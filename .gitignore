@@ -18,3 +18,8 @@
 .idea/
 .DS_Store
 Thumbs.db
+
+# Orchestration: 大体积验证日志与一次性测试现场不入库；
+# .qoder/progress/*.md 与 orchestration.md 必须入库（账本 = Event Journal 前身，不可丢）
+.qoder/evidence/
+.scratch/

@@ -1,5 +1,11 @@
 # Lucero 项目交接 v0.1
 
+> ⚠️ **本页是不完整摘要，已于 2026-09-19 降级。** 完整交接主文档见同目录
+> [`Lucero_Qoder_Handoff_v0.1.md`](Lucero_Qoder_Handoff_v0.1.md)（由 `.docx` 逐段转换而来）。
+> 本摘要**缺失**：ADR-001~015 清单、§9.2 AI 编码强制规则、§12 P0 稳定性红线全文、
+> §10 分阶段版本规划、§10.1 Phase 1 验收、§13 Phase 0 调查模板、§14 Qoder 执行指令。
+> **worker 一律读全文版，不要以本页为准。** 裁决记录见 `docs/adr/ADR-000-baseline-divergence.md`。
+
 Lucero 是一个 Windows Local-First 多 AI Agent 控制平面。
 
 ## 当前冻结技术栈

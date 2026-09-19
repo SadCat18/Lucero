@@ -1,0 +1,10 @@
+# core.autocrlf=true 是全局默认。钉死 repo 内 LF，否则 000001_core_schema.sql 检出即变 CRLF，
+# 冻结文件的逐字节比对会永久失真。
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.docx binary
+*.db binary
