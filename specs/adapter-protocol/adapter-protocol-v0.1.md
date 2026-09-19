@@ -1,6 +1,6 @@
 # Adapter Protocol v0.1（Wave-1 契约②）
 
-- 状态: **proposed**，待用户批准后派发 `adapter` 角色
+- 状态: **accepted**（用户 2026-09-19 16:35 批准，Wave-2 的 `adapter` 角色据此派发）
 - 上游依据: ADR-005 Adapter 进程隔离、ADR-006 协议版本化、架构文档「Adapter」一节的能力等级
 - 关键输入: Phase 0 能力矩阵 §6 的六条设计影响（本契约逐条落地，见 §12 对照表）
 - 范围: Core ↔ Adapter 进程之间的协议。**不含** Core↔UI 的 REST/WS（那是契约③）
@@ -165,6 +165,12 @@ Adapter→Core 通知：
   Adapter 的参数字段走白名单，命中即拒绝并记 `audit_entries`（`outcome=DENIED`）。
 
 ## 10. FakeAdapter 规格（First Sprint 验收对象）
+
+**落点裁定（CO-1，2026-09-19）**：FakeAdapter 源码住 **`core/cmd/fake-adapter/`**（独立 `main` 包），
+由 Core 的 Process Supervisor **作为真子进程拉起**；`adapters/fake/` 只放 fixture 与说明文档。
+两条理由：① Go 的 `internal/` 规则使 `adapters/fake`（在 `core` module 之外）无法被 `core/internal/adapter`
+import，这是 `adapter` 角色实测到的硬约束；② **更重要**：只有跑真进程，才测得到 §8 那条 P0
+「Adapter 崩溃不得带崩 Core」。同进程 import 会把隔离性整个测没了。需要第二个 module 或 `go.work` 的方案一并否掉。
 
 必须实现：`adapter/initialize`、`adapter/health`、`session/list`、`session/read`、`session/send`
 （三态全支持）、`session/stop`、`model/list`、`quota/read`、`approval/list`、`approval/respond`、`stream/*`。
