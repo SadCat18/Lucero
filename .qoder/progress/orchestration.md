@@ -135,7 +135,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | T-1 | backend | **已投递（16:38，主控在用户回合内直发）** | 同上 |
 | T-2 | audit | **已投递（16:37，同上）** | 同上 |
 | T-3 | survey | 已投递（16:12 发送成功） | WorkBuddy 动态探测，见 B5① |
-| T-4 | backend | 待投递 | db 已交付并确认两处破坏性变更：① `Create(a, id, columns, values, ev)` —— **`id` 是独立参数，不要出现在 `columns` 里**；② `db.ErrNoAggregate` 改名 **`db.ErrAggregateNotFound`**。另两条db给的事实：`event_journal.principal_id` 是外键，`EventDraft.PrincipalID` 非空时必须先有 `principals` 行，空字符串存成 NULL 不撞外键；`payload` 缺 `schema` 键时平台层自动补 `"schema":1`。**建聚合一律用 `Create`，用 `Append` 写聚合表会被拒。** |
+| T-4 | backend | **已投递（17:12，巡检，随 T-8 同一条发完）** | db 已交付并确认两处破坏性变更：① `Create(a, id, columns, values, ev)` —— **`id` 是独立参数，不要出现在 `columns` 里**；② `db.ErrNoAggregate` 改名 **`db.ErrAggregateNotFound`**。另两条db给的事实：`event_journal.principal_id` 是外键，`EventDraft.PrincipalID` 非空时必须先有 `principals` 行，空字符串存成 NULL 不撞外键；`payload` 缺 `schema` 键时平台层自动补 `"schema":1`。**建聚合一律用 `Create`，用 `Append` 写聚合表会被拒。** |
 | T-5 | audit | **已投递（16:47，巡检）** | 你的 B1 **已解除**：db 的 `Create`/`Touch` 已交付并有真库夹具（1..5 连续版本、6×8 并发 48 个不重复版本、绕过写被 UNIQUE 拒）。可以写 `internal/approval/store_sqlite.go` 了。**另裁定 Q3 归你**：db 只收集并经 `tx.RedactionHits()` 暴露，由你在**同一事务内** `Append("audit_entries", …)` 落命中记录（只有列名/规则名/次数，无原值）——请实现 `RecordRedaction(hits)` 并补集成用例。Q4 影响你：`AggQuota` 值从 `"quota_account"` 改为 **`"quota"`**（与 `quota_observed` 前缀一致），若你读过这个常量需在断言里跟改。 |
 | T-6 | db | **已投递（16:47，巡检，与 T-7 同一次发送）** | Q1~Q5 裁定结果：**Q1 双方各对一半**，Python 3.45.1 事务内是静默无效、modernc 3.53.4 是直接报错，行为随引擎版本不同；契约已改为"两种都不许依赖 + 必须回读 `PRAGMA journal_mode` 断言实际值"。**Q4 你改**：`AggQuota = "quota"`（事件契约要求 `aggregate_type` 与事件名前缀一致，`quota_observed` ⇒ `quota`）。**Q5 你对**：契约原文自相矛盾（要我禁止的 import），已改契约为 `InitRedaction(denyKeys, patterns []string, marker string) error`，你的实现不动。**Q3 你对**：db 只收集、audit 落链，已写进契约。**结论：`STATUS: complete` 先撤回 in_progress**，Q4 一行改完再交。 |
 
@@ -144,15 +144,24 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 若目标正在执行导致发送失败，保持"待投递"，下一轮再试。
 
 | T-7 | db | **已投递（16:47，巡检，与 T-6 同一次发送）**（原标「优先级最高，含 P0」） | ① **安全缺陷 REQ-A2 成立，主控已复核**：`redact.go:108` 的 `if strings.HasPrefix(s, vaultRefPrefix) { return s }` 让 `"vault://x sk-<密钥>"` **原样落库**。裁定：**删掉这个提前返回**。`vault://<name>` 里的名字本就不该命中密钥正则；一旦命中，**宁可丢掉一个引用也不能漏出密钥**（丢引用是可发现的 bug，泄密是 §12 P0）。补用例：`"vault://x sk-ABCDEFGH"` 必须出现 `[REDACTED]`。② 事件 catalog 补登 `adapter_downgraded`、`adapter_restart_exhausted`（事件契约 §6 已登记，代码 catalog 缺，`adapter` 第 3 轮 Supervisor 必撞墙——它不能自己改你的文件）。③ 上一轮 T-6 的 `AggQuota = "quota"` 仍未改，`STATUS: complete` 继续挂起直到这三条做完。 |
-| T-8 | backend | 待投递（已并入两条新事实，**只投这一条**） | ① `internal/task` 已确认修好（主控重跑 `ok 0.931s`）。② **`internal/session` 测试曾跑满 601.566s 被超时 kill**；主控 16:49 复看：`go vet ./internal/session/` **已无输出**，即编译问题消失。**但 vet 通过不等于测试通过**——超时若仍在就是真阻塞（goroutine 里 `sql.DB.connectionOpener` 存活，像开了库后等不到东西）。请自己复跑 `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test ./internal/session/ -count=1 -timeout 90s -v`，把结论原文写进 progress；**定位前不要推进 HTTP handler**。③ **改掉 `repository.go:9-11` 那条注释里的错误事实**：它写"标准库在这个工具链里没有导出 `sql.QueryerContext`（实测 `go doc database/sql` 查无此符号）"——`database/sql` 自 **Go 1.8 起就导出 `QueryerContext`**，与工具链无关。**你的窄接口 `Queryer` 设计本身是对的、请保留**（consumer-side 窄接口便于测试注入），只需要把理由换成这个真实理由，而不是留一条假的平台事实给后来人。④ db 的破坏性变更见 T-4（同一条链上，投给你时一并处理）。 |
-| T-9 | adapter | 待投递 | CO-1 **采纳你的判断并已在契约② §10 定死**：FakeAdapter 住 `core/cmd/fake-adapter/`（独立 main），由 Supervisor 当真子进程拉起；`adapters/fake/` 只放 fixture 与说明。理由是双重的：你的 internal 限制是真的，但更重要的是**只有真进程才测得到"崩溃不带崩 Core"这条 P0**。CO-2 也对，但**改 `eventjournal` 不是你的活**——db 已补登（主控 16:58 复核通过），你可以用了。**新红点**：你把 `adapter.ErrorCode` 收紧成具体类型后，`internal/adapter` 与 `core/test` 的调用/测试没跟改（db 全量跑时暴露）——**这是你的责任**，`core/test` 那处请通过 Coordination 请 `test` 确认期望值，别自己改它文件。另：你第 1 轮（帧+握手 4 文件）主控已核，`internal/adapter` ok。 |
-| T-11 | test | 待投递 | **ownership lint 的一条判据要放宽**（否则天天误报）：`core/go.sum` 单独增长**不算越界**。主控 16:59 核查过：`go.mod` 一字未动 ⇒ 没人跑 `go get`；那 15 行全是 `modernc.org/sqlite` 的传递依赖（`cc/ccgo/gc/opt/goabi0/fileutil`、`golang-lru/v2`、`x/mod`、`x/sync`、`x/tools`、`pprof`），由 `go build/test` 解析依赖图时自动写入，属预期。改成两条硬判据：① **`go.mod` 有变更**才算越界；② `go.sum` 里出现 **`go.mod` 未声明的顶层模块**才报。另请把这条判据的出处写成注释指向 commit `2530517`，别让它下次又被当新发现。 |
-| T-10 | audit | 待投递 | db 交付转验收通过，另**转达它提的 Q6**：它把你 `IsVaultRef` 的文档措辞认定是本次 P0 的成因之一——"是 vault 引用就豁免"与"值里没藏密钥"不是一回事，db 已改成 `isCleanVaultRef`（前缀对**且**整串过 patterns 不变样才豁免）。请你也**同步自家 `IsVaultRef` 的注释与语义**，别留两处不一致的判定；若有测试依赖旧宽松行为，改掉并说明。另 T-5 提到的 `RecordRedaction(hits)` 仍未见实现，别忘。 |
+| T-8 | backend | **已投递（17:12，巡检，同一条里带上了 T-4）** | ① `internal/task` 已确认修好（主控重跑 `ok 0.931s`）。② **`internal/session` 测试曾跑满 601.566s 被超时 kill**；主控 16:49 复看：`go vet ./internal/session/` **已无输出**，即编译问题消失。**但 vet 通过不等于测试通过**——超时若仍在就是真阻塞（goroutine 里 `sql.DB.connectionOpener` 存活，像开了库后等不到东西）。请自己复跑 `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test ./internal/session/ -count=1 -timeout 90s -v`，把结论原文写进 progress；**定位前不要推进 HTTP handler**。③ **改掉 `repository.go:9-11` 那条注释里的错误事实**：它写"标准库在这个工具链里没有导出 `sql.QueryerContext`（实测 `go doc database/sql` 查无此符号）"——`database/sql` 自 **Go 1.8 起就导出 `QueryerContext`**，与工具链无关。**你的窄接口 `Queryer` 设计本身是对的、请保留**（consumer-side 窄接口便于测试注入），只需要把理由换成这个真实理由，而不是留一条假的平台事实给后来人。④ db 的破坏性变更见 T-4（同一条链上，投给你时一并处理）。 |
+| T-9 | adapter | **已投递（17:12，巡检）** | CO-1 **采纳你的判断并已在契约② §10 定死**：FakeAdapter 住 `core/cmd/fake-adapter/`（独立 main），由 Supervisor 当真子进程拉起；`adapters/fake/` 只放 fixture 与说明。理由是双重的：你的 internal 限制是真的，但更重要的是**只有真进程才测得到"崩溃不带崩 Core"这条 P0**。CO-2 也对，但**改 `eventjournal` 不是你的活**——db 已补登（主控 16:58 复核通过），你可以用了。**新红点**：你把 `adapter.ErrorCode` 收紧成具体类型后，`internal/adapter` 与 `core/test` 的调用/测试没跟改（db 全量跑时暴露）——**这是你的责任**，`core/test` 那处请通过 Coordination 请 `test` 确认期望值，别自己改它文件。另：你第 1 轮（帧+握手 4 文件）主控已核，`internal/adapter` ok。 |
+| T-11 | test | **已投递（17:12，巡检）** | **ownership lint 的一条判据要放宽**（否则天天误报）：`core/go.sum` 单独增长**不算越界**。主控 16:59 核查过：`go.mod` 一字未动 ⇒ 没人跑 `go get`；那 15 行全是 `modernc.org/sqlite` 的传递依赖（`cc/ccgo/gc/opt/goabi0/fileutil`、`golang-lru/v2`、`x/mod`、`x/sync`、`x/tools`、`pprof`），由 `go build/test` 解析依赖图时自动写入，属预期。改成两条硬判据：① **`go.mod` 有变更**才算越界；② `go.sum` 里出现 **`go.mod` 未声明的顶层模块**才报。另请把这条判据的出处写成注释指向 commit `2530517`，别让它下次又被当新发现。 |
+| T-10 | audit | **已投递（17:12，巡检）** | db 交付转验收通过，另**转达它提的 Q6**：它把你 `IsVaultRef` 的文档措辞认定是本次 P0 的成因之一——"是 vault 引用就豁免"与"值里没藏密钥"不是一回事，db 已改成 `isCleanVaultRef`（前缀对**且**整串过 patterns 不变样才豁免）。请你也**同步自家 `IsVaultRef` 的注释与语义**，别留两处不一致的判定；若有测试依赖旧宽松行为，改掉并说明。另 T-5 提到的 `RecordRedaction(hits)` 仍未见实现，别忘。 |
 
 
 
-**投递优先级（17:00 更新，5 行待投，巡检按此序一次投完）**：
-**T-8（backend，含并入的 T-4）> T-9（adapter）> T-10（audit）> T-11（test）**。
+**投递优先级（17:15 更新）**：第二批 3 行，**T-12（db）> T-13（audit）> T-14（test）**，一次投完。
+第一批 T-8/T-4/T-9/T-10/T-11 已由巡检 17:12 全部投成功、零工具报错。
+
+## 待投递 · 第二批（17:15）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-12 | db | 待投递 | **重开 R-002，但不是回归——是我漏设计的写路径**。`temporary_grants` 与 `policy_rules` 是可变表（都有 `updated_at`/`revoked_at`），却不在 ADR-017 那 10 张聚合表里、没有 `version` 列，导致 `Touch` 用不了、`Append` 只能插 —— **这两张表的 UPDATE 在平台层完全没有合法表达**。audit 因此如实返回 `ErrGrantRevocationUnsupported`（它没绕过，是对的）。请做 `000003_grant_policy_version.sql`：给 **`temporary_grants`、`policy_rules`、`adapter_capabilities`** 各加 `version INTEGER NOT NULL DEFAULT 1`（沿用 000002 的形状与自记账约定，不加 CHECK），并在 `AggregateKind` 增加 `AggGrant = "grant"`、`AggPolicy = "policy"`、`AggAdapterCapability = "adapter_capability"`（事件契约 §1 词表里 `grant`/`policy` 已存在；`grant_issued`/`grant_revoked`/`grant_expired` 的 `aggregate_type` 即为 `grant`）。 **第三个是我顺着你的漏点自己找的同型问题，不是一次新事故**：`adapter_capabilities` 的 `health`/`last_verified_at` 可变，而事件目录里**已经有** `adapter_capability_verified` —— 不一起补，你会被重开第三次。 补用例：建行→吊销→`version` 递增且三个 grant 事件版本连续；`policy_rules` 与 `adapter_capabilities` 同形。 **同时请在内部契约里显式声明"无事件表"清单**（这些可变但**故意**不发事件，别让人以后再猜）：`execution_leases`（heartbeat 高频）、`idempotency_keys`（纯基础设施状态）、`settings`、`blobs.archived_at`、`process_instances`（除 `process_started/exited/crashed` 三个已由 `process` 聚合表达的外）。 **这是新增迁移，不动 `000001`/`000002`。** |
+| T-13 | audit | 待投递 | B3/REQ-A6 裁定：**不吞掉，重开 db 补写路径**（见 T-12）。你保持返回 `ErrGrantRevocationUnsupported` 直到 `AggGrant` 落地，**不要**为了"看起来能用"而走裸 SQL 或跳过事件。`grant_revoked` 事件的 `aggregate_type` 将定为 `grant`、`aggregate_id` 用 grant 行自身 id（不是 task/session 的 id）；`payload` 关键字段 `scope_type`/`scope_id`/`action`/`reason`，其中 `reason` 走你的敏感规则。你提的全仓不变量我采纳，已转 `test`（T-14）。 |
+| T-14 | test | 待投递 | 把 audit 提的这条升为**全仓不变量契约用例**：任何参与 `audit_entries.entry_hash` 计算的列，其改写**必须发生在算 hash 之前**；否则哈希链会自己烂掉而表面仍"完整"。至少覆盖：① 先写 details_json 后算 hash 的错误顺序必须被断言抓到；② 篡改已存条目 → `VerifyChain` 失败；③ 脱敏命中计数写入 `details_json` 时也要在 hash 之前（db 的 `RedactionHits` 与 audit 的哈希链是两条会在此交汇的路径，正是要测的接缝）。 |
+
 已投：T-1/T-2/T-3/T-5/T-6/T-7。**db 三条裁定已落地并经主控复跑验收（`ok 2.370s`、`AggQuota="quota"`、
 `isCleanVaultRef` 收紧、新增 `TestAggQuotaMatchesEventPrefix`）→ R-002 正式 complete。**
 投递语义已纠正进巡检 prompt（revision 6）：**目标 running 不是障碍**，只有工具真报错才保持待投。
@@ -230,7 +239,11 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 16:57。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:13。**
+
+> 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
+> 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
+> 并与你的时间戳**互不评判**；16:06~16:57 各行的“晚于真实时间”评语作废。
 
 | 时间 | 状态指纹 | 本轮动作 | 回醒主控 | 备注 |
 |---|---|---|---|---|
@@ -239,6 +252,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | 16:37 | `db=complete/等主控转达` \| `backend=running/q2` \| `audit=ready/等B1(db)` \| `adapter=ready/第2轮可自主` \| `test=running/q2` \| `frontend=running` \| 待投递无新行 | 1 推进 + 0 投递 | 是 | **adapter 交回第 1 轮**（`internal/adapter/` 4 文件已核实在盘），Next action 无红线词 → 已推第 2 轮。**audit 的 B1 解除条件字面上早已成立**：grep 到 `platform/db/touch.go:177` 就是 §1.1.6 的新 `Create`，但它按"等 B1"停手，我未推（规则如此），已请主控决定是否追一行待投递。上轮的 test 停摆风险自解（`test.md`/`frontend.md` 均已在盘）。待主控裁：CO-1 FakeAdapter 落点、CO-2 缺 2 个 `adapter_*` 事件、REQ-A2 `vault://` 前缀整串豁免＝脱敏绕过（P0 向）。归属漂移：`specs/adapter-protocol/adapter-protocol-v0.1.md` 为 M 而角色表判归 adapter，它自报未碰。 |
 | 16:48 | `db=cold→已投 T-6+T-7` \| `audit=ready→已投 T-5` \| `backend=running/q2` \| `adapter=running` \| `test=running/q2` \| `frontend=running` \| 待投余 T-4/T-8(backend)、T-9(adapter) | 2 发送（投 3 行）| 是 | db 处于 cold 窗口，把 P0 那条抢在前面投了。**偏差记录**：你把「同角色一轮最多投一条」写进账本时我的发送已在路上，故 T-6+T-7 合成一次投给 db——**请勿再重发 T-6**，db 队列里已有。T-4/T-8/T-9 因 backend/adapter running 排队第 1 轮（未及 ≥2 轮阈值）。三项裁定经只读 grep 确认在代码里均未落地（`touch.go:31`、`redact.go` 的 `vault://` 提前返回、`eventjournal` 缺 2 个 `adapter_*`），投递不是空转。 |
 | 16:57 | `db=complete/等主控验收+Q6转audit` \| `backend=running/q2` \| `adapter=running` \| `audit=running` \| `test=running/q2` \| `frontend=running` \| 待投余 T-8/T-4(backend)、T-9(adapter)＝**第 2 轮未投** | 0（投 0） | 是 | T-6/T-7 的成效已用只读 grep 独立核实（`AggQuota="quota"`、catalog 补齐 2 个 `adapter_*`、`redact.go:46` 豁免收紧为“整串过 patterns 不变样”），db 再次自报 complete。**T-8/T-4/T-9 连续 2 轮撞不上 idle 窗口**（backend、adapter 全程 running），已按 ≥2 轮阈值回醒主控并请它定“是否允许向 running 会话排队直发”。db 另交回第二条同型泄密路径与 Q6（audit 的 `IsVaultRef` 措辞＝本次 P0 成因）。 |
+
+| 17:13 | `db=complete(主控已验收)` \| `backend=running/q1` \| `adapter=running` \| `audit=ready/写source_sqlite` \| `test=running/q2` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 5 行 | 是 | 按纠正后的语义一次投完 T-8(+T-4)/T-9/T-10/T-11，**全部成功、零工具报错**，running 目标正常进队列——上两轮所谓「撞不上 idle 窗口」是我的错误理解，已回销。audit 交回真库落库层（149 PASS/0 FAIL）并新写 **B3/REQ-A6**：`temporary_grants.revoked_at` + `grant_issued/expired` 事件无法经平台层表达，要主控拍「吞掉 vs 重开 db」。两处纠偏：① audit 说「db 的 `vault://` 跳过脱敏未修」是过期陈述，我已 grep 证伪（`redact.go:46` 已是 `isCleanVaultRef`），别据此重开 R-002；② 我 16:48 的时钟备注判反了，见本段上方更正。 |
 
 ## 来自 worker 的上行输入
 
