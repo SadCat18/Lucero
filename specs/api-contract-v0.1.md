@@ -31,7 +31,7 @@
 |---|---|
 | 时间 | 一律 Unix 毫秒整数，不返回 RFC3339 字符串 |
 | 分页 | `?cursor=<opaque>&limit=50` → `{items, next_cursor}`；**不得**用 offset |
-| 幂等 | 所有有副作用的 POST 必须带 `Idempotency-Key`；命中已完成记录时**返回首次的响应**，不重放副作用（领域模型「Idempotency」） |
+| 幂等 | 所有**改变业务状态**的 POST 必须带 `Idempotency-Key`；命中已完成记录时**返回首次的响应**，不重放副作用（领域模型「Idempotency」）。**REQ-F-11 豁免（18:03 确认）**：凭证签发类端点必须排除在幂等缓存之外——目前唯一一条是 `POST /api/v1/ws-ticket`。理由与 frontend 的判断一致且更强：票是**单次使用 + 校验即作废**的，若被幂等缓存，命中缓存会返回同一张票或其"已作废"结论，等于让一次重放变成可预测行为。豁免不许靠约定，**必须有一条反向用例钉住**（同一请求两次 → 拿到两张不同的有效票）；将来新增豁免端点要显式列进本表，不能靠注释口头豁免 |
 | 乐观并发 | 聚合读响应带 `version`（ADR-017 的列）；变更请求带 `If-Match: <version>`，不符 → `409 version_conflict` |
 | 错误体 | `{"error": {"code": "...", "message": "...", "retryable": bool, "details": {…}}}`，`code` 复用契约② §错误码集合，HTTP 码与之对应 |
 | 未知值 | 可空字段用 `null` + 伴随 `confidence`；**严禁**用 `0`/`false`/`"offline"` 表示"不知道" |
@@ -80,8 +80,8 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | 链上一步 | 客户端调用 | Core 侧效果 |
 |---|---|---|
 | Create Project | `POST /projects` | `project_created` |
-| Discover Fake Session | `POST /sessions/{id}/discover` | `session_discovered` |
-| Mark Managed | `POST /sessions/{id}/manage` | `session_managed` |
+| Discover Fake Session | `POST /api/v1/adapters/{id}/sessions:discover` → 取回 session id 列表 | `session_discovered` |
+| Mark Managed | `POST /api/v1/sessions/{id}:manage`（id 来自上一步） | `session_managed` |
 | Create Task | `POST /tasks` + `Idempotency-Key` | `task_created` |
 | Create Execution | `POST /tasks/{id}:queue` 触发调度 | `execution_created` → `task_preparing` |
 | Send Message | `POST /executions/{id}/send`（映射 `session/send`，带三态 `delivery`） | `execution_started` → `task_running` → `message_recorded` |

@@ -180,8 +180,17 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-23 | audit | 待投递 | **REQ-A4⑤ 已裁**（内部契约新增 §3.1）：默认由**动作风险等级**决定，不来自策略表——内置高风险集（`filesystem.write`/`command.exec`/`db.write`/`deploy`/`remote.*`/`secret.read`/`adapter.debug.*`）→ `REQUIRE_APPROVAL`；风险 `UNKNOWN` 或分类器不认识 → `REQUIRE_APPROVAL`（**不确定即失败关闭**）；已登记低/中风险（含 `session.send`、`execution_started`）→ `ALLOW`。三条硬要求：① `Decide` 返回改 `(Effect, Reason, error)`，默认值必须显式出现在输出里（`DEFAULT_HIGH_RISK`/`DEFAULT_UNKNOWN_RISK`/`DEFAULT_ALLOW`），**不得静默放行**；② 优先级链不变，任何一层有规则即覆盖默认；③ 用例必须证明"垂直链不会被默认卡住，但链上那次审批是 FakeAdapter 主动要的真实高危审批"——否则 §7 验收测的是兜底而不是审批。 |
-| T-24 | test | 待投递 | 你那条"跨包写表"的扫描按字面 `tx.Append(` 抓，**扫不到表名以变量传入的写法**（db 指出、巡检认同）。改成**按表名查**：对每张非本人所有的表，grep 该表名出现在哪些包里（排除 `internal/platform` 的映射表与自身模块），命中即报。别再把判据绑在某个函数名的字面形态上——那种判据会随重构静默失效。 |
+| T-23 | audit | **已投递（18:01，巡检）** | **REQ-A4⑤ 已裁**（内部契约新增 §3.1）：默认由**动作风险等级**决定，不来自策略表——内置高风险集（`filesystem.write`/`command.exec`/`db.write`/`deploy`/`remote.*`/`secret.read`/`adapter.debug.*`）→ `REQUIRE_APPROVAL`；风险 `UNKNOWN` 或分类器不认识 → `REQUIRE_APPROVAL`（**不确定即失败关闭**）；已登记低/中风险（含 `session.send`、`execution_started`）→ `ALLOW`。三条硬要求：① `Decide` 返回改 `(Effect, Reason, error)`，默认值必须显式出现在输出里（`DEFAULT_HIGH_RISK`/`DEFAULT_UNKNOWN_RISK`/`DEFAULT_ALLOW`），**不得静默放行**；② 优先级链不变，任何一层有规则即覆盖默认；③ 用例必须证明"垂直链不会被默认卡住，但链上那次审批是 FakeAdapter 主动要的真实高危审批"——否则 §7 验收测的是兜底而不是审批。 |
+| T-24 | test | **已投递（18:01，巡检）** | 你那条"跨包写表"的扫描按字面 `tx.Append(` 抓，**扫不到表名以变量传入的写法**（db 指出、巡检认同）。改成**按表名查**：对每张非本人所有的表，grep 该表名出现在哪些包里（排除 `internal/platform` 的映射表与自身模块），命中即报。别再把判据绑在某个函数名的字面形态上——那种判据会随重构静默失效。 |
+
+## 待投递 · 第七批（18:05）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-25 | test | 待投递 | T-18① 我原话是"把 `.scratch_loader.py` **移进** `.scratch/`"，主控 18:02 自查：仓库根已无该文件，**全仓也再无任何 loader**（`find . -name "*loader*"` 零命中），且它从未入库（`git log -- .scratch_loader.py` 空），所以没有 diff 可追。**不要为此重建它**——先回答两问：① 它当时对 `scripts/check_ownership.sh` 的补丁是否已完整落进脚本本体；② 若脚本以后再被改写，这个 loader 是否还需要重跑。若"一次性补丁器、用完即弃"，那**删掉比留在 .scratch 更干净**，我改口认可；只要答案不是"丢了"就行。顺带一句：变异回滚用相对路径会静默失败这条教训（frontend 报的）值得进你的 lint 判据——你脚本里所有路径要么绝对、要么显式从仓库根拼。 |
+| T-26 | frontend | 待投递 | **REQ-F-11 你的判断被采纳**，契约③ §2 已改成"幂等只适用于**改变业务状态**的 POST，凭证签发类显式豁免"，并把你那条反向断言写成硬性要求（同一请求两次必须拿到两张不同有效票；将来新增豁免要显式列进该表，不许口头豁免）。**§4 的两行旧写法我已修**（`adapters/{id}/sessions:discover` + `sessions/{id}:manage`），你按 §3 投影是对的、不用回改 yaml 里的这条，但仍请核一遍 35 path 是否与修后的 §3/§4 完全一致。**越界自纠已核实**：`packages/` 只剩 `api-client`、`validate-openapi.mjs` 进了 `apps/desktop/scripts/`、SCOPE 行回到 §7 原文——处理方式正确。**四道闸门 17:52 全绿我记账为阶段性证据**，但按纪律它仍只是"截至 17:52 的观察"，交回时要最后一次重跑。B-F1 维持 blocked（等 backend 的 `/api/v1`），继续做不依赖真后端的部分。 |
+
+**frontend 状态更正**：R-007 从 running 记为 **idle-等主控**（巡检 18:01 实测），T-26 投完即可自行推进非联调部分，不需再等我。
 
 **R-002 口径纠正**：db 自报 complete 但 T-20（透传读 + `policy_*` 入 catalog）仍在途 → 账本改回 `running`，并立规矩：
 **自报 complete 若其后还有未投完的待投递指向该角色，一律不置 complete**（否则巡检会停止观察它，正是我今天第四次犯的病的调度版）。
@@ -278,7 +287,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:51。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 18:01。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -301,6 +310,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | 17:42 | `db=ready/T-16已投·等主控分发Q7Q8` \| `backend=running` \| `adapter=running/q1·本包真红` \| `audit=ready/T-15已投·切片用例` \| `test=running/q2` \| `frontend=ready/T-17已投` \| 待投递=0 | 推进 0 + 投递 4 行 | 是 | 第三+四批（T-15/16/17/18）一次投完，零工具报错。**两笔对账句是我加的、非主控原文**，都写进了表内状态列：① T-15 让 audit 改的 `Append→Create` 它 17:36 已自修；② T-16① 要求的“通报受影响方”db 已列 Q7，差的只是全仓重跑。新增待主控：backend 的 **B-backend-2（Tx 无事务内读→If-Match 原子性）**、**B-backend-3/C12（`internal/notification` 无 owner + 聚合写入口必然 +1 事件行与 §5.4“零新增”冲突）**、db 的 **Q8（§6 无任何 `policy_*` 事件）**；§3/§4 对 `POST /executions/{id}/send` 的矛盾被 backend 与 frontend 各自独立发现。 |
 
 | 17:51 | `db=自报complete→T-20又给新活` \| `backend=running+T-19已投` \| `adapter=running+T-22已投` \| `audit=已推(切片用例)` \| `test=running/q3+T-21已投` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 4 行 | 是 | 第五批 4 行一次投完零报错；推进了 audit（唯一 idle 且 Next action 自主）。**本轮唯一一次独立取证**：`CGO_ENABLED=0 go vet ./internal/adapter/` → 无输出 exit 0，证明 T-22 的“你自己包的红”在投递时已不存在（db/audit 也独立报它 17:44 自修）——这是主控 17:46 那条“超 5 分钟重新取证”纪律的第四个病例，我按先例做法附了对账句并在表内标明。**R-002 别按 complete 收尾**：db 自报 complete 后 30 秒我就把 `Tx.QueryRowContext/QueryContext` 透传（backend 写侧的硬前置）投给了它。audit 自正一条失实自述（sentinel 实未删→17:44 真删并 grep 取证）、并撤回自己上轮报的 adapter 红。 |
+
+| 18:01 | `db=running` \| `backend=running` \| `adapter=running/q1` \| `audit=running+T-23已投` \| `test=running/q1+T-24已投` \| `frontend=ready/等主控裁REQ-F系列` \| 待投递=0 | 推进 0 + 投递 2 行 | 是 | 第六批投完零报错。**两处独立核**：① frontend 的越界自纠按盘为真（`ls packages/` 只剩 `api-client`、`validate-openapi.mjs` 已在 `apps/desktop/scripts/`）；② **T-18① 落地方式与原话不符**——根目录 `.scratch_loader.py` 已消失，但 `find .scratch -name '*loader*'` 零命中，而指令要求的是“**移进** `.scratch/`”不是删；已请主控向 test 确认改名还是真删（我没拿任何角色的自述当证据）。新等主控：REQ-F-11（短票与 §2 幂等键字面冲突，它选豁免+反向断言）、§4 链映射表两行旧文字与 §3 现文矛盾。 |
 
 ## 来自 worker 的上行输入
 
