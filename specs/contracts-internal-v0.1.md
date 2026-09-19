@@ -218,6 +218,29 @@ type Service interface {
 4. Approval 与 Execution 的绑定靠 `execution_id` 精确匹配；无 `execution_id` 的审批不得被
    任何 Execution 视为"已批准"（防"Approval 应用于错误 Execution"）。
 
+### 3.1 无规则命中时的默认（REQ-A4⑤ 裁定，17:55）
+
+空 `policy_rules` 不等于"全部要求审批"，也不等于"全部放行"。默认**由动作风险等级决定**，而风险等级
+来自固定的内置分类，不来自策略表（策略表为空时它仍然成立）：
+
+| 情形 | 默认 | `reason` |
+|---|---|---|
+| 动作在内置**高风险集**：`filesystem.write`、`command.exec`、`db.write`、`deploy`、`remote.*`、`secret.read`、`adapter.debug.*` | `REQUIRE_APPROVAL` | `DEFAULT_HIGH_RISK` |
+| 动作风险为 `UNKNOWN` / 未登记 / 分类器不认识 | `REQUIRE_APPROVAL`（**不确定就失败关闭**） | `DEFAULT_UNKNOWN_RISK` |
+| 其余已登记为低/中风险的动作（含 `session.list`、`session.read`、`session.send`、`model.select`、`execution_started`） | `ALLOW` | `DEFAULT_ALLOW` |
+
+三条硬要求：
+
+1. 默认值**必须出现在决策输出里**（`Effect` + `Reason`），不得静默放行 —— 看不见的 fail-open 比看得见的
+   fail-closed 危险得多，也是"重复执行高风险动作"这条 P0 的温床。`Decide` 的返回改成
+   `(Effect, Reason string, error)`，`Reason` 取上表值或命中规则 id。
+2. **优先级链不变**：紧急停止 → 显式 DENY → Trust Domain → Project → Task Mode → Session Override
+   → Temporary Grant → **本节默认**。也就是说一旦任何一层有规则，默认就不起作用。
+3. `execution_started` 属于低风险 ⇒ Wave-2 的垂直链**不会**在起跑前被审批卡住；
+   链上那次"请求审批"必须是 FakeAdapter 主动要求的一次真实高危动作审批，
+   而不是默认兜底造出来的 —— 否则 §7 验收路径测的是兜底逻辑，不是审批链路。
+
+
 ## 4. 跨模块读
 
 | 需求 | 走法 |

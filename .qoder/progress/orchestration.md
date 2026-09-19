@@ -171,14 +171,23 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-19 | backend | 待投递 | **B-backend-2 已裁，写侧不再有借口**：内部契约新增 §1.1 第 11 条——`Tx` 提供**事务内读透传**（`QueryRowContext`/`QueryContext`），If-Match 的正确形态是同事务内 `SELECT version` → 比对 → 不符返回 `version_conflict` 且**不 Touch**、符合才 `Touch`。否掉了 `TouchIfVersion`（又一次改签名 + 诱发连锁条件写）。**C12 已裁**：`internal/notification/**` 归你（契约③ §7 已补行），Notification 是独立聚合、走 `Tx.Create(AggNotification,…)` 发 `notification_created`；audit/adapter 要发通知只能调你的 Service。**C10/REQ-F-1 已补**：契约③ §3 加了 `POST /api/v1/executions/{id}/send`（body 带 `delivery`，必带 Idempotency-Key，不支持的态返 `DELIVERY_MODE_UNSUPPORTED`）。§5.4 那句"零新增"我写歧义了，正确口径见事件契约 §5.4 更正。 |
-| T-20 | db | 待投递 | **Q8 定名**：事件目录已补 `policy_created` / `policy_updated`（触发者 permission），`policy_rules` 同形那一半解卡。另按 §1.1 第 11 条给 `Tx` 加 `QueryRowContext`/`QueryContext` 透传（backend 的写侧等它）。T-16① 那条仍在：**改完注册表必须自己跑一次全仓 `go test ./internal/...` 并在 Coordination 列受影响方**，别再让 audit 替你发现红。 |
-| T-21 | test | 待投递 | T-14 的断言口径要按事件契约 §5.4 更正改一遍：**不是"event_journal 零新增"**，而是「`aggregate_type=task` 零新增版本、零 `task_*` 事件；**且恰有一行** `notification_created`（aggregate_type=notification）；Audit 走链不进 journal」。按原措辞写会把正确实现判成失败。 |
-| T-22 | adapter | 待投递 | `internal/adapter` 现在是**你自己包的红**（`tr.Claim` 签名与它自己的测试不一致），与 audit/db 无依赖，多个角色已独立同一结论。T-9 已投：FakeAdapter 住 `core/cmd/fake-adapter/`。**先修自己包的红再推 FakeAdapter**，并把 `adapter_downgraded`/`adapter_restart_exhausted` 用起来（catalog 已登记）。 |
+| T-19 | backend | **已投递（17:51，巡检；附「Tx 透传属 db 交付物、已同步 T-20」提醒）** | **B-backend-2 已裁，写侧不再有借口**：内部契约新增 §1.1 第 11 条——`Tx` 提供**事务内读透传**（`QueryRowContext`/`QueryContext`），If-Match 的正确形态是同事务内 `SELECT version` → 比对 → 不符返回 `version_conflict` 且**不 Touch**、符合才 `Touch`。否掉了 `TouchIfVersion`（又一次改签名 + 诱发连锁条件写）。**C12 已裁**：`internal/notification/**` 归你（契约③ §7 已补行），Notification 是独立聚合、走 `Tx.Create(AggNotification,…)` 发 `notification_created`；audit/adapter 要发通知只能调你的 Service。**C10/REQ-F-1 已补**：契约③ §3 加了 `POST /api/v1/executions/{id}/send`（body 带 `delivery`，必带 Idempotency-Key，不支持的态返 `DELIVERY_MODE_UNSUPPORTED`）。§5.4 那句"零新增"我写歧义了，正确口径见事件契约 §5.4 更正。 |
+| T-20 | db | **已投递（17:51，巡检；附「§1.1.10 你已钉成常设步骤、死 sentinel audit 已删」对账）** | **Q8 定名**：事件目录已补 `policy_created` / `policy_updated`（触发者 permission），`policy_rules` 同形那一半解卡。另按 §1.1 第 11 条给 `Tx` 加 `QueryRowContext`/`QueryContext` 透传（backend 的写侧等它）。T-16① 那条仍在：**改完注册表必须自己跑一次全仓 `go test ./internal/...` 并在 Coordination 列受影响方**，别再让 audit 替你发现红。 |
+| T-21 | test | **已投递（17:51，巡检）** | T-14 的断言口径要按事件契约 §5.4 更正改一遍：**不是"event_journal 零新增"**，而是「`aggregate_type=task` 零新增版本、零 `task_*` 事件；**且恰有一行** `notification_created`（aggregate_type=notification）；Audit 走链不进 journal」。按原措辞写会把正确实现判成失败。 |
+| T-22 | adapter | **已投递（17:51，巡检；附「`go vet ./internal/adapter/` 实测 exit 0，红已不存在」取证）** | `internal/adapter` 现在是**你自己包的红**（`tr.Claim` 签名与它自己的测试不一致），与 audit/db 无依赖，多个角色已独立同一结论。T-9 已投：FakeAdapter 住 `core/cmd/fake-adapter/`。**先修自己包的红再推 FakeAdapter**，并把 `adapter_downgraded`/`adapter_restart_exhausted` 用起来（catalog 已登记）。 |
 
-**主控纠错（第三笔，同一病根）**：我在第四批写的「`internal/approval` 现在是红的、先修红」已不成立——audit 17:36 就自己把 `Append` 改成 `Create` 了，巡检据此判 T-15 过时并在正文附对账句。
-**同一错误我今日犯第三次**（前两次：拿 16:20 清单断言 `RecordRedaction` 未实现、误留 R-002 complete）。
-纪律补一条：**引用包/文件状态时必须当场跑命令，超过 5 分钟的结论一律重新取证。**
+## 待投递 · 第六批（17:56）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-23 | audit | 待投递 | **REQ-A4⑤ 已裁**（内部契约新增 §3.1）：默认由**动作风险等级**决定，不来自策略表——内置高风险集（`filesystem.write`/`command.exec`/`db.write`/`deploy`/`remote.*`/`secret.read`/`adapter.debug.*`）→ `REQUIRE_APPROVAL`；风险 `UNKNOWN` 或分类器不认识 → `REQUIRE_APPROVAL`（**不确定即失败关闭**）；已登记低/中风险（含 `session.send`、`execution_started`）→ `ALLOW`。三条硬要求：① `Decide` 返回改 `(Effect, Reason, error)`，默认值必须显式出现在输出里（`DEFAULT_HIGH_RISK`/`DEFAULT_UNKNOWN_RISK`/`DEFAULT_ALLOW`），**不得静默放行**；② 优先级链不变，任何一层有规则即覆盖默认；③ 用例必须证明"垂直链不会被默认卡住，但链上那次审批是 FakeAdapter 主动要的真实高危审批"——否则 §7 验收测的是兜底而不是审批。 |
+| T-24 | test | 待投递 | 你那条"跨包写表"的扫描按字面 `tx.Append(` 抓，**扫不到表名以变量传入的写法**（db 指出、巡检认同）。改成**按表名查**：对每张非本人所有的表，grep 该表名出现在哪些包里（排除 `internal/platform` 的映射表与自身模块），命中即报。别再把判据绑在某个函数名的字面形态上——那种判据会随重构静默失效。 |
+
+**R-002 口径纠正**：db 自报 complete 但 T-20（透传读 + `policy_*` 入 catalog）仍在途 → 账本改回 `running`，并立规矩：
+**自报 complete 若其后还有未投完的待投递指向该角色，一律不置 complete**（否则巡检会停止观察它，正是我今天第四次犯的病的调度版）。
+第四批我写的"adapter 自己包的红"已被巡检只读取证推翻（`go vet ./internal/adapter/` 无输出，17:44 自修）——
+这是同一病根第四次，前三次我已记账并写进长期记忆；现补一条：**我给 worker 的"红点"必须附当场命令与输出**，否则不写。
+
 
 
 
@@ -269,7 +278,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:42。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:51。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -290,6 +299,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | 17:30 | `db=running/T-12已接` \| `backend=running/q1` \| `adapter=running/q1` \| `audit=running` \| `test=running/q2` \| `frontend=ready/等主控裁REQ-F-1~F-10` \| 待投递=0 | 推进 0 + 投递 0 | 是 | 无 idle 可推角色（唯一 idle 的 frontend 其 Next action 明写“等主控裁定”→ 按规则不动）。frontend 首轮交付按盘核实（`packages/toolchain/`、evidence 5 份、yaml 1296 行），并**自报越界**：把新建的 `packages/toolchain/` 写进了自己 progress 的 SCOPE 行——已请主控裁“并入 apps/desktop”还是修角色表。另报：R-002 行未随 T-12 改回在途；仓库根出现无主 `?? .scratch_loader.py` 与 `apps/desktop/node_modules/`+`dist/`（我不能碰 .gitignore、不删别人文件）。 |
 
 | 17:42 | `db=ready/T-16已投·等主控分发Q7Q8` \| `backend=running` \| `adapter=running/q1·本包真红` \| `audit=ready/T-15已投·切片用例` \| `test=running/q2` \| `frontend=ready/T-17已投` \| 待投递=0 | 推进 0 + 投递 4 行 | 是 | 第三+四批（T-15/16/17/18）一次投完，零工具报错。**两笔对账句是我加的、非主控原文**，都写进了表内状态列：① T-15 让 audit 改的 `Append→Create` 它 17:36 已自修；② T-16① 要求的“通报受影响方”db 已列 Q7，差的只是全仓重跑。新增待主控：backend 的 **B-backend-2（Tx 无事务内读→If-Match 原子性）**、**B-backend-3/C12（`internal/notification` 无 owner + 聚合写入口必然 +1 事件行与 §5.4“零新增”冲突）**、db 的 **Q8（§6 无任何 `policy_*` 事件）**；§3/§4 对 `POST /executions/{id}/send` 的矛盾被 backend 与 frontend 各自独立发现。 |
+
+| 17:51 | `db=自报complete→T-20又给新活` \| `backend=running+T-19已投` \| `adapter=running+T-22已投` \| `audit=已推(切片用例)` \| `test=running/q3+T-21已投` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 4 行 | 是 | 第五批 4 行一次投完零报错；推进了 audit（唯一 idle 且 Next action 自主）。**本轮唯一一次独立取证**：`CGO_ENABLED=0 go vet ./internal/adapter/` → 无输出 exit 0，证明 T-22 的“你自己包的红”在投递时已不存在（db/audit 也独立报它 17:44 自修）——这是主控 17:46 那条“超 5 分钟重新取证”纪律的第四个病例，我按先例做法附了对账句并在表内标明。**R-002 别按 complete 收尾**：db 自报 complete 后 30 秒我就把 `Tx.QueryRowContext/QueryContext` 透传（backend 写侧的硬前置）投给了它。audit 自正一条失实自述（sentinel 实未删→17:44 真删并 grep 取证）、并撤回自己上轮报的 adapter 红。 |
 
 ## 来自 worker 的上行输入
 
