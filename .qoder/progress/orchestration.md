@@ -146,12 +146,13 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | T-7 | db | **已投递（16:47，巡检，与 T-6 同一次发送）**（原标「优先级最高，含 P0」） | ① **安全缺陷 REQ-A2 成立，主控已复核**：`redact.go:108` 的 `if strings.HasPrefix(s, vaultRefPrefix) { return s }` 让 `"vault://x sk-<密钥>"` **原样落库**。裁定：**删掉这个提前返回**。`vault://<name>` 里的名字本就不该命中密钥正则；一旦命中，**宁可丢掉一个引用也不能漏出密钥**（丢引用是可发现的 bug，泄密是 §12 P0）。补用例：`"vault://x sk-ABCDEFGH"` 必须出现 `[REDACTED]`。② 事件 catalog 补登 `adapter_downgraded`、`adapter_restart_exhausted`（事件契约 §6 已登记，代码 catalog 缺，`adapter` 第 3 轮 Supervisor 必撞墙——它不能自己改你的文件）。③ 上一轮 T-6 的 `AggQuota = "quota"` 仍未改，`STATUS: complete` 继续挂起直到这三条做完。 |
 | T-8 | backend | 待投递（已并入两条新事实，**只投这一条**） | ① `internal/task` 已确认修好（主控重跑 `ok 0.931s`）。② **`internal/session` 测试曾跑满 601.566s 被超时 kill**；主控 16:49 复看：`go vet ./internal/session/` **已无输出**，即编译问题消失。**但 vet 通过不等于测试通过**——超时若仍在就是真阻塞（goroutine 里 `sql.DB.connectionOpener` 存活，像开了库后等不到东西）。请自己复跑 `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test ./internal/session/ -count=1 -timeout 90s -v`，把结论原文写进 progress；**定位前不要推进 HTTP handler**。③ **改掉 `repository.go:9-11` 那条注释里的错误事实**：它写"标准库在这个工具链里没有导出 `sql.QueryerContext`（实测 `go doc database/sql` 查无此符号）"——`database/sql` 自 **Go 1.8 起就导出 `QueryerContext`**，与工具链无关。**你的窄接口 `Queryer` 设计本身是对的、请保留**（consumer-side 窄接口便于测试注入），只需要把理由换成这个真实理由，而不是留一条假的平台事实给后来人。④ db 的破坏性变更见 T-4（同一条链上，投给你时一并处理）。 |
 | T-9 | adapter | 待投递 | CO-1 **采纳你的判断并已在契约② §10 定死**：FakeAdapter 住 `core/cmd/fake-adapter/`（独立 main），由 Supervisor 当真子进程拉起；`adapters/fake/` 只放 fixture 与说明。理由是双重的：你的 internal 限制是真的，但更重要的是**只有真进程才测得到"崩溃不带崩 Core"这条 P0**。CO-2 也对，但**改 `eventjournal` 不是你的活**——db 已补登（主控 16:58 复核通过），你可以用了。**新红点**：你把 `adapter.ErrorCode` 收紧成具体类型后，`internal/adapter` 与 `core/test` 的调用/测试没跟改（db 全量跑时暴露）——**这是你的责任**，`core/test` 那处请通过 Coordination 请 `test` 确认期望值，别自己改它文件。另：你第 1 轮（帧+握手 4 文件）主控已核，`internal/adapter` ok。 |
+| T-11 | test | 待投递 | **ownership lint 的一条判据要放宽**（否则天天误报）：`core/go.sum` 单独增长**不算越界**。主控 16:59 核查过：`go.mod` 一字未动 ⇒ 没人跑 `go get`；那 15 行全是 `modernc.org/sqlite` 的传递依赖（`cc/ccgo/gc/opt/goabi0/fileutil`、`golang-lru/v2`、`x/mod`、`x/sync`、`x/tools`、`pprof`），由 `go build/test` 解析依赖图时自动写入，属预期。改成两条硬判据：① **`go.mod` 有变更**才算越界；② `go.sum` 里出现 **`go.mod` 未声明的顶层模块**才报。另请把这条判据的出处写成注释指向 commit `2530517`，别让它下次又被当新发现。 |
 | T-10 | audit | 待投递 | db 交付转验收通过，另**转达它提的 Q6**：它把你 `IsVaultRef` 的文档措辞认定是本次 P0 的成因之一——"是 vault 引用就豁免"与"值里没藏密钥"不是一回事，db 已改成 `isCleanVaultRef`（前缀对**且**整串过 patterns 不变样才豁免）。请你也**同步自家 `IsVaultRef` 的注释与语义**，别留两处不一致的判定；若有测试依赖旧宽松行为，改掉并说明。另 T-5 提到的 `RecordRedaction(hits)` 仍未见实现，别忘。 |
 
 
 
-**投递优先级（16:58 更新，4 行待投，巡检按此序一次投完）**：
-**T-8（backend，已并入 T-4）> T-9（adapter）> T-10（audit）**；T-4 不单独投，随 T-8 一次发完。
+**投递优先级（17:00 更新，5 行待投，巡检按此序一次投完）**：
+**T-8（backend，含并入的 T-4）> T-9（adapter）> T-10（audit）> T-11（test）**。
 已投：T-1/T-2/T-3/T-5/T-6/T-7。**db 三条裁定已落地并经主控复跑验收（`ok 2.370s`、`AggQuota="quota"`、
 `isCleanVaultRef` 收紧、新增 `TestAggQuotaMatchesEventPrefix`）→ R-002 正式 complete。**
 投递语义已纠正进巡检 prompt（revision 6）：**目标 running 不是障碍**，只有工具真报错才保持待投。
