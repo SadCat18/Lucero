@@ -37,7 +37,7 @@ const (
     AggProject AggregateKind = "project"; AggAdapter AggregateKind = "adapter"
     AggModel AggregateKind = "model";    AggSession AggregateKind = "session"
     AggTask AggregateKind = "task";      AggExecution AggregateKind = "execution"
-    AggApproval AggregateKind = "approval"; AggQuota AggregateKind = "quota_account"
+    AggApproval AggregateKind = "approval"; AggQuota AggregateKind = "quota"
     AggNotification AggregateKind = "notification"; AggHandoff AggregateKind = "handoff"
 )
 
@@ -71,8 +71,12 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
 3. 业务包各自持有自己的 `Repository`（只读查询 + 组装聚合），但**没有任何一个包能拿到
    别的表的写权限**。禁止 `GlobalDatabaseRepository`。
 4. 连接级 PRAGMA（`foreign_keys`、`busy_timeout`）由 `db` 在每条新建池化连接上设置；
-   库级 PRAGMA（`journal_mode`、`synchronous`）只在迁移/初始化时执行一次，
-   **绝不在事务内执行**（`journal_mode` 在事务里是 no-op，会静默失效）。
+   库级 PRAGMA（`journal_mode`、`synchronous`）只在迁移/初始化时执行一次，**绝不在事务内执行**。
+   **表述修正（Q1，2026-09-19 双引擎实测）**：事务内改 `journal_mode` 的后果**随引擎版本不同**——
+   SQLite 3.45.1（Python 内置）静默无效并回读原模式；modernc 内置 SQLite 3.53.4 直接报
+   `cannot change into wal mode from within a transaction`。因此实现**两种行为都不许依赖**：
+   库级 PRAGMA 必须在任何事务之外执行一次，且**必须回读 `PRAGMA journal_mode` 断言实际值**，
+   不得假定"执行过就等于生效"。测试断言按当前驱动（modernc 3.53.4）写，并在注释里标明版本敏感。
 5. **记账约定**：每个 `.sql` 迁移文件末尾自己 `INSERT INTO schema_migrations(version, name, applied_at)`
    （`000001`、`000002` 均已如此），迁移器只查这张表来决定执行哪个文件，**自己不写记账行**；
    迁移器**不得**再包一层事务（脚本自带 `BEGIN IMMEDIATE;…COMMIT;`，嵌套会直接报错）。
@@ -124,13 +128,22 @@ func Rules() RedactionRules   // 唯一导出面；不实现替换逻辑
 
 ```go
 package db
-func InitRedaction(r audit.RedactionRules) error   // 编译正则；任一失败 → Core 不进入 Ready
+// 原语参数而非共享类型：db 不得 import audit（§0 依赖方向），audit 也不得 import db。
+// cmd/core 一行注入：db.InitRedaction(r.DenyKeys, r.Patterns, r.Marker)
+func InitRedaction(denyKeys, patterns []string, marker string) error   // 编译正则；任一失败 → Core 不进入 Ready
 ```
+
+**签名修正（Q5，2026-09-19）**：本条原文写的是 `InitRedaction(r audit.RedactionRules)`，
+那会要求 db import audit，与 §0 的依赖方向自相矛盾。`db` 改用三个原语参数是**正确实现，契约错了**，
+故改契约不改代码。同理 db 里那份内置 `InterimRedactionRules()` 在 audit 的 `Rules()` 落地后**必须删除**（已删）。
 
 - 强制点：`Tx.Touch` 与 `Tx.Append` 在序列化 `payload_json` / `details_json` / 任意 TEXT 列**之前**递归遍历，
   命中 `DenyKeys` 的键整值替换，字符串值再跑 `Patterns`。没有"跳过脱敏"的参数。
-- 每次命中记一条 `RedactionHit{column, key|pattern, count}` 进 `audit_entries.details_json`（只有计数与名字，**不含原值**）。
-- 日志走同一个 redactor：日志 handler 出口处套用，不在各业务调用点各自处理。
+- **命中记录的责任划分（Q3，2026-09-19 裁定）**：`db` 只在事务内**收集**，经
+  `tx.RedactionHits() []RedactionHit{Column, Match, Count}` 暴露（**只有列名、规则名、次数，绝无原值**）；
+  由 **`audit` 在同一事务内自己 `Append("audit_entries", …)`**。
+  理由：`audit_entries` 带 `previous_hash`/`entry_hash` 链，属 audit 的知识，db 去写它等于伪造链条。
+  日志走同一个 redactor：日志 handler 出口处套用，不在各业务调用点各自处理。
 - Secret 原值只允许以 `vault://<name>` 引用形式持久化（DPAPI abstraction，First Sprint 只留接口不实现）。
 - 边界外文本（Provider 返回的自由文本里可能自带密钥）只能靠 `Patterns` 兜，属已知上限
   ——`ponytail: pattern-only for free text, entropy detection if false negatives bite`。
