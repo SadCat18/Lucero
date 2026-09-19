@@ -1,9 +1,15 @@
 # Build
 /dist/
+dist/
 /target/
 /node_modules/
+node_modules/
 *.exe
 *.dll
+
+# 一次性脚手架只准待在 .scratch/，不得散在仓库根（17:35 实测到 .scratch_loader.py 落根目录）
+.scratch/
+/.scratch_*
 
 # Local data
 /data/

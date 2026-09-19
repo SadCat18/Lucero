@@ -13,6 +13,13 @@
    理由不是防外网，是防本机任意进程与浏览器页面——Phase 0 实测到反面教材：
    WorkBuddy `--auth none` 的 help 自述"允许任意本地进程通过该服务执行命令、读写文件"。
    一个无鉴权的本地控制平面 = 任意本地进程可以驱动你的 AI 执行高风险动作。
+2.1 **WebSocket 例外（REQ-F-2 裁定，17:35）**：W3C 规定浏览器不能在 `WebSocket` 握手携带自定义头，
+   所以 `/ws/v1/events` **不接受** `Authorization` 头。改用**一次性短票**：
+   `POST /api/v1/ws-ticket`（走正常 Bearer）→ 返回 `{ticket, expires_in: 30}` →
+   连接 `/ws/v1/events?ticket=…`；服务端校验后**立即作废该票**，票为单次使用、30 秒过期、不入库明文。
+   否掉的两个备选：`Sec-WebSocket-Protocol` 携带（把口令塞进协议协商字段，语义污染且要求服务端回显子协议）、
+   同源反代注入（多一个组件，Tauri 未进场时无从属处）。
+   **禁止**为绕开这条而放宽成"WS 无鉴权"——那等于给任意本地进程开一条只读的完整业务时间线。
 3. **不开放 CORS**（或只放行桌面 WebView 自身来源）；带 `Origin` 的外部请求一律 403。
 4. 单用户，不做账号体系。写操作必须带 `X-Lucero-Principal`（允许值 `local-user`），
    缺失即 `401`；`system` 与 adapter principal 只能由 Core 内部产生，**不接受外部声明**。
@@ -40,10 +47,11 @@ GET  /api/v1/projects?cursor=&limit=     → 列表；GET/PATCH /api/v1/projects
 POST /api/v1/adapters/{key}/probe        → 触发握手+能力核定；GET /api/v1/adapters[/{id}]
 GET  /api/v1/adapters/{id}/capabilities  → 逐能力等级 + effective_backend + last_verified_at
 GET  /api/v1/models?adapter=             → 模型列表（含 parameter_schema_json）
-POST /api/v1/sessions/{id}/discover      → 从 Provider 拉已有会话进本地（幂等：remote_session_id 去重）
-POST /api/v1/sessions/{id}/manage        → 置 managed（受管理会话才开同步与通知）
-GET  /api/v1/sessions[/{id}]             → 详情；GET /api/v1/sessions/{id}/messages?after_seq=
-POST /api/v1/sessions/{id}/sync          → 显式增量同步，返回 sync_state + next_cursor
+POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、按 remote_session_id 去重 upsert 本地行，
+                                          返回发现的 session id 列表（幂等：重复 discover 不产生新行）
+POST /api/v1/sessions/{id}:manage      → 置 managed（受管理会话才开同步与通知）
+GET  /api/v1/sessions[/{id}]           → 详情；GET /api/v1/sessions/{id}/messages?after_seq=
+POST /api/v1/sessions/{id}:sync        → 显式增量同步，返回 sync_state + next_cursor
 POST /api/v1/tasks                       → 建任务（必须带 Idempotency-Key）
 GET  /api/v1/tasks?status=&project=&cursor=
 PATCH /api/v1/tasks/{id}                 → 只允许 priority/title/description/mode；带 If-Match

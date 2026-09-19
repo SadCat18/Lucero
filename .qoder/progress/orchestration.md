@@ -160,6 +160,18 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 - **第三批投递顺序**：`T-15（audit）> T-16（db）`。理由：`internal/approval` 现在是红的，先修红。
   T-12/T-13/T-14 已 17:20 投出；`000003` 已落盘，所以 T-13 里"保留 ErrGrantRevocationUnsupported"可能已过时，以 T-15 为准。
 
+## 待投递 · 第四批（17:40，裁 frontend 首轮）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-17 | frontend | 待投递 | **REQ-F-2 裁定：一次性短票**。W3C 确实禁止 `WebSocket` 握手带自定义头，我 §1.2 写漏了——**这是契约错，你对**。契约③ 已新增 §2.1：`POST /api/v1/ws-ticket`（走 Bearer）→ `{ticket, expires_in:30}` → `/ws/v1/events?ticket=`，服务端校验后立即作废、单次使用、不入库明文。否掉 `Sec-WebSocket-Protocol`（把口令塞进协议协商字段）与同源反代（Tauri 未进场，凭空加组件）。**不许改成"WS 不鉴权"**。请同步 yaml。**REQ-F-7 同样你对**：§3 原写法 `POST /sessions/{id}/discover` 在 discover 之前根本没有 id，已改成 `POST /api/v1/adapters/{id}/sessions:discover`（返回发现的 session id 列表，按 `remote_session_id` 去重幂等），`manage`/`sync` 保留。请同步 yaml 与 §4 链映射。**越界裁定：驳回 `packages/toolchain/`**——并进 `apps/desktop` 的 devDependencies，§7 不为它扩行。**比文件位置更严重的是你把自己 progress 的 SCOPE 行改了**：SCOPE 是别人判定你是否越界的依据，不能由被约束方单方面扩大，即使已如实标注也不行；请改回与契约③ §7 完全一致。**另两件**：① 巡检只转达了 REQ-F-2/F-7，请在 progress 里给 REQ-F-1~F-10 每条一行"结论 + 需不需要主控裁"，别让我从 1296 行 yaml 里反推；② 一次性脚本放 `.scratch/`，别落仓库根（我刚补的 `.gitignore` 是兜底，不是许可）。**B-F2 决定：暂不惊动用户开浏览器面板**，PNG 截图推到 Wave-3 验收；现在交文本证据（DOM 快照/渲染断言输出）即可。B-F1 成立，等 backend 交 API，你继续做不依赖真后端的部分（codegen 链路、UNKNOWN 渲染分支断言）。 |
+| T-18 | test | 待投递 | 两件：① `.scratch_loader.py` 落在**仓库根**（未跟踪），请移进 `.scratch/`——根目录只放交付物。② 你那个 loader 用 `assert L[50].startswith(...)` / `assert L[92]=='}'` **按行号锚定自己脚本**，改一行就自碎，属于把工具写成脆弱断言；改成按内容定位（grep 到标记再插）。"解析 §7 失败一律 exit 2、绝不退回旧数据"这条保留，是对的。③ 顺带：`node_modules`/`dist` 此前没被忽略（根锚定 `/node_modules/` 不覆盖 `apps/desktop/`），我已修 .gitignore，你的 lint 判据 5 现在才真的有效。 |
+
+**投递优先级（第四批）**：`T-17 > T-18`；`T-15 > T-16` 若仍未投则排在它们之前（approval 包还红着）。
+本批同时修了账本两处失真：R-002 从误留的 `complete` 改回 `running`（巡检指出），
+以及我自己漏在 .gitignore 的嵌套 `node_modules/`（`/node_modules/` 只锚根目录，覆盖不到 `apps/desktop/`）。
+
+
 
 
 ## 待投递 · 第二批（17:15）
@@ -202,7 +214,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | REQ | role | sessionId | 状态 | Wave | 出口条件 |
 |---|---|---|---|---|---|
 | R-001 | survey | `7726e47f-d772-4f98-9b2a-2588ec5fd46b` | complete 且**主控已验收**（`51afde6`）；16:12 追加 WorkBuddy 动态探测中 | 0 | 五家矩阵 + 优先级 + fallback 链 |
-| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | **complete（16:58 主控复跑验收）** | 2 | 平台层 + 迁移器 + Create/Touch/Append + 强制脱敏已交付；后续仅按需回调 |
+| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | **running（T-12 重开，17:20 已接；`000003` 已落盘）** | 2 | 000003 三表加 version + 映射变更须同轮通报受影响方（§1.1 第 10 条） |
 | R-003 | backend | `370101c0-0d5d-49ba-a84f-6d72695da0c1` | running | 2 | 状态机矩阵驱动 + 合法/非法迁移用例全覆盖 |
 | R-004 | adapter | `d27c7da2-b677-41b5-be92-bdcf81691273` | **running（16:38 派）** | 2 | 协议帧+握手+三态投递+进程监管+FakeAdapter；`go test ./internal/adapter/... ./internal/process/...` 绿 |
 | R-005 | audit | `06a5de3f-8e86-4c18-bc81-0f3215350246` | running | 2 | 哈希链 + RedactionRules + Decide 优先级链 + Resolve 幂等 |
