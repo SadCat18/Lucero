@@ -129,6 +129,8 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `project_archived` | project | `reason` | – |
 | `adapter_registered` | adapter | `adapter_key` `protocol_version` | – |
 | `adapter_health_changed` | adapter | `from` `to` `confidence` | – |
+| `adapter_downgraded` | adapter | `capability_name` `from_backend` `to_backend` `reason` | ✓ |
+| `adapter_restart_exhausted` | adapter | `pid` `attempt_count` `backoff_ms` | ✓ |
 | `adapter_capability_verified` | adapter | `capability_name` `support_level` | – |
 | `model_discovered` | model | `remote_model_id` `canonical_key` | – |
 | `session_discovered` | session | `remote_session_id` `adapter_instance_id` | – |
