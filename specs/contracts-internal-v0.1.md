@@ -79,6 +79,27 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
    因此每个迁移文件都**不可重放**：重跑会撞 `schema_migrations` 主键或 `CREATE TABLE` 已存在。
    执行前必须先备份 DB，失败则 Core 不进入 Ready。新迁移从下一号顺延，不改已发布的文件。
 
+### 1.1 C4/C5 裁定（2026-09-19，回 backend 的 Coordination）
+
+6. **新建聚合走 `Create`，不走 `Touch`**（原契约漏了这个入口）：
+
+   ```go
+   // 首行落库 + 版本恒为 1 + 插首个事件。id 由调用方以 UUIDv7 预生成（幂等重试要复用同一个）。
+   func (tx *Tx) Create(a AggregateKind, id string, columns []string, values []any, ev EventDraft) error
+   ```
+
+   `Create` 内部写 `version = 1`，事件的 `aggregate_version` 亦为 1。
+   `Touch` 遇到不存在的 id 必须返回 `ErrAggregateNotFound`，**不得**顺手建行。
+7. **`setSQL` 允许多列**（`"status = ?, updated_at = ?"` 合法）：白名单校验的是**列名**与占位符形态，
+   不限制列数；`version = version + 1` 由 `Touch` 自己追加，调用方写了 `version` 直接拒。
+   `AggTask` / `AggExecution` 等常量由 `internal/platform/db` 导出，业务包只引用不自定义。
+8. **事件类型注册校验只在一处**：`Tx.Touch` / `Tx.Create` 内部调
+   `eventjournal.Registered(ev.Type)`，未登记即返回 error。业务包**不必**各自重复校验。
+   依赖方向 `platform/db ──► eventjournal` 合法（`eventjournal` 不 import 任何业务包）。
+9. **payload 结构体长期留在业务包**（`internal/task/events.go` 等），因为它们编码的是域事实；
+   `internal/eventjournal` 只做目录与校验面，不放业务 payload 类型，避免变成口袋包。
+
+
 ## 2. Redaction：规则归 audit，强制点在 db
 
 「哪些算敏感」是安全策略（audit 的知识），「保证一定被处理」是写入机制（db 的职责）。

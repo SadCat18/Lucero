@@ -121,6 +121,28 @@ WHERE id = ? RETURNING version;
 
 Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不产生** Task 事件。
 
+### 5.4 投影无合法目标时（C1 裁定，2026-09-19）
+
+§5.1 是**唯一权威**：投影只能沿 §5.1 的边走。若某 Execution 事件在 Task 当前状态下**找不到合法目标**
+（典型：`QUEUED`/`PAUSED`/`BLOCKED` 时收到 `execution_failed` 且 Handoff 已 READY），则：
+
+1. Task **停在原态，不产生任何事件**——§3 的"一个版本一个事件"绑定的是状态变化，没有状态变化就没有事件，
+   这不算违反 ADR-008；
+2. 必须产出一条 **Notification**（`notification_type = projection_rejected`）+ 一条 **Audit**
+   （`action = execution_failed`，`outcome = UNKNOWN`，`details_json` 带 `task_state`、`execution_event`、
+   `reason`）。Notification/Audit 走各自通道，不进 `event_journal`；
+3. 该情况**不得静默吞掉**——静默 = "丢任务"的早期形态。`test` 角色需有一条用例钉住此行为。
+
+### 5.5 UNKNOWN 的进入与离开（C3 裁定）
+
+§5.1/§5.2 原文只写了"仅 Recovery 携带证据时可出"，此处补全：
+
+- **进入 UNKNOWN** 与**离开 UNKNOWN** 都必须满足三条件：`Occasion = Recovery` + 非空 `Evidence` + **起点不是终态**。
+- **终态（Task `ACCEPTED`/`CANCELLED`；Execution `SUCCEEDED`/`FAILED`/`CANCELLED`）永不被改判成 `UNKNOWN`**——
+  那等于抹掉已发生的历史，属 §12「丢 Task 或 Execution 历史」。
+- `UNKNOWN` 不得被渲染或折算为 `FAILED` / `0` / `Offline`，除非另取得证据。
+
+
 ## 6. 事件目录 v0.1
 
 | event_type | 触发者（包） | payload 关键字段 | Audit |
@@ -149,8 +171,12 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `task_failed` | task | `error_code` | ✓ |
 | `task_cancelled` | task | `reason` | ✓ |
 | `task_interrupted` | task | `execution_id` `lease_state` | ✓ |
+| `task_paused` | task | `reason` | – |
+| `task_blocked` | task | `reason` `blocked_on` | – |
+| `task_resumed` | task | `from`（`PAUSED`/`BLOCKED`） | – |
 | `task_transferring` | task | `handoff_id` | – |
 | `task_state_corrected` | recovery | `from` `to` `evidence` `recovered_from` | ✓ |
+| `execution_paused` / `execution_resumed` | execution | `reason` / `from` | – |
 | `execution_created` | execution | `task_id` `adapter_instance_id` `model_id` `attempt_no` `trigger_type` | – |
 | `execution_started` | execution | `provider_execution_id` `model_snapshot_sha256` | – |
 | `execution_output_flushed` | execution | `batch_first_seq` `batch_last_seq` `char_count` `channel` | – |
