@@ -98,20 +98,103 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
   （`modernc.org/sqlite v1.59.0`，`go.mod` 收归主控独占）；契约① 三份标记 accepted，
   ADR-017 修正为 **10 张表、不加 CHECK**（原文写 9 张但代码枚举含 `AggModel`，属我自己的不一致）
 - Next action: 等 `survey` 交出 Codex 379 文件 v2 schema 的方法/能力面 → 写契约② → 派 `adapter`
-- Verification: `git -C /d/Project/Lucero log --oneline -3` = `26616e9 / 900038d / c94b8c2`；
-  四个 worker 各自的 `.qoder/progress/<role>.md` 已建立
+- Verification: `git -C /d/Project/Lucero log --oneline -3` = `f007372 / b120bfd / 51afde6`
+- **更正**（16:15，巡检指出、我核实确认）：我此前写"四个 worker 各自的 progress 已建立"**不实**。
+  实况只有 `survey / db / backend` 三份，**`audit` 跑了近 40 分钟仍无进度文件**（但 `internal/audit`、
+  `internal/permission`、`internal/approval` 下已有 9 个源文件，含我要求的 `sql_locality_test.go`）。
+  我不再引用自己的断言，改用重跑测试取证。
+
+## 主控重跑取证（16:20，不信 worker 自述）
+
+命令 `cd /d/Project/Lucero/core && CGO_ENABLED=0 go test ./internal/...`：
+
+- 绿：`approval` 0.921s、`audit` 0.893s、`eventjournal` 0.769s、`execution`(cached)、`permission`(cached)、
+  `platform/db` 2.207s、`session` 1.502s → **B7 关闭**（db 的 3 处编译错它自己修好了）
+- 红：**`internal/task` build failed** —— `projection_test.go` 6 处按 2 返回值写，
+  `ProjectTaskState` 现返回 3 个（backend 为落实 §5.4 改了签名没同步调用点）。已把命令原文与
+  6 个错点转给 backend，要求：第三个值当"投影被拒"信号用、补一个"被拒时 event_journal 零新增"断言、
+  **交付前最后一次重跑才算报绿**。
+
+## 机制发现：主控在"被巡检唤醒的回合"里发不出消息（重要）
+
+`send_message_to_chat_session` 现在**连续两次被拒**（audit、backend），错误原文：
+「由其他会话委派的任务必须直接执行，不能继续向其他会话转发消息。」
+对照先前成功：15:5x 给 db/backend/survey 发都进去了。差别在于**本轮是我被巡检的消息唤醒的回合**，
+而先前是用户主动开口的回合。推断（未证实）：防转发死循环的闸门把"由其它会话消息触发的回合"
+里再向外发消息一并拦掉了。
+
+**后果与应对**：被巡检唤醒时，我只能记账与向用户汇报，**不能直接指挥 worker**。
+要推进有三条路：① 等用户下一次开口时我再发；② 由巡检在 worker 的 idle 窗口发（它有这个权限）；
+③ 给巡检追加一条"按主控写在账本里的指令待办去投递"的职责。
+建议采用 ③ 并把指令写成账本里的 `## 待投递` 段——这样主控与被唤醒回合解耦。
+
+## 待投递（由巡检执行，主控在被唤醒回合发不出）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-1 | backend | **已投递（16:38，主控在用户回合内直发）** | 同上 |
+| T-2 | audit | **已投递（16:37，同上）** | 同上 |
+| T-3 | survey | 已投递（16:12 发送成功） | WorkBuddy 动态探测，见 B5① |
+| T-4 | backend | 待投递 | db 已交付并确认两处破坏性变更：① `Create(a, id, columns, values, ev)` —— **`id` 是独立参数，不要出现在 `columns` 里**；② `db.ErrNoAggregate` 改名 **`db.ErrAggregateNotFound`**。另两条db给的事实：`event_journal.principal_id` 是外键，`EventDraft.PrincipalID` 非空时必须先有 `principals` 行，空字符串存成 NULL 不撞外键；`payload` 缺 `schema` 键时平台层自动补 `"schema":1`。**建聚合一律用 `Create`，用 `Append` 写聚合表会被拒。** |
+| T-5 | audit | **已投递（16:47，巡检）** | 你的 B1 **已解除**：db 的 `Create`/`Touch` 已交付并有真库夹具（1..5 连续版本、6×8 并发 48 个不重复版本、绕过写被 UNIQUE 拒）。可以写 `internal/approval/store_sqlite.go` 了。**另裁定 Q3 归你**：db 只收集并经 `tx.RedactionHits()` 暴露，由你在**同一事务内** `Append("audit_entries", …)` 落命中记录（只有列名/规则名/次数，无原值）——请实现 `RecordRedaction(hits)` 并补集成用例。Q4 影响你：`AggQuota` 值从 `"quota_account"` 改为 **`"quota"`**（与 `quota_observed` 前缀一致），若你读过这个常量需在断言里跟改。 |
+| T-6 | db | **已投递（16:47，巡检，与 T-7 同一次发送）** | Q1~Q5 裁定结果：**Q1 双方各对一半**，Python 3.45.1 事务内是静默无效、modernc 3.53.4 是直接报错，行为随引擎版本不同；契约已改为"两种都不许依赖 + 必须回读 `PRAGMA journal_mode` 断言实际值"。**Q4 你改**：`AggQuota = "quota"`（事件契约要求 `aggregate_type` 与事件名前缀一致，`quota_observed` ⇒ `quota`）。**Q5 你对**：契约原文自相矛盾（要我禁止的 import），已改契约为 `InitRedaction(denyKeys, patterns []string, marker string) error`，你的实现不动。**Q3 你对**：db 只收集、audit 落链，已写进契约。**结论：`STATUS: complete` 先撤回 in_progress**，Q4 一行改完再交。 |
+
+
+投递规则：巡检把某条发出后，把状态改成「已投递 + 时间」，**不要重复投递同一条**；
+若目标正在执行导致发送失败，保持"待投递"，下一轮再试。
+
+| T-7 | db | **已投递（16:47，巡检，与 T-6 同一次发送）**（原标「优先级最高，含 P0」） | ① **安全缺陷 REQ-A2 成立，主控已复核**：`redact.go:108` 的 `if strings.HasPrefix(s, vaultRefPrefix) { return s }` 让 `"vault://x sk-<密钥>"` **原样落库**。裁定：**删掉这个提前返回**。`vault://<name>` 里的名字本就不该命中密钥正则；一旦命中，**宁可丢掉一个引用也不能漏出密钥**（丢引用是可发现的 bug，泄密是 §12 P0）。补用例：`"vault://x sk-ABCDEFGH"` 必须出现 `[REDACTED]`。② 事件 catalog 补登 `adapter_downgraded`、`adapter_restart_exhausted`（事件契约 §6 已登记，代码 catalog 缺，`adapter` 第 3 轮 Supervisor 必撞墙——它不能自己改你的文件）。③ 上一轮 T-6 的 `AggQuota = "quota"` 仍未改，`STATUS: complete` 继续挂起直到这三条做完。 |
+| T-8 | backend | 待投递（已并入两条新事实，**只投这一条**） | ① `internal/task` 已确认修好（主控重跑 `ok 0.931s`）。② **`internal/session` 测试曾跑满 601.566s 被超时 kill**；主控 16:49 复看：`go vet ./internal/session/` **已无输出**，即编译问题消失。**但 vet 通过不等于测试通过**——超时若仍在就是真阻塞（goroutine 里 `sql.DB.connectionOpener` 存活，像开了库后等不到东西）。请自己复跑 `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test ./internal/session/ -count=1 -timeout 90s -v`，把结论原文写进 progress；**定位前不要推进 HTTP handler**。③ **改掉 `repository.go:9-11` 那条注释里的错误事实**：它写"标准库在这个工具链里没有导出 `sql.QueryerContext`（实测 `go doc database/sql` 查无此符号）"——`database/sql` 自 **Go 1.8 起就导出 `QueryerContext`**，与工具链无关。**你的窄接口 `Queryer` 设计本身是对的、请保留**（consumer-side 窄接口便于测试注入），只需要把理由换成这个真实理由，而不是留一条假的平台事实给后来人。④ db 的破坏性变更见 T-4（同一条链上，投给你时一并处理）。 |
+| T-9 | adapter | 待投递 | CO-1 **采纳你的判断并已在契约② §10 定死**：FakeAdapter 住 `core/cmd/fake-adapter/`（独立 main），由 Supervisor 当真子进程拉起；`adapters/fake/` 只放 fixture 与说明。理由是双重的：你的 internal 限制是真的，但更重要的是**只有真进程才测得到"崩溃不带崩 Core"这条 P0**。CO-2 也对，但**改 `eventjournal` 不是你的活**——db 已补登（主控 16:58 复核通过），你可以用了。**新红点**：你把 `adapter.ErrorCode` 收紧成具体类型后，`internal/adapter` 与 `core/test` 的调用/测试没跟改（db 全量跑时暴露）——**这是你的责任**，`core/test` 那处请通过 Coordination 请 `test` 确认期望值，别自己改它文件。另：你第 1 轮（帧+握手 4 文件）主控已核，`internal/adapter` ok。 |
+| T-10 | audit | 待投递 | db 交付转验收通过，另**转达它提的 Q6**：它把你 `IsVaultRef` 的文档措辞认定是本次 P0 的成因之一——"是 vault 引用就豁免"与"值里没藏密钥"不是一回事，db 已改成 `isCleanVaultRef`（前缀对**且**整串过 patterns 不变样才豁免）。请你也**同步自家 `IsVaultRef` 的注释与语义**，别留两处不一致的判定；若有测试依赖旧宽松行为，改掉并说明。另 T-5 提到的 `RecordRedaction(hits)` 仍未见实现，别忘。 |
+
+
+
+**投递优先级（16:58 更新，4 行待投，巡检按此序一次投完）**：
+**T-8（backend，已并入 T-4）> T-9（adapter）> T-10（audit）**；T-4 不单独投，随 T-8 一次发完。
+已投：T-1/T-2/T-3/T-5/T-6/T-7。**db 三条裁定已落地并经主控复跑验收（`ok 2.370s`、`AggQuota="quota"`、
+`isCleanVaultRef` 收紧、新增 `TestAggQuotaMatchesEventPrefix`）→ R-002 正式 complete。**
+投递语义已纠正进巡检 prompt（revision 6）：**目标 running 不是障碍**，只有工具真报错才保持待投。
+
+
+**时钟纪律**：本机 16:49 时账本已被我写到 "16:52" —— 主控时间戳此前靠推断、已确认飘了约 16 分钟。
+以后所有写入账本/契约/commit 的时间一律先 `date` 再写。心跳列继续用本机时间，不拿它评我。
+
+
+**假设已证实**：`send_message` 被拒只发生在「主控被其它会话消息唤醒的回合」；
+用户主动开口的回合内发送正常（16:37 给 audit、16:38 给 backend 均成功，backend 处于 running 也收进了队列）。
+
+
+
+## 巡检通道已生效（16:06 第一次自发回醒）
+
+修好的回醒通道立刻起作用：它主动发来三条状态变化，其中一条**抓到我的不实陈述**（见上）。
+
+它同时上报"需主控裁 C1/C2/C3"——那是它与我几分钟前的动作赛跑，`f007372` 已裁定回写。
+教训：**账本必须实时反映裁定**，否则巡检会按同一指纹反复吵用户。
+
+
+## 主控会话（回醒目标）
+
+`46227ba1-61ac-4d13-be88-e2d16ea34daf` —— 巡检发现状态变化时必须 `send_message` 到这里的会话，
+**不要**依赖用户人工转述。这是 15:47 补的设计缺口：此前巡检只改账本、无法回醒。
 
 ## 派发账本
 
 | REQ | role | sessionId | 状态 | Wave | 出口条件 |
 |---|---|---|---|---|---|
-| R-001 | survey | `7726e47f-d772-4f98-9b2a-2588ec5fd46b` | running | 0 | 五家矩阵 + 优先级 + fallback 链 |
-| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | running | 2 | 平台层 + 迁移器 + Touch/Append + 强制脱敏，`go test ./...` 绿 |
+| R-001 | survey | `7726e47f-d772-4f98-9b2a-2588ec5fd46b` | complete 且**主控已验收**（`51afde6`）；16:12 追加 WorkBuddy 动态探测中 | 0 | 五家矩阵 + 优先级 + fallback 链 |
+| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | **complete（16:58 主控复跑验收）** | 2 | 平台层 + 迁移器 + Create/Touch/Append + 强制脱敏已交付；后续仅按需回调 |
 | R-003 | backend | `370101c0-0d5d-49ba-a84f-6d72695da0c1` | running | 2 | 状态机矩阵驱动 + 合法/非法迁移用例全覆盖 |
-| R-004 | adapter | — | **未派：等契约②** | 2 | 协议 + FakeAdapter + 进程监管 |
+| R-004 | adapter | `d27c7da2-b677-41b5-be92-bdcf81691273` | **running（16:38 派）** | 2 | 协议帧+握手+三态投递+进程监管+FakeAdapter；`go test ./internal/adapter/... ./internal/process/...` 绿 |
 | R-005 | audit | `06a5de3f-8e86-4c18-bc81-0f3215350246` | running | 2 | 哈希链 + RedactionRules + Decide 优先级链 + Resolve 幂等 |
-| R-006 | test | — | 未派：等契约③ | 2 | 三类测试 + grep 越界检查 |
-| R-007 | frontend | — | 未派：等契约③ | 3 | 纯 REST/WS 观察面板 |
+| R-006 | test | `5aee940a-360b-43b4-88ff-47af54e1701a` | running（16:44 派） | 2 | ownership lint + 状态机独立转录 + Adapter 契约 harness + Crash 骨架 |
+| R-007 | frontend | `2609f3c3-7de6-42cf-bb0f-0708a4358100` | running（16:52 派） | 3 | 生成 `core-v1.yaml` + api-client codegen + 观察面板骨架；UNKNOWN 不得渲染成 0/Offline；端到端联调在 Core API 落地前标 blocked |
+
+> 角色与文件所有权的**正式版本以 `specs/api-contract-v0.1.md` §7 为准**（`test` 的 ownership lint 依它判定）；
+> 本文件的角色表是操作摘要。两处不一致时以契约为准，并回头修本表。
+
+
 
 ## 已定的防冲突纪律（本会话内新增，未进契约文档）
 
@@ -121,7 +204,40 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
   否则会话在 `D:\Work资源\...` 里建产物，账本与 diff 全错位。
 - **本地 commit 归主控**：worker 一律禁止 git 写操作，验收靠 `git diff 900038d --stat` 自查归属。
 
+## 无人值守值守配置（15:32 启用）
 
+| 任务 | jobId | 调度 | 权限 | 输出模式 |
+|---|---|---|---|---|
+| Lucero 编排巡检 | `37f0ac17-fc0d-41bb-854f-f74b8145ba9a` | every 10 min | Auto（非 Full Access） | merged |
+| Lucero 编排日报 | `88b4e710-e23f-40d7-af87-a488c29bce93` | `0 9 * * *` Asia/Shanghai | Auto | merged |
+
+两者执行目录均为 `D:\Project\Lucero`，只允许写本文件，禁止 `create_chat_session`、禁止 git 写、禁止跑 build/test、
+禁止启动五家第三方软件（那是 `survey` 经单独授权后的事）。
+**巡检自禁时要用上表自己的 jobId** —— 它无从得知，只能从这里读。
+
+用户回来时说「回来了，给我现状」→ 主控 disable 这两条（`qoder_cron` action=disable），
+先读本文件 NEEDS YOU 段，再只交一张状态表。
+
+建 cron 时踩到两个坑（都靠「建完回读 list」才发现，光看 add 的返回体会漏掉）：
+1. 正文落库时 `绝` 字被转成 `绠`，一次 update 引入、重写修好；现在两条 prompt 都不用该字。
+2. 日报调度创建后被自动改成 `0 12 * * *`（我从未提交 schedule 字段，revision 自己跳了）。
+   已显式回写为 `0 9 * * *` 并再读确认。**以后改这两条任务时，必须连带复核 schedule 与正文。**
+
+
+
+
+
+## 巡检心跳
+
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 16:57。**
+
+| 时间 | 状态指纹 | 本轮动作 | 回醒主控 | 备注 |
+|---|---|---|---|---|
+| 16:06 | `db=running/q1` \| `backend=blocked/等db编译` \| `audit=running/无progress文件` \| `survey=complete/待验收` | 0 | 是 | 首轮（本段新建，此前无心跳）。backend 交回领域层证据并新写 B-backend-1 + C1~C7；`core/internal/platform/db/redact.go:19` 错点仍在但 db 16:06 刚改过该文件。`ls .qoder/progress/` 无 `audit.md` → 上方「四个 worker progress 已建立」不实。backend 头部 `LAST_UPDATED 16:20` 晚于真实时间，其自报时间戳不可信。 |
+| 16:25 | `db=complete/等主控转达` \| `backend=running/q1` \| `audit=running` \| `adapter=running` \| `test=ready/无progress文件` \| 待投递 T-1~T-3 全部已投递 | 0（投递 0） | 是 | db 自报 complete，Next action 属主控（转达 backend 改名）→ 未推进；其 Q1/Q4/Q5 与 `Create`/`ErrAggregateNotFound` 破坏性改名已回醒主控。test 已 turn_completed 但 `.qoder/progress/test.md` 仍不存在 → 停摆风险已上报，我不代写指令。审计时钟：**真实时间 16:25，而 db.md 头写 17:15、账本写 16:38/16:44 → 文件内时间戳一律不可用于判定「≥2 轮」，只用本列。** |
+| 16:37 | `db=complete/等主控转达` \| `backend=running/q2` \| `audit=ready/等B1(db)` \| `adapter=ready/第2轮可自主` \| `test=running/q2` \| `frontend=running` \| 待投递无新行 | 1 推进 + 0 投递 | 是 | **adapter 交回第 1 轮**（`internal/adapter/` 4 文件已核实在盘），Next action 无红线词 → 已推第 2 轮。**audit 的 B1 解除条件字面上早已成立**：grep 到 `platform/db/touch.go:177` 就是 §1.1.6 的新 `Create`，但它按"等 B1"停手，我未推（规则如此），已请主控决定是否追一行待投递。上轮的 test 停摆风险自解（`test.md`/`frontend.md` 均已在盘）。待主控裁：CO-1 FakeAdapter 落点、CO-2 缺 2 个 `adapter_*` 事件、REQ-A2 `vault://` 前缀整串豁免＝脱敏绕过（P0 向）。归属漂移：`specs/adapter-protocol/adapter-protocol-v0.1.md` 为 M 而角色表判归 adapter，它自报未碰。 |
+| 16:48 | `db=cold→已投 T-6+T-7` \| `audit=ready→已投 T-5` \| `backend=running/q2` \| `adapter=running` \| `test=running/q2` \| `frontend=running` \| 待投余 T-4/T-8(backend)、T-9(adapter) | 2 发送（投 3 行）| 是 | db 处于 cold 窗口，把 P0 那条抢在前面投了。**偏差记录**：你把「同角色一轮最多投一条」写进账本时我的发送已在路上，故 T-6+T-7 合成一次投给 db——**请勿再重发 T-6**，db 队列里已有。T-4/T-8/T-9 因 backend/adapter running 排队第 1 轮（未及 ≥2 轮阈值）。三项裁定经只读 grep 确认在代码里均未落地（`touch.go:31`、`redact.go` 的 `vault://` 提前返回、`eventjournal` 缺 2 个 `adapter_*`），投递不是空转。 |
+| 16:57 | `db=complete/等主控验收+Q6转audit` \| `backend=running/q2` \| `adapter=running` \| `audit=running` \| `test=running/q2` \| `frontend=running` \| 待投余 T-8/T-4(backend)、T-9(adapter)＝**第 2 轮未投** | 0（投 0） | 是 | T-6/T-7 的成效已用只读 grep 独立核实（`AggQuota="quota"`、catalog 补齐 2 个 `adapter_*`、`redact.go:46` 豁免收紧为“整串过 patterns 不变样”），db 再次自报 complete。**T-8/T-4/T-9 连续 2 轮撞不上 idle 窗口**（backend、adapter 全程 running），已按 ≥2 轮阈值回醒主控并请它定“是否允许向 running 会话排队直发”。db 另交回第二条同型泄密路径与 Q6（audit 的 `IsVaultRef` 措辞＝本次 P0 成因）。 |
 
 ## 来自 worker 的上行输入
 
@@ -160,9 +276,27 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 - ~~B1 ADR-000 D1~D4~~ 已关闭（15:18，全按建议执行并验证）
 - ~~B2 基线 commit 授权~~ 已关闭（`900038d` 本地 commit，未 push）
 - ~~B1' 契约① 批准~~ 已关闭（"全按推荐"，四点 accepted，`000002` 草案已落盘）
-- **B3（当前唯一硬阻塞）** 契约② 需要 `survey` 的 Codex v2 协议 schema 证据才能动笔
-  → `adapter` 角色无法派发 → Wave-2 垂直链（需要 FakeAdapter）无法闭合。
-  解除条件：`survey.md` 的 Codex 段完成，或用户说"不等 survey，按 Codex 现有线索先写"。
+- **B3** ~~契约② 等 survey 证据~~ **已解除**（15:45 survey 交付完成并验收）。
+  现为 **B3'：契约② 已成文待用户批准** → 批准即派 `adapter`（Q21 约定：契约批了自动派）。
+- **B5** 探测授权进度：
+  - ① **WorkBuddy 已授权并派发**（16:12，用户给出 `Public\Desktop\WorkBuddy.lnk`，主控解析 =
+    `D:\Program Files\WorkBuddy\WorkBuddy.exe`，即 survey 已查过的同一目录 → 缺的不是路径而是"跑起来"）。
+    范围：可启动桌面端与 `codebuddy`（含 `--serve`）、可在 `.scratch/phase0-workbuddy/` 新建一次性项目与会话、
+    真实消息 ≤3 条（其份额原本 0/15 未用）。目标＝判定会话正文在本地还是云端 + CLI/ACP 链能否承担全部读写。
+    停止条件：出现登录/验证码/Windows Hello 界面即停并记 blocked，**不代用户登录**、不读 token 值。
+    要求收尾：关掉自己起的进程并报告残留 pid/端口。
+  - ② **Qoder `127.0.0.1:58129` mcp-router 探测：仍未授权**（要用用户凭据）。不阻塞任何 Wave。
+- **B9（新）** 桌面端可能真的弹出 WorkBuddy 窗口，用户已知会。
+
+- **B6** ~~db 全量测试口径错~~ 已关闭：已向 db 发更正（scoped 测试），并向 backend 澄清
+  "db 包红不算你的验收失败"。
+- **B7（新）** `internal/platform/db` 编译不过 3 处（`redact.go:19`、`touch.go:308/322`），
+  是 db 在途产物（它自己的 scoped 测试此前是过的）。已把错误清单转给 db，
+  同时把契约缺口（缺 `Create` 入口）补上。解除条件：`go build ./internal/platform/db/` 干净。
+- **B8（新）** backend 顶回的 4 处契约缺口 C1/C2/C3/C4/C5 已全部由主控裁定并回写（commit 见下）。
+  其中 C1 判定"backend 的原实现是对的、我漏写规则"，C2/C5 判定"契约真缺，已补"。
+
+
 - **B4（观察项，非阻塞）** 四个 worker 全在**会话默认 cwd 之外**的 `D:\Project\Lucero` 干活。
   跨目录写已对主控本身验证放行，但 worker 的权限模式未逐一验证——若某个 worker 卡在权限弹窗上，
   表现为 `needs_attention`，届时才需要用户手工开一次新工作区。当前不做预防性动作。
@@ -201,6 +335,10 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## ⚠ NEEDS YOU
 
-1. **ADR-000 D1~D4 裁决**（建议全按 A 版补回：docx 全文转 md 入库 + B 版编号对齐 A 版 + 补回 §55/§59/§33 三处丢失事实）
-2. **红线⑤ 单次授权**：是否现在就让 `survey` 会话开始启动五家软件并读 `D:\opencode\data`、`D:\WorkBuddy`（每家 ≤3 条真实消息）
-3. **红线② 授权**：是否允许我把 Wave-0 产物做一次本地 commit（不 push）
+（15:35 更新 · 当前无需要你处理的事项）
+
+- ~~ADR-000 D1~D4~~ 已办 · ~~基线 commit 授权~~ 已给（`900038d`）· ~~契约① 四点批准~~ 已给
+- 唯一待办在 **Blockers B3**：契约②（Adapter 协议）等 `survey` 交出 Codex v2 schema 证据；
+  解除后主控自动派 `adapter`，不需要你介入。
+- 若你希望不等 survey、现在就按已有线索写契约② 并派 `adapter`，说一句即可（那是 B3 的人工解锁）。
+

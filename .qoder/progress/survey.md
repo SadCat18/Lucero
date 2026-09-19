@@ -1,9 +1,12 @@
 OWNER_ROLE: survey
 TASK_ID: phase0-survey
-STATUS: in_progress
+STATUS: complete
 SCOPE: Phase 0 五家 AI 软件能力调查，只产出 `docs/adapters/phase0/*.md` 与 `PHASE0_CAPABILITY_MATRIX.md`；不写业务代码、不改架构文档、不碰任何第三方软件配置
 EVIDENCE_DIR: D:\Project\Lucero\.scratch\phase0-<vendor>\
-LAST_UPDATED: 2026-09-19T15:40+08:00
+LAST_UPDATED: 2026-09-19T16:55+08:00
+
+> **本文件有两轮记录**：第 1 轮 = 五家纯静态取证（预算 0/15）；第 2 轮 = WorkBuddy 单家动态实测（预算 3/3 用尽）。
+> 凡结论属第 2 轮者均以 **[实测]** 标注，与静态推断严格分开。第 1 轮有 5 项结论被第 2 轮推翻，见 D-节《修正记录》。
 
 ## Objective
 
@@ -12,11 +15,11 @@ LAST_UPDATED: 2026-09-19T15:40+08:00
 
 ## Completion criteria
 
-- [ ] `docs/adapters/phase0/codex.md` 存在，25 项每项有等级 + 证据来源 + 版本号；无证据项为 UNKNOWN 并写明原因
-- [ ] 同上 `qoder.md` `opencode.md` `zcode.md` `workbuddy.md`
-- [ ] `docs/adapters/PHASE0_CAPABILITY_MATRIX.md` 存在，含分级打分、优先级排序、fallback 链、UI Automation 待办清单
-- [ ] 全矩阵零猜测：每个非 UNKNOWN 格子可回溯到 `.scratch/` 里的一条原始输出
-- [ ] 报告内零用户隐私：只有字段名、结构、枚举值、脱敏样例（无 token / account_id / 对话正文 / 仓库 URL / 本地路径中的项目名）
+- [x] `docs/adapters/phase0/codex.md` 存在，25 项每项有等级 + 证据来源 + 版本号；无证据项为 UNKNOWN 并写明原因
+- [x] 同上 `qoder.md` `opencode.md` `zcode.md` `workbuddy.md`（五份齐全，主表各 25 行，见 V3）
+- [x] `docs/adapters/PHASE0_CAPABILITY_MATRIX.md` 存在，含分级打分、优先级排序、fallback 链、UI Automation 待办清单
+- [x] 全矩阵零猜测：每个非 UNKNOWN 格子可回溯到 `.scratch/` 里的一条原始输出（等级图例仅用八等级 + UNKNOWN；UNKNOWN 在每家报告逐条附原因）
+- [x] 报告内零用户隐私：隐私复扫 0 命中（见 V4）；只含字段名、结构、枚举值、脱敏路径（`%USERPROFILE%`/`%LOCALAPPDATA%` 形式）
 
 ## Scope boundaries
 
@@ -24,15 +27,19 @@ LAST_UPDATED: 2026-09-19T15:40+08:00
 - Out of scope: 四份架构文档（红线①）、`core/migrations/`、git 任何写操作（红线②）、安装/卸载软件（红线④）
 - Out of scope: `docs/architecture/CORE_DOMAIN_MODEL_V0.1.md` 的 A/B 分叉（ADR-000 D1~D4 裁决中，本角色不依赖它）
 - 红线⑤已由用户在本会话指令中逐次授权：只读浏览 + 启动观察 + 每家 ≤3 条真实消息（仅限 `.scratch/phase0-<vendor>/` 空项目）
-- 自设约束：**未动用任何一条真实消息预算**。五家的定级全部由静态证据（CLI --help / 协议 schema / 二进制字符串 / SQLite schema / 注册表 / netstat）支撑，无需发消息
+- 预算使用：第 1 轮 **0 条真实消息**（五家全靠静态定级）；第 2 轮 **WorkBuddy 3 / 3 用尽**（用户单次授权），其余四家 0 / 3 全剩余
 
 ## Current checkpoint
 
-- Stage: 静态证据采集**全部完成**（5/5 家）；进入产出物阶段
-- Status: in_progress
-- Last verified action: `netstat -ano -p tcp` → ZCode 16 个进程**无一监听 TCP**；Qoder pid 24480 监听 `127.0.0.1:58129`（与 `mcp-router.json.baseUrl` 端口一致，实测对上）；五家中无 Codex daemon 在监听
-- Next action: 写 `docs/adapters/phase0/opencode.md`（25 项逐格，证据引用 E7~E12）
-- Verification: 文件存在且 25 行能力表全部有等级与证据列，UNKNOWN 项均带原因
+- Stage: **两轮全部闭环** —— 第 1 轮五家静态定级 + 第 2 轮 WorkBuddy 动态实测与改判，交付物已同步更新
+- Status: complete
+- Last verified action: `check_tables.py` → 五份报告主能力表各 25 行、矩阵 25 行 7 列无破表；
+  隐私复扫 `<用户名>|<昵称>|<服务口令>|<仓主>|github\.com/|sk-|<项目A>|<项目A>|<项目B>|主机名` → **0 命中**；
+  残留复核 `netstat` → 自起的 `127.0.0.1:8791` **已无 LISTENING**（仅剩内核 TIME_WAIT），
+  `taskkill /PID 22600 /T /F` 成功，job worker(34852)/session 进程(37388) 已自行退出，
+  桌面端 13 个 WorkBuddy 进程全程未受影响，`workbuddy.db.sessions` 仍 36 行（实测计数未变）
+- Next action: **交回主控**——本角色无剩余动作；WorkBuddy 探针已结案，唯一待授权的深挖只剩 **Qoder mcp-router REST 面**
+- Verification: 见 V1~V7 与 D1~D8
 
 ## Completed
 
@@ -42,15 +49,24 @@ LAST_UPDATED: 2026-09-19T15:40+08:00
 - 实物确认：Codex CLI `codex-cli 0.154.0` + Desktop `OpenAI.Codex_26.915.3509.0`（MSIX，进程名 ChatGPT.exe）；
   Qoder `0.3.3`（引擎 `entrypoint=cli`，transcript 内 `version=1.1.53`）；OpenCode Desktop `1.18.14`；
   ZCode `3.12.3.7463`（引擎 `session.version=0.16.x`）；WorkBuddy Desktop `5.5.6` + 内置 CodeBuddy CLI `2.137.1`
-- 主目录定位纠偏一次：`D:\ZCodeFile\.zcode` 是**工作区目录**，真正的 app home 是 `C:\Users\韩涵\.zcode\`，
+- **第 2 轮（动态实测，用户单次授权）WorkBuddy 探针完成并改判**：起 `codebuddy --serve`（127.0.0.1:8791，默认口令）→
+  拉到 **OpenAPI 3.1.0 / 113 paths / 44 schemas** 的公开契约 → 实测鉴权三层、列会话、**读回正文**、
+  token 级流式、额度数值、停作业、复用登录 → **原 #4 UNKNOWN 被推翻**（正文在本机两处 JSONL）；
+  WorkBuddy 分数 50/80=62.5% → **74/88=84.1%**，P1 → **P0（范围限 CLI 会话族）**。详见 D1~D8
+- 复盘出两条方法论教训并写入矩阵：① `find … | head` 的 **SIGPIPE 假阴性**导致第 1 轮误判"正文不在本机"；
+  ② **API 返回成功 ≠ 生效**（`delivered:true / saved:false`）→ Core 不得把 vendor 的"已接受"当"已生效"
+- 主目录定位纠偏一次（第 1 轮）：`D:\ZCodeFile\.zcode` 是**工作区目录**，真正的 app home 是 `%USERPROFILE%\.zcode\`，
   其 `cli\db\db.sqlite`(208 MB) 才是 ZCode 的会话主库 —— 若未纠正会把 ZCode 错评为"只有索引 + 只能 UI Automation"
 
 ## Remaining
 
-- 五份 phase0 报告落盘（codex 已完成则余 4 份）
-- `PHASE0_CAPABILITY_MATRIX.md`：分级打分 + 优先级 + fallback 链 + UI Automation 待办清单
-- 待主控决定的可选深挖：Qoder MCP router(127.0.0.1:58129) 的实际 REST 面 —— 需使用 `mcp-router.json.apiKey`，
-  属"使用用户登录态"，本角色**未做**，需另行授权
+- 本角色交付物**无剩余**。
+- ~~1. WorkBuddy 桌面端会话正文位置~~ → **第 2 轮已解决**（正文在本机两处 JSONL；结论与修正记录见 `workbuddy.md`）
+- 唯一剩余的待授权深挖：**Qoder mcp-router 的 REST 面**（`mcp-router.json.baseUrl` 指向实测在 LISTENING 的 `127.0.0.1:58129`）
+  —— 需授权使用其 `apiKey`（= 使用用户登录态），可能把 Qoder 的 #8/#9/#13 从 UNSUPPORTED 拉回，**决定 Qoder 是否仍排 P2**
+- WorkBuddy 侧仍有 5 个 UNKNOWN 因**预算耗尽**未能推进（#7 对既有会话续发的可靠路径 `-r <sessionId>`、#11/#12 切模型与 effort 生效、
+  #16 待审载荷、#18 附件注入）→ 若主控要补这几项，需**新一次**消息预算授权（建议 ≥2 条，且探针目录放在 git 仓库之外）
+- 预算现状：**WorkBuddy 3/3 用尽；Codex / Qoder / OpenCode / Z Code 各 3 条全部未动**
 
 ## Blockers
 
@@ -70,21 +86,35 @@ LAST_UPDATED: 2026-09-19T15:40+08:00
 - → 主控：**OpenCode 与 Z Code 的本地库 schema 高度同构**（`session` 表 20/20 列同名，
   `slug/share_url/summary_additions/summary_diffs/revert/permission/time_compacting/time_archived` 全一致；
   `session_input`、`todo`、`permission`、`part` 同族）→ 一个 LOCAL_DATA reader 可能同时覆盖两家的只读链。
-- → 主控：**WorkBuddy(=CodeBuddy Code) 与 Qoder 的 transcript 都是 Claude-Code 形制**
-  （uuid/parentUuid/toolUseResult/permissionMode/usage）→ 第二组同构族。
-  结论：五家实际只有 **3 种本地数据族**，Adapter 协议不必为每家设计独立 schema。
-- → 主控：颠覆性事实（会推翻"每家都有 API"这一隐含假设）：ZCode 无 API/无 CLI；WorkBuddy 会话正文未在本机定位。
+- → 主控：**WorkBuddy 与 Qoder 的 transcript 同为"Claude-Code 形 JSONL"，但 [实测] 并不同构**
+  （WorkBuddy 扁平 `{role,content,providerData,__codebuddyLocal}`；Qoder 嵌套 `{uuid,parentUuid,message:{role},toolUseResult}`）
+  → 原"3 个本地数据族"修正为 **4 个 reader**（A=OpenCode+ZCode、B1=WorkBuddy、B2=Qoder、C=Codex）
+- → 主控：颠覆性事实更新（第 2 轮）：**ZCode 无 API/无 CLI 仍成立**；~~WorkBuddy 会话正文未定位~~ 已推翻 →
+  改为新事实 **WorkBuddy 有两套互不可见的会话身份空间**（CLI 族 `.codebuddy` vs 桌面族 `.workbuddy`，实测桌面表零新增行）
+  → `external_session_id` 必须带 namespace 维度，否则撞 id 空间。**这是本轮对 Adapter 协议最实质的新增要求。**
+- → 主控：[实测] **vendor 的"已接受"响应不可信**（`/jobs/{id}/reply → delivered:true, saved:false` 且不执行）
+  → Execution/Event 语义要求"投递后一次读回确认"，建议写进契约①
 
 ## Changed files
 
-- `docs/adapters/phase0/` (新建目录)
-- `.qoder/progress/survey.md` (新建/更新) — 本文件
-- `.scratch/phase0-codex/` help_*.txt × 9、schema_x/（47 顶层 + v1 + v2 379 文件）、probe_rollout.py、gen.log
-- `.scratch/phase0-opencode/` db_schema.py、db_probe.py（+ 路由/SSE 扫描的一次性内联脚本输出）
-- `.scratch/phase0-zcode/` probe.py（dbschema.py 已上移到 `.scratch/` 供五家复用）
-- `.scratch/phase0-workbuddy/` cb_help.txt、ps.json
-- `.scratch/phase0-qoder/` （transcript schema 探针为内联执行，输出记在本文件 E15）
-- `.scratch/dbschema.py`、`.scratch/redact_json.py` — 两个跨家复用的小工具
+**交付物（本角色唯一可写范围）**
+
+- `docs/adapters/phase0/codex.md` (新建, 13,032 B) — 25 项定级 + fallback 链 + 4 条 UNKNOWN
+- `docs/adapters/phase0/opencode.md` (新建, 13,084 B) — 25 项 + 141+60 条路由证据 + 5 条 UNKNOWN
+- `docs/adapters/phase0/workbuddy.md` (**第 2 轮整体重写**) — 25 项按 [实测]/[静态] 分档；12 项上调、#7 下调；UNKNOWN 由第 1 轮 6 条 → 第 2 轮 7 条（#4 已解决，新增 #13 费用语义与 #7/#11/#12 因预算耗尽未测）；新增《修正记录》与《残留与清理》
+- `docs/adapters/PHASE0_CAPABILITY_MATRIX.md` (**第 2 轮改判**) — WorkBuddy 列 12 格更新 + 上标说明、打分表加"证据强度"列（WorkBuddy 62.5%→84.1%）、P0 由 2 家扩为 3 家、§6.3/§6.4/§6.5 重写、§7 边界声明改为两档证据口径
+- `docs/adapters/phase0/zcode.md` (新建, 17,979 B) — 25 项 + 与 OpenCode 同构比对 + 6 条 UNKNOWN
+- `docs/adapters/phase0/qoder.md` (新建, 15,562 B) — 25 项 + 7 工具契约原文 + 7 条 UNKNOWN
+- `.qoder/progress/survey.md` (新建 → 本文件)
+
+**明确未改**：`docs/adapters/PHASE0_ADAPTER_CAPABILITY_SURVEY.md`（原件 25 行 TBD 全部保留，见 V5）、
+`docs/architecture/*`、`docs/adr/*`、`core/migrations/*`；
+四家（Codex/Qoder/OpenCode/ZCode）软件的文件与配置 **0 次写入**；
+WorkBuddy 的**配置、账号、默认项目、既有会话**同样 0 次写入 —— 第 2 轮唯一的写入是其 CLI 在 `~/.codebuddy/` 下
+**自建的探针会话文件**（见 V7 与 `workbuddy.md《残留与清理》`），非用户数据、非配置改动
+
+**过程产物（非交付物，可清理）**：`.scratch/phase0-{codex,opencode,zcode,workbuddy,qoder}/`、
+`.scratch/{dbschema,redact_json}.py`、`.scratch/phase0-codex/schema_x/`（428 个 schema 文件，**建议保留**给 adapter 角色对齐契约）
 
 ## Verification evidence
 
@@ -133,7 +163,7 @@ LAST_UPDATED: 2026-09-19T15:40+08:00
 
 - **E13** 版本：`ZCode.exe` FileVersion = **3.12.3.7463**；Electron；引擎 bundle `resources/glm/zcode.cjs`(11,416,833 B)；
   `resources/tools/{cua-helper,ripgrep,ugrep}`；`app-update.yml` → `provider: generic, url: http://localhost:8081`
-- **E14** 主库 `C:\Users\韩涵\.zcode\cli\db\db.sqlite` **208,707,584 B**，23 表：
+- **E14** 主库 `C:\Users\<用户名>\.zcode\cli\db\db.sqlite` **208,707,584 B**，23 表：
   `session`(89) / `message`(12213, 有 `sequence`) / `part`(46775, 有 `sequence`) / `session_entry`(2026) /
   **`session_input`(901)** / `model_usage`(8264) / `turn_usage`(696) / `tool_usage`(9186) / `permission`(0) /
   `todo`(241) / `input_history`(100) / `session_target` / `session_task_link` / `workflow_*` / `dwf_*` / `schema_migration`(22)
@@ -218,7 +248,68 @@ LAST_UPDATED: 2026-09-19T15:40+08:00
 - Python `sqlite3` 游标在 `for row in cur.execute(...)` 里再次 `cur.execute` 会**静默丢失后续行**（本会话第一次 dump ZCode 只出 1/9 张表就是此因）→ 先 `fetchall()`
 - `du -sh` 遍历 OpenCode/WorkBuddy 大目录会超时，改 `ls` 定向列目录
 
+### 第 2 轮动态实测（WorkBuddy，D1~D10）— 归档于 `.scratch/phase0-workbuddy/dyn/`
+
+- **D1 起服务**：`node …/cli/bin/codebuddy --serve --port 8791 --host 127.0.0.1` → stdout 打印
+  `Endpoint / Web UI(?password=…) / Password / Config` 四项（口令未记录，仅本地 log）；
+  `netstat` 实测 `127.0.0.1:8791 LISTENING pid=22600`；`GET /api/v1/health` → `{status:"ok",uptime,platforms:["generic","wecom","wechat-kf"],pid}`
+- **D2 鉴权契约**：任何 API 缺 `X-CodeBuddy-Request: 1` → `403 {"error":"Missing required header: x-codebuddy-request"}`；
+  `GET /api/openapi.json` **属豁免路径 → 免鉴权 200**。openapi `securitySchemes` = `{BearerAuth, PasswordQuery(?password=), CustomRequestHeader}`，
+  豁免路径明文列出（静态资源 / `auth/status` / `auth/login` / `webhooks/*` / `openapi.json` / `docs`），可用 `CODEBUDDY_DISABLE_REQUEST_VALIDATION=1` 关闭
+- **D3 契约规模**：`info.title = "CodeBuddy Code API (Beta)"`，`info.version = 2.137.1`，**paths=113**，`components.schemas=44`
+  （ACP 帧族齐全：`SessionUpdate/AgentMessageChunk/AgentThoughtChunk/UserMessageChunk/ToolCall/ToolCallUpdate/InterruptionRequest/SessionEnd/ModelUpdate/ModeUpdate/PlanUpdate/AvailableCommandsUpdate`…）
+- **D4 #1 复用登录 [实测]**：`GET /api/v1/auth/status` → `{authEnabled:true, authenticated:true}`；
+  CLI `system/init` 事件 `apiKeySource="copilot.tencent.com"`；**全程无登录/验证码/Hello 弹窗**，未读任何凭据值
+- **D5 #4/#3 正文与列会话 [实测，推翻第 1 轮]**：唯一标记串自造后落盘比对，命中 4 处 ——
+  `~/.codebuddy/projects/<cwd-slug>/<sessionId>.jsonl`（正文，扁平 `{id,timestamp,type,role,content,providerData,__codebuddyLocal,sessionId,cwd}`）、
+  `~/.codebuddy/jobs/<shortId>/state.json`、`~/.codebuddy/logs/<date>/<proj>__<32hex>.log`（**原样写 prompt 正文**）、`~/.codebuddy/traces/<pid>/trace_*.json`；
+  桌面族另有 `D:\WorkBuddyData\.workbuddy\projects\<cwd-slug>\*.jsonl`（11 个 slug 目录）；
+  `GET /api/v1/sessions/across-projects` → `{id,name,createdAt,updatedAt,messageCount,isCurrent,projectId,cwd,status,isPlayground,isUserDefinedTitle}`；
+  `GET /api/v1/sessions/{id}/history` → `{sessionId,name,requests:[{userInput,finalReply}]}`，**`finalReply` = 我造的标记串**（读回成功）
+- **D6 #8/#13 [实测端到端]**：`codebuddy -p --output-format stream-json --include-partial-messages --permission-mode plan "<marker 提示>"`
+  → **exit=0**、38 行 JSONL、事件族 `{system/init:1, system/status:1, file-history-snapshot:1, stream_event:32, assistant:2, result/success:1}`；
+  `result` = `{duration_ms:8771, duration_api_ms:8771, num_turns:3, is_error:false, total_cost_usd:0,
+  usage:{input_tokens:26976, output_tokens:80, cache_creation_input_tokens:13216, cache_read_input_tokens:13760},
+  modelUsage:{auto:{…, contextWindow:256000, maxOutputTokens:32000}}, permission_denials:[], _meta:{traceparent,baggage}, _requestId}`；
+  REST 侧 `GET /api/v1/stats` → `modelUsage.auto` 数值与 CLI **完全一致** + `dailyModelTokens:[{date,tokensByModel:{auto:27056}}]`
+- **D7 两个实测负面结论**：
+  ① `POST /api/v1/jobs` 派发后 run 卡在 `SessionRunStateMachine … event=RUN_ACCEPTED | to=pending`，**无 RUN_COMPLETED**，
+     `jobs/<id>/state.json` 长期 `state:"working"` + `detail:"Idling with no task or recent output"` + `output:null`；
+     `POST /api/v1/jobs/{id}/reply` → `{delivered:true, saved:false}` 且 messageCount 不增、stats 不增 → **HTTP 写链实测不可靠**
+  ② 契约漂移：`POST /api/v1/runs` 文档 body 只有 `{text,sender}`，实跑 `400 "Invalid generic message format: missing required fields (id, type)"`
+     （在 `codebuddy.js` 的 generic adapter `parseInbound` 里查到真实要求 `{id,type,version?,source?,payload}`）
+- **D8 其余实测点**：`GET /api/v1/info` → `{cwd,version,os,arch,nodeVersion,gatewayMode:"local",tunnelUrl,uptime,userName,autoUpdate:{enabled:true}}`；
+  `POST /api/v1/jobs/{id}/stop` → `{data:{stopped:true}}`；`GET /api/v1/jobs` 列表项带 `webUrl:"http://127.0.0.1:<port>/"`；
+  模型目录来源 = 服务日志 `[CloudProductManager] fetch cloud product … success, agents(1): cli, models(52)` + `AgentModelResolver product config input: 55 models, 18 agents`
+  + `CustomModelsProductProvider … ~/.workbuddy/models.json`（**REST 无 `/models` 端点**）；
+  `GET /api/v1/jobs/{id}` 详情返回形状与列表不一致（我按列表形状解析取到 `state=None`）
+- **D9 隔离性 [实测]**：CLI 会话跑完后 `workbuddy.db.sessions` 仍 **36 行**、`where cwd like '%phase0-workbuddy%'` = **0 行**
+  → CLI 族与桌面族是两套会话身份空间
+- **D10 清理**：`taskkill /PID 22600 /T /F` 成功；34852/37388 已自行退出；8791 无 LISTENING（剩 TIME_WAIT）；
+  收尾新增的 51218/51219 经核属 **AweSun**（pid 7272），非本探针残留；桌面 WorkBuddy 13 进程未动
+
+### 交付验收（V1~V7）
+
+- **V1 文件齐全**：`ls -la docs/adapters/phase0/*.md docs/adapters/PHASE0_CAPABILITY_MATRIX.md` → 6 个文件非空；
+  第 2 轮后 `workbuddy.md` 与 `PHASE0_CAPABILITY_MATRIX.md` 已重写/改判，余四家报告未动
+- **V2 打分口径可复算**：权重 `N=4 C=3 CL=3 LD=2 RO=2 UA=1 EX=1 US=0`，只计 #1~#23，UNKNOWN 不计分改计覆盖率 →
+  Codex 87/92=94.6%(覆盖 23/23，纯静态)、OpenCode 76/84=90.5%(21/23，纯静态)、
+  **WorkBuddy 74/88=84.1%(22/23，含动态实测；第 1 轮静态为 50/80=62.5%)**、
+  Qoder 48/84=57.1%(21/23，纯静态)、ZCode 32/84=38.1%(21/23，纯静态)
+- **V3 25 行完整性**：`awk '/^\| # \| 能力 \| 等级/{flag=1;next} …END{print c}'` 逐文件 → 五份报告**各 25 行**（不多不少）
+- **V4 隐私复扫**（第 2 轮加强版）：`grep -rnoE "<用户名>|<昵称>|<服务口令片段>|<仓主>|github\.com/[A-Za-z]|sk-[A-Za-z0-9]{6,}|<项目A>|<项目A>|<项目B>|<主机名>" docs/adapters/` → **0 命中**。
+  第 2 轮新出现的三类敏感物均已排除：**账户昵称**（出现在 WorkBuddy 服务日志的 `auth_success` 行）、**`--serve` 自动口令**、**探针读到的 git 仓库地址** → 报告中一律用占位符或只写字段名
+- **V5 未越界**：`grep -c TBD docs/adapters/PHASE0_ADAPTER_CAPABILITY_SURVEY.md` → 25 行 TBD 原样保留（不改基线文件）；
+  `git` 写操作 **0 次**；第三方软件**配置/账号/既有会话 0 次写入**（`workbuddy.db.sessions` 前后均 36 行，实测）；
+  软件 0 次安装/卸载；**未读任何凭据值**；全程未出现登录/验证码/Windows Hello 界面（故未触发"立即停止"条件）
+- **V6 动态探针已彻底清理**：自起 `--serve` 的 pid 22600 已 kill，`netstat` 中 `8791` 与作业端口 `55518` 均无 LISTENING；
+  监听数 33 → 34 的差值经核属第三方 AweSun，非本探针
+- **V7 唯一遗留物 = 文件残留（未删）**：`~/.codebuddy/{projects/d-Project-Lucero-.scratch-…, jobs/5c14baca, sessions/22600.json, logs/2026-09-19/probe-proj__*.log, traces/{37388,16604}}`
+  → 删除动作等于写第三方数据目录，需主控另行授权；内容仅含**我自造的标记串与提示词**，不含用户历史正文
+
 ## Recovery note
 
-- Interruption point: 静态证据全部采集完毕并已归档；`codex.md` 已写；余 4 份报告 + 汇总矩阵待写
-- First action after recovery: 读本文件 E7~E12 段，直接写 `docs/adapters/phase0/opencode.md`（无需重跑任何探测）
+- Interruption point: **无**——第 1 轮（五家静态）+ 第 2 轮（WorkBuddy 动态实测）均已闭环并改判落盘
+- First action after recovery: 读 `docs/adapters/PHASE0_CAPABILITY_MATRIX.md` §7（两档证据强度）→ §6（5 条结构性事实）→ §3（P0 三家 / P2 / P3）；
+  若恢复工作只剩一件：**向主控要 Qoder mcp-router 的一次只读探测授权**（唯一还可能改判的入口）。
+  WorkBuddy 侧若要补剩余 5 项 UNKNOWN，需要**新的**消息预算授权（3/3 已尽），且探针目录务必放在任何 git 仓库之外
