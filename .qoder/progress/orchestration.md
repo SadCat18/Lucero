@@ -151,16 +151,24 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 
 
-**投递优先级（17:15 更新）**：第二批 3 行，**T-12（db）> T-13（audit）> T-14（test）**，一次投完。
-第一批 T-8/T-4/T-9/T-10/T-11 已由巡检 17:12 全部投成功、零工具报错。
+| T-15 | audit | 待投递（**主控自责**） | 我的 T-12 把你的 `internal/approval` 打红了，实测原文：`Resolve: insert grant …: append to temporary_grants: aggregate rows must go through Touch or Create`。不是我让你改的契约有问题，是我漏了一条规则：**表进入聚合注册表就是破坏性变更**，已补进内部契约 §1.1 第 10 条。修法很小：`temporary_grants` 的建行从 `Append` 换成 `Tx.Create(db.AggGrant, id, columns, values, ev)`（id 仍由你预生成），后续 `revoked_at` 更新用 `Touch`。改完重跑 `go test ./internal/approval/ -count=1`。`ErrGrantRevocationUnsupported` 保留到 `000003` 真正可用为止——它已落盘，你可能已经能拆了，自己判。 |
+| T-16 | db | 待投递 | 两条：① 你加完注册表映射后**没跑全仓、也没告知受影响方**，导致 audit 红了一包却无人通知（见 T-15）。内部契约新增 §1.1 第 10 条：**改注册表必须自己先 `go test ./internal/...` + grep 既有 `Append` 调用点，同一轮把受影响方列进 Coordination**，不许只报"我这边绿"。② 我上一条给你的 T-10 里"audit 的 `RecordRedaction` 仍未见实现"是**主控的过期断言**（它 17:02 就落在 `internal/audit/append.go:133` 且三条路径同事务调用），别据此给 audit 提要求。 |
+
+**主控纠错（17:25，两笔）**：
+- T-10 里"仍未见实现"是我拿 16:20 的文件清单当现状断言，未复看。audit 与巡检都指出来了，已证伪并撤回。
+- 巡检提醒"3 个新常量可能波及 backend/adapter"——**方向不对**：Go 加常量不外溢；真正外溢的是聚合表名映射与 `Append` 校验行为的变更。以后我按这条区分再预警。
+- **第三批投递顺序**：`T-15（audit）> T-16（db）`。理由：`internal/approval` 现在是红的，先修红。
+  T-12/T-13/T-14 已 17:20 投出；`000003` 已落盘，所以 T-13 里"保留 ErrGrantRevocationUnsupported"可能已过时，以 T-15 为准。
+
+
 
 ## 待投递 · 第二批（17:15）
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-12 | db | 待投递 | **重开 R-002，但不是回归——是我漏设计的写路径**。`temporary_grants` 与 `policy_rules` 是可变表（都有 `updated_at`/`revoked_at`），却不在 ADR-017 那 10 张聚合表里、没有 `version` 列，导致 `Touch` 用不了、`Append` 只能插 —— **这两张表的 UPDATE 在平台层完全没有合法表达**。audit 因此如实返回 `ErrGrantRevocationUnsupported`（它没绕过，是对的）。请做 `000003_grant_policy_version.sql`：给 **`temporary_grants`、`policy_rules`、`adapter_capabilities`** 各加 `version INTEGER NOT NULL DEFAULT 1`（沿用 000002 的形状与自记账约定，不加 CHECK），并在 `AggregateKind` 增加 `AggGrant = "grant"`、`AggPolicy = "policy"`、`AggAdapterCapability = "adapter_capability"`（事件契约 §1 词表里 `grant`/`policy` 已存在；`grant_issued`/`grant_revoked`/`grant_expired` 的 `aggregate_type` 即为 `grant`）。 **第三个是我顺着你的漏点自己找的同型问题，不是一次新事故**：`adapter_capabilities` 的 `health`/`last_verified_at` 可变，而事件目录里**已经有** `adapter_capability_verified` —— 不一起补，你会被重开第三次。 补用例：建行→吊销→`version` 递增且三个 grant 事件版本连续；`policy_rules` 与 `adapter_capabilities` 同形。 **同时请在内部契约里显式声明"无事件表"清单**（这些可变但**故意**不发事件，别让人以后再猜）：`execution_leases`（heartbeat 高频）、`idempotency_keys`（纯基础设施状态）、`settings`、`blobs.archived_at`、`process_instances`（除 `process_started/exited/crashed` 三个已由 `process` 聚合表达的外）。 **这是新增迁移，不动 `000001`/`000002`。** |
-| T-13 | audit | 待投递 | B3/REQ-A6 裁定：**不吞掉，重开 db 补写路径**（见 T-12）。你保持返回 `ErrGrantRevocationUnsupported` 直到 `AggGrant` 落地，**不要**为了"看起来能用"而走裸 SQL 或跳过事件。`grant_revoked` 事件的 `aggregate_type` 将定为 `grant`、`aggregate_id` 用 grant 行自身 id（不是 task/session 的 id）；`payload` 关键字段 `scope_type`/`scope_id`/`action`/`reason`，其中 `reason` 走你的敏感规则。你提的全仓不变量我采纳，已转 `test`（T-14）。 |
-| T-14 | test | 待投递 | 把 audit 提的这条升为**全仓不变量契约用例**：任何参与 `audit_entries.entry_hash` 计算的列，其改写**必须发生在算 hash 之前**；否则哈希链会自己烂掉而表面仍"完整"。至少覆盖：① 先写 details_json 后算 hash 的错误顺序必须被断言抓到；② 篡改已存条目 → `VerifyChain` 失败；③ 脱敏命中计数写入 `details_json` 时也要在 hash 之前（db 的 `RedactionHits` 与 audit 的哈希链是两条会在此交汇的路径，正是要测的接缝）。 |
+| T-12 | db | **已投递（17:20，巡检）** | **重开 R-002，但不是回归——是我漏设计的写路径**。`temporary_grants` 与 `policy_rules` 是可变表（都有 `updated_at`/`revoked_at`），却不在 ADR-017 那 10 张聚合表里、没有 `version` 列，导致 `Touch` 用不了、`Append` 只能插 —— **这两张表的 UPDATE 在平台层完全没有合法表达**。audit 因此如实返回 `ErrGrantRevocationUnsupported`（它没绕过，是对的）。请做 `000003_grant_policy_version.sql`：给 **`temporary_grants`、`policy_rules`、`adapter_capabilities`** 各加 `version INTEGER NOT NULL DEFAULT 1`（沿用 000002 的形状与自记账约定，不加 CHECK），并在 `AggregateKind` 增加 `AggGrant = "grant"`、`AggPolicy = "policy"`、`AggAdapterCapability = "adapter_capability"`（事件契约 §1 词表里 `grant`/`policy` 已存在；`grant_issued`/`grant_revoked`/`grant_expired` 的 `aggregate_type` 即为 `grant`）。 **第三个是我顺着你的漏点自己找的同型问题，不是一次新事故**：`adapter_capabilities` 的 `health`/`last_verified_at` 可变，而事件目录里**已经有** `adapter_capability_verified` —— 不一起补，你会被重开第三次。 补用例：建行→吊销→`version` 递增且三个 grant 事件版本连续；`policy_rules` 与 `adapter_capabilities` 同形。 **同时请在内部契约里显式声明"无事件表"清单**（这些可变但**故意**不发事件，别让人以后再猜）：`execution_leases`（heartbeat 高频）、`idempotency_keys`（纯基础设施状态）、`settings`、`blobs.archived_at`、`process_instances`（除 `process_started/exited/crashed` 三个已由 `process` 聚合表达的外）。 **这是新增迁移，不动 `000001`/`000002`。** |
+| T-13 | audit | **已投递（17:20，巡检）** | B3/REQ-A6 裁定：**不吞掉，重开 db 补写路径**（见 T-12）。你保持返回 `ErrGrantRevocationUnsupported` 直到 `AggGrant` 落地，**不要**为了"看起来能用"而走裸 SQL 或跳过事件。`grant_revoked` 事件的 `aggregate_type` 将定为 `grant`、`aggregate_id` 用 grant 行自身 id（不是 task/session 的 id）；`payload` 关键字段 `scope_type`/`scope_id`/`action`/`reason`，其中 `reason` 走你的敏感规则。你提的全仓不变量我采纳，已转 `test`（T-14）。 |
+| T-14 | test | **已投递（17:20，巡检）** | 把 audit 提的这条升为**全仓不变量契约用例**：任何参与 `audit_entries.entry_hash` 计算的列，其改写**必须发生在算 hash 之前**；否则哈希链会自己烂掉而表面仍"完整"。至少覆盖：① 先写 details_json 后算 hash 的错误顺序必须被断言抓到；② 篡改已存条目 → `VerifyChain` 失败；③ 脱敏命中计数写入 `details_json` 时也要在 hash 之前（db 的 `RedactionHits` 与 audit 的哈希链是两条会在此交汇的路径，正是要测的接缝）。 |
 
 已投：T-1/T-2/T-3/T-5/T-6/T-7。**db 三条裁定已落地并经主控复跑验收（`ok 2.370s`、`AggQuota="quota"`、
 `isCleanVaultRef` 收紧、新增 `TestAggQuotaMatchesEventPrefix`）→ R-002 正式 complete。**
@@ -239,7 +247,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:13。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:30。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -254,6 +262,10 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | 16:57 | `db=complete/等主控验收+Q6转audit` \| `backend=running/q2` \| `adapter=running` \| `audit=running` \| `test=running/q2` \| `frontend=running` \| 待投余 T-8/T-4(backend)、T-9(adapter)＝**第 2 轮未投** | 0（投 0） | 是 | T-6/T-7 的成效已用只读 grep 独立核实（`AggQuota="quota"`、catalog 补齐 2 个 `adapter_*`、`redact.go:46` 豁免收紧为“整串过 patterns 不变样”），db 再次自报 complete。**T-8/T-4/T-9 连续 2 轮撞不上 idle 窗口**（backend、adapter 全程 running），已按 ≥2 轮阈值回醒主控并请它定“是否允许向 running 会话排队直发”。db 另交回第二条同型泄密路径与 Q6（audit 的 `IsVaultRef` 措辞＝本次 P0 成因）。 |
 
 | 17:13 | `db=complete(主控已验收)` \| `backend=running/q1` \| `adapter=running` \| `audit=ready/写source_sqlite` \| `test=running/q2` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 5 行 | 是 | 按纠正后的语义一次投完 T-8(+T-4)/T-9/T-10/T-11，**全部成功、零工具报错**，running 目标正常进队列——上两轮所谓「撞不上 idle 窗口」是我的错误理解，已回销。audit 交回真库落库层（149 PASS/0 FAIL）并新写 **B3/REQ-A6**：`temporary_grants.revoked_at` + `grant_issued/expired` 事件无法经平台层表达，要主控拍「吞掉 vs 重开 db」。两处纠偏：① audit 说「db 的 `vault://` 跳过脱敏未修」是过期陈述，我已 grep 证伪（`redact.go:46` 已是 `isCleanVaultRef`），别据此重开 R-002；② 我 16:48 的时钟备注判反了，见本段上方更正。 |
+
+| 17:20 | `db=重开(T-12 已投)` \| `backend=running/q2` \| `adapter=running/q1` \| `audit=ready/写source_sqlite` \| `test=running/q2` \| `frontend=running` \| 待投递=0（第一、二批全清） | 推进 0 + 投递 3 行 | 是 | 第二批 T-12/T-13/T-14 一次投完，**零工具报错**（db 从 cold 被唤醒、test 进队列）。**audit 顶回主控账本一句不实**：T-10 说 `RecordRedaction` 未见实现，它 17:16 举证第 3 轮就在 `internal/audit/append.go`；我已把对账句随 T-13 附上，避免它白做一遍。audit 另自正时间戳 17:26→17:16（与主控同类病）。核对过 `ls core/migrations/` 只有 000001/000002，`000003` 未落盘属正常（指令刚投）。 |
+
+| 17:30 | `db=running/T-12已接` \| `backend=running/q1` \| `adapter=running/q1` \| `audit=running` \| `test=running/q2` \| `frontend=ready/等主控裁REQ-F-1~F-10` \| 待投递=0 | 推进 0 + 投递 0 | 是 | 无 idle 可推角色（唯一 idle 的 frontend 其 Next action 明写“等主控裁定”→ 按规则不动）。frontend 首轮交付按盘核实（`packages/toolchain/`、evidence 5 份、yaml 1296 行），并**自报越界**：把新建的 `packages/toolchain/` 写进了自己 progress 的 SCOPE 行——已请主控裁“并入 apps/desktop”还是修角色表。另报：R-002 行未随 T-12 改回在途；仓库根出现无主 `?? .scratch_loader.py` 与 `apps/desktop/node_modules/`+`dist/`（我不能碰 .gitignore、不删别人文件）。 |
 
 ## 来自 worker 的上行输入
 

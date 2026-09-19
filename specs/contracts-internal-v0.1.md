@@ -102,6 +102,13 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
    依赖方向 `platform/db ──► eventjournal` 合法（`eventjournal` 不 import 任何业务包）。
 9. **payload 结构体长期留在业务包**（`internal/task/events.go` 等），因为它们编码的是域事实；
    `internal/eventjournal` 只做目录与校验面，不放业务 payload 类型，避免变成口袋包。
+10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
+   一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），
+   所有既有建卡路径必须同轮改成 `Create`。因此**db 改注册表时必须自己先跑全仓**
+   `grep -rn "Append(\\\"" *.go` 与 `go test ./internal/...`，并在同一轮把受影响方列进 Coordination，
+   不得只报"我这边绿了"。只新增 `AggregateKind` 常量**不是**破坏性的（Go 加常量不影响调用方）——
+   破坏来自映射与校验行为的改变，别把两件事混为一谈。
+
 
 
 ## 2. Redaction：规则归 audit，强制点在 db
