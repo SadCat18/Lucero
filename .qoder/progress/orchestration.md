@@ -12,8 +12,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## Completion criteria
 
-- [ ] Wave-0：仓库、工具链、基线裁决入口就位；survey 会话在跑
-- [ ] Wave-1：契约①（ADR + 事件命名 + aggregate_version + redaction 接口 + Approval Service API）经用户批准
+- [x] Wave-0：仓库、工具链、基线裁决入口就位；survey 会话在跑
+- [x] Wave-1：契约①（ADR + 事件命名 + aggregate_version + redaction 接口 + Approval Service API）经用户批准
 - [ ] Wave-2：垂直链跑到 `Task ACCEPTED`，db/backend/adapter/audit/test 五方交付均有重跑通过的证据
 - [ ] Wave-3：观察面板纯 REST/WS 驱动；kill Core / kill Adapter 崩溃测试通过
 - [ ] 全程：blocked 项零丢失，红线零绕过
@@ -92,38 +92,36 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## Current checkpoint
 
-- Stage: Wave-1 契约① 已成文，等用户批准（Wave-2 派发门禁）
-- Status: blocked
-- Last verified action: 工具链实跑通过（`go version go1.27.1 windows/amd64`、`node v24.19.0`）；
-  `go env` 回读确认 `GOPROXY=https://goproxy.cn,direct`、`GOMODCACHE=D:\DevTools\go-data\mod`；
-  契约① 三份文件落盘（`docs/adr/README.md` 11 KB、`specs/events/event-contract-v0.1.md` 11.8 KB、
-  `specs/contracts-internal-v0.1.md` 10 KB）
-- Next action: 用户批准契约① → 主控写 `000002` 迁移草案 → 派发 Wave-2 五个 worker
-- Verification: `git -C /d/Project/Lucero log --oneline -1` 出现基线 commit 且 `git status --short` 干净
-
-## Blockers
-
-- **B1（新，Wave 门禁）** 契约① 需用户批准才可派 Wave-2。需拍板四点：
-  ① `000002` 给 9 张聚合表加 `version` 列（ADR-017）；
-  ② 事件命名改用 `task_created` 小写下划线，**偏离**交接主文档时间线示意图里的 `TaskCreated`
-     （主控判断：示意图是行文而非协议，但这是冻结文档表述的改动，须你确认）；
-  ③ Redaction 机制在 db、规则在 audit 的具体接口形状；
-  ④ `approvals` 表 SQL 只准出现在 `internal/approval`（Q33=B 的落地）+ grep 可执行检查。
-- **B2** 基线 commit 需红线②授权（worker 无 diff 可对照，ownership 违规也查不了）
-- ~~B1(旧) ADR-000 未裁决~~ 已于 15:18 关闭：D1~D4 全按建议执行并验证
-
+- Stage: Wave-2 部分启动（3/5），等 survey 证据才能写契约②
+- Status: in_progress
+- Last verified action: 基线 commit `900038d`（14 文件）；依赖 commit `26616e9`
+  （`modernc.org/sqlite v1.59.0`，`go.mod` 收归主控独占）；契约① 三份标记 accepted，
+  ADR-017 修正为 **10 张表、不加 CHECK**（原文写 9 张但代码枚举含 `AggModel`，属我自己的不一致）
+- Next action: 等 `survey` 交出 Codex 379 文件 v2 schema 的方法/能力面 → 写契约② → 派 `adapter`
+- Verification: `git -C /d/Project/Lucero log --oneline -3` = `26616e9 / 900038d / c94b8c2`；
+  四个 worker 各自的 `.qoder/progress/<role>.md` 已建立
 
 ## 派发账本
 
 | REQ | role | sessionId | 状态 | Wave | 出口条件 |
 |---|---|---|---|---|---|
 | R-001 | survey | `7726e47f-d772-4f98-9b2a-2588ec5fd46b` | running | 0 | 五家矩阵 + 优先级 + fallback 链 |
-| R-002 | db | — | 未派（等 Wave-1） | 2 | |
-| R-003 | backend | — | 未派 | 2 | |
-| R-004 | adapter | — | 未派 | 2 | |
-| R-005 | audit | — | 未派 | 2 | |
-| R-006 | test | — | 未派 | 2 | |
-| R-007 | frontend | — | 未派 | 3 | |
+| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | running | 2 | 平台层 + 迁移器 + Touch/Append + 强制脱敏，`go test ./...` 绿 |
+| R-003 | backend | `370101c0-0d5d-49ba-a84f-6d72695da0c1` | running | 2 | 状态机矩阵驱动 + 合法/非法迁移用例全覆盖 |
+| R-004 | adapter | — | **未派：等契约②** | 2 | 协议 + FakeAdapter + 进程监管 |
+| R-005 | audit | `06a5de3f-8e86-4c18-bc81-0f3215350246` | running | 2 | 哈希链 + RedactionRules + Decide 优先级链 + Resolve 幂等 |
+| R-006 | test | — | 未派：等契约③ | 2 | 三类测试 + grep 越界检查 |
+| R-007 | frontend | — | 未派：等契约③ | 3 | 纯 REST/WS 观察面板 |
+
+## 已定的防冲突纪律（本会话内新增，未进契约文档）
+
+- **`core/go.mod` 归主控独占**：worker 禁止 `go get` / `go mod tidy`，需要依赖写 `## Coordination` REQ。
+  理由：多会话并行时它是唯一必然产生写冲突的文件。已用 `26616e9` 预声明唯一允许的驱动。
+- **所有 worker 的命令必须用绝对路径**，且显式告知"正式目录不是你会话的默认 cwd"——
+  否则会话在 `D:\Work资源\...` 里建产物，账本与 diff 全错位。
+- **本地 commit 归主控**：worker 一律禁止 git 写操作，验收靠 `git diff 900038d --stat` 自查归属。
+
+
 
 ## 来自 worker 的上行输入
 
@@ -159,8 +157,16 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## Blockers
 
-- **B1** ADR-000 的 D1~D4 未裁决 → Wave-2 全部 worker 的边界推导不出来。解除条件：用户给 D1~D4 结论。
-- **B2** 基线 commit 需红线②授权。解除条件：用户说"提交"。
+- ~~B1 ADR-000 D1~D4~~ 已关闭（15:18，全按建议执行并验证）
+- ~~B2 基线 commit 授权~~ 已关闭（`900038d` 本地 commit，未 push）
+- ~~B1' 契约① 批准~~ 已关闭（"全按推荐"，四点 accepted，`000002` 草案已落盘）
+- **B3（当前唯一硬阻塞）** 契约② 需要 `survey` 的 Codex v2 协议 schema 证据才能动笔
+  → `adapter` 角色无法派发 → Wave-2 垂直链（需要 FakeAdapter）无法闭合。
+  解除条件：`survey.md` 的 Codex 段完成，或用户说"不等 survey，按 Codex 现有线索先写"。
+- **B4（观察项，非阻塞）** 四个 worker 全在**会话默认 cwd 之外**的 `D:\Project\Lucero` 干活。
+  跨目录写已对主控本身验证放行，但 worker 的权限模式未逐一验证——若某个 worker 卡在权限弹窗上，
+  表现为 `needs_attention`，届时才需要用户手工开一次新工作区。当前不做预防性动作。
+
 
 ## Coordination
 
