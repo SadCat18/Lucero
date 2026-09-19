@@ -1,6 +1,6 @@
 # API & Ownership Contract v0.1（Wave-1 契约③）
 
-- 状态: **proposed**，待用户批准后派发 `frontend`
+- 状态: **accepted**（用户 2026-09-19 16:52 批准，`frontend` 据此派发；§7 补 `core/api/**` 归属）
 - 范围: Core ↔ 客户端（桌面 / 浏览器 / 未来的 PWA 与 CLI）的 REST + WebSocket，以及跨角色文件所有权
 - 上游依据: ADR-009 REST + WebSocket、架构文档「API」节的端点清单、ADR-008（先落库再推）、
   领域模型「Idempotency」「Aggregate Version」「UNKNOWN 是合法状态」「Audit 与 Secret」
@@ -105,6 +105,7 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 |---|---|---|
 | `core/migrations/**`、`core/internal/platform/**`、`core/internal/eventjournal/**` | `db` | 独占 `.sql` 修改权；`000001` 冻结 |
 | `core/internal/task/**`、`execution/**`、`session/**`、`quota/**` | `backend` | |
+| `core/api/http/**`、`core/api/websocket/**`、`core/cmd/core/**` | `backend` | **16:52 补**：transport 层原先无人归属。它是业务 Service 的薄投影，**不得含任何业务判断或状态迁移**；一律经各模块 Service 与 `db.Touch/Create`，WS 推送只能发生在事务提交之后（ADR-008） |
 | `core/internal/approval/**`、`permission/**`、`audit/**` | `audit` | `approvals` 的 SQL 只准出现在 `internal/approval` |
 | `core/internal/adapter/**`、`process/**`、`adapters/fake/**` | `adapter` | |
 | `core/test/**`、`scripts/**` | `test` | 不得在别人包里建 `_test.go` |
