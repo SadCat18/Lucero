@@ -126,11 +126,16 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 §5.1 是**唯一权威**：投影只能沿 §5.1 的边走。若某 Execution 事件在 Task 当前状态下**找不到合法目标**
 （典型：`QUEUED`/`PAUSED`/`BLOCKED` 时收到 `execution_failed` 且 Handoff 已 READY），则：
 
-1. Task **停在原态，不产生任何事件**——§3 的"一个版本一个事件"绑定的是状态变化，没有状态变化就没有事件，
-   这不算违反 ADR-008；
-2. 必须产出一条 **Notification**（`notification_type = projection_rejected`）+ 一条 **Audit**
-   （`action = execution_failed`，`outcome = UNKNOWN`，`details_json` 带 `task_state`、`execution_event`、
-   `reason`）。Notification/Audit 走各自通道，不进 `event_journal`；
+1. Task **不推进版本、不产生任何 `task_*` 事件**——§3 的"一个版本一个事件"绑定的是状态变化，
+   没有状态变化就没有 Task 版本。
+   **C12 更正（17:45，此处原文有歧义已被 audit 顶回）**：原文写"不产生任何事件"字面不成立，
+   因为下面第 2 条要写 Notification，而 Notification 是**独立聚合**，必然在 `event_journal` 落一行。
+   精确口径是：**`aggregate_type=task` 零新增版本、零事件**；允许且**应当**恰有一行
+   `notification_created`（`aggregate_type=notification`）；Audit 走行哈希链，不进 `event_journal`。
+2. 必须产出一条 **Notification**（`notification_type = projection_rejected`，经
+   `notification.Service.Notify` → `Tx.Create(AggNotification, …)`，正常发 `notification_created` 事件）
+   + 一条 **Audit**（`action = execution_failed`，`outcome = UNKNOWN`，`details_json` 带 `task_state`、
+   `execution_event`、`reason`）。Notification/Audit 走各自通道，不碰 Task 版本。
 3. 该情况**不得静默吞掉**——静默 = "丢任务"的早期形态。`test` 角色需有一条用例钉住此行为。
 
 ### 5.5 UNKNOWN 的进入与离开（C3 裁定）
@@ -185,6 +190,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `execution_cancelled` / `_failed` / `_succeeded` / `_interrupted` | execution | `result_code` `error_code` `usage` | ✓(failed/interrupted) |
 | `approval_requested` / `_resolved` / `_expired` / `_cancelled` | approval | 同上 | ✓ |
 | `grant_issued` / `grant_revoked` / `grant_expired` | permission | `scope_type` `scope_id` `action` `expires_at` | ✓ |
+| `policy_created` / `policy_updated` | permission | `scope_type` `scope_id` `action_pattern` `effect` | ✓ |
 | `quota_observed` | quota | `quota_account_id` `quota_key` `observation_kind` `confidence` | – |
 | `notification_created` / `_handled` | notification | `notification_type` `priority` `task_id` `approval_id` | – |
 | `handoff_created` / `_ready` / `_completed` / `_failed` | handoff | `source_execution_id` `target_adapter_instance_id` `package_sha256` | – |

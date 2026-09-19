@@ -102,6 +102,21 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
    依赖方向 `platform/db ──► eventjournal` 合法（`eventjournal` 不 import 任何业务包）。
 9. **payload 结构体长期留在业务包**（`internal/task/events.go` 等），因为它们编码的是域事实；
    `internal/eventjournal` 只做目录与校验面，不放业务 payload 类型，避免变成口袋包。
+11. **`Tx` 必须提供事务内读**（B-backend-2 裁定，17:45）：`If-Match`/乐观并发的语义要求
+    "读版本 → 比较 → 改状态"发生在**同一个事务**里；在 `Write` 之外读版本会留竞态窗口
+    （读到的 version 到 Touch 时可能已被别的事务推进）。裁定采最小方案——
+    透传而非新抽象：
+
+    ```go
+    func (tx *Tx) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row
+    func (tx *Tx) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
+    ```
+
+    调用方自己保证 `SELECT` 的表属于它自己的模块（越表读仍受 §45 约束）。
+    典型用法：`SELECT version FROM tasks WHERE id=?` → 比对 `If-Match` → 不符直接返回
+    `version_conflict` 且**不 Touch**（不产生事件、不推进版本）；符合才 `Touch`。
+    否掉的方案 `TouchIfVersion(...)`：把期望版本塞进 `Touch` 会让签名再变一次、
+    并诱发"所有模块都想要条件写"的连锁扩展；透传读一行解决，且不加抽象。
 10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
    一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），
    所有既有建卡路径必须同轮改成 `Create`。因此**db 改注册表时必须自己先跑全仓**

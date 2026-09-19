@@ -59,6 +59,10 @@ POST /api/v1/tasks/{id}:queue|pause|resume|cancel|accept   → 状态动作（cu
 POST /api/v1/tasks/{id}:transfer         → 建 Handoff（body: target_adapter, target_session?, reason）
 GET  /api/v1/executions?task_id=         → 该任务全部 Execution（含 attempt_no/trigger_type/predecessor）
 GET  /api/v1/executions/{id}             → 含三份快照：model / permission / environment
+POST /api/v1/executions/{id}/send        → **C10/REQ-F-1 补（17:45）**：映射契约② `session/send`；
+                                          body `{text, delivery: start_now|guide|queue, attachments?}`，
+                                          必带 `Idempotency-Key`；Provider 侧 delivery 态不支持时返回
+                                          `DELIVERY_MODE_UNSUPPORTED`，**不得静默降级**
 GET  /api/v1/executions/{id}/output?after_seq=  → 流式批次（读 execution_output_chunks，非事件）
 POST /api/v1/executions/{id}:cancel      → 中止当前生成（映射 session/stop；不支持返回 501 而非假成功）
 GET  /api/v1/approvals?state=PENDING     → 待决审批；POST /api/v1/approvals/{id}:resolve
@@ -115,6 +119,7 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | `core/internal/task/**`、`execution/**`、`session/**`、`quota/**` | `backend` | |
 | `core/api/http/**`、`core/api/websocket/**`、`core/cmd/core/**` | `backend` | **16:52 补**：transport 层原先无人归属。它是业务 Service 的薄投影，**不得含任何业务判断或状态迁移**；一律经各模块 Service 与 `db.Touch/Create`，WS 推送只能发生在事务提交之后（ADR-008） |
 | `core/internal/approval/**`、`permission/**`、`audit/**` | `audit` | `approvals` 的 SQL 只准出现在 `internal/approval` |
+| `core/internal/notification/**` | `backend` | **C12 补（17:45）**：此表原无 owner。Notification 是独立聚合，写入走 `Tx.Create(AggNotification,…)` 并发 `notification_created`；`audit`/`adapter` 需要发通知时**调它的 Service**，不得自己写 `notifications` 表 |
 | `core/internal/adapter/**`、`process/**`、`adapters/fake/**` | `adapter` | |
 | `core/test/**`、`scripts/**` | `test` | 不得在别人包里建 `_test.go` |
 | `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**` | `frontend` | 禁止 import Core 内部类型 |

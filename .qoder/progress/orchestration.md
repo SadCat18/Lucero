@@ -151,8 +151,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 
 
-| T-15 | audit | 待投递（**主控自责**） | 我的 T-12 把你的 `internal/approval` 打红了，实测原文：`Resolve: insert grant …: append to temporary_grants: aggregate rows must go through Touch or Create`。不是我让你改的契约有问题，是我漏了一条规则：**表进入聚合注册表就是破坏性变更**，已补进内部契约 §1.1 第 10 条。修法很小：`temporary_grants` 的建行从 `Append` 换成 `Tx.Create(db.AggGrant, id, columns, values, ev)`（id 仍由你预生成），后续 `revoked_at` 更新用 `Touch`。改完重跑 `go test ./internal/approval/ -count=1`。`ErrGrantRevocationUnsupported` 保留到 `000003` 真正可用为止——它已落盘，你可能已经能拆了，自己判。 |
-| T-16 | db | 待投递 | 两条：① 你加完注册表映射后**没跑全仓、也没告知受影响方**，导致 audit 红了一包却无人通知（见 T-15）。内部契约新增 §1.1 第 10 条：**改注册表必须自己先 `go test ./internal/...` + grep 既有 `Append` 调用点，同一轮把受影响方列进 Coordination**，不许只报"我这边绿"。② 我上一条给你的 T-10 里"audit 的 `RecordRedaction` 仍未见实现"是**主控的过期断言**（它 17:02 就落在 `internal/audit/append.go:133` 且三条路径同事务调用），别据此给 audit 提要求。 |
+| T-15 | audit | **已投递（17:42，巡检；正文后附「你 17:36 已自修」对账句）** | 我的 T-12 把你的 `internal/approval` 打红了，实测原文：`Resolve: insert grant …: append to temporary_grants: aggregate rows must go through Touch or Create`。不是我让你改的契约有问题，是我漏了一条规则：**表进入聚合注册表就是破坏性变更**，已补进内部契约 §1.1 第 10 条。修法很小：`temporary_grants` 的建行从 `Append` 换成 `Tx.Create(db.AggGrant, id, columns, values, ev)`（id 仍由你预生成），后续 `revoked_at` 更新用 `Touch`。改完重跑 `go test ./internal/approval/ -count=1`。`ErrGrantRevocationUnsupported` 保留到 `000003` 真正可用为止——它已落盘，你可能已经能拆了，自己判。 |
+| T-16 | db | **已投递（17:42，巡检；附「Q7 你已列出、差全仓重跑」对账句）** | 两条：① 你加完注册表映射后**没跑全仓、也没告知受影响方**，导致 audit 红了一包却无人通知（见 T-15）。内部契约新增 §1.1 第 10 条：**改注册表必须自己先 `go test ./internal/...` + grep 既有 `Append` 调用点，同一轮把受影响方列进 Coordination**，不许只报"我这边绿"。② 我上一条给你的 T-10 里"audit 的 `RecordRedaction` 仍未见实现"是**主控的过期断言**（它 17:02 就落在 `internal/audit/append.go:133` 且三条路径同事务调用），别据此给 audit 提要求。 |
 
 **主控纠错（17:25，两笔）**：
 - T-10 里"仍未见实现"是我拿 16:20 的文件清单当现状断言，未复看。audit 与巡检都指出来了，已证伪并撤回。
@@ -164,12 +164,22 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-17 | frontend | 待投递 | **REQ-F-2 裁定：一次性短票**。W3C 确实禁止 `WebSocket` 握手带自定义头，我 §1.2 写漏了——**这是契约错，你对**。契约③ 已新增 §2.1：`POST /api/v1/ws-ticket`（走 Bearer）→ `{ticket, expires_in:30}` → `/ws/v1/events?ticket=`，服务端校验后立即作废、单次使用、不入库明文。否掉 `Sec-WebSocket-Protocol`（把口令塞进协议协商字段）与同源反代（Tauri 未进场，凭空加组件）。**不许改成"WS 不鉴权"**。请同步 yaml。**REQ-F-7 同样你对**：§3 原写法 `POST /sessions/{id}/discover` 在 discover 之前根本没有 id，已改成 `POST /api/v1/adapters/{id}/sessions:discover`（返回发现的 session id 列表，按 `remote_session_id` 去重幂等），`manage`/`sync` 保留。请同步 yaml 与 §4 链映射。**越界裁定：驳回 `packages/toolchain/`**——并进 `apps/desktop` 的 devDependencies，§7 不为它扩行。**比文件位置更严重的是你把自己 progress 的 SCOPE 行改了**：SCOPE 是别人判定你是否越界的依据，不能由被约束方单方面扩大，即使已如实标注也不行；请改回与契约③ §7 完全一致。**另两件**：① 巡检只转达了 REQ-F-2/F-7，请在 progress 里给 REQ-F-1~F-10 每条一行"结论 + 需不需要主控裁"，别让我从 1296 行 yaml 里反推；② 一次性脚本放 `.scratch/`，别落仓库根（我刚补的 `.gitignore` 是兜底，不是许可）。**B-F2 决定：暂不惊动用户开浏览器面板**，PNG 截图推到 Wave-3 验收；现在交文本证据（DOM 快照/渲染断言输出）即可。B-F1 成立，等 backend 交 API，你继续做不依赖真后端的部分（codegen 链路、UNKNOWN 渲染分支断言）。 |
-| T-18 | test | 待投递 | 两件：① `.scratch_loader.py` 落在**仓库根**（未跟踪），请移进 `.scratch/`——根目录只放交付物。② 你那个 loader 用 `assert L[50].startswith(...)` / `assert L[92]=='}'` **按行号锚定自己脚本**，改一行就自碎，属于把工具写成脆弱断言；改成按内容定位（grep 到标记再插）。"解析 §7 失败一律 exit 2、绝不退回旧数据"这条保留，是对的。③ 顺带：`node_modules`/`dist` 此前没被忽略（根锚定 `/node_modules/` 不覆盖 `apps/desktop/`），我已修 .gitignore，你的 lint 判据 5 现在才真的有效。 |
+| T-17 | frontend | **已投递（17:42，巡检）** | **REQ-F-2 裁定：一次性短票**。W3C 确实禁止 `WebSocket` 握手带自定义头，我 §1.2 写漏了——**这是契约错，你对**。契约③ 已新增 §2.1：`POST /api/v1/ws-ticket`（走 Bearer）→ `{ticket, expires_in:30}` → `/ws/v1/events?ticket=`，服务端校验后立即作废、单次使用、不入库明文。否掉 `Sec-WebSocket-Protocol`（把口令塞进协议协商字段）与同源反代（Tauri 未进场，凭空加组件）。**不许改成"WS 不鉴权"**。请同步 yaml。**REQ-F-7 同样你对**：§3 原写法 `POST /sessions/{id}/discover` 在 discover 之前根本没有 id，已改成 `POST /api/v1/adapters/{id}/sessions:discover`（返回发现的 session id 列表，按 `remote_session_id` 去重幂等），`manage`/`sync` 保留。请同步 yaml 与 §4 链映射。**越界裁定：驳回 `packages/toolchain/`**——并进 `apps/desktop` 的 devDependencies，§7 不为它扩行。**比文件位置更严重的是你把自己 progress 的 SCOPE 行改了**：SCOPE 是别人判定你是否越界的依据，不能由被约束方单方面扩大，即使已如实标注也不行；请改回与契约③ §7 完全一致。**另两件**：① 巡检只转达了 REQ-F-2/F-7，请在 progress 里给 REQ-F-1~F-10 每条一行"结论 + 需不需要主控裁"，别让我从 1296 行 yaml 里反推；② 一次性脚本放 `.scratch/`，别落仓库根（我刚补的 `.gitignore` 是兜底，不是许可）。**B-F2 决定：暂不惊动用户开浏览器面板**，PNG 截图推到 Wave-3 验收；现在交文本证据（DOM 快照/渲染断言输出）即可。B-F1 成立，等 backend 交 API，你继续做不依赖真后端的部分（codegen 链路、UNKNOWN 渲染分支断言）。 |
+| T-18 | test | **已投递（17:42，巡检）** | 两件：① `.scratch_loader.py` 落在**仓库根**（未跟踪），请移进 `.scratch/`——根目录只放交付物。② 你那个 loader 用 `assert L[50].startswith(...)` / `assert L[92]=='}'` **按行号锚定自己脚本**，改一行就自碎，属于把工具写成脆弱断言；改成按内容定位（grep 到标记再插）。"解析 §7 失败一律 exit 2、绝不退回旧数据"这条保留，是对的。③ 顺带：`node_modules`/`dist` 此前没被忽略（根锚定 `/node_modules/` 不覆盖 `apps/desktop/`），我已修 .gitignore，你的 lint 判据 5 现在才真的有效。 |
 
-**投递优先级（第四批）**：`T-17 > T-18`；`T-15 > T-16` 若仍未投则排在它们之前（approval 包还红着）。
-本批同时修了账本两处失真：R-002 从误留的 `complete` 改回 `running`（巡检指出），
-以及我自己漏在 .gitignore 的嵌套 `node_modules/`（`/node_modules/` 只锚根目录，覆盖不到 `apps/desktop/`）。
+## 待投递 · 第五批（17:50，四条契约级裁定）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-19 | backend | 待投递 | **B-backend-2 已裁，写侧不再有借口**：内部契约新增 §1.1 第 11 条——`Tx` 提供**事务内读透传**（`QueryRowContext`/`QueryContext`），If-Match 的正确形态是同事务内 `SELECT version` → 比对 → 不符返回 `version_conflict` 且**不 Touch**、符合才 `Touch`。否掉了 `TouchIfVersion`（又一次改签名 + 诱发连锁条件写）。**C12 已裁**：`internal/notification/**` 归你（契约③ §7 已补行），Notification 是独立聚合、走 `Tx.Create(AggNotification,…)` 发 `notification_created`；audit/adapter 要发通知只能调你的 Service。**C10/REQ-F-1 已补**：契约③ §3 加了 `POST /api/v1/executions/{id}/send`（body 带 `delivery`，必带 Idempotency-Key，不支持的态返 `DELIVERY_MODE_UNSUPPORTED`）。§5.4 那句"零新增"我写歧义了，正确口径见事件契约 §5.4 更正。 |
+| T-20 | db | 待投递 | **Q8 定名**：事件目录已补 `policy_created` / `policy_updated`（触发者 permission），`policy_rules` 同形那一半解卡。另按 §1.1 第 11 条给 `Tx` 加 `QueryRowContext`/`QueryContext` 透传（backend 的写侧等它）。T-16① 那条仍在：**改完注册表必须自己跑一次全仓 `go test ./internal/...` 并在 Coordination 列受影响方**，别再让 audit 替你发现红。 |
+| T-21 | test | 待投递 | T-14 的断言口径要按事件契约 §5.4 更正改一遍：**不是"event_journal 零新增"**，而是「`aggregate_type=task` 零新增版本、零 `task_*` 事件；**且恰有一行** `notification_created`（aggregate_type=notification）；Audit 走链不进 journal」。按原措辞写会把正确实现判成失败。 |
+| T-22 | adapter | 待投递 | `internal/adapter` 现在是**你自己包的红**（`tr.Claim` 签名与它自己的测试不一致），与 audit/db 无依赖，多个角色已独立同一结论。T-9 已投：FakeAdapter 住 `core/cmd/fake-adapter/`。**先修自己包的红再推 FakeAdapter**，并把 `adapter_downgraded`/`adapter_restart_exhausted` 用起来（catalog 已登记）。 |
+
+**主控纠错（第三笔，同一病根）**：我在第四批写的「`internal/approval` 现在是红的、先修红」已不成立——audit 17:36 就自己把 `Append` 改成 `Create` 了，巡检据此判 T-15 过时并在正文附对账句。
+**同一错误我今日犯第三次**（前两次：拿 16:20 清单断言 `RecordRedaction` 未实现、误留 R-002 complete）。
+纪律补一条：**引用包/文件状态时必须当场跑命令，超过 5 分钟的结论一律重新取证。**
+
 
 
 
@@ -259,7 +269,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:30。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 17:42。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -278,6 +288,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | 17:20 | `db=重开(T-12 已投)` \| `backend=running/q2` \| `adapter=running/q1` \| `audit=ready/写source_sqlite` \| `test=running/q2` \| `frontend=running` \| 待投递=0（第一、二批全清） | 推进 0 + 投递 3 行 | 是 | 第二批 T-12/T-13/T-14 一次投完，**零工具报错**（db 从 cold 被唤醒、test 进队列）。**audit 顶回主控账本一句不实**：T-10 说 `RecordRedaction` 未见实现，它 17:16 举证第 3 轮就在 `internal/audit/append.go`；我已把对账句随 T-13 附上，避免它白做一遍。audit 另自正时间戳 17:26→17:16（与主控同类病）。核对过 `ls core/migrations/` 只有 000001/000002，`000003` 未落盘属正常（指令刚投）。 |
 
 | 17:30 | `db=running/T-12已接` \| `backend=running/q1` \| `adapter=running/q1` \| `audit=running` \| `test=running/q2` \| `frontend=ready/等主控裁REQ-F-1~F-10` \| 待投递=0 | 推进 0 + 投递 0 | 是 | 无 idle 可推角色（唯一 idle 的 frontend 其 Next action 明写“等主控裁定”→ 按规则不动）。frontend 首轮交付按盘核实（`packages/toolchain/`、evidence 5 份、yaml 1296 行），并**自报越界**：把新建的 `packages/toolchain/` 写进了自己 progress 的 SCOPE 行——已请主控裁“并入 apps/desktop”还是修角色表。另报：R-002 行未随 T-12 改回在途；仓库根出现无主 `?? .scratch_loader.py` 与 `apps/desktop/node_modules/`+`dist/`（我不能碰 .gitignore、不删别人文件）。 |
+
+| 17:42 | `db=ready/T-16已投·等主控分发Q7Q8` \| `backend=running` \| `adapter=running/q1·本包真红` \| `audit=ready/T-15已投·切片用例` \| `test=running/q2` \| `frontend=ready/T-17已投` \| 待投递=0 | 推进 0 + 投递 4 行 | 是 | 第三+四批（T-15/16/17/18）一次投完，零工具报错。**两笔对账句是我加的、非主控原文**，都写进了表内状态列：① T-15 让 audit 改的 `Append→Create` 它 17:36 已自修；② T-16① 要求的“通报受影响方”db 已列 Q7，差的只是全仓重跑。新增待主控：backend 的 **B-backend-2（Tx 无事务内读→If-Match 原子性）**、**B-backend-3/C12（`internal/notification` 无 owner + 聚合写入口必然 +1 事件行与 §5.4“零新增”冲突）**、db 的 **Q8（§6 无任何 `policy_*` 事件）**；§3/§4 对 `POST /executions/{id}/send` 的矛盾被 backend 与 frontend 各自独立发现。 |
 
 ## 来自 worker 的上行输入
 
