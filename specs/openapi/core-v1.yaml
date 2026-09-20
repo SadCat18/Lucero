@@ -91,7 +91,8 @@ paths:
         `POST /api/v1/ws-ticket` → `{ticket, expires_in: 30}` → `/ws/v1/events?ticket=…`。
         票单次使用、30 秒过期、服务端校验后立即作废、不入库明文 —— **每次（重）连都要新一张**。
         这不是"WS 免鉴权"。
-        T-30 裁定：本端点**免 `X-Lucero-Principal`**（它不改业务状态，只是凭证签发），但**仍必须带 Bearer**。
+        T-30 裁定：本端点**免 `X-Lucero-Principal`**（它不改业务状态，只是凭证签发），但**仍必须带 Bearer**
+        —— dev 期那个 Bearer 由 §1 第 2.2 项的反代注入，面板代码里没有口令。
         也故意不吃 `Idempotency-Key`：票若被幂等缓存，重放会交出已作废的票（§2 豁免表唯一一条，
         反向用例 = 同一请求两次必须拿到两张不同有效票）。
       responses:
@@ -695,7 +696,13 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: 共享口令 core-token，来自数据目录下 `core.endpoint`。防的是本机任意进程，不是外网。
+      description: |
+        共享口令 core-token，落在 <data-dir>/core.endpoint（{host_port, token, version}，契约③ §1 第 2.1/2.2 项）。
+        准确说法：它是**同用户边界内的门帘，不是隔离机制** —— 0600 在 Windows 被默认 ACL 映射掉，
+        同用户的任意进程都能读到该文件；所以严禁开任何"远程/跨进程要口令"的口（§1 第 2.2 项④）。
+        浏览器面板自身不持有口令：dev 期由 Vite dev-server 同源反代注入 Authorization，
+        生产期由 Tauri shell 注入（v0.1 不开放真环境，重开条件 = Tauri 进场）。
+        WS 握手不吃这个头（W3C 限制），走 §2.1 的一次性短票。
   parameters:
     Id:
       name: id

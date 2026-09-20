@@ -129,26 +129,44 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     将来若引入多用户/凭据轮换，再按新 ADR 升级为聚合。
 13. **`Tx.UpdateOnce`：无事件可变表的唯一合法 UPDATE 入口（REQ-DB-1 裁定，13:5x 按 db 交付原文写）**
     第 12 条只说了"这些表不需要 `Touch`/`Create`"，却没给 UPDATE 入口，于是幂等中间件封不了自己的响应
-    （backend 只能回 `409 idempotency_replay`）。db 已交付，签名与语义以 `platform/db/touch.go:174` 为准：
+    （backend 只能回 `409 idempotency_replay`）。db 已交付，签名与语义以 **`platform/db` 的
+    `Tx.UpdateOnce`** 为准（**本文一律用符号引用定位，不写行号**——理由见本节末尾的"行号是易腐品"条）：
 
     ```go
     func (tx *Tx) UpdateOnce(table, id, guardCol string, guardVal any,
         setSQL string, args []any) (int64, error)   // 返回实际改动行数
     ```
 
-    - **白名单写死在 db 里**：`narrowTables`（`touch.go:156`）当前**只有 `idempotency_keys`**，
+    - **白名单写死在 db 里**：变量 **`narrowTables`** 当前**只有 `idempotency_keys`**，
       可写列 `state`/`response_json`/`updated_at`/`expires_at`，主键 `key`。白名单外一律 error
       （"not in platform/db's narrow update whitelist"）。**加表要过我这关**（写 REQ，不许顺手加）。
-    - **聚合表物理封死**：`aggTables[table]` 命中就直接 error（`:175-177`），
+    - **聚合表物理封死**：`Tx.UpdateOnce` 开头对 **`aggTables`** 的命中判断直接 error，
       所以第 12 条那张表**不可能被误用来绕过版本**。
     - **`guardCol`/`guardVal` 是"只封存一次"的关键**：第一次写把 `state` 改掉并落 `response_json` → 1 行；
       重放时条件不匹配 → **0 行**，调用方据此**回读已封存的响应**而不是覆盖它。
       平台层因此**不需要理解状态机语义**（"谁算第一次"由调用方的 guard 表达），这是这条入口能保持窄的原因。
-    - **仍然跑脱敏**（`:172-173`）：`response_json` 正是最可能带密钥的列，别指望它是第二个豁免口。
+    - **仍然跑脱敏**：`Tx.UpdateOnce` 与 `Touch`/`Create` 共用 **`Tx.scrubArgs`**，
+      `response_json` 正是最可能带密钥的列，别指望它是第二个豁免口。
     - **不发事件、不取 version**（这就是"无事件表"的定义）。
     - 判据归 `test`：`UpdateOnce` 打聚合表必须 error；打白名单外表必须 error；
       guard 不匹配时返回 0 行且**原值未被覆盖**；`response_json` 里放一个密钥形状的值，
       落库后必须是被脱敏的（这一条打在 db 的返回值/直接产物上，不是打在读侧）。
+
+14. **契约里只准用符号引用定位，禁止写行号（db 提，14:4x 采纳并泛化为全项目规矩）**
+    实证就在这次：我 13:5x 按**当时实读**写进第 13 条的四处行号（`touch.go:156/174/175-177/172-173`），
+    40 分钟后被 db 自己**新加的 3 行注释**整体推后 3（`narrowTables` 156→159、`UpdateOnce` 174→177、
+    聚合表守卫 175→178、`scrubArgs` 206→209），而其中"跑脱敏 `:172-173`"其实指的是**注释行不是调用点**——
+    **我写的那一刻就没指对东西**。这不是 db 的错，是"行号"这种引用形式本身不持真。
+    判据：
+    - **定位一律写**：包名 + 标识符（`Tx.UpdateOnce`、`narrowTables`、`(*Core).writeEndpointFile`）、
+      或表名/列名/约束名（`execution_output_chunks` 的 `UNIQUE(execution_id, sequence_no)`）。
+      这些是**改名才算破坏性变更**的东西，改行号不是。
+    - **行号只允许出现在两处**：① 账本/进度文件里作为"某时刻观察"的证据（须带当场 `date`）；
+      ② 测试断言的失败输出。**契约正文不许有**，因为契约是被长期引用的一方。
+    - 需要"证明代码此刻长这样"时，写**可跑的命令**（`grep -n "func (tx \*Tx) UpdateOnce" ...`），
+      比写行号更强：命令每次都能重新定位，行号只会过期。
+    - 同一条也解释了今早那两次"契约里的错指针"（`//go:embed ../../../migrations` 指向非法位置、
+      `core/migrations/embed.go` 给不存在的文件派了 owner）：**指针越具体，越容易在写下的下一秒变成假的。**
 
 10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
    一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），

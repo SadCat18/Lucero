@@ -23,7 +23,7 @@
 2.2 **面板怎么拿到 core token（REQ-F-18 裁定，13:3x；本条是 §1 列表的第 2.2 项，紧跟第 2.1 项的票机制。
     注意别与内部契约的"§2.2 Redaction"混读 —— 跨文档引用请写全"契约③ §1 第 2.2 项"）**：
     **正式途径不是"前端持有 token"，而是前端根本不接触它。**
-    Core 已把 `{host_port, token, version}` 写进 `<data-dir>/core.endpoint`（`cmd/core/main.go:223-231`），
+    Core 已把 `{host_port, token, version}` 写进 `<data-dir>/core.endpoint`（`core/cmd/core` 的 `(*Core).writeEndpointFile`），
     读它的是**本机进程**，不是页面：
     - **dev 期 = Vite dev-server 同源反代**：node 侧读 `core.endpoint`，转发 `/api/v1/*` 时注入
       `Authorization: Bearer …`；WS 用同一条代理（`ws: true`），**鉴权仍走 §2.1 的一次性票，不因代理而改变**。
@@ -32,7 +32,7 @@
       所以 **v0.1 明确：观察面板不开放给真环境**，重开条件 = Tauri 进场那一轮。这不是缺口，是已划的边界。
     - **两条禁止**：① **不得**新增"把 token 发给客户端"的 HTTP 端点或配置项（那会把下面那条文件边界整个废掉）；
       ② **不得**用 `VITE_*`/`import.meta.env` 把口令烤进构建产物。
-    - **⚠ 必须一起写清、不许美化的一条**：`main.go:229` 传的 `0o600` **在本机不成立** ——
+    - **⚠ 必须一起写清、不许美化的一条**：`(*Core).writeEndpointFile` 里 `os.WriteFile` 传的 `0o600` **在本机不成立** ——
       Windows 默认 ACL 会把 Go 的 0600/0700 映射成 `rwxrwxrwx`（本机实测，属既有环境事实）。
       所以 `core.endpoint` 对**同用户的任意进程**实际可读。准确说法是：
       **§1.2 的共享口令是"同用户边界内的门帘"，不是隔离机制**；正因如此更不能多开一个能远程要到口令的口。
@@ -61,7 +61,7 @@
 |---|---|
 | 时间 | 一律 Unix 毫秒整数，不返回 RFC3339 字符串 |
 | 分页 | `?cursor=<opaque>&limit=50` → `{items, next_cursor}`；**不得**用 offset |
-| WebSocket 帧 | **REQ-WS-1 裁定（12:5x，含"为什么不引 `gorilla/websocket`"）**：Core 服务端自带 431 行手写 framer（`core/api/websocket/{ws,frames}.go`），已实测覆盖三处真会出事的地方——入站帧**无掩码即拒**（`frames.go:83`）、**分片帧即拒**并回 `close(1002)`（`:79`）、64 位长度分支在**分配之前**就查 `maxIncoming`（`:100`，不会被巨型长度声明撑爆内存）。因此客户端约定：① **入站消息必须单帧、≤125 字节有效载荷**（我们的入站只有 `{type:"resubscribe", from_seq}` 一类小 JSON，够用）；② 不协商任何扩展，服务端**不回** `Sec-WebSocket-Extensions`，故浏览器不会启用 permessage-deflate；③ 入站只允许 text/binary/close/ping/pong 五种 opcode，其余按协议错误关。**重开条件**（满足任一条再引依赖，且要新 ADR）：要发/收 >125 字节的入站消息、要二进制分片、要 permessage-deflate、要服务端主动大扇出压帧。理由：这是本地优先产品的**第一个直接依赖**，而换掉一套已测绿的帧实现属于"拿不回的东西"。 |
+| WebSocket 帧 | **REQ-WS-1 裁定（12:5x，含"为什么不引 `gorilla/websocket`"）**：Core 服务端自带 431 行手写 framer（`core/api/websocket/{ws,frames}.go`），已实测覆盖三处真会出事的地方——三处都在 `internal/api/websocket` 的 **`(*framer).read`** 里：入站帧**无掩码即拒**、**分片帧即拒**并回 `close(1002)`、64 位长度分支在 `make([]byte, n)` **之前**就查 `maxIncoming`（不会被巨型长度声明撑爆内存）。因此客户端约定：① **入站消息必须单帧、≤125 字节有效载荷**（我们的入站只有 `{type:"resubscribe", from_seq}` 一类小 JSON，够用）；② 不协商任何扩展，服务端**不回** `Sec-WebSocket-Extensions`，故浏览器不会启用 permessage-deflate；③ 入站只允许 text/binary/close/ping/pong 五种 opcode，其余按协议错误关。**重开条件**（满足任一条再引依赖，且要新 ADR）：要发/收 >125 字节的入站消息、要二进制分片、要 permessage-deflate、要服务端主动大扇出压帧。理由：这是本地优先产品的**第一个直接依赖**，而换掉一套已测绿的帧实现属于"拿不回的东西"。 |
 | 幂等 | 所有**改变业务状态**的 POST 必须带 `Idempotency-Key`；命中已完成记录时**返回首次的响应**，不重放副作用（领域模型「Idempotency」）。**REQ-F-11 豁免（18:03 确认）**：凭证签发类端点必须排除在幂等缓存之外——目前唯一一条是 `POST /api/v1/ws-ticket`。理由与 frontend 的判断一致且更强：票是**单次使用 + 校验即作废**的，若被幂等缓存，命中缓存会返回同一张票或其"已作废"结论，等于让一次重放变成可预测行为。豁免不许靠约定，**必须有一条反向用例钉住**（同一请求两次 → 拿到两张不同的有效票）；将来新增豁免端点要显式列进本表，不能靠注释口头豁免 |
 | 乐观并发 | 聚合读响应带 `version`（ADR-017 的列）；变更请求带 `If-Match: <version>`，不符 → `409 version_conflict` |
 | 错误体 | `{"error": {"code": "...", "message": "...", "retryable": bool, "details": {…}}}`，`code` 复用契约② §错误码集合，HTTP 码与之对应 |

@@ -129,7 +129,7 @@ Adapter→Core 通知：
    **每个 delta 绝不写 event_journal**。
 4. Adapter 不写 DB、不发事件；`stream/delta` 不是 Durable Event，掉电即丢，靠 chunk 表兜。
 5. **`turn_ref`（CO-21 裁定，13:5x）—— 四条 Adapter→Core 通知都必须带它，缺任一帧即协议违规。**
-   起因是我这边的两处不自洽，不是 adapter 实现问题：`000001:355` 的
+   起因是我这边的两处不自洽，不是 adapter 实现问题：`000001` 迁移里
    `execution_output_chunks` 有 `UNIQUE(execution_id, sequence_no)`，而本节原来**只给 `sequence_no`**，
    全篇又没有 `correlation` 字段（13:4x `grep -n correlation` 在本文 **0 命中**）——
    一条长连接上跑多个 execution 时，Core 拿到一个裸 `sequence_no` **无法判定它属于谁**，只能猜
@@ -337,8 +337,8 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 `error.code` 是 JSON-RPC 的**数字**字段，`error.data.code` 才是本文的大写蛇形字符串；两者并存、不互相替代。
 
 **先记一条我自己的错**：本节初版写的是「所有领域错误统一走 `-32000`，`data.code` 承载判别符」。
-**这条已撤回**——它和 **CO-4 的既有裁定**以及 `core/internal/adapter/protocol.go:51-67` **已落地的实现**冲突
-（那里每个码各有一个数字，且 `protocol_test.go:248` 在钉这个数字）。我在改契约前没读这段代码，
+**这条已撤回**——它和 **CO-4 的既有裁定**以及 `internal/adapter` 的 `ErrorCode` 常量块 **已落地的实现**冲突
+（那里每个码各有一个数字，且 `internal/adapter` 的 `TestErrorCarriesSymbolInData` 在钉这个数字）。我在改契约前没读这段代码，
 属于我这一轮第三次「契约行与盘上实现不符」。以本节现在的规则为准。
 
 **规则（这部分与实现一致，且是真缺陷，保留）：**
@@ -350,7 +350,7 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
    它**不是**"领域码不认识"的落点（原来我把它写成"未映射的内部故障"，那句就是 adapter 提问的根源，已改）。
    1.1 **收到 §15.1 之外的 `data.code` 怎么降级 —— 裁定用 `INTERNAL(-32013)`，不用 `-32603`**：
        对端给一个我们不认识的领域码，那是**一次合法的领域响应**（只是我方词汇表没覆盖），
-       不是 JSON-RPC 层的故障，所以走 `INTERNAL`。实现已正确（`protocol.go:179-187` 的 `Degrade`：
+       不是 JSON-RPC 层的故障，所以走 `INTERNAL`。实现已正确（`internal/adapter` 的 `(*Error).Degrade`：
        降级到 `INTERNAL` 但**把原码原样留在 `data` 里** —— "unknown code stays visible,
        Core just stops pretending it understands it"）。这与"不许把 `UNKNOWN` 显示成确定值"是同一条纪律：
        **Core 不假装看懂了，但也不销毁证据**。断言下限：未知码 → 对外 `INTERNAL`、`data` 里原码可读、且进 Audit。
