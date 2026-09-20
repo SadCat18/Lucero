@@ -470,3 +470,15 @@ func TestCrashEventJournalComplete(t *testing.T) {
 	t.Skip("blocked: 需要 cmd/core 的 WS 端点（backend）；seq 连续性的一半已由 " +
 		"TestCrashProcessDeathKeepsDurableData 覆盖")
 }
+
+// TestIdempotentReplayBodyIsByteIdentical 内部契约 §1.1 第 13 条"响应体口径"（C18 裁定：
+// 首次也回读库）。这条判的是 §12 红线里"Secret 泄露到响应"的另一个入口：
+// 若 handler 直接返回自己 Marshal 的那一份，一旦被脱敏命中，**首次响应就是未打码的**，
+// 库里存的却是打码版；首次与重放也就此分叉。判据两条：
+//
+//	① 同一 Idempotency-Key 的 201 body 与重放 body 逐字节相等；
+//	② 塞一个命中脱敏规则的值（如 {"token":"…"}）时，两份响应都等于库里 response_json 的打码版。
+func TestIdempotentReplayBodyIsByteIdentical(t *testing.T) {
+	t.Skip("blocked: 需要 POST /api/v1/tasks 与幂等回读路径可用（backend，§1.1#13 的实现方）；" +
+		"接线后按上面两条写断言，另按 T-66④ 变异必须改变'是否走到回读那一步'")
+}

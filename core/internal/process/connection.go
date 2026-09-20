@@ -11,6 +11,27 @@ import (
 	"github.com/SadCat18/lucero/core/internal/adapter"
 )
 
+// lostError is the one shape every caller of a dead connection gets, whatever the
+// race. The §15.1 code ADAPTER_UNRESPONSIVE is named in the text because that is the
+// condition, but it is never put on the wire from here: a reply needs a peer request
+// to answer, and inventing one would be Core speaking for an Adapter.
+func lostError(method, why string) error {
+	return &LostError{Method: method, Reason: why,
+		Err: fmt.Errorf("%w: %s: %s (%s)", ErrConnectionLost, method, why,
+			adapter.ErrAdapterUnresponsive)}
+}
+
+// LostError keeps both halves machine-readable: errors.Is against ErrConnectionLost,
+// and errors.As against it for the method that was in flight.
+type LostError struct {
+	Method string
+	Reason string
+	Err    error
+}
+
+func (e *LostError) Error() string { return e.Err.Error() }
+func (e *LostError) Unwrap() error { return e.Err }
+
 // ErrConnectionLost means the child process went away while a call was in flight.
 // It is deliberately not a contract error code: whether the turn succeeded is
 // unknown at this point, and §8 sends the Execution to UNKNOWN on that basis.
@@ -28,10 +49,11 @@ type Inbound struct {
 // frames: requests out with a UUIDv7 request_id and an optional deadline, replies
 // matched back by id, stream notifications deduplicated and forwarded.
 //
-// One goroutine reads the child's stdout, started by Initialize rather than by
-// Connect: reading before the handshake is done would let frames pass the cursor
-// untouched, and CO-6/A-5 require the cursor to be reset after the handshake and
-// before the first frame.
+// One goroutine reads the child's stdout from the moment Connect returns, before the
+// handshake: stdout pipes are unbuffered, so a reader that waits for
+// Initialize would let an Adapter that talks first block on its own write and the
+// handshake would never complete. Frames that arrive that early are reported as §2
+// violations and never move the cursor, which Initialize resets (CO-6/A-5).
 type Connection struct {
 	child *Child
 	w     *adapter.Writer
@@ -42,32 +64,50 @@ type Connection struct {
 	coreVersion string
 
 	mu      sync.Mutex
+	writeMu sync.Mutex // one stdout stream, many callers: frames must not interleave
 	hs      *adapter.Handshake
 	pending map[string]chan *adapter.Frame
 	turns   map[string]*adapter.TurnTracker
-	cursor  adapter.Cursor
-	inbound chan Inbound
-	dead    chan struct{}
-	dieOnce sync.Once
-	closed  bool
+	// cursor is the connection-level watermark and hole tracker: §6.7 states plainly
+	// that sequence_no is connection-level, and since_seq is one number per connection.
+	cursor adapter.Cursor
+	// lastByRef is §6.7's idempotency key (turn_ref, sequence_no). A frame is a
+	// duplicate only of the same turn's same number - gating on the watermark alone
+	// would drop a second execution's lower-numbered frame as a "duplicate" of the
+	// first one's higher one, which is the accident the key exists to stop.
+	lastByRef map[string]int64
+	// execByRef is the §6.7 turn_ref -> execution_id map, valid only for this
+	// connection. turn/claimed and turn/dispatched are what populate it (CO-8 lets
+	// those two frames name the execution), and every other frame is attributed
+	// through it.
+	execByRef map[string]string
+	inbound   chan Inbound
+	dead      chan struct{}
+	dieOnce   sync.Once
+	closed    bool
 }
 
-// Connect starts the child and prepares the pump. Nothing is read or written until
-// Initialize completes, so a child that dies before the handshake is reported by
-// the Supervisor's events, not as a protocol failure.
+// Connect starts the child and the pump. The reader must be running before any reply
+// can arrive - and on a pipe, nothing is buffered, so a pump that starts only after
+// the handshake would deadlock on the handshake reply itself. Frames that arrive
+// before the handshake are reported as §2 violations instead of moving the cursor.
 func (s *Supervisor) Connect(ctx context.Context, coreVersion string) (*Connection, error) {
 	child, err := s.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{
+	conn := &Connection{
 		child: child, w: adapter.NewWriter(child.Stdin), r: adapter.NewReader(child.Stdout),
 		sup: s, coreVersion: coreVersion,
-		pending: map[string]chan *adapter.Frame{},
-		turns:   map[string]*adapter.TurnTracker{},
-		inbound: make(chan Inbound, 64),
-		dead:    make(chan struct{}),
-	}, nil
+		pending:   map[string]chan *adapter.Frame{},
+		turns:     map[string]*adapter.TurnTracker{},
+		lastByRef: map[string]int64{},
+		execByRef: map[string]string{},
+		inbound:   make(chan Inbound, 64),
+		dead:      make(chan struct{}),
+	}
+	go conn.read()
+	return conn, nil
 }
 
 // Child exposes the pipes and pid, so a caller can attach the stderr sink and
@@ -110,9 +150,13 @@ func (c *Connection) Initialize(ctx context.Context) (*adapter.Handshake, error)
 	}
 	c.mu.Lock()
 	c.hs = hs
-	c.cursor.Reset(0) // CO-6/A-5: after the handshake, before the first frame
+	// CO-6/A-5: the cursor starts counting from the handshake, so anything that
+	// arrived beforehand is not part of this session's sequence. A restarted process
+	// gets a whole new Connection, which is the same reset by construction.
+	c.cursor.Reset(0)
+	c.lastByRef = map[string]int64{}
+	c.execByRef = map[string]string{}
 	c.mu.Unlock()
-	go c.read()
 	return hs, nil
 }
 
@@ -149,10 +193,19 @@ func (c *Connection) Cancel(targetID string) error {
 	}
 	f.Params = raw
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
 		return ErrConnectionLost
 	}
+	return c.write(f)
+}
+
+// write serialises frame writes: Call and Cancel run on different goroutines and a
+// half-written line would break the peer's stream (§1: one object per line).
+func (c *Connection) write(f *adapter.Frame) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return c.w.Write(f)
 }
 
@@ -162,30 +215,42 @@ func (c *Connection) Cancel(targetID string) error {
 func (c *Connection) Inbound() <-chan Inbound { return c.inbound }
 
 // Turn returns the §6.3/CO-8 evidence tracker for one Execution, creating it on
-// first sight. Core keeps these per Execution because the resume cursor is the pair
-// (execution_id, sequence_no).
+// first sight. The tracker stays keyed by Core's own id: turn_ref is how frames
+// attribute themselves (§6.7), and this map is where one becomes the other.
+//
+// The pump is the only writer: callers read State/TurnID/ProviderExecutionID and hand
+// an UNKNOWN turn to Recovery, which closes it through Recover. Claiming from
+// somewhere else would race with the frames.
 func (c *Connection) Turn(executionID string) *adapter.TurnTracker {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.turnLocked(executionID)
 }
 
-// LastSeq reports how far the inbound stream has been accepted, which is what a
-// reconnect sends as since_seq (§6.2). CO-21 asks whether stream/delta should carry
-// execution_id: until it does, the counter is per Adapter process, which is what
-// §6.2 literally states, and whoever persists chunks pairs it with the execution.
+// LastSeq is the connection-level watermark, which is what a reconnect's since_seq
+// is measured against: §6.7 states plainly that sequence_no is monotonic per Adapter
+// process, not per turn.
 func (c *Connection) LastSeq() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cursor.Last()
 }
 
-// MissingSeq returns the first sequence_no that never arrived after a drop, or 0
-// when the stream has been contiguous.
+// MissingSeq returns the first sequence_no that never arrived after a jump, or 0
+// while the connection's numbering has been contiguous.
 func (c *Connection) MissingSeq() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cursor.SinceSeq()
+}
+
+// SinceSeq is the per-turn resume number §6.7 asks Core to keep: the highest
+// sequence_no accepted for that turn_ref, or 0 when nothing has arrived for it.
+// Independent of any other execution's cursor, which is the point of the turn_ref.
+func (c *Connection) SinceSeq(turnRef string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastByRef[turnRef]
 }
 
 // Close stops the pump and releases the pipes. It does not kill the child: shutting
@@ -221,14 +286,20 @@ func (c *Connection) request(ctx context.Context, method string, params any) (*a
 	ch := make(chan *adapter.Frame, 1)
 
 	c.mu.Lock()
+	select {
+	case <-c.dead:
+		c.mu.Unlock()
+		return nil, lostError(method, "connection already gone")
+	default:
+	}
 	if c.closed {
 		c.mu.Unlock()
-		return nil, ErrConnectionLost
+		return nil, lostError(method, "connection closed")
 	}
 	c.pending[id] = ch
 	c.mu.Unlock()
 
-	if err := c.w.Write(f); err != nil {
+	if err := c.write(f); err != nil {
 		c.forget(id)
 		return nil, fmt.Errorf("send %s: %w", method, err)
 	}
@@ -246,7 +317,7 @@ func (c *Connection) request(ctx context.Context, method string, params any) (*a
 		return nil, fmt.Errorf("%s: %w (sent %s)", method, ctx.Err(), adapter.CancelMethod)
 	case <-c.dead:
 		c.forget(id)
-		return nil, fmt.Errorf("%s: %w", method, ErrConnectionLost)
+		return nil, lostError(method, "no reply")
 	}
 }
 
@@ -280,6 +351,9 @@ func (c *Connection) read() {
 		}
 		switch f.Kind() {
 		case adapter.KindResponse:
+			// T-45: a code outside §15.1 degrades to INTERNAL with the original
+			// number preserved, so no caller can branch on a meaning Core invented.
+			f.Error = f.Error.Degrade()
 			c.mu.Lock()
 			ch := c.pending[f.ID]
 			c.mu.Unlock()
@@ -300,28 +374,80 @@ func (c *Connection) read() {
 // notify applies §6.2's idempotent drop and drives the per-Execution evidence
 // trackers, then forwards whatever is left.
 func (c *Connection) notify(f *adapter.Frame) {
+	c.mu.Lock()
+	initialized := c.hs != nil
+	c.mu.Unlock()
+	if !initialized {
+		// §2: no traffic belongs on the stream before the handshake, and accepting it
+		// would let an Adapter pre-seed the dedup cursor for a session nobody started.
+		c.deliver(Inbound{Err: &adapter.Error{Code: adapter.ErrProtocolNotInitialized,
+			Message: f.Method + " arrived before adapter/initialize completed (§2)"}})
+		return
+	}
 	s, err := adapter.DecodeStream(f)
 	if err != nil {
 		c.deliver(Inbound{Err: err})
 		return
 	}
 	c.mu.Lock()
-	keep := c.cursor.Accept(s.SequenceNo)
-	var tr *adapter.TurnTracker
-	if s.ExecutionID != "" {
-		tr = c.turnLocked(s.ExecutionID)
+	execID, why := c.attributeLocked(s)
+	ref := s.TurnRef
+	// §6.7's idempotency key is (turn_ref, sequence_no), so that pair and not the
+	// connection's watermark decides whether a frame repeats one. Gating on the
+	// watermark alone would drop a second execution's lower-numbered frame as a
+	// "duplicate" of the first execution's higher one - the exact accident the key
+	// exists to prevent.
+	fresh := s.SequenceNo > c.lastByRef[ref]
+	if fresh {
+		c.lastByRef[ref] = s.SequenceNo
 	}
+	// The watermark stays connection-level, because sequence_no is: since_seq and the
+	// hole it reports are one number per Adapter process.
+	c.cursor.Accept(s.SequenceNo)
 	c.mu.Unlock()
-	if !keep {
-		return // duplicate or stale: dropped by sequence_no, not re-delivered
+	if why != nil {
+		// Unknown or contradictory turn_ref: dropped, not guessed at. This is the one
+		// place the frame does not travel onward with its error attached - a lossy
+		// stream is survivable, a crossed one writes two executions into one row.
+		c.deliver(Inbound{Err: why})
+		return
 	}
-	if tr != nil {
-		if err := applyTurn(tr, s); err != nil {
-			c.deliver(Inbound{Frame: s, Err: err})
-			return
-		}
+	if !fresh {
+		return // duplicate of (turn_ref, sequence_no): dropped, not re-delivered
+	}
+	tr := c.Turn(execID)
+	if err := applyTurn(tr, s); err != nil {
+		c.deliver(Inbound{Frame: s, Err: err})
+		return
 	}
 	c.deliver(Inbound{Frame: s})
+}
+
+
+// attributeLocked resolves a frame to Core's own Execution id and maintains the
+// turn_ref -> execution_id map that §6.7 keeps valid only for this connection.
+// turn/claimed and turn/dispatched name the execution themselves (CO-8) and thereby
+// bind their ticket; everything else is attributed through that binding. The second
+// result is why the frame must be dropped rather than forwarded.
+func (c *Connection) attributeLocked(s *adapter.StreamFrame) (string, *adapter.Error) {
+	if s.ExecutionID != "" {
+		if known, ok := c.execByRef[s.TurnRef]; ok && known != s.ExecutionID {
+			return "", &adapter.Error{Code: adapter.ErrInvalidParams,
+				Message: fmt.Sprintf("%s names execution %q but turn_ref %q is bound to %q: one ticket is not two runs (§6.7)",
+					s.Method, s.ExecutionID, s.TurnRef, known)}
+		}
+		if s.TurnRef != "" {
+			c.execByRef[s.TurnRef] = s.ExecutionID
+		}
+		return s.ExecutionID, nil
+	}
+	execID, ok := c.execByRef[s.TurnRef]
+	if !ok {
+		return "", &adapter.Error{Code: adapter.ErrInvalidParams,
+			Message: fmt.Sprintf("%s carries turn_ref %q this connection never bound; §6.7 forbids attributing it to the turn in flight",
+				s.Method, s.TurnRef)}
+	}
+	return execID, nil
 }
 
 // applyTurn feeds one decoded notification into the tracker. Errors are returned
@@ -361,12 +487,10 @@ func (c *Connection) kill(cause error) {
 		return
 	}
 	c.mu.Lock()
-	for id, ch := range c.pending {
-		ch <- &adapter.Frame{JSONRPC: adapter.JSONRPCVersion, ID: id, RequestID: id,
-			Error: &adapter.Error{Code: adapter.ErrInternal,
-				Message: "connection lost: " + cause.Error()}}
-		delete(c.pending, id)
-	}
+	// Waiters are left in place on purpose: each Call is already selecting on c.dead,
+	// so closing it gives every caller the same result. Synthesising reply frames
+	// instead made the outcome depend on a race - a call registered before the death
+	// got a fabricated frame with err==nil, one after got ErrConnectionLost.
 	for execID, tr := range c.turns {
 		if !tr.ProcessRestarted() {
 			continue
@@ -377,7 +501,7 @@ func (c *Connection) kill(cause error) {
 		msg := fmt.Sprintf("execution %s turn %s is UNKNOWN: the process died before turn/finished (§6.3)",
 			execID, tr.TurnID())
 		select {
-		case c.inbound <- Inbound{Err: &adapter.Error{Code: adapter.ErrInternal, Message: msg}}:
+		case c.inbound <- Inbound{Err: &adapter.Error{Code: adapter.ErrAdapterUnresponsive, Message: msg}}:
 		default:
 		}
 	}

@@ -29,6 +29,7 @@ import (
 	wsapi "github.com/SadCat18/lucero/core/api/websocket"
 	"github.com/SadCat18/lucero/core/internal/audit"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/task"
 )
 
 // Version 由构建注入；没有就用这个，别让 health 报空。
@@ -137,7 +138,35 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 		return nil, err
 	}
 	core.tickets = httpapi.NewTickets(cfg.TicketTTL, nil)
+	// principals 有两处外键指向它（event_journal.principal_id 与 tasks.requested_by），
+	// 而契约③ §1.4 是单用户、写操作只认 local-user → 启动时把这唯一主体建出来。
+	if err := core.ensurePrincipal("local-user", "USER", "本机用户"); err != nil {
+		core.close()
+		return nil, err
+	}
+	if err := core.ensurePrincipal("system", "SYSTEM", "Core"); err != nil {
+		core.close()
+		return nil, err
+	}
 	return core, nil
+}
+
+// ensurePrincipal 幂等地建一条 principals（非聚合表，按 §1.1 第 12 条用 Append，不占版本号）。
+func (c *Core) ensurePrincipal(id, kind, display string) error {
+	var n int
+	if err := c.db.Read.QueryRow(`SELECT count(*) FROM principals WHERE id = ?`, id).Scan(&n); err != nil {
+		return fmt.Errorf("查主体 %s: %w", id, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	return c.db.Write(context.Background(), func(tx *db.Tx) error {
+		_, err := tx.Append("principals",
+			[]string{"id", "principal_type", "display_name", "created_at", "updated_at"},
+			[]any{id, kind, display, now, now})
+		return err
+	})
 }
 
 // handler 把两个 transport 面拼起来：/ws/v1/events 走一次性短票（REQ-F-2，不接受 Authorization 头），
@@ -155,6 +184,7 @@ func (c *Core) handler() http.Handler {
 			return v
 		},
 		Tickets: c.tickets,
+		Tasks:   task.NewService(nil), TaskList: task.NewRepository(c.db.Read), Store: c.db,
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{
@@ -195,7 +225,9 @@ func (c *Core) writeEndpointFile() error {
 		return err
 	}
 	path := filepath.Join(c.cfg.DataDir, "core.endpoint")
-	// 0600：里面有共享口令。同机其他用户读不到，是 §1.1 那套"防本机任意进程"的前提之一。
+	// 0o600 在这里只是"请求"：Windows 上它被默认 ACL 映射成 rwxrwxrwx（core_test.go 因此不断言权限位），
+	// 只有非 Windows 部署才拿到正确默认。所以这个文件的口令**不受文件权限保护**、同用户任意进程可读——
+	// 它是"同用户边界内的门帘，不是隔离机制"（T-53⑤）。正因如此才更不能开一个能远程要到口令的端点。
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return fmt.Errorf("写 core.endpoint: %w", err)
 	}

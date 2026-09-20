@@ -40,7 +40,7 @@ func TestMigrateFSAppliesInOrderAndIsIdempotent(t *testing.T) {
 	d := openTemp(t)
 	both := []string{"000001_probe_one.sql", "000002_probe_two.sql"}
 
-	if err := d.MigrateFS(probeFS(both...), "."); err != nil {
+	if err := d.migrateFS(probeFS(both...), "."); err != nil {
 		t.Fatalf("MigrateFS: %v", err)
 	}
 	if got := ledgerVersions(t, d); !eq(got, []int{1, 2}) {
@@ -51,7 +51,7 @@ func TestMigrateFSAppliesInOrderAndIsIdempotent(t *testing.T) {
 		Scan(&hasVersionCol); err != nil || hasVersionCol != 1 {
 		t.Fatalf("step 2's ALTER did not land: count=%d err=%v", hasVersionCol, err)
 	}
-	if err := d.MigrateFS(probeFS(both...), "."); err != nil {
+	if err := d.migrateFS(probeFS(both...), "."); err != nil {
 		t.Fatalf("rerun: %v", err)
 	}
 	if got := ledgerVersions(t, d); !eq(got, []int{1, 2}) {
@@ -63,7 +63,7 @@ func TestMigrateFSAppliesInOrderAndIsIdempotent(t *testing.T) {
 // fixtures above cannot hide a break in the real set.
 func TestMigrateFSOverRealMigrations(t *testing.T) {
 	d := openTemp(t)
-	if err := d.MigrateFS(os.DirFS(repoMigrations(t)), "."); err != nil {
+	if err := d.migrateFS(os.DirFS(repoMigrations(t)), "."); err != nil {
 		t.Fatalf("MigrateFS(real migrations): %v", err)
 	}
 	if got := ledgerVersions(t, d); !eq(got, []int{1, 2, 3}) {
@@ -71,11 +71,11 @@ func TestMigrateFSOverRealMigrations(t *testing.T) {
 	}
 }
 
-// MigrateFS reads only the fs.FS. An empty FS must fail even though the same
+// migrateFS reads only the fs.FS. An empty FS must fail even though the same
 // scripts sit on disk a few directories up.
 func TestMigrateFSNeverFallsBackToDisk(t *testing.T) {
 	d := openTemp(t)
-	err := d.MigrateFS(fstest.MapFS{}, ".")
+	err := d.migrateFS(fstest.MapFS{}, ".")
 	if err == nil {
 		t.Fatal("MigrateFS accepted an empty FS while core/migrations exists on disk")
 	}
@@ -89,11 +89,11 @@ func TestMigrateFSNeverFallsBackToDisk(t *testing.T) {
 func TestMigrateFSReportsLostMigration(t *testing.T) {
 	d := openTemp(t)
 	both := []string{"000001_probe_one.sql", "000002_probe_two.sql"}
-	if err := d.MigrateFS(probeFS(both...), "."); err != nil {
+	if err := d.migrateFS(probeFS(both...), "."); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	err := d.MigrateFS(probeFS("000001_probe_one.sql"), ".")
+	err := d.migrateFS(probeFS("000001_probe_one.sql"), ".")
 	if err == nil {
 		t.Fatal("a lost migration file was accepted")
 	}
@@ -112,7 +112,7 @@ CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL,
 CREATE TABLE quiet (id TEXT PRIMARY KEY) STRICT;
 COMMIT;`)},
 	}
-	err := d.MigrateFS(silent, ".")
+	err := d.migrateFS(silent, ".")
 	if err == nil {
 		t.Fatal("a script that recorded nothing was accepted")
 	}

@@ -54,6 +54,10 @@ type Journal interface {
 	After(ctx context.Context, after int64, limit int) ([]Event, error)
 	// Oldest 返回当前还在表里的最小 seq；空表返回 0。用来判断"journal 已被裁剪"。
 	Oldest(ctx context.Context) (int64, error)
+	// Head 返回连接建立那一刻 journal 的头游标（最大 seq）；空表返回 0。
+	// 只有它能兑现契约③ §5 的"不带游标 = 只收此后新事件"：把起点抬到头，
+	// 而不是从 0 全量重放（OpenAPI 里 WsHelloAck.server_seq 的字段说明就是这个值）。
+	Head(ctx context.Context) (int64, error)
 }
 
 // Tickets 是一次性短票的校验口，*api/http.Tickets 天然满足。
@@ -120,19 +124,28 @@ func Handler(cfg Config) http.Handler {
 			// upgrade 里已经写好状态码了。
 			return
 		}
-		serve(r, conn, br, cfg, initialFrom(r))
+		from, declared := initialFrom(r)
+		serve(r, conn, br, cfg, from, declared)
 	})
 }
 
 var errNotWebSocket = errors.New("wsapi: 不是合法的 WebSocket 升级请求")
 
-// initialFrom 取 ?from_seq=（契约① §8 的游标形态）；客户端 hello 里的 from_seq 优先。
-func initialFrom(r *http.Request) int64 {
-	n, err := strconv.ParseInt(r.URL.Query().Get("from_seq"), 10, 64)
-	if err != nil || n < 0 {
-		return 0
+// initialFrom 取 ?from_seq=，并**区分"没带"与"带了个 0"**：
+// 0 是合法游标（"从头补发"），缺省则是"只要此后新事件"，两者行为相反，不能用一个 int64 表达。
+// 客户端 hello 里的 from_seq 若存在则覆盖这里的值（F-16）。
+func initialFrom(r *http.Request) (int64, bool) {
+	q := r.URL.Query()
+	raw, ok := q["from_seq"]
+	if !ok || len(raw) == 0 {
+		return 0, false
 	}
-	return n
+	n, err := strconv.ParseInt(raw[0], 10, 64)
+	if err != nil || n < 0 {
+		// 给了但解不出来：当作没声明，让它走 hello_ack 起点=头，不要退化成全量重放。
+		return 0, false
+	}
+	return n, true
 }
 
 // isUpgrade：握手三件套齐了才去验票，避免坏握手烧掉一次性凭证。

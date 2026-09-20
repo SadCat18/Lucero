@@ -140,6 +140,91 @@ func (tx *Tx) QueryContext(ctx context.Context, q string, args ...any) (*sql.Row
 	return tx.conn.QueryContext(ctx, q, args...)
 }
 
+// narrowTables is the entire no-version update surface: hardcoded here, and
+// every other table is refused. The event-less mutable tables of contract §1.1
+// item 12 are deliberately absent until something outside this package actually
+// writes one — an entry with no consumer is a speculative door.
+//
+// Adding a table here requires a REQ approved by the orchestrator (契约 §1.1.13);
+// do not extend this map on your own.
+//
+// Aggregate tables (ADR-017's ten plus 000003's three) can never be listed here:
+// UpdateOnce rejects them before the whitelist is even consulted, so a future
+// edit cannot quietly open a path that skips versioning.
+type narrowTable struct {
+	pk   string
+	cols map[string]bool
+}
+
+var narrowTables = map[string]narrowTable{
+	"idempotency_keys": {pk: "key", cols: map[string]bool{
+		"state": true, "response_json": true, "updated_at": true, "expires_at": true,
+	}},
+}
+
+// UpdateOnce applies "column = ?" pairs to a whitelisted, event-less table keyed
+// by its primary key, but only while guardCol still differs from guardVal, and
+// returns how many rows it changed.
+//
+// The guard is what lets a caller seal a result exactly once without this
+// package learning what the states mean: the first writer changes state and
+// stores the response (1 row), a replay matches nothing (0 rows) and then reads
+// back the sealed response instead of overwriting it.
+//
+// No version is taken and no event is written (that is what makes these tables
+// event-less), but redaction still runs on every value — response_json is exactly
+// the kind of column that carries secrets.
+func (tx *Tx) UpdateOnce(table, id, guardCol string, guardVal any, setSQL string, args []any) (int64, error) {
+	if aggTables[table] {
+		return 0, fmt.Errorf("update on %s: aggregate rows must go through Touch or Create", table)
+	}
+	nt, ok := narrowTables[table]
+	if !ok {
+		return 0, fmt.Errorf("update on %s is not allowed: it is not in platform/db's narrow update whitelist", table)
+	}
+	if id == "" {
+		return 0, fmt.Errorf("update %s: empty %s", table, nt.pk)
+	}
+	cols, err := parseSet(setSQL)
+	if err != nil {
+		return 0, err
+	}
+	if len(cols) != len(args) {
+		return 0, fmt.Errorf("update %s: %d columns but %d args", table, len(cols), len(args))
+	}
+	if !nt.cols[guardCol] {
+		return 0, fmt.Errorf("update %s: %s is not a guardable column", table, guardCol)
+	}
+	for _, c := range cols {
+		if !nt.cols[c] {
+			return 0, fmt.Errorf("update %s.%s is not allowed", table, c)
+		}
+		if c == nt.pk {
+			return 0, fmt.Errorf("update %s: %s is the key, not a settable column", table, nt.pk)
+		}
+		if err := tx.db.checkColumn(table, c); err != nil {
+			return 0, err
+		}
+	}
+	scrubbed, err := tx.scrubArgs(table, cols, args)
+	if err != nil {
+		return 0, err
+	}
+
+	set := make([]string, 0, len(cols))
+	for _, c := range cols {
+		set = append(set, c+" = ?")
+	}
+	q := "UPDATE " + table + " SET " + strings.Join(set, ", ") +
+		" WHERE " + nt.pk + " = ? AND " + guardCol + " <> ?"
+	qa := append(append([]any{}, scrubbed...), id, guardVal)
+	res, err := tx.conn.ExecContext(tx.ctx, q, qa...)
+	if err != nil {
+		return 0, fmt.Errorf("update %s %s: %w", table, id, err)
+	}
+	return res.RowsAffected()
+}
+
 // Touch updates the aggregate, takes its next version, and appends the event in
 // one transaction. setSQL is a comma-separated list of "column = ?" pairs whose
 // placeholders line up with args.

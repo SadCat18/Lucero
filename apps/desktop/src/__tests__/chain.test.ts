@@ -58,7 +58,6 @@ describe('F-16：客户端必须先发 hello', () => {
 });
 const urls: (number | null)[] = [];
 const url = (fromSeq: number | null) => { urls.push(fromSeq); return 'ws://fake/ws/v1/events'; };
-const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe('契约① §7 链投影', () => {
   it('11 步覆盖了链上的全部 22 类事件，一步不缺', () => {
@@ -84,6 +83,7 @@ describe('契约① §7 链投影', () => {
 
 describe('WS 游标与 resync 回落', () => {
   it('游标只前进、重叠事件按 seq 丢弃、ping 不伪造事件、resync 走 REST 并标注缺口', () => {
+    link.seq = null; link.resync = false; data.seen.clear(); data.events.length = 0;
     const s = connectEvents({ url, socketFactory });
     s.feed(JSON.stringify({ type: 'hello', from_seq: 0 }));
     expect(link.state).toBe('live');

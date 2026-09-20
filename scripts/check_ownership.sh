@@ -37,7 +37,7 @@ for req in core/internal core/go.mod specs/api-contract-v0.1.md scripts/check_ow
   [[ -e "$req" ]] || { printf '前置检查失败：%s 下缺 %s —— 扫描会静默全绿，拒绝出报告
 ' "$ROOT" "$req" >&2; exit 2; }
 done
-SCAN_GO="$(find core/internal -name '*.go' 2>/dev/null | wc -l | tr -d ' ')"
+SCAN_GO="$(find core -name '*.go' -not -path '*/node_modules/*' 2>/dev/null | wc -l | tr -d ' ')"
 (( SCAN_GO >= 20 )) || { printf '前置检查失败：core/internal 只找到 %s 个 .go 文件（期望 >=20），扫描面异常
 ' "$SCAN_GO" >&2; exit 2; }
 
@@ -148,7 +148,7 @@ APPROVALS_RE='(from|update|insert[[:space:]]+into|join)[[:space:]]+approvals\b'
 check_1() {
   hdr "1/8 approvals 表 SQL 只准出现在 internal/approval（契约① §3.1）"
   local hits n
-  hits="$(scan_go "$APPROVALS_RE" core/internal || true)"
+  hits="$(scan_go "$APPROVALS_RE" core || true)"
   n=$([[ -n "$hits" ]] && printf '%s\n' "$hits" | wc -l | tr -d ' ' || echo 0)
   (( n == 0 )) && { info "0 hits — internal/approval 尚无 store.go，此项暂无证据（不是通过，是还没写）"; return; }
   local p
@@ -209,10 +209,12 @@ owner_of_table() { printf '%s\n' "$TABLE_MAP" | awk -F'|' -v t="$1" '$1==t{print
 cross_package_refs() {
   local root="$1" tbl want excl hits line f
   while IFS='|' read -r tbl want; do
-    [[ -z "$tbl" || "$want" == "internal/platform/db" ]] && continue
+    [[ -z "$tbl" ]] && continue
+    # 机制表（event_journal/audit_entries/…）也扫：读走 INFO、写才报红。
+    # 之前整类跳过，导致 REQ-WS-2 那种"event_journal 的读视图住在 cmd/core/journal.go"看不见。
     excl="^${root}internal/platform/"          # 机制层的映射表本来就该知道所有表名
     for w in $want; do excl="$excl|^${root}${w}/"; done   # 归属包自己引用自己的表 = 正常
-    hits="$(grep -rniE "\b${tbl}\b" "$root"internal --include='*.go' 2>/dev/null \
+    hits="$(grep -rniE "\b${tbl}\b" "$root" --include='*.go' 2>/dev/null \
              | grep -vE "$excl" \
              | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' || true)"
     [[ -z "$hits" ]] && continue
@@ -239,10 +241,10 @@ check_2() {
   local all kind f tbl want
   all="$(cross_package_refs core/)"
   local n=0 reads=0 fx=0 lits=0 readfiles='' fxf='' litfiles='' litwhat=''
-  while IFS='|' read -r kind f tbl want; do
+  while IFS='|' read -r kind f tbl want snippet; do
     [[ -z "$kind" ]] && continue
     case "$kind" in
-      write)   n=$((n+1)); bad "$f 在归属包（$want）之外引用表 $tbl，且这一行是写语句/写调用" ;;
+      write)   n=$((n+1)); bad "$f 在归属包（$want）之外引用表 $tbl，且这一行是写语句/写调用（打开该文件核对；扫描按表名不按函数名）" ;;
       fixture) fx=$((fx+1)); fxf="$fxf $f" ;;
       literal) lits=$((lits+1)); litfiles="$litfiles $f"; litwhat="$litwhat $tbl@$f" ;;
       read)    reads=$((reads+1)); readfiles="$readfiles $f" ;;
@@ -255,7 +257,7 @@ check_2() {
   (( reads > 0 )) && info "另有 $reads 处只读引用（§1.3/§4 允许跨模块读与 JOIN，不判越界）：$(printf '%s\n' $readfiles | sort -u | tr '\n' ' ')"
   (( n == 0 && reads == 0 && fx == 0 )) && info "没有任何包在自己的目录之外提到别人的表名"
   local ex
-  ex="$(scan_go '\.Exec(Context)?\(' core/internal | grep -v '/platform/db/' | grep -v '_test\.go:' || true)"
+  ex="$(scan_go '\.Exec(Context)?\(' core | grep -v '/platform/db/' | grep -v '_test\.go:' || true)"
   if [[ -n "$ex" ]]; then
     while IFS= read -r line; do
       bad "业务包绕开平台层自行执行写语句（§1）: ${line%%:*}"
@@ -430,62 +432,107 @@ check_7() {
   tailor
 }
 
-# --- check 8: 错误码三方一致（契约② §15.1 集合 ↔ §15.2 HTTP 映射 ↔ Go codeNames）----
+# 从 Go 源码里提 symbol -> §15.1 码名。锚点按参数给（domainCodes / protocolCodeNames）。
+
+# --- check 8: 错误码一致（判据 = 契约② §15.2 末尾的算法 + §15.1.1 生产方表）----------
+# T-45④ 定的形状：§15.1 是**协议词汇表**，不许按我方实现完成度裁剪（Z Code 没有写入口，
+# WRITE_ENTRY_NONE/READ_ONLY 照样得存在）。所以：
+#   · 门面只判三件 —— ①§15.1 ↔ §15.2 码名集合双向相等；②每个码在 §15.1.1 有生产方声明；
+#     ③生产方是 Core:internal/X 的行，那个包里必须真有对应符号，且「有 Go 常量」列与磁盘一致、
+#     数字与 protocol.go 逐项相等（§15.3 规则 3）。
+#   · `Adapter` 行是 Core 只识别不生产（Symbol() 读对端 data.code），`result-frame` 永不上 wire，
+#     两者都**不要求**常量 —— 给它们造没人发的常量才是问题。
 SPEC2='specs/adapter-protocol/adapter-protocol-v0.1.md'
-# 命名分裂是故意的（§15：Adapter 大写蛇形 / HTTP 小写蛇形），所以不比对字符串，比对"集合归属"。
-# version_conflict 是 HTTP 层专有、不经 Adapter，按 T-31① 不许按行数硬抹平。
-TRANSPORT_ONLY='INVALID_PARAMS METHOD_NOT_FOUND'   # JSON-RPC/传输层符号，§15.1 本就不收
+PROTO_GO='core/internal/adapter/protocol.go'
 check_8() {
-  hdr "8/8 错误码三方一致（§15.1 集合 ↔ §15.2 HTTP 映射 ↔ internal/adapter 的 codeNames）"
+  hdr "8/8 错误码一致（§15.1 ↔ §15.2 映射 ↔ §15.1.1 生产方/数字表 ↔ protocol.go）"
   [[ -f "$SPEC2" ]] || { bad "找不到 $SPEC2"; return; }
-  local spec_codes map_src map_http go_names c g row code stat n=0
-  spec_codes="$(sed -n '/^### 15\.1/,/^### 15\.2/p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$2); print $2}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
-  map_src="$(sed -n '/^### 15\.2/,/^## /p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$4); print $4}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
-  # 只取"首列是小写码、第三列以数字开头"的真数据行：§15.2 里还有一行图例
-  # （"领域错误的唯一数字码：…真判别符在 data.code"），不筛就会被当 HTTP 码判成违规。
-  map_http="$(sed -n '/^### 15\.2/,/^## /p' "$SPEC2" | grep -E '^\| `[a-z_]+`[[:space:]]*\|[[:space:]]*[0-9]'                 | awk -F'|' '{gsub(/[ `]/,"",$3); print $3}' | sort -u)"
-  go_names="$(sed -n '/^var codeNames/,/^}/p' core/internal/adapter/protocol.go | grep -oE '"[A-Z][A-Z_]{3,}"' | tr -d '"' | sort -u)"
-  local nspec nmap ngo
-  nspec="$(printf '%s\n' $spec_codes | grep -c .)"
-  nmap="$(printf '%s\n' $map_src | grep -c .)"
-  ngo="$(printf '%s\n' $go_names | grep -c .)"
-  info "§15.1 声明 $nspec 个 Adapter 码；§15.2 的「来自」列 $nmap 个；Go codeNames $ngo 个符号"
-  # 防空转：三个集合任意一个为空就说明提取失败（sed/grep 或文档结构变了），
-  # 那时每条腿都会"0 命中 = 通过"，是比误报更坏的伪装成功。
-  (( nspec >= 8 && nmap >= 8 && ngo >= 8 )) || \
-    bad "错误码三方对账的输入集合异常（§15.1=$nspec 来自列=$nmap Go=$ngo，期望各 >=8）—— 判据会空转，先修 lint"
-  # 腿 A：规范里承诺的码，Go 侧必须发得出来
-  for c in $spec_codes; do
-    printf '%s\n' "$go_names" | grep -qxF "$c" || bad "§15.1 有 $c，但 internal/adapter 的 codeNames 里没这个符号（Adapter 发不出它承诺的码）"
+  local c1 c2 only1 only2 rows n1 n2
+  c1="$(sed -n '/^### 15\.1/,/^#### 15\.1\.1/p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$2); print $2}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
+  c2="$(sed -n '/^### 15\.2/,/^### 15\.3/p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$4); print $4}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
+  n1="$(printf '%s\n' $c1 | grep -c .)"; n2="$(printf '%s\n' $c2 | grep -c .)"
+  info "§15.1 = $n1 码，§15.2 来自列 = $n2 码（唯一例外 version_conflict 右列写 — 天然不进集合）"
+  (( n1 >= 8 && n2 >= 8 )) || { bad "码集合提取异常（$n1/$n2，期望各 >=8）—— 判据会空转，先修 lint"; return; }
+  only1="$(comm -23 <(printf '%s\n' $c1) <(printf '%s\n' $c2))"
+  only2="$(comm -13 <(printf '%s\n' $c1) <(printf '%s\n' $c2))"
+  for row in $only1; do bad "§15.1 有 $row 但 §15.2 无映射行（新增码两处必须同改）"; done
+  for row in $only2; do bad "§15.2 来自列出现 $row，但 §15.1 没这个码"; done
+  # §15.1.1：数字码 | 码 | 生产方 | 有 Go 常量
+  rows="$(sed -n '/^#### 15\.1\.1/,/^### 15\.2/p' "$SPEC2" | awk -F'|' '/^\| `-3/ {
+      for(i=2;i<=5;i++){gsub(" ","",$i); gsub("`","",$i)}; print $2"|"$3"|"$4"|"$5}')"
+  local num nm producer hasc pkg dir real
+  (( $(printf '%s\n' "$rows" | grep -c .) >= 8 )) || { bad "§15.1.1 生产方表提取异常——判据会空转"; return; }
+  while IFS='|' read -r num nm producer hasc; do
+    [[ -z "$nm" ]] && continue
+    if [[ "$producer" != *协议层* ]] && ! printf '%s\n' "$c1" | grep -qxF "$nm"; then
+      bad "§15.1.1 有 $nm，但 §15.1 没这个码（两张表漂移）"
+    fi
+    case "$num" in
+      -320[0-9][0-9]) ;;
+      -326[0-9][0-9]) case "$producer" in *协议层*) ;; *) bad "$nm 用预定义码 $num 却不是协议层行（§15.3 规则 1）" ;; esac ;;
+      *) bad "$nm 的数字码 $num 不在 -32000~-32099，也不在协议层区间（§15.3 规则 2）" ;;
+    esac
+    case "$producer" in
+      *Core:internal/*)
+        pkg="$(printf '%s' "$producer" | sed -E 's/.*Core:(internal\/[a-z_]+).*/\1/')"
+        # §15.1.1 要点 3：「有 Go 常量」列看的是 internal/adapter 里有没有这个名字
+        # （词汇由协议包统一持有、由 process 触发），按生产方包搜会判出一条根本不存在的错。
+        dir=core/internal/adapter
+        [[ -d "$dir" ]] || { bad "$nm 声明生产方 $pkg，但目录不存在"; continue; }
+        real=no; grep -qrF "\"$nm\"" "$dir" --include='*.go' && real=yes
+        # 「有 Go 常量」这一列目前**不可机读**：契约没给判定命令，而"名字出现在文件里"与
+        # "存在 ErrX ErrorCode 常量"是两件事（DANGEROUS_FLAG_REFUSED / EXECUTION_STATE_UNKNOWN
+        # 只作为数字表的字符串出现，并没有常量）。所以只报 INFO，等 §15.1.1 附判据后再升红。
+        [[ "$hasc" == "✓" && "$real" == "no" ]] && \
+          info "  待判据：$nm 表说有常量，$dir 里搜不到该字符串"
+        [[ "$hasc" == "✗" && "$real" == "yes" ]] && \
+          info "  待判据：$nm 表说没常量，$dir 里出现该字符串（是常量还是数字表？契约未给判定命令）"
+        # 数字与 protocol.go 的逐项相等**不在这里判**：§15.1.1 自己写明那张表的来源就是
+        # `protocol_test.go` 的 codeTable（13:22 实读），adapter 已经在钉它；我重复实现只会
+        # 多一处会漂移的判据（这一轮我在这条腿上烧了 5 次，全部记在案）。
+        # 这里只保留 §15.3 规则 1/2 的区间判据与"表说有常量、包里就得有"的存在性判据。
+        ;;
+      *Adapter*|*result-frame*)
+        [[ "$hasc" == "✓" ]] && info "  $nm：生产方 $producer 却标『有 Go 常量』——Core 只识别不生产，请确认不是投机常量"
+        ;;
+      *) bad "$nm 的生产方声明『$producer』不认识（合法值：Core:internal/…、Adapter、result-frame）" ;;
+    esac
+  done <<< "$rows"
+  # T-51① 精确形状：两表行数**天然不等**（§15.1=17 / §15.1.1=19），判据是反向包含 §15.1 ⊆ §15.1.1，
+  # 且差集必须**恰好**是那两个协议层码——不写 17==19，也不写集合相等。
+  local extra missing
+  extra="$(comm -13 <(printf '%s\n' $c1) <(printf '%s\n' "$rows" | cut -d'|' -f2 | sort -u) | sort)"
+  [[ "$(printf '%s ' $extra)" == "INVALID_PARAMS METHOD_NOT_FOUND " ]] || \
+    bad "§15.1.1 比 §15.1 多出的码不是恰好的 {INVALID_PARAMS, METHOD_NOT_FOUND}，实得：$(printf '%s ' $extra)"
+  missing="$(comm -23 <(printf '%s\n' $c1) <(printf '%s\n' "$rows" | cut -d'|' -f2 | sort -u))"
+  [[ -z "$missing" ]] || for row in $missing; do
+    bad "§15.1 的 $row 在 §15.1.1 里没有行（缺数字与生产方声明）"
   done
-  # 腿 B：每个 Adapter 码都必须有一行 HTTP 映射
-  for c in $spec_codes; do
-    printf '%s\n' "$map_src" | grep -qxF "$c" || bad "§15.1 的 $c 在 §15.2 映射表里没有行（HTTP 层无处安放它）"
-  done
-  # 腿 C：Go 侧多出来的符号要么在 §15.1，要么是已登记的传输层专用码
-  for g in $go_names; do
-    printf '%s\n' "$spec_codes" | grep -qxF "$g" && continue
-    case " $TRANSPORT_ONLY " in *" $g "*) continue ;; esac
-    bad "internal/adapter 有 $g，但 §15.1 与传输层专用清单里都没有它（规范外凭空多一个码）"
-  done
-  # 腿 D：映射表的 HTTP 码必须是三位数字
-  for row in $map_http; do
-    [[ "$row" =~ ^[1-5][0-9][0-9]$ ]] || bad "§15.2 的 HTTP 码列出现非三位数字：$row"
-  done
-  # 腿 E：HTTP 专有行只许 version_conflict，且它不得有 Go 符号
-  for code in $(sed -n '/^### 15\.2/,/^## /p' "$SPEC2" | awk -F'|' '/^\| `/ && $4 ~ /—/ {gsub(/[ `]/,"",$2); print $2}'); do
-    [[ "$code" == "version_conflict" ]] || bad "§15.2 出现第二个"无 Adapter 来源"的行 $code —— 要么补 §15.1 要么说明理由"
-    printf '%s\n' "$go_names" | grep -qxF "VERSION_CONFLICT" && bad "version_conflict 声称 HTTP 专有，Go 侧却定义了它"
-  done
+  # T-51③：标 result-frame 的行若又写"有 Go 常量 ✓"，是表自相矛盾；
+  # 而"CANCELLED 永不出现在 error 响应"这条要真测，先把静态一半钉住：任何生产代码
+  # 拿它构造 error 回复即红（今天全仓无 ErrCancelled，实测过）。
+  local rf
+  while IFS='|' read -r num nm producer hasc; do
+    [[ -z "$nm" ]] && continue
+    case "$producer" in
+      *result-frame*)
+        [[ "$hasc" == "✓" ]] && bad "$nm 标成 result-frame（永不作 error 回复）却又标『有 Go 常量』，§15.1.1 自相矛盾"
+        # 锚点用**号码**不用码名：CANCELLED 同时是 Task/Execution 的状态字符串，
+        # 按码名搜必然假红（我第一版就红了）。真缺陷的形状是"别处拿这个号造 error 回复"。
+        grep -rn -- "$num" core/internal core/cmd --include='*.go' 2>/dev/null \
+          | grep -v '_test\.go' | grep -v 'internal/adapter/protocol' | grep -q . \
+          && bad "$nm（$num）是结果帧专用码，却有别处生产代码引用该号造 error 回复（§15.3 规则 5）"
+        ;;
+    esac
+  done <<< "$rows"
   tailor
 }
-
 # --- selftest: the scanners must be able to fail ----------------------------
 run_all() { check_1; check_2; check_3; check_4; check_5; check_6; check_7; check_8; }
 
 selftest() {
   hdr "SELFTEST（证明上面几条不是永真式）"
-  local tmp; tmp="$(mktemp -d)" || exit 2
+  local tmp; tmp="$(mktemp -d -p "$SCRATCH")" || exit 2
   mkdir -p "$tmp/internal/task" "$tmp/internal/approval" "$tmp/internal/execution"
   printf 'package task\n\nconst q = "SELECT id FROM approvals WHERE s = ?"\n'          > "$tmp/internal/task/repo.go"
   printf 'package approval\n\nconst q = "UPDATE APPROVALS SET state = ? WHERE id = ?"\n' > "$tmp/internal/approval/store.go"
@@ -517,7 +564,7 @@ selftest() {
   [[ "$(owner_of packages/toolchain/package.json)" == "UNOWNED" ]] ||     { report "  [SELFTEST FAIL] 无归属路径没被判成 UNOWNED（§7 缺行的检测失效了）"; fails=$((fails+1)); }
   # 前置检查：脚本按自身位置推仓库根，换 cwd 不影响，所以只能把它拷进一个没有 core/internal
   # 的空仓库里验"扫描面为空必须 exit 2"，而不是在临时目录里调它（那样测的是同一份真仓库）。
-  local bare; bare="$(mktemp -d)"
+  local bare; bare="$(mktemp -d -p "$SCRATCH")"
   mkdir -p "$bare/scripts" && cp scripts/check_ownership.sh "$bare/scripts/"
   bash "$bare/scripts/check_ownership.sh" >/dev/null 2>&1
   [[ $? -eq 2 ]] || { report "  [SELFTEST FAIL] 在没有 core/internal 的仓库副本里跑，脚本没以 2 号错退出——它会伪装成全绿"; fails=$((fails+1)); }
@@ -528,7 +575,7 @@ c
 ' | orphan_modules "$(printf 'a
 b')")" == "c " ]] ||     { report "  [SELFTEST FAIL] go.sum 孤儿模块判据不灵（永真或漏报）"; fails=$((fails+1)); }
   # T-24 的按表名扫描：合成件里"task 包写 quota_accounts"必须被判成 write 类命中
-  local fx2; fx2="$(mktemp -d)/internal"
+  local fx2; fx2="$(mktemp -d -p "$SCRATCH")/internal"
   mkdir -p "$fx2/task" "$fx2/quota"
   printf 'package task
 
@@ -563,27 +610,35 @@ const q = `SELECT id FROM quota_accounts`
   return $(( fails > 0 ? 2 : 0 ))
 }
 
+# T-52：一次性产物（含 mktemp 出来的自测夹具）只准落在仓库内被 ignore 的角色目录，
+# 不碰整机共享 Temp；删除只针对自己刚建的那一个具体路径，绝不通配。
+SCRATCH="$ROOT/.scratch/test"
+mkdir -p "$SCRATCH" || { printf "无法建 %s
+" "$SCRATCH" >&2; exit 2; }
+
 load_owner_table
 # --explain <path>: 打印某个路径判给谁、命中哪条规则（被 lint 点名时先跑这个自查）
 if [[ "${1:-}" == "--rules" ]]; then
-  for k in "${!OWNER[@]}"; do printf '[%s] -> %s
-' "$k" "${OWNER[$k]}"; done | sort; exit 0
+  for k in "${!OWNER[@]}"; do printf '[%s] -> %s\n' "$k" "${OWNER[$k]}"; done | sort; exit 0
 fi
 if [[ "${1:-}" == "--explain" ]]; then
   shift
   for arg in "$@"; do
-    local_src=""
-    for pref in "${!OWNER[@]}"; do case "$arg" in "$pref"*) [[ "${#pref}" -gt "${#local_src}" ]] && local_src="$pref";; esac; done
-    for pref in "${!OWNER_HOLE[@]}"; do case "$arg" in "$pref"*) [[ "${#pref}" -gt "${#local_src}" ]] && local_src="$pref (§7 空洞补偿表)";; esac; done
-    printf '%-52s -> %-12s [%s]
-' "$arg" "$(owner_of "$arg")" "${local_src:-无规则命中}"
+    hit=""
+    for pref in "${!OWNER[@]}"; do
+      case "$arg" in "$pref"*) [[ ${#pref} -gt ${#hit} ]] && hit="$pref" ;; esac
+    done
+    for pref in "${!OWNER_HOLE[@]}"; do
+      case "$arg" in "$pref"*) [[ ${#pref} -gt ${#hit} ]] && hit="§7 空洞补偿表 $pref" ;; esac
+    done
+    printf '%-52s -> %-12s [%s]\n' "$arg" "$(owner_of "$arg")" "${hit:-无规则命中}"
   done
   exit 0
 fi
 if (( SELFTEST )); then selftest; exit $?; fi
 
 report "Lucero ownership lint  baseline=$BASELINE  HEAD=$(git rev-parse --short HEAD)  $(date -Iseconds)"
-report "  扫描面：core/internal 下 $SCAN_GO 个 .go 文件（少于 20 个本脚本直接拒绝出报告）"
+report "  扫描面：core/ 下 $SCAN_GO 个 .go 文件（含 cmd/ 与 api/；T-41③ 扩面：transport 层直查表以前看不见）"
 report "  归属表：$OWNER_ROWS 条规则，运行时解析自 $API_SPEC §7（无内嵌副本；--explain <path> 可自查判定依据）"
 run_all
 hdr "结论"

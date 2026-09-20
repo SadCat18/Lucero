@@ -171,53 +171,164 @@ func TestNewCancel(t *testing.T) {
 // TestErrorCodeTable pins the §1 symbol<->number table (CO-4): the numbers are
 // what a Provider-facing Adapter will put on the wire, so renumbering silently is
 // a protocol break. 主控 pastes this table into §1.
+// §15.1 in full, as the table T-36/T-45 asked me to hand back. `producer` is the
+// column T-45 wants folded into the contract: Adapter (a real Adapter answers it),
+// Core:internal/adapter, Core:internal/process, or result-frame (never on the wire).
+// Only the Core:* rows have Go constants; the rest is vocabulary Core recognises.
+var codeTable = []struct {
+	num      int
+	name     string
+	producer string
+	constant ErrorCode
+	hasConst bool
+}{
+	{-32000, "PROTOCOL_NOT_INITIALIZED", "Core:internal/adapter", ErrProtocolNotInitialized, true},
+	{-32001, "PROTOCOL_VERSION_MISMATCH", "Core:internal/adapter", ErrProtocolVersionMismatch, true},
+	{-32002, "CAPABILITY_UNAVAILABLE", "Core:internal/adapter", ErrCapabilityUnavailable, true},
+	{-32003, "WRITE_ENTRY_NONE", "Core:internal/adapter", ErrWriteEntryNone, true},
+	{-32004, "DELIVERY_MODE_UNSUPPORTED", "Core:internal/adapter", ErrDeliveryModeUnsupported, true},
+	{-32005, "LOCAL_DATA_UNAVAILABLE", "Adapter", 0, false},
+	{-32006, "SESSION_NOT_FOUND", "Adapter", 0, false},
+	{-32007, "AUTH_REQUIRED", "Adapter", 0, false},
+	{-32008, "RATE_LIMITED", "Adapter", 0, false},
+	{-32009, "DANGEROUS_FLAG_REFUSED", "Core:internal/process", 0, false},
+	{-32010, "CANCELLED", "result-frame", 0, false},
+	{-32011, "TIMEOUT", "Adapter", 0, false},
+	{-32012, "PROVIDER_ERROR", "Adapter", 0, false},
+	{-32013, "INTERNAL", "Core:internal/adapter", ErrInternal, true},
+	{-32014, "ADAPTER_UNRESPONSIVE", "Core:internal/process", ErrAdapterUnresponsive, true},
+	{-32015, "EXECUTION_STATE_UNKNOWN", "Core:internal/process", 0, false},
+	{-32016, "READ_ONLY", "Adapter", 0, false},
+	{-32601, "METHOD_NOT_FOUND", "Core:internal/adapter (协议层, §15.3)", ErrMethodNotFound, true},
+	{-32602, "INVALID_PARAMS", "Core:internal/adapter (协议层, §15.3)", ErrInvalidParams, true},
+}
+
 func TestErrorCodeTable(t *testing.T) {
-	cases := []struct {
-		code ErrorCode
-		num  int
-		sym  string
-	}{
-		{ErrProtocolNotInitialized, -32600, "PROTOCOL_NOT_INITIALIZED"},
-		{ErrWriteEntryNone, -32601, "WRITE_ENTRY_NONE"},
-		{ErrCapabilityUnavailable, -32602, "CAPABILITY_UNAVAILABLE"},
-		{ErrDeliveryModeUnsupported, -32603, "DELIVERY_MODE_UNSUPPORTED"},
-		{ErrInvalidParams, -32001, "INVALID_PARAMS"},
-		{ErrAdapterUnresponsive, -32004, "ADAPTER_UNRESPONSIVE"},
-		{ErrProtocolVersionMismatch, -32048, "PROTOCOL_VERSION_MISMATCH"},
-		{ErrLocalDataUnavailable, -32049, "LOCAL_DATA_UNAVAILABLE"},
-		{ErrMethodNotFound, -32002, "METHOD_NOT_FOUND"},
-		{ErrInternal, -32003, "INTERNAL"},
-	}
-	seen := map[int]ErrorCode{}
-	for _, c := range cases {
-		if int(c.code) != c.num {
-			t.Errorf("%s = %d, want %d", c.sym, int(c.code), c.num)
-		}
-		if got := c.code.String(); got != c.sym {
-			t.Errorf("code %d String() = %q, want %q", c.num, got, c.sym)
-		}
-		// -32050..-32099 is reserved (§1): Core must never answer from it.
+	seen := map[int]string{}
+	domain, protocol := 0, 0
+	for _, c := range codeTable {
 		if c.num >= adapterCodeFirst && c.num <= adapterCodeLast {
-			t.Errorf("%s = %d sits in the reserved band -32099..-32050", c.sym, c.num)
+			t.Errorf("%s = %d sits in the reserved Adapter band -32099..-32050", c.name, c.num)
+		}
+		predefined := c.num >= jsonRPCPredefinedFirst && c.num <= jsonRPCPredefinedLast
+		name, isDomain := domainCodes[ErrorCode(c.num)]
+		if isDomain {
+			domain++
+		}
+		if _, ok := protocolCodeNames[ErrorCode(c.num)]; ok {
+			protocol++
+		}
+		// Membership must agree with the band: domain codes keep clear of the
+		// predefined numbers (T-36b), and only the predefined pair carries no name.
+		if isDomain == predefined {
+			t.Errorf("%s = %d: domain=%v but predefined=%v", c.name, c.num, isDomain, predefined)
+		}
+		if isDomain && name != c.name {
+			t.Errorf("%d is named %q in domainCodes, the table says %q", c.num, name, c.name)
+		}
+		if got := ErrorCode(c.num).String(); got != c.name {
+			t.Errorf("code %d String() = %q, want %q", c.num, got, c.name)
+		}
+		// And back again: §15.3 rule 3 makes this file the only truth for the
+		// name↔number pair, so a lookup by name has to land on the same row.
+		if got, ok := CodeByName(c.name); !ok || int(got) != c.num {
+			t.Errorf("CodeByName(%q) = %d, %v, want %d", c.name, int(got), ok, c.num)
+		}
+		// Only Core-produced codes may have a constant, and a constant must match.
+		if c.hasConst && int(c.constant) != c.num {
+			t.Errorf("%s constant = %d, table says %d", c.name, int(c.constant), c.num)
+		}
+		// A constant is required only where this package is the producer; a code
+		// produced by internal/process declares its own symbol there, and listing
+		// exemptions here would rot the moment it grows one.
+		if c.producer == "Core:internal/adapter" && !c.hasConst {
+			t.Errorf("%s is produced here but has no constant", c.name)
+		}
+		if !strings.HasPrefix(c.producer, "Core:") && c.hasConst {
+			t.Errorf("%s is produced by %s yet Core declares a constant (speculative)", c.name, c.producer)
 		}
 		if dup, ok := seen[c.num]; ok {
-			t.Fatalf("duplicate wire code %d for %s and %s", c.num, dup, c.code)
+			t.Fatalf("duplicate wire code %d for %s and %s", c.num, dup, c.name)
 		}
-		seen[c.num] = c.code
-		if num, err := json.Marshal(c.code); err != nil || string(num) != strconv.Itoa(c.num) {
-			t.Errorf("marshal %s = %s, %v, want the bare number %d", c.sym, num, err, c.num)
+		seen[c.num] = c.name
+		if raw, err := json.Marshal(ErrorCode(c.num)); err != nil || string(raw) != strconv.Itoa(c.num) {
+			t.Errorf("marshal %s = %s, %v, want the bare number %d", c.name, raw, err, c.num)
 		}
 	}
-	for code, sym := range codeNames {
+	if domain != 17 || protocol != 2 {
+		t.Errorf("membership = %d domain + %d protocol, want 17 + 2", domain, protocol)
+	}
+	if len(domainCodes) != 17 || len(protocolCodeNames) != 2 {
+		t.Errorf("tables hold %d domain + %d protocol, want 17 + 2",
+			len(domainCodes), len(protocolCodeNames))
+	}
+	if len(codeNames) != len(codeTable) {
+		t.Errorf("codeNames covers %d entries, the table has %d", len(codeNames), len(codeTable))
+	}
+	for code, name := range codeNames {
 		if _, ok := seen[int(code)]; !ok {
-			t.Errorf("%s (%d) is in codeNames but not in the table under test", sym, int(code))
+			t.Errorf("%s (%d) is in codeNames but not in the table", name, int(code))
 		}
 	}
-	if len(codeNames) != len(cases) {
-		t.Errorf("codeNames has %d entries, the table has %d", len(codeNames), len(cases))
-	}
-	if got := ErrorCode(-32050).String(); got != "UNKNOWN_CODE(-32050)" {
+	if got := ErrorCode(-32098).String(); got != "UNKNOWN_CODE(-32098)" {
 		t.Errorf("unknown code renders %q, want the number kept visible", got)
+	}
+}
+
+// TestUnknownCodeDegradesToInternal is T-45's "Core 必须按未知码降级为 INTERNAL 且不崩":
+// an Adapter answering with a number outside §15.1 (a newer Provider build, or
+// debug/fail pointed at a made-up code) must not be routed by a meaning Core invented,
+// and the original number has to survive for the log and Audit line.
+func TestUnknownCodeDegradesToInternal(t *testing.T) {
+	unknown := &Error{Code: ErrorCode(-32499), Message: "brand new failure",
+		Data: map[string]any{"retry_after_ms": 500, "code": "SOMETHING_NEW"}}
+	if unknown.Known() {
+		t.Error("Known() = true for a number that is in neither table")
+	}
+	got := unknown.Degrade()
+	if got.Code != ErrInternal || got.Message != "brand new failure" {
+		t.Errorf("Degrade() = %+v, want INTERNAL with the message kept", got)
+	}
+	data, ok := got.Data.(map[string]any)
+	if !ok || data["original_code"] != -32499 || data["retry_after_ms"] != 500 ||
+		data["original_name"] != "SOMETHING_NEW" {
+		t.Errorf("degraded data = %+v, want original_code plus the peer's own fields", got.Data)
+	}
+	if got := unknown.Degrade().Symbol(); got != "INTERNAL" {
+		t.Errorf("Symbol() after Degrade = %q, want INTERNAL: a name in data.code must not resurrect the unknown code", got)
+	}
+	if _, present := got.Data.(map[string]any)["code"]; present {
+		t.Error("data.code survived the degradation, which is what Symbol() reads")
+	}
+	// A known code is returned untouched, and a nil error must not panic.
+	known := &Error{Code: ErrWriteEntryNone, Message: "m"}
+	if known.Degrade() != known {
+		t.Error("a known code was rewritten by Degrade()")
+	}
+	var nilErr *Error
+	if nilErr.Degrade() != nil || nilErr.Known() {
+		t.Error("nil *Error must pass through as nil rather than panicking")
+	}
+}
+
+// TestDomainNameTravelsInDataCode is §15.1's shape rule and T-36(c)'s consequence: a
+// domain refusal carries its UPPER_SNAKE name in data.code, while a predefined
+// protocol failure carries only its number - naming both would give one concept two
+// spellings on the wire, which is what T-36 asked me to settle.
+func TestDomainNameTravelsInDataCode(t *testing.T) {
+	raw, err := json.Marshal(NewErrorReply("9", "r9", ErrDeliveryModeUnsupported, "no guide"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"data":{"code":"DELIVERY_MODE_UNSUPPORTED"}`) {
+		t.Errorf("domain reply lost its §15.1 name: %s", raw)
+	}
+	raw, err = json.Marshal(NewErrorReply("9", "r9", ErrMethodNotFound, "stream/nope"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"data"`) {
+		t.Errorf("a predefined code invented a second name: %s", raw)
 	}
 }
 
@@ -226,7 +337,7 @@ func TestErrorCodeTable(t *testing.T) {
 // refused rather than read as code 0.
 func TestErrorFromWireRoundTrips(t *testing.T) {
 	var f Frame
-	const doc = `{"jsonrpc":"2.0","id":"1","request_id":"r","error":{"code":-32601,"message":"write_entry=false"}}`
+	const doc = `{"jsonrpc":"2.0","id":"1","request_id":"r","error":{"code":-32003,"message":"write_entry=false"}}`
 	if err := json.Unmarshal([]byte(doc), &f); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -242,44 +353,6 @@ func TestErrorFromWireRoundTrips(t *testing.T) {
 	}
 	if err := bare.Validate(); err == nil || !strings.Contains(err.Error(), "no code") {
 		t.Errorf("code-less error reply = %v, want it refused", err)
-	}
-}
-
-// TestErrorCarriesSymbolInData pins §15.1: the Adapter layer's UPPER_SNAKE name
-// travels in error.data.code, and a peer's data.code wins over the number when the
-// two disagree (an Adapter may answer with a §15 code Core was never given a number
-// for).
-func TestErrorCarriesSymbolInData(t *testing.T) {
-	f := NewErrorReply("9", "r9", ErrDeliveryModeUnsupported, "no guide")
-	var wire struct {
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-			Data    struct {
-				Code string `json:"code"`
-			} `json:"data"`
-		} `json:"error"`
-	}
-	raw, err := json.Marshal(f)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		t.Fatalf("decode: %v (%s)", err, raw)
-	}
-	if wire.Error.Code != -32603 || wire.Error.Data.Code != "DELIVERY_MODE_UNSUPPORTED" {
-		t.Errorf("wire error = %+v, want numeric code plus the §15.1 name in data.code", wire.Error)
-	}
-	// A number Core does not know keeps its number visible rather than being renamed.
-	unknown := &Error{Code: ErrorCode(-32700), Message: "from a Provider"}
-	if got := unknown.Symbol(); got != "UNKNOWN_CODE(-32700)" {
-		t.Errorf("Symbol() = %q, want the number kept", got)
-	}
-	// data.code wins when it disagrees with the number.
-	renamed := &Error{Code: ErrorCode(-32700), Message: "m",
-		Data: map[string]any{"code": "RATE_LIMITED"}}
-	if got := renamed.Symbol(); got != "RATE_LIMITED" {
-		t.Errorf("Symbol() = %q, want the peer's §15.1 name to win", got)
 	}
 }
 

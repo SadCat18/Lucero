@@ -179,6 +179,20 @@ String(wf?.['cursor-default']).includes('禁止') && String(wf?.['cursor-default
   ? ok('from_seq 缺省语义钉死（F-9）') : bad('cursor-default 未写（F-9）');
 S.WsFrame.oneOf.some((x) => x.properties?.type?.enum?.[0] === 'hello_ack')
   ? ok('WsFrame 含 hello_ack') : bad('WsFrame 未含 hello_ack');
+// F-16 / F-17
+wf?.client_frames?.hello && S.WsClientHello
+  ? ok('F-16：客户端 hello 帧已投影（面板连上先报游标）')
+  : bad('缺 client_frames.hello / WsClientHello（F-16）');
+String(wf?.['known-gap']).includes('F-17')
+  ? ok('F-17 空 journal 不回帧的缺口已写进 yaml（不许被读成"连接不健康"）')
+  : bad('known-gap 未记 F-17');
+S.WsClientHello?.required?.join(',') === 'type' && String(S.WsClientHello.properties.from_seq.type).includes('null')
+  ? ok('WsClientHello：from_seq 可省 = 只要此后新事件')
+  : bad('WsClientHello 形态不符 F-16');
+// T-30 实测：migration_version 是整数不是字符串
+String(S.Health.properties.migration_version.type).includes('integer')
+  ? ok('Health.migration_version 与实测一致（整数/null）')
+  : bad('Health.migration_version 仍是字符串投影（实测 Core 返回整数）');
 String(S.WsHelloAck.required) === 'type,server_seq' ? ok('WsHelloAck 必带 server_seq')
   : bad('WsHelloAck 缺 server_seq');
 

@@ -18,7 +18,8 @@ const base = `http://${conf.host_port}`;
 const wsBase = `ws://${conf.host_port}`;
 const token = conf.token ?? '';
 
-const core = () => createCoreClient({ baseUrl: base, token });
+/** 口令只在这个测试里出现：node 侧直连 Core，不经反代。测试文件不进构建产物。 */
+const core = () => createCoreClient({ baseUrl: base, extraHeaders: { authorization: `Bearer ${token}` } });
 /** 票与口令是凭据：断言与日志里只出现掩码 */
 const mask = (t: string) => `***(len ${t.length})`;
 

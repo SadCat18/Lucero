@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/SadCat18/lucero/core/internal/eventjournal"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
@@ -219,5 +221,200 @@ func TestListKeysetCursorNoGapsNoDupes(t *testing.T) {
 	}
 	if byProject, err := repo.List(ctx, task.Filter{Status: task.Created, ProjectID: "nope", Limit: 10}); err != nil || len(byProject) != 0 {
 		t.Errorf("不存在的项目应返回空：%v %v", byProject, err)
+	}
+}
+
+// requireCatalogued 检查这几个事件类型有没有进 db 的注册表（internal/eventjournal 的 catalog）。
+// C2 裁定新增的五个（task_paused / task_blocked / task_resumed / execution_paused / execution_resumed）
+// 至今不在里面，写它们会被平台层按 §9.1 判 P0 直接拒 → 已提 REQ-DB-3。
+// 这里用**条件跳过**而不是把断言删掉或注释掉：db 一加进注册表，这些正向用例自己就开始跑，
+// 不需要谁记得回来取消 skip；跳过时会打出等谁，不会被读成"通过"。
+func requireCatalogued(t *testing.T, types ...string) {
+	t.Helper()
+	for _, s := range types {
+		if !eventjournal.Registered(s) {
+			t.Skipf("%q 还没进 internal/eventjournal 的注册表（REQ-DB-3 等 db），写它会被 §9.1 判 P0", s)
+		}
+	}
+}
+
+// newTaskIn 把一条 Task 直接摆在指定状态（openWriteDB 已经种好两个 principals，所以不像
+// service_test.go 的 newTaskAt 那样再插一遍 —— 那会撞 principals 的主键）。
+// 用途：暂停/恢复只关心"从哪个状态动"，不关心它是怎么走到那儿的。
+func newTaskIn(t *testing.T, d *db.DB, ctx context.Context, id string, status task.State) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		return tx.Create(db.AggTask, id,
+			[]string{"title", "status", "created_at", "updated_at"},
+			[]any{"暂停与恢复", string(status), now, now},
+			db.EventDraft{EventID: "ev-new-" + id, Type: task.EventCreated,
+				Aggregate: db.AggTask, AggregateID: id, PrincipalID: "system"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func eventsOf(t *testing.T, d *db.DB, id string) int {
+	t.Helper()
+	return countRows(t, d, `SELECT count(*) FROM event_journal WHERE aggregate_id=?`, id)
+}
+
+func payloadOf(t *testing.T, d *db.DB, eventType, id string) string {
+	t.Helper()
+	var s string
+	if err := d.Read.QueryRow(
+		`SELECT payload_json FROM event_journal WHERE event_type=? AND aggregate_id=?`, eventType, id).Scan(&s); err != nil {
+		t.Fatalf("没有 %s 这一行事件（%s）: %v", eventType, id, err)
+	}
+	return s
+}
+
+// TestPrepareWritesPreparingWithExecution 钉三件事：
+// ① CREATED→PREPARING 不在 §5.1 矩阵里，被拒且一行不写；
+// ② QUEUED→PREPARING 落 task_preparing，且 payload 真点名了 execution_id（§6）；
+// ③ 缺 execution_id 的 Prepare 在碰库之前就失败 —— 不是"写完再回滚"。
+func TestPrepareWritesPreparingWithExecution(t *testing.T) {
+	d, ctx := openWriteDB(t)
+	svc := task.NewService(nil)
+	mustCreate(t, d, ctx, "t-p", "准备开工", "NORMAL")
+
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Prepare(ctx, tx, "t-p", task.Command{EventID: "ev-illegal", PrincipalID: "local-user", ExecutionID: "ex-1"})
+		return err
+	}); !errors.Is(err, task.ErrIllegalTransition) {
+		t.Errorf("CREATED→PREPARING 应被 §5.1 拒掉，实际 %v", err)
+	}
+	if n := eventsOf(t, d, "t-p"); n != 1 {
+		t.Fatalf("被拒的 Prepare 留下了 %d 行事件", n)
+	}
+
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Queue(ctx, tx, "t-p", task.Command{EventID: "ev-q", PrincipalID: "local-user"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Prepare(ctx, tx, "t-p", task.Command{EventID: "ev-noex", PrincipalID: "local-user"})
+		return err
+	}); !errors.Is(err, task.ErrInvalidTask) {
+		t.Errorf("缺 execution_id 的 Prepare 应报 ErrInvalidTask，实际 %v", err)
+	}
+	if n := eventsOf(t, d, "t-p"); n != 2 {
+		t.Fatalf("缺 execution_id 的 Prepare 竟然写了 %d 行事件（应为 2：created+queued）", n)
+	}
+
+	var res task.Result
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		var err error
+		res, err = svc.Prepare(ctx, tx, "t-p", task.Command{EventID: "ev-prep", PrincipalID: "local-user", ExecutionID: "ex-1"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if res.To != task.Preparing || res.Version != 3 || !res.Advanced {
+		t.Errorf("Prepare 结果不对: %+v", res)
+	}
+	if p := payloadOf(t, d, task.EventPreparing, "t-p"); !strings.Contains(p, `"execution_id":"ex-1"`) {
+		t.Errorf("task_preparing 的 payload 没点名 execution_id: %s", p)
+	}
+}
+
+// TestPauseThenResumeWritesBothEvents 是 :pause/:resume 的真表往返：
+// RUNNING→PAUSED 带 reason，PAUSED→RUNNING 带 from=PAUSED；重复暂停被矩阵拒；
+// resume 到 CANCELLED 这类目标在动作层就拒（那是 :cancel 的活），且一行不写。
+func TestPauseThenResumeWritesBothEvents(t *testing.T) {
+	d, ctx := openWriteDB(t)
+	svc := task.NewService(nil)
+	newTaskIn(t, d, ctx, "t-run", task.Running)
+
+	// 这一条不依赖任何事件类型注册，所以放在最前面先跑掉：目标态不在 QUEUED/RUNNING 里的
+	// resume 属于误用（:cancel 有它自己的动作），必须在读库之前就被动作层拒。
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Resume(ctx, tx, "t-run", task.Cancelled, task.Command{EventID: "ev-bad-to", PrincipalID: "local-user"})
+		return err
+	}); !errors.Is(err, task.ErrInvalidTask) {
+		t.Errorf("resume 到 CANCELLED 应报 ErrInvalidTask，实际 %v", err)
+	}
+
+	requireCatalogued(t, task.EventPaused, task.EventResumed)
+	var p task.Result
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		var err error
+		p, err = svc.Pause(ctx, tx, "t-run", task.Command{
+			EventID: "ev-pause", PrincipalID: "local-user", Reason: "用户在饭点按了暂停", WantVersion: 1})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if p.From != task.Running || p.To != task.Paused || p.Version != 2 {
+		t.Errorf("Pause 结果不对: %+v", p)
+	}
+	if got := payloadOf(t, d, task.EventPaused, "t-run"); !strings.Contains(got, `"reason":"用户在饭点按了暂停"`) {
+		t.Errorf("task_paused 没带上 reason: %s", got)
+	}
+
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Pause(ctx, tx, "t-run", task.Command{EventID: "ev-pause-2", PrincipalID: "local-user"})
+		return err
+	}); !errors.Is(err, task.ErrIllegalTransition) {
+		t.Errorf("PAUSED→PAUSED 不在矩阵里，应被拒，实际 %v", err)
+	}
+	if n := eventsOf(t, d, "t-run"); n != 2 {
+		t.Fatalf("两次被拒的动作写到了 %d 行（应停在 paused 那一行）", n)
+	}
+
+	var r task.Result
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		var err error
+		r, err = svc.Resume(ctx, tx, "t-run", task.Running, task.Command{
+			EventID: "ev-resume", PrincipalID: "local-user", WantVersion: 2})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r.From != task.Paused || r.To != task.Running || r.Version != 3 {
+		t.Errorf("Resume 结果不对: %+v", r)
+	}
+	if got := payloadOf(t, d, task.EventResumed, "t-run"); !strings.Contains(got, `"from":"PAUSED"`) {
+		t.Errorf("task_resumed.from 应是 PAUSED: %s", got)
+	}
+}
+
+// TestResumeRefusesStatesThatWereNeverSuspended 是 resumedFrom 白名单的唯一证据。
+// 前提要先证住：§5.1 确实给 INTERRUPTED 开了到 RUNNING 的边 —— 所以光靠矩阵拦不住，
+// 不设白名单的话一次崩溃恢复会被写成 task_resumed{from:"INTERRUPTED"}，而 §6 的 from 只有 PAUSED/BLOCKED。
+func TestResumeRefusesStatesThatWereNeverSuspended(t *testing.T) {
+	if err := task.Check(task.Interrupted, task.Running, task.Normal, task.Evidence{}); err != nil {
+		t.Fatalf("前提变了：§5.1 本该允许 INTERRUPTED→RUNNING，实际 %v", err)
+	}
+	d, ctx := openWriteDB(t)
+	svc := task.NewService(nil)
+	newTaskIn(t, d, ctx, "t-int", task.Interrupted)
+
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Resume(ctx, tx, "t-int", task.Running, task.Command{EventID: "ev-r", PrincipalID: "local-user"})
+		return err
+	}); !errors.Is(err, task.ErrIllegalTransition) {
+		t.Errorf("INTERRUPTED 不是 resume 的合法起始态，实际 %v", err)
+	}
+	if n := eventsOf(t, d, "t-int"); n != 1 {
+		t.Fatalf("被拒的 resume 留下了 %d 行事件", n)
+	}
+
+	// BLOCKED 才是 §6 认的另一种 from，且它到 QUEUED 的边也在矩阵里。
+	// 这一小段要写 task_resumed（还没进注册表，REQ-DB-3），所以放在上面那两条守卫之后：
+	// 上面那两条不依赖注册表，无论 db 有没有补都会真跑。
+	requireCatalogued(t, task.EventResumed)
+	newTaskIn(t, d, ctx, "t-blk", task.Blocked)
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, err := svc.Resume(ctx, tx, "t-blk", task.Queued, task.Command{EventID: "ev-rb", PrincipalID: "local-user"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := payloadOf(t, d, task.EventResumed, "t-blk"); !strings.Contains(got, `"from":"BLOCKED"`) {
+		t.Errorf("task_resumed.from 应是 BLOCKED: %s", got)
 	}
 }

@@ -11,10 +11,21 @@ import (
 )
 
 // SettingEmergencyStop is the GLOBAL settings key the first rung of the chain
-// reads; value_json is {"enabled":true}. A missing row means not stopped — the
-// absence of a switch must never itself stop the system. An unreadable or
-// unparseable value is returned as an error, which Engine turns into DENY, so a
-// corrupt stop flag cannot be read as "clear to proceed".
+// reads; value_json is {"enabled":true}.
+//
+// Read-only here, and deliberately so (T-65① / REQ-DB-2): settings has no
+// legitimate write path today - Tx.UpdateOnce's narrowTables holds only
+// idempotency_keys - and a write entry point with no consumer is the same
+// speculative feature T-28③ refused for policy_rules. When the panel grows an
+// emergency-stop button, that whitelist extension goes through a REQ to the
+// orchestrator; until then nothing may write this row from product code.
+//
+// A missing row means NOT stopped. "Cannot read the switch" is not "stop": the
+// asymmetry is intentional, because failing this direction on an absent row
+// would halt every Execution for a setting nobody ever set. A value that exists
+// but cannot be parsed is the opposite case - it is returned as an error, which
+// Engine turns into DENY, so a corrupt stop flag cannot read as "clear to
+// proceed".
 const SettingEmergencyStop = "emergency_stop"
 
 // SQLiteSource reads policy and grants through the platform's read pool.

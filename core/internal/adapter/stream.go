@@ -3,7 +3,21 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
+
+// CarriesTurnRef is §6.7.s scope, stated once so the producer, the consumer and every
+// Adapter in the tree agree on it: the ticket belongs to the four notifications §6.s
+// table defines, namely stream/delta, stream/item, stream/state and turn/finished.
+// turn/claimed and turn/dispatched are absent because CO-8 defines them with an
+// execution_id to attribute themselves by and no ticket at all.
+func CarriesTurnRef(method string) bool {
+	switch method {
+	case MethodStreamDelta, MethodStreamItem, MethodStreamState, MethodTurnFinished:
+		return true
+	}
+	return false
+}
 
 // Stream notification methods (contract §6). Only MethodTurnFinished is
 // mandatory: §6.1 exists because Phase 0 measured Qoder's 真流式 as UNSUPPORTED,
@@ -28,11 +42,16 @@ const (
 var streamChannels = []string{ChannelAssistant, ChannelThought, ChannelTool, ChannelStatus}
 
 // StreamFrame is one decoded stream notification. Every §6.1 notification carries
-// SequenceNo; it is the resume cursor together with the execution id, and the key
-// §6.2's idempotent drop works on.
+// SequenceNo; together with TurnRef it is the idempotency key (§6 rule 2), and
+// TurnRef is what makes a frame attributable when one connection carries several
+// executions at once (§6.7).
 type StreamFrame struct {
 	Method     string `json:"-"`
 	SequenceNo int64  `json:"sequence_no"`
+	// TurnRef is Core's own correlation string - the JSON-RPC id of the request that
+	// started the turn - echoed back verbatim. The Adapter neither generates nor
+	// interprets it, and no Core-side identity travels outward in a frame (§6.7).
+	TurnRef string `json:"turn_ref"`
 
 	Channel         string          `json:"channel,omitempty"`
 	Text            string          `json:"text,omitempty"`
@@ -43,12 +62,18 @@ type StreamFrame struct {
 
 	// The §6.4 evidence pair. turn/claimed says the Adapter took the job,
 	// turn/dispatched says a turn actually started; without the second one Core may
-	// not show "running", so both fields live here rather than in a send reply.
+	// not show "running".
 	Accepted            bool   `json:"accepted,omitempty"`
 	QueuePosition       *int64 `json:"queue_position,omitempty"`
-	ExecutionID         string `json:"execution_id,omitempty"`
 	TurnID              string `json:"turn_id,omitempty"`
 	ProviderExecutionID string `json:"provider_execution_id,omitempty"`
+	// ExecutionID rides only on turn/claimed and turn/dispatched, because CO-8 names
+	// it there. §6.7 keeps it off the other four notifications: it is a Core-side
+	// identity, and a frame that travels to a Provider must not carry one. Every
+	// frame - including these two, which §6.7 also requires - carries turn_ref, so
+	// once Core resolves the ticket this field is attribution belt-and-braces, and
+	// CO-24 asks 主控 whether it is still needed at all.
+	ExecutionID string `json:"execution_id,omitempty"`
 
 	// Usage and the provider payloads stay raw: their shape belongs to the
 	// Provider, and §6.4 forbids Core from interpreting them.
@@ -75,12 +100,22 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 		return nil, fmt.Errorf("%s payload: %w", f.Method, err)
 	}
 	// CO-6 (2026-09-19): every notification carries sequence_no, so the resume cursor
-	// (execution_id, sequence_no) works even for a Provider that only speaks at turn
-	// granularity.
+	// works even for a Provider that only speaks at turn granularity. §6.7 pairs it
+	// with turn_ref: the idempotency key and the resume cursor are per turn, not per
+	// connection, because one connection can carry several executions at once.
 	if s.SequenceNo <= 0 {
 		return nil, &Error{Code: ErrInvalidParams,
 			Message: fmt.Sprintf("%s sequence_no %d: CO-6 requires a positive one on every stream notification",
 				f.Method, s.SequenceNo)}
+	}
+	// §6.7: turn_ref is mandatory on the four output notifications, and on those
+	// four only - turn/claimed and turn/dispatched attribute themselves by the
+	// execution_id CO-8 gives them, and carry no ticket. A frame that cannot be
+	// attributed is a protocol violation rather than a droppable one: guessing
+	// "the only turn in flight" is the accident the rule exists to prevent.
+	if s.TurnRef == "" && CarriesTurnRef(f.Method) {
+		return nil, &Error{Code: ErrInvalidParams,
+			Message: fmt.Sprintf("%s has no turn_ref (§6.7 makes it mandatory on every notification)", f.Method)}
 	}
 	switch f.Method {
 	case MethodStreamDelta:
@@ -102,12 +137,14 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 				Message: fmt.Sprintf("stream/state confidence %q is not one of %v", s.Confidence, confidences)}
 		}
 	case MethodTurnClaimed:
-		// CO-8 (final form): turn/claimed = {execution_id, accepted, queue_position?,
-		// provider_execution_id} and deliberately carries **no turn_id** - "the
-		// Adapter took the instruction" is not "a turn started", and the only proof
-		// of a start is turn/dispatched. provider_execution_id belongs on claimed
-		// precisely because Core may die in the claimed-but-not-dispatched window:
-		// Recovery queries the Provider by it before judging the turn UNKNOWN.
+		// CO-8 (final form): turn/claimed = {turn_ref, execution_id, accepted,
+		// queue_position?, provider_execution_id} and deliberately carries **no
+		// turn_id** - "the Adapter took the instruction" is not "a turn started", and
+		// the only proof of a start is turn/dispatched. provider_execution_id belongs
+		// on claimed precisely because Core may die in the claimed-but-not-dispatched
+		// window: Recovery queries the Provider by it before judging the turn UNKNOWN.
+		// These two frames are where execution_id may appear at all: §6.7 keeps the
+		// Core-side identity off the other four, whose attribution is turn_ref alone.
 		if s.ExecutionID == "" {
 			return nil, &Error{Code: ErrInvalidParams, Message: "turn/claimed has no execution_id (CO-8)"}
 		}
@@ -147,15 +184,22 @@ func NewStream(requestID string, s *StreamFrame) (*Frame, error) {
 		return nil, &Error{Code: ErrInvalidParams,
 			Message: fmt.Sprintf("%s: CO-6 requires sequence_no >= 1, got %d", s.Method, s.SequenceNo)}
 	}
+	// The producer is checked as strictly as the consumer, through the same
+	// predicate, so the two sides cannot disagree about which frames owe a ticket.
+	if s.TurnRef == "" && CarriesTurnRef(s.Method) {
+		return nil, &Error{Code: ErrInvalidParams,
+			Message: fmt.Sprintf("%s: §6.7 requires a turn_ref on its four notifications", s.Method)}
+	}
 	var params any = s
 	if s.Method == MethodStreamItem {
-		// stream/item's body is opaque, so sequence_no is injected into it rather
-		// than wrapped, which would move the Provider's fields a second time.
+		// stream/item's body is opaque, so the envelope fields are injected into it
+		// rather than wrapped, which would move the Provider's fields a second time.
 		var body map[string]json.RawMessage
 		if err := json.Unmarshal(s.Item, &body); err != nil {
 			return nil, fmt.Errorf("stream/item body %s: %w", s.Item, err)
 		}
 		body["sequence_no"] = json.RawMessage(fmt.Sprintf("%d", s.SequenceNo))
+		body["turn_ref"] = json.RawMessage(strconv.Quote(s.TurnRef))
 		params = body
 	}
 	raw, err := json.Marshal(params)
@@ -317,7 +361,8 @@ func (t *TurnTracker) Recover(result string) error {
 // Cursor applies §6.2 to one Adapter process run: sequence_no increases
 // monotonically, a frame at or below the cursor is dropped idempotently, and a
 // jump records the first unseen number so the caller can request since_seq after a
-// reconnect.
+// reconnect. §6.7 makes the key (turn_ref, sequence_no) rather than sequence_no
+// alone, so one connection carrying two executions keeps one cursor each.
 type Cursor struct {
 	last int64
 	hole int64

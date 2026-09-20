@@ -22,6 +22,29 @@ type SQLiteStore struct {
 	d     *db.DB
 	now   func() int64
 	newID func() (string, error)
+	// cp writes ADR-018's "every 1000 successful appends" checkpoint line.
+	// Unset by default: the store still links every audit row, it just leaves
+	// anchoring to whoever owns the file.
+	cp *audit.CheckpointCounter
+}
+
+// UseCheckpoints turns anchor writing on for this store.
+func (s *SQLiteStore) UseCheckpoints(cp *audit.CheckpointCounter) { s.cp = cp }
+
+// write runs fn in one transaction and hands its audit appends to the
+// checkpoint counter only if the transaction committed. That ordering is the
+// whole point: a checkpoint must never lead the rows, or a crash reads as
+// truncation and a false tampering alarm is worse than no anchor at all.
+func (s *SQLiteStore) write(ctx context.Context, fn func(tx *db.Tx, ch *audit.Chain) error) error {
+	var ch *audit.Chain
+	err := s.d.Write(ctx, func(tx *db.Tx) error {
+		ch = s.chain(tx)
+		return fn(tx, ch)
+	})
+	if err != nil || ch == nil {
+		return err
+	}
+	return ch.Checkpoint()
 }
 
 func NewSQLiteStore(d *db.DB, now func() int64) *SQLiteStore {
@@ -60,9 +83,11 @@ func nullMs(v int64) any {
 	return v
 }
 
-// chain binds an audit chain writer to one open transaction.
-func (s *SQLiteStore) chain(tx audit.Appender) *audit.Chain {
-	return &audit.Chain{Head: audit.HeadQuery(s.d.Read), Insert: tx, Now: s.now}
+// chain binds an audit chain writer to one open transaction. Head reads through
+// the same tx, so a second append in the transaction sees the row the first one
+// wrote and the chain cannot fork behind our back.
+func (s *SQLiteStore) chain(tx *db.Tx) *audit.Chain {
+	return &audit.Chain{Head: audit.HeadQuery(tx), Insert: tx, Now: s.now, Checkpoints: s.cp}
 }
 
 // eventIDs mints the envelope ids. Per event contract §4 a command with no
@@ -85,7 +110,7 @@ func (s *SQLiteStore) Insert(ctx context.Context, a Approval) error {
 	if err != nil {
 		return err
 	}
-	return s.d.Write(ctx, func(tx *db.Tx) error {
+	return s.write(ctx, func(tx *db.Tx, ch *audit.Chain) error {
 		evID, corr, caus, err := s.eventIDs(a.correlationHint(), "")
 		if err != nil {
 			return err
@@ -105,7 +130,6 @@ func (s *SQLiteStore) Insert(ctx context.Context, a Approval) error {
 		}); err != nil {
 			return err
 		}
-		ch := s.chain(tx)
 		if _, err := ch.Append(ctx, s.entry(a, eventjournal.ApprovalRequested, principal, evID, corr, audit.OutcomeSuccess)); err != nil {
 			return err
 		}
@@ -135,15 +159,13 @@ func correlationOf(raw string) string {
 }
 
 // MarkResolved applies the decision. Tx.Touch keys on id only, so the
-// "still PENDING?" guard is a read taken inside this transaction: db.Write holds
-// BEGIN IMMEDIATE on a one-connection writer, so no other committed state can
-// appear between the read and the update. A row that is no longer PENDING
-// produces no update, no event, no audit row and no grant — that is the
-// idempotency guarantee under a double click.
+// "still PENDING?" guard is a read taken through the same transaction. A row
+// that is no longer PENDING produces no update, no event, no audit row and no
+// grant — that is the idempotency guarantee under a double click.
 func (s *SQLiteStore) MarkResolved(ctx context.Context, current Approval, res Resolution, grant permission.Grant, at int64) (bool, error) {
 	applied := false
-	err := s.d.Write(ctx, func(tx *db.Tx) error {
-		fresh, err := s.fetch(ctx, current.ID)
+	err := s.write(ctx, func(tx *db.Tx, ch *audit.Chain) error {
+		fresh, err := s.fetchIn(ctx, tx, current.ID)
 		if err != nil {
 			return err
 		}
@@ -181,7 +203,6 @@ func (s *SQLiteStore) MarkResolved(ctx context.Context, current Approval, res Re
 		}
 		base := fresh
 		base.State, base.ResolvedAt, base.ResolvedBy = res.State, at, res.By
-		ch := s.chain(tx)
 		if _, err := ch.Append(ctx, s.entry(base, eventjournal.ApprovalResolved, res.By, evID, corr, audit.OutcomeSuccess)); err != nil {
 			return err
 		}
@@ -232,13 +253,12 @@ func grantPayload(g permission.Grant) map[string]any {
 // ExpirePending converges pending approvals whose deadline has passed. Each row
 // is a normal Touch: one version, one approval_expired event, one audit row.
 func (s *SQLiteStore) ExpirePending(ctx context.Context, at int64) error {
-	return s.d.Write(ctx, func(tx *db.Tx) error {
-		rows, err := s.d.Read.QueryContext(ctx,
+	return s.write(ctx, func(tx *db.Tx, ch *audit.Chain) error {
+		rows, err := tx.QueryContext(ctx,
 			`SELECT id FROM approvals WHERE state = 'PENDING' AND expires_at IS NOT NULL AND expires_at <= ?`, at)
 		if err != nil {
 			return fmt.Errorf("approval: list expiring: %w", err)
 		}
-		ch := s.chain(tx)
 		var due []string
 		for rows.Next() {
 			var id string
@@ -255,7 +275,7 @@ func (s *SQLiteStore) ExpirePending(ctx context.Context, at int64) error {
 		rows.Close()
 
 		for _, id := range due {
-			fresh, err := s.fetch(ctx, id)
+			fresh, err := s.fetchIn(ctx, tx, id)
 			if err != nil {
 				return err
 			}
@@ -300,8 +320,8 @@ func (s *SQLiteStore) ExpirePending(ctx context.Context, at int64) error {
 // reason 只有计数与来源，没有值；它仍是 payload 的一个自由文本字段，
 // 所以照样要过 audit 的 value patterns（见 audit 的 TestFreeTextReasonIsScrubbedByPatterns）。
 func (s *SQLiteStore) RevokeGrants(ctx context.Context, at int64) error {
-	return s.d.Write(ctx, func(tx *db.Tx) error {
-		rows, err := s.d.Read.QueryContext(ctx,
+	return s.write(ctx, func(tx *db.Tx, ch *audit.Chain) error {
+		rows, err := tx.QueryContext(ctx,
 			`SELECT id, principal_id, scope_type, COALESCE(scope_id, ''), action, COALESCE(expires_at, 0)
 			 FROM temporary_grants
 			 WHERE revoked_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?`, at)
@@ -330,7 +350,6 @@ func (s *SQLiteStore) RevokeGrants(ctx context.Context, at int64) error {
 			return nil
 		}
 
-		ch := s.chain(tx)
 		for _, g := range due {
 			evID, corr, caus, err := s.eventIDs("", "")
 			if err != nil {
@@ -378,6 +397,14 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (Approval, error) {
 
 func (s *SQLiteStore) fetch(ctx context.Context, id string) (Approval, error) {
 	return scanApproval(s.d.Read.QueryRowContext(ctx,
+		`SELECT `+selectColumns+` FROM approvals WHERE id = ?`, id))
+}
+
+// fetchIn reads inside an open transaction. Writes use this rather than the read
+// pool so the "still PENDING?" guard sees the state the UPDATE is about to
+// change, instead of relying on the single-writer channel to make the two agree.
+func (s *SQLiteStore) fetchIn(ctx context.Context, tx *db.Tx, id string) (Approval, error) {
+	return scanApproval(tx.QueryRowContext(ctx,
 		`SELECT `+selectColumns+` FROM approvals WHERE id = ?`, id))
 }
 

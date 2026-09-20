@@ -110,6 +110,12 @@ func Checkpoint(entries []Entry) (Head, error) {
 // deletion of a middle entry (link and seq gap), deletion of the newest
 // entries (head mismatch) and out-of-order appends. A failure is an incident:
 // never "repair" it by re-hashing, and never delete or forge entries (§9.2).
+//
+// Passing Head{} means "check self-consistency only", not "no check performed":
+// every link is still recomputed, so rewriting or deleting a middle entry is
+// caught, but deleting the newest entries is not — a truncated chain is
+// internally valid. Callers who need the truncation case must pass a Head from
+// the anchor file (see Check), or say plainly that they did not check it.
 func VerifyChain(entries []Entry, head Head) error {
 	if len(entries) == 0 {
 		if head == (Head{}) {

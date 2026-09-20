@@ -52,12 +52,35 @@ type Chain struct {
 	Insert Appender
 	Now    func() int64
 
+	// Checkpoints is optional: nil keeps a Chain purely transactional. When set,
+	// the append count accrues inside the transaction and is only handed over
+	// after the caller's write has COMMITTED (see Checkpoint) - ADR-018's
+	// "every 1000 successful appends" must never lead the rows.
+	Checkpoints *CheckpointCounter
+
 	// The head is read once per transaction and then tracked locally: a second
 	// Append in the same transaction cannot see the first row through the read
 	// pool, because it is still inside the open write transaction.
 	cached   bool
+	appends  int
 	lastSeq  int64
 	lastHash string
+}
+
+// Certified is the newest link this Chain wrote, or the zero Head if it wrote
+// none. It is named apart from the Head field, which reads the stored chain.
+func (c *Chain) Certified() Head { return Head{Seq: c.lastSeq, Hash: c.lastHash} }
+
+// Checkpoint hands this transaction's committed appends to the shared counter.
+// Call it only after the transaction has COMMITTED, and never on a rolled-back
+// one — that is what keeps the anchor from leading the database.
+func (c *Chain) Checkpoint() error {
+	if c.Checkpoints == nil {
+		return nil
+	}
+	n := c.appends
+	c.appends = 0
+	return c.Checkpoints.Advance(n, c.Certified())
 }
 
 // canonicalJSON re-encodes details_json the way the platform's redactor will:
@@ -122,6 +145,7 @@ func (c *Chain) Append(ctx context.Context, e Entry) (int64, error) {
 		return 0, fmt.Errorf("%w: predicted seq %d, stored %d", ErrChainFork, e.Seq, seq)
 	}
 	c.lastSeq, c.lastHash = seq, e.EntryHash
+	c.appends++
 	return seq, nil
 }
 
@@ -149,10 +173,10 @@ func (c *Chain) RecordRedaction(ctx context.Context, base Entry, hits []Redactio
 // HeadQuery returns a Head func that reads the newest audit_entries row from q.
 // An empty chain is (0, ""), which is also what Seal expects for the first row.
 //
-// ponytail: bound this to the read pool today — the single serialized writer
-// means no committed row can appear mid-transaction, and the seq check in Append
-// turns any residual window into a rollback rather than a silent fork. Give db
-// an in-transaction read (REQ) and this becomes exact.
+// Pass the open transaction rather than the read pool: db.Tx has had
+// QueryRowContext since REQ-A6① landed, and a pooled read cannot see a row this
+// transaction already appended. The seq check in Append stays as a tripwire
+// against a head that moved underneath us.
 func HeadQuery(q Queryer) func(context.Context) (int64, string, error) {
 	return func(ctx context.Context) (int64, string, error) {
 		var (

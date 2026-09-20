@@ -56,3 +56,13 @@ func (j journalReader) Oldest(ctx context.Context) (int64, error) {
 	}
 	return v.Int64, nil
 }
+
+// Head 返回此刻的最大 seq，空表 0 —— 契约③ §5 的"不带游标只收此后新事件"的起点，
+// 也是 hello_ack.server_seq 该带的值（OpenAPI WsHelloAck 的字段说明）。
+func (j journalReader) Head(ctx context.Context) (int64, error) {
+	var v sql.NullInt64
+	if err := j.d.Read.QueryRowContext(ctx, `SELECT max(seq) FROM event_journal`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("journal: head: %w", err)
+	}
+	return v.Int64, nil
+}

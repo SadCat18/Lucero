@@ -42,8 +42,18 @@ var queueStrategies = []string{QueueInterruptAndRun, QueueAfterTurn}
 type SendParams struct {
 	RemoteSessionID string `json:"remote_session_id"`
 	Text            string `json:"text,omitempty"`
-	Delivery        string `json:"delivery"`
-	QueueStrategy   string `json:"queue_strategy,omitempty"`
+	// ExecutionID is Core's own id for the run this send starts. CO-8 keys the
+	// turn/claimed + turn/dispatched evidence pair by it, and an Adapter can only
+	// echo what it was given - §4's session/send params list has no such field,
+	// which is CO-24. §6.7 is why this stays the one place the identity crosses:
+	// the other four notifications attribute themselves by turn_ref instead, because
+	// execution_id is ours and a Provider must not end up logging it.
+	// Left optional so an empty value keeps the honest outcome: no evidence frames,
+	// and §6.3 leaves the Execution UNKNOWN rather than let Core infer a start from
+	// the send reply alone.
+	ExecutionID   string `json:"execution_id,omitempty"`
+	Delivery      string `json:"delivery"`
+	QueueStrategy string `json:"queue_strategy,omitempty"`
 	// IdempotencyKey is §4's "Idempotency-Key 必填". The contract spells it
 	// header-style but an ndjson frame has no headers, so it travels in params -
 	// see CO-15 if 主控 wants it frame-level next to request_id instead.

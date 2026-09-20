@@ -26,6 +26,9 @@ import (
 type TaskService interface {
 	Create(ctx context.Context, tx *db.Tx, in task.NewTask) (task.Task, error)
 	Queue(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
+	Pause(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
+	// Resume 的目标态由 handler 传进来：§5.1 有两条合法出边，选哪条是请求里的信息，不是这里该猜的。
+	Resume(ctx context.Context, tx *db.Tx, id string, to task.State, cmd task.Command) (task.Result, error)
 }
 
 type TaskLister interface {
@@ -108,13 +111,23 @@ func registerTaskRoutes(mux *http.ServeMux, c Config) {
 			return
 		}
 		id, action, ok := splitTaskAction(r.URL.Path)
-		if !ok || action != "queue" {
-			// pause/resume/cancel/accept 还没接：明确 501，不假成功。
+		if !ok {
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"该状态动作尚未实现", true)
 			return
 		}
-		queueTask(w, r, c, id)
+		switch action {
+		case "queue":
+			queueTask(w, r, c, id)
+		case "pause":
+			pauseTask(w, r, c, id)
+		case "resume":
+			resumeTask(w, r, c, id)
+		default:
+			// cancel/accept 还没接，以及任何没听过的 verb：明确 501，不假成功。
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"该状态动作尚未实现", true)
+		}
 	})
 }
 
@@ -150,29 +163,40 @@ func createTask(w http.ResponseWriter, r *http.Request, c Config) {
 	correlation := newUUIDv7() // 一条命令链共享同一个 correlation_id（契约① §4）
 
 	id := newUUIDv7()
-	var created task.Task
+	var sealed string // 首次响应体：本轮刚造的，或命中已封存的那一份 —— 对外没有区别
 	err = c.Store.Write(r.Context(), func(tx *db.Tx) error {
-		// 幂等记录与建任务在同一事务里：主键冲突 = 这条 key 已经有人干过，
-		// 整个事务回滚，副作用一次都不会重复。"返回首次响应"要等 db 给出
-		// 更新 idempotency_keys 的入口（REQ-DB-1），现在只能回 409 让客户端去 GET。
-		if err := recordIdempotency(r.Context(), tx, key, principal, "task_created", hashOf(raw)); err != nil {
+		// 幂等记录与副作用在同一事务里：主键冲突 = 这条 key 已经有人干过，整个事务回滚，
+		// 高风险动作一次都不会重复执行（§40 的目的）。
+		s, err := claimIdempotency(r.Context(), tx, key, principal, "task_created", hashOf(raw))
+		if err != nil {
 			return err
 		}
-		var err error
-		created, err = c.Tasks.Create(r.Context(), tx, task.NewTask{
+		if s != "" {
+			sealed = s // 已封存 → 原样回首次响应，不再碰任何聚合
+			return nil
+		}
+		created, err := c.Tasks.Create(r.Context(), tx, task.NewTask{
 			ID: id, EventID: newUUIDv7(), Title: body.Title, Description: body.Description,
 			Mode: body.Mode, Priority: body.Priority, RiskLevel: body.RiskLevel,
 			ProjectID: body.ProjectID, RequestedBy: principal,
 			PrincipalID: principal, CorrelationID: correlation, CausationID: correlation,
 		})
+		if err != nil {
+			return err
+		}
+		// 封存的是"当时那份响应"：任务后来被 queue 掉了，重放仍回 CREATED/v1，
+		// 因为契约③ §2 要的是首次响应，不是当前状态（当前状态请 GET）。
+		sealed, err = sealIdempotency(tx, key, viewOf(created))
 		return err
 	})
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusCreated, viewOf(created))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(sealed))
 	case errors.Is(err, errReplay):
 		writeError(w, http.StatusConflict, "idempotency_replay",
-			"同一 Idempotency-Key 已经处理过；响应回放的完整语义等 REQ-DB-1", false)
+			"同一 Idempotency-Key 的首次请求还没完成，暂时没有可回放的响应", true)
 	case errors.Is(err, errKeyMismatch):
 		writeError(w, http.StatusConflict, "idempotency_mismatch",
 			"同一 Idempotency-Key 带了不同的请求体（键含 request_hash）", false)
@@ -225,7 +249,12 @@ func listTasks(w http.ResponseWriter, r *http.Request, c Config) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
 }
 
-func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+// taskAction 是 :queue / :pause / :resume 共用的外壳：解析 If-Match → 一个事务里跑那一步 → 统一映射错误码。
+// 三个动作只在"跑哪一步、命令里多带什么"上不同；把错误码映射写三份迟早会漂，所以只写一份。
+// handler 层零业务判断（契约③ §7）：状态与合法性全在 task.Service 里判。
+func taskAction(w http.ResponseWriter, r *http.Request, c Config, id string, base task.Command,
+	run func(context.Context, *db.Tx, task.Command) (task.Result, error)) {
+
 	var (
 		wantVersion int64
 		res         task.Result
@@ -239,12 +268,15 @@ func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 		wantVersion = n
 	}
 	correlation := newUUIDv7()
+	cmd := base
+	cmd.EventID = newUUIDv7()
+	cmd.PrincipalID = r.Header.Get("X-Lucero-Principal")
+	cmd.CorrelationID, cmd.CausationID = correlation, correlation
+	cmd.WantVersion = wantVersion
+
 	err := c.Store.Write(r.Context(), func(tx *db.Tx) error {
 		var err error
-		res, err = c.Tasks.Queue(r.Context(), tx, id, task.Command{
-			EventID: newUUIDv7(), PrincipalID: r.Header.Get("X-Lucero-Principal"),
-			CorrelationID: correlation, CausationID: correlation, WantVersion: wantVersion,
-		})
+		res, err = run(r.Context(), tx, cmd)
 		return err
 	})
 	switch {
@@ -254,11 +286,68 @@ func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 		writeError(w, http.StatusConflict, "version_conflict", err.Error(), true)
 	case errors.Is(err, task.ErrIllegalTransition):
 		writeError(w, http.StatusConflict, "illegal_transition", err.Error(), false)
+	case errors.Is(err, task.ErrInvalidTask):
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
 	case errors.Is(err, db.ErrAggregateNotFound) || errors.Is(err, sql.ErrNoRows):
 		writeError(w, http.StatusNotFound, "not_found", "没有这条 Task", false)
 	default:
 		serverError(w, r, err)
 	}
+}
+
+func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	taskAction(w, r, c, id, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+		return c.Tasks.Queue(ctx, tx, id, cmd)
+	})
+}
+
+// pauseBody 是 :pause 的请求体。§3 没定义它，所以这里只认一个可选的 reason，
+// 不给它加"必填"这种查不到条款的要求（见 progress C21）。
+type pauseBody struct {
+	Reason string `json:"reason"`
+}
+
+func pauseTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	var body pauseBody
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "读请求体失败", true)
+		return
+	}
+	if strings.TrimSpace(string(raw)) != "" {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_failed", "请求体不是合法 JSON: "+err.Error(), false)
+			return
+		}
+	}
+	taskAction(w, r, c, id, task.Command{Reason: body.Reason},
+		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+			return c.Tasks.Pause(ctx, tx, id, cmd)
+		})
+}
+
+// resumeBody 的 to **必填**：§5.1 里 PAUSED→QUEUED 与 PAUSED→RUNNING 两条边都合法，
+// 而 tasks 表没有"暂停之前是什么"这一列 —— 替客户端选等于替它决定要不要有一个 Execution。
+type resumeBody struct {
+	To string `json:"to"`
+}
+
+func resumeTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	var body resumeBody
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "读请求体失败", true)
+		return
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || (body.To != "QUEUED" && body.To != "RUNNING") {
+		writeError(w, http.StatusBadRequest, "validation_failed",
+			`:resume 需要一个 JSON 体 {"to":"QUEUED"|"RUNNING"}`, false)
+		return
+	}
+	to := task.State(body.To)
+	taskAction(w, r, c, id, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+		return c.Tasks.Resume(ctx, tx, id, to, cmd)
+	})
 }
 
 // serverError 不回传内部错误文本：里面可能带 SQL、列名甚至路径。
@@ -275,23 +364,34 @@ var (
 	errKeyMismatch = errors.New("httpapi: Idempotency-Key 对应的请求体不一致")
 )
 
-// recordIdempotency 写 idempotency_keys 的 IN_PROGRESS 行。
-// §1.1 第 12 条：这张表是"故意不发事件的可变表"，所以用 Append，不占聚合版本。
-func recordIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation, hash string) error {
-	var existing string
+// claimIdempotency 决定这一次 POST 归谁干。三种结果互斥：
+//   - ("", nil)     → 这条 key 由本次占用（已写 IN_PROGRESS 行），调用方去执行副作用；
+//   - (body, nil)   → 命中已封存的首次响应，调用方把 body 原样发出去，什么都不用再写；
+//   - ("", errReplay) → 首次请求还挂着（IN_PROGRESS），此刻确实没有响应可回。
+//
+// §1.1 第 12 条：这张表是"故意不发事件的可变表"，所以占坑用 Append、封存用 UpdateOnce，都不占聚合版本。
+func claimIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation, hash string) (string, error) {
+	var (
+		existingHash, state string
+		stored              sql.NullString
+	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT request_hash FROM idempotency_keys WHERE key = ?`, key).Scan(&existing)
+		`SELECT request_hash, state, response_json FROM idempotency_keys WHERE key = ?`, key).
+		Scan(&existingHash, &state, &stored)
 	switch {
 	case err == nil:
-		if existing != hash {
-			return errKeyMismatch
+		if existingHash != hash {
+			return "", errKeyMismatch
 		}
-		return errReplay
+		if state == "COMPLETED" && stored.String != "" {
+			return stored.String, nil
+		}
+		return "", errReplay
 	case errors.Is(err, sql.ErrNoRows):
 		// 没记录，往下 INSERT
 	case err != nil:
 		// 读不出来的其它错误也别蒙：让 INSERT 去撞唯一约束，语义更清楚。
-		return err
+		return "", err
 	}
 	now := time.Now().UnixMilli()
 	var p any
@@ -302,11 +402,31 @@ func recordIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation
 		[]string{"key", "principal_id", "operation", "request_hash", "state", "created_at", "updated_at"},
 		[]any{key, p, operation, hash, "IN_PROGRESS", now, now}); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: idempotency_keys.key") {
-			return errReplay
+			return "", errReplay
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return "", nil
+}
+
+// sealIdempotency 把首次响应封进 idempotency_keys，返回封进去的那份 body。
+// guard 用 state != 'COMPLETED'：这是"只封存第一次"的强制点，不靠调用方自觉。
+// 0 行 = 这一格已经被别人封了，本次就不该由我来宣称首次响应 → 按重放处理（事务回滚，副作用不留）。
+func sealIdempotency(tx *db.Tx, key string, v taskView) (string, error) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	n, err := tx.UpdateOnce("idempotency_keys", key, "state", "COMPLETED",
+		"state = ?, response_json = ?, updated_at = ?",
+		[]any{"COMPLETED", string(body), time.Now().UnixMilli()})
+	if err != nil {
+		return "", err
+	}
+	if n != 1 {
+		return "", errReplay
+	}
+	return string(body), nil
 }
 
 func hashOf(b []byte) string {

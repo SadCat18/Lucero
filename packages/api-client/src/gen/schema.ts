@@ -36,7 +36,8 @@ export interface paths {
          *     `POST /api/v1/ws-ticket` → `{ticket, expires_in: 30}` → `/ws/v1/events?ticket=…`。
          *     票单次使用、30 秒过期、服务端校验后立即作废、不入库明文 —— **每次（重）连都要新一张**。
          *     这不是"WS 免鉴权"。
-         *     T-30 裁定：本端点**免 `X-Lucero-Principal`**（它不改业务状态，只是凭证签发），但**仍必须带 Bearer**。
+         *     T-30 裁定：本端点**免 `X-Lucero-Principal`**（它不改业务状态，只是凭证签发），但**仍必须带 Bearer**
+         *     —— dev 期那个 Bearer 由 §1 第 2.2 项的反代注入，面板代码里没有口令。
          *     也故意不吃 `Idempotency-Key`：票若被幂等缓存，重放会交出已作废的票（§2 豁免表唯一一条，
          *     反向用例 = 同一请求两次必须拿到两张不同有效票）。
          */
@@ -833,8 +834,10 @@ export interface components {
              * @enum {string}
              */
             state: "BOOTING" | "READY" | "STOPPING" | "STOPPED" | "UNKNOWN";
+            /** @description 实测 Core 返回 "0.1.0-dev"（字符串） */
             version?: string | null;
-            migration_version?: string | null;
+            /** @description 实测 Core 返回整数 3（= schema_migrations.version）；原先投影成字符串是错的，按 §6.1 以 handler 实测为准 */
+            migration_version?: number | null;
             /** @description 前端该看的权威闸门（state==READY 才 true） */
             ready: boolean;
         };
@@ -1183,6 +1186,13 @@ export interface components {
             /** @description 必含 `schema: 1`；入库前已过强制脱敏 */
             payload?: components["schemas"]["JsonMap"];
             created_at: components["schemas"]["Timestamp"];
+        };
+        /** @description F-16：客户端→服务端的第一个控制帧。不带 from_seq 表示只要此后新事件。 */
+        WsClientHello: {
+            /** @enum {string} */
+            type: "hello";
+            /** Format: int64 */
+            from_seq?: number | null;
         };
         WsHello: {
             /** @enum {string} */

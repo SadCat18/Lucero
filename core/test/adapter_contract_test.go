@@ -586,3 +586,47 @@ func TestFakeAdapterSubprocess(t *testing.T) {
 		}
 	}
 }
+
+// TestUnknownErrorCodeDegradesToInternal T-45⑤：Core 收到 §15.1 之外的码时必须降级为
+// INTERNAL 且不崩、不装懂。断言全打在 Degrade()/Symbol() 自己的返回值上（T-29）。
+func TestUnknownErrorCodeDegradesToInternal(t *testing.T) {
+	unk := &adapter.Error{Code: adapter.ErrorCode(-32999), Message: "provider said something new",
+		Data: map[string]any{"code": "SOMETHING_NEW", "provider_raw": map[string]any{"x": 1}}}
+	got := unk.Degrade()
+	if got == nil {
+		t.Fatal("Degrade 返回 nil：Core 不能因为看不懂就把错误丢掉")
+	}
+	if got.Code != adapter.ErrInternal {
+		t.Errorf("未知码 %d 降级成 %s，期望 INTERNAL", int(unk.Code), got.Code)
+	}
+	// 这一条是本用例存在的理由：把未知码原样念回去 = Core 假装自己懂，
+	// 也是 Degrade 注释里点名要防的那件事。
+	if s := got.Symbol(); s != "INTERNAL" {
+		t.Errorf("降级后 Symbol()=%q，期望 INTERNAL（未知码不得借 data.code 复活）", s)
+	}
+	d, ok := got.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("data 结构变了：%T", got.Data)
+	}
+	if _, still := d["code"]; still {
+		t.Errorf("data.code 没摘掉，Symbol() 会重新念出未知码：%v", d)
+	}
+	if v, _ := d["original_code"].(int); v != -32999 {
+		t.Errorf("original_code 没保留对端真正说的码（Audit 要能查到原始事实）：%v", d["original_code"])
+	}
+	if _, kept := d["provider_raw"]; !kept {
+		t.Errorf("对端原始信息被丢了：%v", d)
+	}
+	for _, known := range []*adapter.Error{
+		{Code: adapter.ErrMethodNotFound, Message: "no such method"},
+		{Code: adapter.ErrWriteEntryNone, Message: "read-only adapter"},
+		{Code: adapter.ErrInvalidParams, Message: "bad params"},
+	} {
+		if out := known.Degrade(); out != known {
+			t.Errorf("已登记的 %s 被 Degrade 改动了（协议层码不该被降级）", known.Code)
+		}
+	}
+	if out := (*adapter.Error)(nil).Degrade(); out != nil {
+		t.Error("nil Error 的 Degrade 造出了对象")
+	}
+}

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
 )
@@ -34,8 +36,20 @@ type fakeProcess struct {
 	cmd    *exec.Cmd
 	stdin  io.Closer
 	out    *adapter.Writer
-	in     *adapter.Reader
 	stderr *bytes.Buffer
+	// frames carries everything the child says, read by one goroutine so two
+	// concurrent Read calls on one Reader can never interleave inside its buffer.
+	frames chan read
+	// seen is every frame as it arrived, responses included. §6.4's ordering claim
+	// ("claimed before dispatched before the reply") has to be asserted on a log that
+	// skipped nothing: a helper that reads past frames to find what it wants turns
+	// "the first frame was X" into "X arrived eventually".
+	seen []*adapter.Frame
+}
+
+type read struct {
+	f   *adapter.Frame
+	err error
 }
 
 // startFakeAdapter launches the fake as a real subprocess and hands back its pipes.
@@ -57,7 +71,17 @@ func startFakeAdapter(t *testing.T) *fakeProcess {
 		t.Fatalf("Start: %v", err)
 	}
 	p := &fakeProcess{cmd: cmd, stdin: stdin, out: adapter.NewWriter(stdin),
-		in: adapter.NewReader(stdout), stderr: stderr}
+		stderr: stderr, frames: make(chan read)}
+	go func() {
+		r := adapter.NewReader(stdout)
+		for {
+			f, err := r.Read()
+			p.frames <- read{f: f, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	t.Cleanup(func() {
 		_ = stdin.Close()
 		_, _ = io.Copy(io.Discard, stdout)
@@ -66,24 +90,110 @@ func startFakeAdapter(t *testing.T) *fakeProcess {
 	return p
 }
 
-// call sends one request and returns the reply, reading exactly one frame so nothing
-// after it (the test framework's own output) gets parsed.
+// nextFrame returns the frame the child sent next, failing rather than waiting
+// forever: an adapter that stops answering is the bug under test, not a reason to
+// park the suite until the go tool times out.
+func (p *fakeProcess) nextFrame(t *testing.T) *adapter.Frame {
+	t.Helper()
+	select {
+	case r := <-p.frames:
+		if r.err != nil {
+			t.Fatalf("read from the fake adapter: %v", r.err)
+		}
+		return r.f
+	case <-time.After(10 * time.Second):
+		t.Fatal("no frame from the fake adapter within 10s")
+	}
+	return nil
+}
+
+// silent reports whether the adapter kept its mouth shut for d. A frame that does
+// arrive within d is returned so the caller can name it in the failure.
+func (p *fakeProcess) silent(t *testing.T, d time.Duration) (*adapter.Frame, bool) {
+	t.Helper()
+	select {
+	case r := <-p.frames:
+		if r.err != nil {
+			t.Fatalf("read from the fake adapter: %v", r.err)
+		}
+		return r.f, false
+	case <-time.After(d):
+		return nil, true
+	}
+}
+
+func (p *fakeProcess) write(t *testing.T, f *adapter.Frame) {
+	t.Helper()
+	if err := p.out.Write(f); err != nil {
+		t.Fatalf("write %s: %v", f.Method, err)
+	}
+}
+
+// request builds a §1 call frame with a request_id of its own.
+func request(id, method string, params any) *adapter.Frame {
+	raw, _ := json.Marshal(params)
+	return &adapter.Frame{JSONRPC: adapter.JSONRPCVersion, ID: id, Method: method,
+		Params: raw, RequestID: "req-" + id}
+}
+
+// call sends one request and returns its reply, recording every frame it passed
+// through on the way. Matching on the id rather than "the next frame" is what lets a
+// session/send answer with notifications before its response - but the frames it read
+// past stay in the log, so an ordering assertion on top of them is not a skipping one.
 func call(t *testing.T, p *fakeProcess, id, method string, params any) *adapter.Frame {
 	t.Helper()
-	raw, err := json.Marshal(params)
-	if err != nil {
-		t.Fatalf("marshal params: %v", err)
+	p.write(t, request(id, method, params))
+	for {
+		f := p.nextFrame(t)
+		p.seen = append(p.seen, f)
+		if f.Kind() == adapter.KindResponse {
+			if f.ID != id {
+				t.Fatalf("reply for %q while waiting for %q", f.ID, id)
+			}
+			return f
+		}
 	}
-	f := &adapter.Frame{JSONRPC: adapter.JSONRPCVersion, ID: id, Method: method,
-		Params: raw, RequestID: "req-" + id}
-	if err := p.out.Write(f); err != nil {
-		t.Fatalf("write %s: %v", method, err)
+}
+
+// initialize performs §2's handshake, which every other call is gated behind.
+func initialize(t *testing.T, p *fakeProcess) {
+	t.Helper()
+	reply := call(t, p, "init", adapter.MethodInitialize, adapter.InitializeParams{
+		Protocol: adapter.Version{Major: adapter.ProtocolMajor, Minor: adapter.ProtocolMinor}})
+	if reply.Error != nil {
+		t.Fatalf("adapter/initialize: %s", reply.Error)
 	}
-	reply, err := p.in.Read()
-	if err != nil {
-		t.Fatalf("read reply of %s: %v", method, err)
+}
+
+// trace labels every frame in arrival order, responses included, and runs each
+// notification through the decoder Core uses: a frame the fake is happy with and
+// DecodeStream rejects is not evidence (§6.4).
+func (p *fakeProcess) trace(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, f := range p.seen {
+		if f.Kind() == adapter.KindResponse {
+			out = append(out, "reply#"+f.ID)
+			continue
+		}
+		s, err := adapter.DecodeStream(f)
+		if err != nil {
+			t.Fatalf("Core could not decode our own %s notification: %v", f.Method, err)
+		}
+		out = append(out, fmt.Sprintf("%s/%d", s.Method, s.SequenceNo))
 	}
-	return reply
+	return out
+}
+
+// notifications is the stream alone, for counting what a call put on the wire.
+func (p *fakeProcess) notifications() []*adapter.Frame {
+	var out []*adapter.Frame
+	for _, f := range p.seen {
+		if f.Kind() != adapter.KindResponse {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // TestFakeAdapterRefusesBeforeHandshake is §2's gate measured across a process

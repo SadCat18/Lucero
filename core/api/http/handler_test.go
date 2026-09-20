@@ -148,6 +148,33 @@ func TestUnimplementedEndpointsAreNotSilentSuccess(t *testing.T) {
 	}
 }
 
+// ADR-018：链校验逻辑归 internal/audit，cmd/core 只传数据目录路径。audit 还没导出锚点入口
+// （REQ-A-1），所以 /health 今天没有、也不许凭空冒出一个"已校验"字段。这条钉住键集与措辞，
+// 将来真要加必须带 UNVERIFIED 三态之一，不能直接写 VERIFIED。
+func TestHealthNeverClaimsChainVerification(t *testing.T) {
+	hs := newHarness(t)
+	rec := hs.do(http.MethodGet, "/api/v1/health", "", "", "")
+
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"state", "version", "migration_version", "ready"} {
+		if _, ok := keys[k]; !ok {
+			t.Errorf("health 缺字段 %s", k)
+		}
+	}
+	if len(keys) != 4 {
+		t.Errorf("health 冒出了第四个之外的字段，先自问是不是在虚报校验状态: %d 个键", len(keys))
+	}
+	low := strings.ToLower(rec.Body.String())
+	for _, claim := range []string{"verif", "signed", "tamper", "integrity", "verified_local"} {
+		if strings.Contains(low, claim) {
+			t.Errorf("health 不得声称审计链已校验/防篡改（ADR-018），命中 %q：%s", claim, rec.Body)
+		}
+	}
+}
+
 // REQ-F-11 的反向用例（契约③ §2 明令要有一条）：同一请求两次必须拿到两张不同的有效票。
 // 票签发端点还额外豁免于"写操作要带主体"，因为它不改变业务状态。
 func TestWsTicketIsNotIdempotencyCached(t *testing.T) {

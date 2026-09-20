@@ -35,37 +35,97 @@ const (
 	MethodDebugCrash = "debug/crash"
 )
 
-// ErrorCode is the numeric JSON-RPC error code on the wire (CO-4 ruled 2026-09-19:
-// integer, because a standard JSON-RPC client type-checks it). The symbol stays as
-// the Go-side name for logs, Audit and callers that branch; TestErrorCodeTable pins
-// each pair so the two cannot drift, and pins the reserved band.
+// ErrorCode is the numeric JSON-RPC error code on the wire. CO-4 ruled it an
+// integer because a standard JSON-RPC client type-checks the field; §15.1 then ruled
+// that the *name* of a domain failure travels in `error.data.code` as UPPER_SNAKE.
+// TestErrorCodeTable pins every number here so the contract, Core and any Adapter
+// cannot drift apart.
 //
-// CO-4's table: -32600..-32603 for the named refusals, which deliberately does not
-// line up with JSON-RPC's predefined meanings for those numbers, -32001..-32049 for
-// the rest, and -32050..-32099 kept free for a real Adapter's native errors. That is
-// the contract owner's call: only Lucero Adapters speak this protocol, and a
-// Provider's own codes are mapped by that Adapter, never by Core.
+// Two bands, deliberately:
+//
+//	-32600..-32700  JSON-RPC's predefined codes. Only the protocol-layer failures
+//	                live here, and they carry no §15.1 name: the number already says
+//	                everything (-32601 is method-not-found to any client, and
+//	                naming it would invite a second, conflicting vocabulary).
+//	-32000..-32049  the contract's domain refusals (§15.1), each mirrored in data.code.
+//	-32050..-32099  reserved, Core never answers from it; a Provider's native error
+//	                travels inside PROVIDER_ERROR's data.provider_raw instead.
+//
+// Before T-36 three domain codes sat on -32600..-32602, which are predefined
+// (-32600 invalid request / -32601 method not found / -32602 invalid params): a
+// generic client would have routed a WRITE_ENTRY_NONE as "method not found". That was
+// the bug T-36(b) caught.
 type ErrorCode int
 
+// Domain codes Core itself puts on the wire (T-45's class 甲: "Core:internal/adapter"
+// or "Core:internal/process"). Only these get Go symbols - the rest of §15.1 is
+// vocabulary a real Adapter produces, and Core recognises those by the name in
+// data.code plus the number in domainCodes below. Declaring a constant nobody sends
+// would be speculative code that drifts the moment the contract table moves.
 const (
-	ErrProtocolNotInitialized  ErrorCode = -32600 // CO-4
-	ErrWriteEntryNone          ErrorCode = -32601 // CO-4
-	ErrCapabilityUnavailable   ErrorCode = -32602 // CO-4
-	ErrDeliveryModeUnsupported ErrorCode = -32603 // CO-4
-	ErrInvalidParams           ErrorCode = -32001 // CO-4
-	ErrMethodNotFound          ErrorCode = -32002 // CO-4
-	ErrInternal                ErrorCode = -32003 // CO-4
-
-	// -32005..-32049 is the band CO-4 leaves for later codes. These two are codes this
-	// package returns that CO-4 has not numbered, so they sit at the far end: -32005
-	// and -32006 are earmarked there for READ_ONLY and EXECUTION_STATE_UNKNOWN, and
-	// two symbols on one number is a misread waiting to happen. READ_ONLY has no call
-	// site here yet - §3 sends WRITE_ENTRY_NONE through the same door - so it is not
-	// declared, and its number stays unclaimed.
-	ErrAdapterUnresponsive     ErrorCode = -32004 // CO-4
-	ErrProtocolVersionMismatch ErrorCode = -32048 // unnumbered
-	ErrLocalDataUnavailable    ErrorCode = -32049 // unnumbered
+	ErrProtocolNotInitialized  ErrorCode = -32000 // §2, Core refuses a pre-handshake call
+	ErrProtocolVersionMismatch ErrorCode = -32001 // §2.2, Core rejects a foreign major
+	ErrCapabilityUnavailable   ErrorCode = -32002 // §4, Core gates on the capability table
+	ErrWriteEntryNone          ErrorCode = -32003 // §3, Core gates writes on write_entry
+	ErrDeliveryModeUnsupported ErrorCode = -32004 // §5, Core refuses an undeclared state
+	ErrInternal                ErrorCode = -32013 // §15.1 names it INTERNAL, not INTERNAL_ERROR
+	// Vocabulary lives here by §15.1.1's own reading, producer be damned: ADAPTER_UNRESPONSIVE
+	// is raised by internal/process when the child dies mid-call, but an Adapter reply
+	// carrying it must still be recognisable inside the codec.
+	ErrAdapterUnresponsive ErrorCode = -32014
 )
+
+// Protocol-layer failures use JSON-RPC's predefined numbers (§15.3), so they carry no
+// §15.1 name in data.code: -32601 already means method-not-found to any client, and a
+// second spelling would be a second truth (T-36's ruling).
+const (
+	ErrMethodNotFound ErrorCode = -32601
+	ErrInvalidParams  ErrorCode = -32602
+)
+
+// domainCodes is §15.1 in full: the vocabulary Core must recognise, whether or not it
+// ever produces a given code. Keyed by the numbers T-36 asked for; the producer of
+// each one belongs in the contract (§15.1's 生产方 column), not duplicated here.
+var domainCodes = map[ErrorCode]string{
+	ErrProtocolNotInitialized:  "PROTOCOL_NOT_INITIALIZED",
+	ErrProtocolVersionMismatch: "PROTOCOL_VERSION_MISMATCH",
+	ErrCapabilityUnavailable:   "CAPABILITY_UNAVAILABLE",
+	ErrWriteEntryNone:          "WRITE_ENTRY_NONE",
+	ErrDeliveryModeUnsupported: "DELIVERY_MODE_UNSUPPORTED",
+	-32005:                     "LOCAL_DATA_UNAVAILABLE", // Adapter (§4)
+	-32006:                     "SESSION_NOT_FOUND",      // Adapter (§4)
+	-32007:                     "AUTH_REQUIRED",          // Adapter (§2); never log in for the user
+	-32008:                     "RATE_LIMITED",           // Adapter (§7)
+	-32009:                     "DANGEROUS_FLAG_REFUSED", // Core:internal/process (§9 arg gate)
+	-32010:                     "CANCELLED",              // 结果帧: $/cancel ack, never an error reply (§15.3)
+	-32011:                     "TIMEOUT",                // Adapter (§1 deadline_at)
+	-32012:                     "PROVIDER_ERROR",         // Adapter, raw kept in data.provider_raw
+	ErrInternal:                "INTERNAL",
+	ErrAdapterUnresponsive:     "ADAPTER_UNRESPONSIVE",
+	-32015:                     "EXECUTION_STATE_UNKNOWN", // §7 crash semantics: refuse to advance an UNKNOWN execution
+	-32016:                     "READ_ONLY",               // object-level read-only (§12.11), unlike §3's Adapter-level
+}
+
+var protocolCodeNames = map[ErrorCode]string{
+	ErrMethodNotFound: "METHOD_NOT_FOUND",
+	ErrInvalidParams:  "INVALID_PARAMS",
+}
+
+// IsDomainCode reports whether a number is one of §15.1's vocabulary.
+func IsDomainCode(c ErrorCode) bool { _, ok := domainCodes[c]; return ok }
+
+// CodeByName is the reverse of String, for a caller that holds the symbol and needs
+// the number to put on the wire (FakeAdapter's debug/fail takes a name). An unknown
+// name reports false rather than inventing a number: the caller then sends the
+// number it was given, and Core's Degrade path handles it as an unknown code.
+func CodeByName(name string) (ErrorCode, bool) {
+	for c, n := range codeNames {
+		if n == name {
+			return c, true
+		}
+	}
+	return 0, false
+}
 
 // adapterCodeFirst/Last bound -32050..-32099, which CO-4 reserves and Core must
 // never occupy.
@@ -74,19 +134,26 @@ const (
 	adapterCodeLast  = -32050
 )
 
-// codeNames is the symbol side of CO-4's table.
-var codeNames = map[ErrorCode]string{
-	ErrProtocolNotInitialized:  "PROTOCOL_NOT_INITIALIZED",
-	ErrWriteEntryNone:          "WRITE_ENTRY_NONE",
-	ErrCapabilityUnavailable:   "CAPABILITY_UNAVAILABLE",
-	ErrDeliveryModeUnsupported: "DELIVERY_MODE_UNSUPPORTED",
-	ErrInvalidParams:           "INVALID_PARAMS",
-	ErrMethodNotFound:          "METHOD_NOT_FOUND",
-	ErrInternal:                "INTERNAL",
-	ErrAdapterUnresponsive:     "ADAPTER_UNRESPONSIVE",
-	ErrProtocolVersionMismatch: "PROTOCOL_VERSION_MISMATCH",
-	ErrLocalDataUnavailable:    "LOCAL_DATA_UNAVAILABLE",
-}
+// jsonRPCPredefinedFirst/Last bound the band Core may only use for §15.3's
+// protocol-layer failures.
+const (
+	jsonRPCPredefinedFirst = -32700
+	jsonRPCPredefinedLast  = -32600
+)
+
+// codeNames is everything Core may print, for logs, Audit and Error.Symbol. It is
+// built from the two tables above, so the vocabulary stays in one place even though
+// only class-甲 codes have Go constants.
+var codeNames = func() map[ErrorCode]string {
+	m := map[ErrorCode]string{}
+	for k, v := range domainCodes {
+		m[k] = v
+	}
+	for k, v := range protocolCodeNames {
+		m[k] = v
+	}
+	return m
+}()
 
 // String renders the symbol; an unknown number keeps the number visible rather
 // than silently renaming someone else's failure.
@@ -110,9 +177,46 @@ type Error struct {
 	Data    any       `json:"data,omitempty"`
 }
 
-// Symbol returns §15.1's name for the error, preferring a `data.code` the peer sent
-// over the number-derived name: a real Adapter may answer with a §15 code whose
-// number Core has never been given.
+// Known reports whether the number is in §15.1/§15.3's vocabulary. An Adapter may
+// answer with a code Core has never been given (a newer Provider build, or
+// debug/fail aimed at a made-up number); callers use this to degrade instead of
+// branching on a code that means nothing here.
+func (e *Error) Known() bool {
+	if e == nil {
+		return false
+	}
+	_, ok := codeNames[e.Code]
+	return ok
+}
+
+// Degrade maps an unknown code to INTERNAL, keeping the original number in data so a
+// log line and Audit still carry what the Adapter actually said. Never a guess: the
+// unknown code stays visible, Core just stops pretending it understands it.
+func (e *Error) Degrade() *Error {
+	if e == nil || e.Known() {
+		return e
+	}
+	// original_code and original_name, never code: writing a name into data.code
+	// would make Symbol() report the unknown code again instead of INTERNAL, which is
+	// the one thing this function exists to prevent.
+	raw := map[string]any{"original_code": int(e.Code)}
+	if data, ok := e.Data.(map[string]any); ok {
+		for k, v := range data {
+			if k == "code" {
+				if name, ok := v.(string); ok && name != "" {
+					raw["original_name"] = name
+				}
+				continue
+			}
+			raw[k] = v
+		}
+	}
+	return &Error{Code: ErrInternal, Message: e.Message, Data: raw}
+}
+
+// Symbol is §15.1's name for the error, preferring a `data.code` the peer sent over
+// the number-derived name: a real Adapter may answer with a domain code whose number
+// Core has never been given.
 func (e *Error) Symbol() string {
 	if m, ok := e.Data.(map[string]any); ok {
 		if name, ok := m["code"].(string); ok && name != "" {
@@ -249,12 +353,14 @@ func NewCancel(requestID, targetID string) (*Frame, error) {
 // NewErrorReply builds an error reply, carrying §15.1's name in data.code alongside
 // the numeric error.code.
 func NewErrorReply(id, requestID string, code ErrorCode, message string) *Frame {
-	return &Frame{
-		JSONRPC:   JSONRPCVersion,
-		ID:        id,
-		Error:     &Error{Code: code, Message: message, Data: map[string]any{"code": code.String()}},
-		RequestID: requestID,
+	e := &Error{Code: code, Message: message}
+	// §15.1's name travels in data.code for domain refusals only; a predefined
+	// protocol code needs no name, because -32601 already means method-not-found to
+	// any client and a second spelling would be a second truth (T-36c).
+	if name, ok := domainCodes[code]; ok {
+		e.Data = map[string]any{"code": name}
 	}
+	return &Frame{JSONRPC: JSONRPCVersion, ID: id, Error: e, RequestID: requestID}
 }
 
 // Reader decodes ndjson frames from a stream that carries frames only. Adapter

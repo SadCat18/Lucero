@@ -1,0 +1,307 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SadCat18/lucero/core/internal/adapter"
+)
+
+// codeOf reads §15.1.1 instead of repeating its numbers here: an edit to the table
+// must move this test with it rather than leave a stale literal behind. RATE_LIMITED
+// and AUTH_REQUIRED have no Go constant on purpose (T-45: only codes Core produces
+// get one), and looking them up is also what proves the Adapter-side rows exist.
+func codeOf(t *testing.T, name string) adapter.ErrorCode {
+	t.Helper()
+	c, ok := adapter.CodeByName(name)
+	if !ok {
+		t.Fatalf("%s is not in the §15.1.1 table", name)
+	}
+	return c
+}
+
+// TestFakeAdapterDeliversThreeStates is §10's "三态全支持" measured as behaviour rather
+// than as a capability row: each state answers with what CO-7 lets it claim, and the
+// CO-8 evidence pair reaches the wire in the order that makes it readable.
+func TestFakeAdapterDeliversThreeStates(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	send := func(id, delivery, key, text string) adapter.SendResult {
+		t.Helper()
+		reply := call(t, p, id, "session/send", adapter.SendParams{
+			RemoteSessionID: "s-1", Text: text, Delivery: delivery,
+			ExecutionID: "exec-" + id, IdempotencyKey: key})
+		if reply.Error != nil {
+			t.Fatalf("session/send %s (%s): %s", id, delivery, reply.Error)
+		}
+		var res adapter.SendResult
+		if err := json.Unmarshal(reply.Result, &res); err != nil {
+			t.Fatalf("session/send %s reply: %v", id, err)
+		}
+		// Core's own rule, run against the mode that was asked for: this is the check
+		// that turns a quiet downgrade into a failure.
+		if err := res.Validate(delivery); err != nil {
+			t.Errorf("our %s reply breaks CO-7: %v", delivery, err)
+		}
+		return res
+	}
+
+	now := send("1", adapter.DeliveryStartNow, "k1", "hello")
+	if now.TurnID == "" || now.ProviderExecutionID == "" || now.IdempotencyHit {
+		t.Errorf("start_now = %+v, want a turn and a Provider handle", now)
+	}
+	// §5: guide interrupts the turn that is running; it does not open a second one.
+	steer := send("2", adapter.DeliveryGuide, "k2", "and one more thing")
+	if steer.TurnID != now.TurnID {
+		t.Errorf("guide opened %q over the running %q (§5 does not allow that)", steer.TurnID, now.TurnID)
+	}
+	// CO-7: a queued answer may claim a position and nothing else.
+	queued := send("3", adapter.DeliveryQueue, "k3", "later please")
+	if queued.QueuePosition == nil || *queued.QueuePosition != 1 {
+		t.Errorf("queue = %+v, want queue_position 1", queued)
+	}
+	if queued.TurnID != "" {
+		t.Errorf("queued reply carried turn_id %q before the turn ran", queued.TurnID)
+	}
+
+	// §4's Idempotency-Key: the retry answers like the first call, says it is a hit,
+	// and above all does not start a second turn.
+	before := len(p.notifications())
+	again := send("4", adapter.DeliveryStartNow, "k1", "hello")
+	if !again.IdempotencyHit || again.TurnID != now.TurnID {
+		t.Errorf("retry = %+v, want the first answer with idempotency_hit", again)
+	}
+	if got := len(p.notifications()) - before; got != 0 {
+		t.Errorf("the idempotent retry emitted %d stream frames, want 0", got)
+	}
+
+	// The next send closes the running turn and drains the queue behind it, which is
+	// the only thing that distinguishes "queued" from "never ran".
+	next := send("5", adapter.DeliveryStartNow, "k5", "next one")
+	if next.TurnID == now.TurnID {
+		t.Error("the send after the queue reused the closed turn")
+	}
+	// The whole exchange, in arrival order, responses included: §6.4's pair has to be
+	// claimed-then-dispatched-then-answered, and a log that only lists the
+	// notifications cannot tell that apart from three frames that arrived after the
+	// reply. sequence_no is pinned in each label, so §6.2's monotonic rule is here too.
+	want := strings.Join([]string{
+		"reply#init",
+		"turn/claimed/1", "turn/dispatched/2", "stream/delta/3", "reply#1",
+		"stream/delta/4", "reply#2", // the guide's, on the same turn
+		"reply#3", // queued: a position, and no turn on the stream yet
+		"reply#4", // idempotent hit: nothing at all on the stream
+		"turn/finished/5",
+		"turn/claimed/6", "turn/dispatched/7", "stream/delta/8", "turn/finished/9", // the drained queue
+		"turn/claimed/10", "turn/dispatched/11", "stream/delta/12", "reply#5",
+	}, " ")
+	if got := strings.Join(p.trace(t), " "); got != want {
+		t.Errorf("wire order = %s\n       want %s", got, want)
+	}
+}
+
+// TestFakeAdapterRefusesUndeliverableSend pins §5's mandatory refusals across a
+// process boundary: an unknown state and a missing Idempotency-Key get named, never
+// absorbed into whichever state the Adapter happens to support.
+func TestFakeAdapterRefusesUndeliverableSend(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	for _, tc := range []struct {
+		name string
+		p    adapter.SendParams
+		want adapter.ErrorCode
+	}{
+		{"unknown state", adapter.SendParams{RemoteSessionID: "s", Delivery: "teleport",
+			IdempotencyKey: "k"}, adapter.ErrDeliveryModeUnsupported},
+		{"no idempotency key", adapter.SendParams{RemoteSessionID: "s", Delivery: adapter.DeliveryStartNow},
+			adapter.ErrInvalidParams},
+		{"strategy off a queue", adapter.SendParams{RemoteSessionID: "s", Delivery: adapter.DeliveryStartNow,
+			QueueStrategy: adapter.QueueAfterTurn, IdempotencyKey: "k"}, adapter.ErrInvalidParams},
+	} {
+		reply := call(t, p, "bad-"+tc.name, "session/send", tc.p)
+		if reply.Error == nil {
+			t.Errorf("%s: got %+v, want a refusal", tc.name, reply)
+			continue
+		}
+		if reply.Error.Code != tc.want {
+			t.Errorf("%s: code %s, want %s", tc.name, reply.Error.Code, tc.want)
+		}
+	}
+	// A refusal must not have opened a turn either.
+	if got := len(p.notifications()); got != 0 {
+		t.Errorf("the refused sends put %d frames on the stream, want 0", got)
+	}
+}
+
+// TestFakeAdapterQuotaUnknownVersusObserved is §7's "UNKNOWN and 0 are two different
+// facts" as two answers from the same process, so a reader can compare them.
+func TestFakeAdapterQuotaUnknownVersusObserved(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	var seen adapter.QuotaResult
+	reply := call(t, p, "q1", "quota/read", struct{}{})
+	if reply.Error != nil {
+		t.Fatalf("quota/read: %s", reply.Error)
+	}
+	if err := json.Unmarshal(reply.Result, &seen); err != nil {
+		t.Fatalf("quota/read reply: %v", err)
+	}
+	if err := seen.Validate(); err != nil {
+		t.Errorf("our observed quota breaks §7: %v", err)
+	}
+	if len(seen.Observations) != 1 || seen.Observations[0].UsedPercent == nil {
+		t.Fatalf("observations = %+v, want one readable row", seen.Observations)
+	}
+
+	call(t, p, "arm", "debug/unknown_quota", struct{}{})
+	unread := call(t, p, "q2", "quota/read", struct{}{})
+	if unread.Error != nil {
+		t.Fatalf("quota/read after debug/unknown_quota: %s", unread.Error)
+	}
+	// The wire shape is the contract here, not the decoded struct: null would decode
+	// to the same empty slice, and §7 asks for observations: [].
+	if !strings.Contains(string(unread.Result), `"observations":[]`) {
+		t.Errorf("unreadable quota = %s, want observations:[] rather than null", unread.Result)
+	}
+	seen = adapter.QuotaResult{}
+	if err := json.Unmarshal(unread.Result, &seen); err != nil {
+		t.Fatalf("quota/read reply: %v", err)
+	}
+	if seen.OverallConfidence != adapter.ConfidenceUnknown || len(seen.Observations) != 0 {
+		t.Errorf("unreadable quota = %+v, want UNKNOWN with no observations", seen)
+	}
+	if err := seen.Validate(); err != nil {
+		t.Errorf("the UNKNOWN reply is not a shape §7 allows: %v", err)
+	}
+}
+
+// TestFakeAdapterFailInjection covers §10's debug/fail in the three shapes a contract
+// test needs: the next call, the Nth call, and a code Core has never heard of. The
+// last one is what makes Core's degradation path testable without editing the table.
+func TestFakeAdapterFailInjection(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	arm := func(id, code string, nth int) *adapter.Frame {
+		t.Helper()
+		return call(t, p, id, "debug/fail", map[string]any{"code": code, "nth": nth})
+	}
+	if reply := arm("a1", "RATE_LIMITED", 0); reply.Error != nil {
+		t.Fatalf("debug/fail: %s", reply.Error)
+	}
+	// §10's default: the injection fires on the call right after the arming one.
+	fired := call(t, p, "h1", adapter.MethodHealth, struct{}{})
+	if fired.Error == nil {
+		t.Fatalf("debug/fail did not fire on the next call: %s", fired.Result)
+	}
+	if want := codeOf(t, "RATE_LIMITED"); fired.Error.Code != want {
+		t.Errorf("injected code = %s, want %s", fired.Error.Code, want)
+	}
+	if data, ok := fired.Error.Data.(map[string]any); !ok || data["code"] != "RATE_LIMITED" {
+		t.Errorf("injected data = %v, want §15.1's name in data.code", fired.Error.Data)
+	}
+	// And it is spent: §10 arms one failure, not a permanent outage.
+	if spent := call(t, p, "h2", adapter.MethodHealth, struct{}{}); spent.Error != nil {
+		t.Errorf("adapter/health after the injection was spent: %s", spent.Error)
+	}
+
+	if reply := arm("a2", "AUTH_REQUIRED", 3); reply.Error != nil {
+		t.Fatalf("debug/fail nth=3: %s", reply.Error)
+	}
+	for i := 1; i <= 2; i++ {
+		if r := call(t, p, fmt.Sprintf("ok%d", i), adapter.MethodHealth, struct{}{}); r.Error != nil {
+			t.Errorf("call %d of 3 should still work, got %s", i, r.Error)
+		}
+	}
+	if r := call(t, p, "third", adapter.MethodHealth, struct{}{}); r.Error == nil ||
+		r.Error.Code != codeOf(t, "AUTH_REQUIRED") {
+		t.Errorf("nth=3 injection = %+v, want AUTH_REQUIRED on the third call", r)
+	}
+
+	// A number outside §15.1 travels as a number and gets no name, which is how Core
+	// learns to degrade rather than to guess.
+	const outside = -32900
+	if reply := arm("a3", fmt.Sprintf("%d", outside), 0); reply.Error != nil {
+		t.Fatalf("debug/fail with a numeric code: %s", reply.Error)
+	}
+	odd := call(t, p, "h4", adapter.MethodHealth, struct{}{})
+	if odd.Error == nil || int(odd.Error.Code) != outside {
+		t.Fatalf("unknown-code injection = %+v, want it on the wire unchanged", odd)
+	}
+	if odd.Error.Known() {
+		t.Errorf("%d is not in §15.1 but Known() said otherwise", outside)
+	}
+	if odd.Error.Data != nil {
+		t.Errorf("the unknown code carried data %v; only §15.1's codes get a name", odd.Error.Data)
+	}
+	degraded := odd.Error.Degrade()
+	raw, err := json.Marshal(degraded.Data)
+	if err != nil {
+		t.Fatalf("degraded data: %v", err)
+	}
+	keeps := fmt.Sprintf(`"original_code":%d`, outside)
+	if degraded.Code != adapter.ErrInternal || !strings.Contains(string(raw), keeps) {
+		t.Errorf("Degrade = %s with %s, want INTERNAL that keeps the original number visible", degraded.Code, raw)
+	}
+
+	if reply := arm("a4", "NOT_A_CODE", 0); reply.Error == nil ||
+		reply.Error.Code != adapter.ErrInvalidParams {
+		t.Errorf("debug/fail accepted a code that is neither a name nor a number: %+v", reply)
+	}
+}
+
+// TestFakeAdapterHangWaitsForCancel is §10's debug/hang and §15.3 rule 5 together:
+// nothing answers until a $/cancel names this request, and that acknowledgement is a
+// result frame. A cancel for some other id must not release it either, or a timeout
+// on one call would silently free a different one.
+func TestFakeAdapterHangWaitsForCancel(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	p.write(t, request("h1", "debug/hang", struct{}{}))
+	if f, quiet := p.silent(t, 300*time.Millisecond); !quiet {
+		t.Fatalf("debug/hang answered early with %v", f)
+	}
+
+	other, err := adapter.NewCancel("req-x", "not-h1")
+	if err != nil {
+		t.Fatalf("NewCancel: %v", err)
+	}
+	p.write(t, other)
+	if f, quiet := p.silent(t, 300*time.Millisecond); !quiet {
+		t.Fatalf("a $/cancel for another request released the hang: %v", f)
+	}
+
+	mine, err := adapter.NewCancel("req-y", "h1")
+	if err != nil {
+		t.Fatalf("NewCancel: %v", err)
+	}
+	p.write(t, mine)
+	reply := p.nextFrame(t)
+	if reply.ID != "h1" {
+		t.Fatalf("reply id %q, want the hanging request's", reply.ID)
+	}
+	// §15.3: CANCELLED has a number but must never appear in an error response.
+	if reply.Error != nil {
+		t.Fatalf("the cancel acknowledgement arrived as an error: %s", reply.Error)
+	}
+	var ack struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err := json.Unmarshal(reply.Result, &ack); err != nil || !ack.Cancelled {
+		t.Errorf("cancel acknowledgement = %s, want the cancelled flag set", reply.Result)
+	}
+	if !strings.Contains(p.stderr.String(), "hanging on h1") {
+		t.Errorf("the hang was not reported on stderr: %q", p.stderr)
+	}
+	// The session has to keep serving afterwards.
+	if r := call(t, p, "h2", adapter.MethodHealth, struct{}{}); r.Error != nil {
+		t.Errorf("adapter/health after the cancel: %s, want the process still serving", r.Error)
+	}
+}

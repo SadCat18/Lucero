@@ -43,7 +43,13 @@ export interface ChainCall {
   detail: string;
 }
 
-export const core = createCoreClient({});
+/**
+ * 面板**不持有口令**（契约③ §1 第 2.2 项，REQ-F-18 裁定）：dev 期由 Vite dev-server 的同源反代
+ * 注入 Authorization，生产期由 Tauri shell 注入；WS 侧仍走 §2.1 的一次性短票，代理不代劳。
+ * 所以这里没有 `?core_token=`，客户端也不再有 token 字段。
+ * 生产期 v0.1 不开放真环境（Rust/Tauri 未进场），重开条件 = Tauri 进场。
+ */
+export const core = createCoreClient();
 
 export const link = reactive({
   state: 'connecting' as LinkState,

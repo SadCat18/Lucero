@@ -43,6 +43,7 @@ type Command struct {
 	ResultCode   string
 	ErrorCode    string
 	LeaseState   string
+	Reason       string // 人给的理由（:pause 用）。CancelledPayload 走 ErrorCode，那是执行侧带来的错误码，两者不同源。
 	Notification string // 被拒时那条 Notification 的预生成 id
 	RejEvent     string // 被拒时 notification_created 的事件 id
 
@@ -151,10 +152,10 @@ func guardIfMatch(cur Task, cmd Command) error {
 }
 
 // advance 是所有状态动作共用的四步：库里读当前行（状态与版本都从这儿来，不接受调用方口头给）
-// → If-Match → §5.1 状态机裁决 → Touch（一个版本、一行事件）。
+// → If-Match → 起始态白名单（allowedFrom=nil 表示交给矩阵自己判）→ §5.1 状态机裁决 → Touch（一个版本、一行事件）。
 // 任何一步不过就一行都不写。
 func (s *Service) advance(ctx context.Context, tx *db.Tx, id string, cmd Command, to State,
-	eventOf func(Task) (string, any)) (Result, error) {
+	allowedFrom map[State]bool, eventOf func(Task) (string, any)) (Result, error) {
 
 	cur, err := NewRepository(tx).Get(ctx, id)
 	if err != nil {
@@ -163,6 +164,9 @@ func (s *Service) advance(ctx context.Context, tx *db.Tx, id string, cmd Command
 	res := Result{From: cur.Status, To: cur.Status, Version: cur.Version}
 	if err := guardIfMatch(cur, cmd); err != nil {
 		return res, err
+	}
+	if allowedFrom != nil && !allowedFrom[cur.Status] {
+		return res, fmt.Errorf("task: 起始态 %s 不在本动作允许的集合里（目标 %s）: %w", cur.Status, to, ErrIllegalTransition)
 	}
 	if err := Check(cur.Status, to, Normal, Evidence{}); err != nil {
 		return res, fmt.Errorf("task: %s→%s 不在 §5.1 矩阵里: %w", cur.Status, to, err)
@@ -267,10 +271,47 @@ func (s *Service) Create(ctx context.Context, tx *db.Tx, in NewTask) (Task, erro
 }
 
 // Queue 是唯一合法的"排队"入口：CREATED→QUEUED（§5.1）。
-// Scheduler 之后由它自己那一步（QUEUED→PREPARING）接手，这里不代劳。
 func (s *Service) Queue(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
-	return s.advance(ctx, tx, id, cmd, Queued, func(t Task) (string, any) {
+	return s.advance(ctx, tx, id, cmd, Queued, nil, func(t Task) (string, any) {
 		return EventQueued, QueuedPayload{Priority: t.Priority}
+	})
+}
+
+// Prepare 是 QUEUED→PREPARING（§5.1），Scheduler 拉起 Execution 之后回头调它。
+// execution_id 是这条事件的语义核心（§6），不是可选装饰：ADR-013/015 下 Task 与 Execution 是两个聚合，
+// 一条说"开始准备"却点不出准备者的事件等于伪造，所以在碰库之前就要失败。
+func (s *Service) Prepare(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
+	if cmd.ExecutionID == "" {
+		return Result{}, fmt.Errorf("%w: task_preparing 缺 execution_id", ErrInvalidTask)
+	}
+	return s.advance(ctx, tx, id, cmd, Preparing, nil, func(t Task) (string, any) {
+		return EventPreparing, PreparingPayload{ExecutionID: cmd.ExecutionID}
+	})
+}
+
+// Pause 把任务挂到 PAUSED。起始态不在这设白名单：§5.1 里指向 PAUSED 的边本来就散在七个状态上
+// （QUEUED/PREPARING/RUNNING/WAITING_APPROVAL/WAITING_INPUT/BLOCKED/WAITING_ACCEPTANCE），矩阵说了算。
+// reason 允许为空：§3 没给 :pause 定义请求体，"查不到条款的要求"不许我替契约发明（见 progress C21）。
+func (s *Service) Pause(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
+	return s.advance(ctx, tx, id, cmd, Paused, nil, func(t Task) (string, any) {
+		return EventPaused, PausedPayload{Reason: cmd.Reason}
+	})
+}
+
+// resumedFrom 是 §6 给 task_resumed.from 定死的取值集合：只有真的被挂起来过的状态才谈得上"恢复"。
+// 不加这道白名单会出这种事：INTERRUPTED 也有到 QUEUED/RUNNING 的合法边（§5.1），
+// 于是一次崩溃恢复被写成 task_resumed{from:"INTERRUPTED"} —— 目录里没这个值，且没人暂停过。
+var resumedFrom = map[State]bool{Paused: true, Blocked: true}
+
+// Resume 只承认"从 PAUSED 或 BLOCKED 回到 QUEUED 或 RUNNING"。
+// 目标态**必须**由调用方点名：tasks 表没有"暂停之前是什么"这一列，而 §5.1 里
+// PAUSED→QUEUED 与 PAUSED→RUNNING 两条边都合法，替客户端猜就等于凭空决定要不要有一个 Execution。
+func (s *Service) Resume(ctx context.Context, tx *db.Tx, id string, to State, cmd Command) (Result, error) {
+	if to != Queued && to != Running {
+		return Result{}, fmt.Errorf("%w: resume 的目标只能是 QUEUED 或 RUNNING，给了 %q", ErrInvalidTask, to)
+	}
+	return s.advance(ctx, tx, id, cmd, to, resumedFrom, func(t Task) (string, any) {
+		return EventResumed, ResumedPayload{From: t.Status}
 	})
 }
 

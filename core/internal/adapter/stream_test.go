@@ -31,19 +31,19 @@ func TestDecodeStream(t *testing.T) {
 		{
 			name:   "delta",
 			method: MethodStreamDelta,
-			params: `{"sequence_no":7,"channel":"ASSISTANT","text":"hel","provider_raw":{"tok":123}}`,
+			params: `{"turn_ref":"t-1","sequence_no":7,"channel":"ASSISTANT","text":"hel","provider_raw":{"tok":123}}`,
 			want:   StreamFrame{SequenceNo: 7, Channel: ChannelAssistant, Text: "hel"},
 		},
 		{
 			name:   "state",
 			method: MethodStreamState,
-			params: `{"sequence_no":8,"normalized_status":"RUNNING","provider_status_raw":"generating","confidence":"MEDIUM"}`,
+			params: `{"turn_ref":"t-1","sequence_no":8,"normalized_status":"RUNNING","provider_status_raw":"generating","confidence":"MEDIUM"}`,
 			want:   StreamFrame{SequenceNo: 8, NormalizedState: "RUNNING", Confidence: ConfidenceMedium},
 		},
 		{
 			name:   "finished is the mandatory one",
 			method: MethodTurnFinished,
-			params: `{"sequence_no":9,"result_code":"OK","usage":{"input_tokens":10}}`,
+			params: `{"turn_ref":"t-1","sequence_no":9,"result_code":"OK","usage":{"input_tokens":10}}`,
 			want:   StreamFrame{SequenceNo: 9, ResultCode: "OK"},
 		},
 		{
@@ -52,12 +52,18 @@ func TestDecodeStream(t *testing.T) {
 			params:  `{"channel":"THOUGHT","text":"hmm"}`,
 			wantErr: "CO-6",
 		},
-		{name: "unknown channel", method: MethodStreamDelta, params: `{"sequence_no":1,"channel":"SYSTEM","text":"x"}`, wantErr: "channel"},
-		{name: "missing channel", method: MethodStreamDelta, params: `{"sequence_no":1,"text":"x"}`, wantErr: "channel"},
-		{name: "negative sequence", method: MethodStreamDelta, params: `{"sequence_no":-1,"channel":"TOOL"}`, wantErr: "CO-6"},
-		{name: "state without status", method: MethodStreamState, params: `{"sequence_no":1,"confidence":"HIGH"}`, wantErr: "normalized_status"},
-		{name: "state without confidence", method: MethodStreamState, params: `{"sequence_no":1,"normalized_status":"RUNNING"}`, wantErr: "confidence"},
-		{name: "finished without result_code", method: MethodTurnFinished, params: `{"sequence_no":1}`, wantErr: "result_code"},
+		{name: "unknown channel", method: MethodStreamDelta, params: `{"turn_ref":"t-1","sequence_no":1,"channel":"SYSTEM","text":"x"}`, wantErr: "channel"},
+		{name: "missing channel", method: MethodStreamDelta, params: `{"turn_ref":"t-1","sequence_no":1,"text":"x"}`, wantErr: "channel"},
+		{name: "negative sequence", method: MethodStreamDelta, params: `{"turn_ref":"t-1","sequence_no":-1,"channel":"TOOL"}`, wantErr: "CO-6"},
+		{name: "state without status", method: MethodStreamState, params: `{"turn_ref":"t-1","sequence_no":1,"confidence":"HIGH"}`, wantErr: "normalized_status"},
+		{name: "state without confidence", method: MethodStreamState, params: `{"turn_ref":"t-1","sequence_no":1,"normalized_status":"RUNNING"}`, wantErr: "confidence"},
+		{name: "finished without result_code", method: MethodTurnFinished, params: `{"turn_ref":"t-1","sequence_no":1}`, wantErr: "result_code"},
+		// §6.7: a frame that cannot be attributed is a protocol violation, and it is
+		// the four output notifications that pay for it. turn/claimed and
+		// turn/dispatched attribute themselves by execution_id (CO-8), so requiring a
+		// second key there would reject frames the contract itself defines.
+		{name: "delta without turn_ref", method: MethodStreamDelta, params: `{"sequence_no":1,"channel":"ASSISTANT","text":"x"}`, wantErr: "turn_ref"},
+		{name: "finished without turn_ref", method: MethodTurnFinished, params: `{"sequence_no":1,"result_code":"OK"}`, wantErr: "turn_ref"},
 	}
 	for _, c := range cases {
 		f := notifyFrame(t, c.method, c.params)
@@ -90,7 +96,7 @@ func TestDecodeStream(t *testing.T) {
 // untouched, because Core may not interpret what only the Provider defines.
 func TestProviderPayloadsStayRaw(t *testing.T) {
 	const raw = `{"tok":123,"nested":{"a":[1,2]}}`
-	f := notifyFrame(t, MethodStreamDelta, `{"sequence_no":1,"channel":"ASSISTANT","text":"x","provider_raw":`+raw+`}`)
+	f := notifyFrame(t, MethodStreamDelta, `{"turn_ref":"t-1","sequence_no":1,"channel":"ASSISTANT","text":"x","provider_raw":`+raw+`}`)
 	got, err := DecodeStream(f)
 	if err != nil {
 		t.Fatalf("DecodeStream: %v", err)
@@ -98,7 +104,7 @@ func TestProviderPayloadsStayRaw(t *testing.T) {
 	if string(got.ProviderRaw) != raw {
 		t.Errorf("provider_raw = %s, want it byte-identical to %s", got.ProviderRaw, raw)
 	}
-	fin := notifyFrame(t, MethodTurnFinished, `{"sequence_no":2,"result_code":"OK","usage":{"input_tokens":10,"output_tokens":3}}`)
+	fin := notifyFrame(t, MethodTurnFinished, `{"turn_ref":"t-1","sequence_no":2,"result_code":"OK","usage":{"input_tokens":10,"output_tokens":3}}`)
 	s, err := DecodeStream(fin)
 	if err != nil {
 		t.Fatalf("finished: %v", err)
@@ -109,7 +115,7 @@ func TestProviderPayloadsStayRaw(t *testing.T) {
 }
 
 func TestStreamItemIsOpaque(t *testing.T) {
-	f := notifyFrame(t, MethodStreamItem, `{"sequence_no":4,"tool":"bash","state":"READY","provider_raw":{"exit":0}}`)
+	f := notifyFrame(t, MethodStreamItem, `{"turn_ref":"t-1","sequence_no":4,"tool":"bash","state":"READY","provider_raw":{"exit":0}}`)
 	got, err := DecodeStream(f)
 	if err != nil {
 		t.Fatalf("DecodeStream: %v", err)
@@ -135,7 +141,7 @@ func TestStreamFrameMustBeNotification(t *testing.T) {
 		t.Error("a response-shaped stream frame decoded, want refusal")
 	}
 	var unknown Frame
-	if err := json.Unmarshal([]byte(`{"jsonrpc":"2.0","method":"stream/nope","request_id":"r","params":{"sequence_no":1}}`), &unknown); err != nil {
+	if err := json.Unmarshal([]byte(`{"jsonrpc":"2.0","method":"stream/nope","request_id":"r","params":{"turn_ref":"t-1","sequence_no":1}}`), &unknown); err != nil {
 		t.Fatal(err)
 	}
 	var e *Error
@@ -148,12 +154,12 @@ func TestStreamFrameMustBeNotification(t *testing.T) {
 // Reader reads and DecodeStream decodes, including stream/item's injected cursor.
 func TestStreamRoundTrip(t *testing.T) {
 	out := []*StreamFrame{
-		{Method: MethodStreamDelta, SequenceNo: 1, Channel: ChannelAssistant, Text: "a\nb"},
-		{Method: MethodStreamItem, SequenceNo: 2, Item: json.RawMessage(`{"tool":"bash"}`)},
-		{Method: MethodStreamState, SequenceNo: 3, NormalizedState: "RUNNING", Confidence: ConfidenceHigh},
-		{Method: MethodTurnClaimed, SequenceNo: 4, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "pe1", QueuePosition: i64(2)},
-		{Method: MethodTurnDispatch, SequenceNo: 5, TurnID: "t1", ExecutionID: "e1", ProviderExecutionID: "pe1"},
-		{Method: MethodTurnFinished, SequenceNo: 6, ResultCode: "OK"},
+		{Method: MethodStreamDelta, SequenceNo: 1, TurnRef: "t-1", Channel: ChannelAssistant, Text: "a\nb"},
+		{Method: MethodStreamItem, SequenceNo: 2, TurnRef: "t-1", Item: json.RawMessage(`{"tool":"bash"}`)},
+		{Method: MethodStreamState, SequenceNo: 3, TurnRef: "t-1", NormalizedState: "RUNNING", Confidence: ConfidenceHigh},
+		{Method: MethodTurnClaimed, SequenceNo: 4, TurnRef: "t-1", Accepted: true, ExecutionID: "e1", ProviderExecutionID: "pe1", QueuePosition: i64(2)},
+		{Method: MethodTurnDispatch, SequenceNo: 5, TurnRef: "t-1", TurnID: "t1", ExecutionID: "e1", ProviderExecutionID: "pe1"},
+		{Method: MethodTurnFinished, SequenceNo: 6, TurnRef: "t-1", ResultCode: "OK"},
 	}
 	var buf strings.Builder
 	w := NewWriter(&buf)
@@ -472,14 +478,18 @@ func TestDecodeStreamEvidence(t *testing.T) {
 		params  string
 		wantErr string
 	}{
-		{"claimed nominal", MethodTurnClaimed, `{"sequence_no":1,"accepted":true,"execution_id":"e1","provider_execution_id":"pe1","queue_position":2}`, ""},
-		{"refused claim needs no turn_id", MethodTurnClaimed, `{"sequence_no":1,"execution_id":"e1","provider_execution_id":"pe1"}`, ""},
-		{"claimed without execution_id", MethodTurnClaimed, `{"sequence_no":1,"accepted":true,"provider_execution_id":"pe1"}`, "execution_id"},
-		{"claimed without provider handle", MethodTurnClaimed, `{"sequence_no":1,"accepted":true,"execution_id":"e1"}`, "provider_execution_id"},
-		{"dispatch nominal", MethodTurnDispatch, `{"sequence_no":2,"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, ""},
-		{"dispatch without execution_id", MethodTurnDispatch, `{"sequence_no":2,"turn_id":"t1","provider_execution_id":"pe1"}`, "execution_id"},
-		{"dispatch without provider handle", MethodTurnDispatch, `{"sequence_no":2,"turn_id":"t1","execution_id":"e1"}`, "provider_execution_id"},
-		{"dispatch without turn_id", MethodTurnDispatch, `{"sequence_no":2,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_id"},
+		{"claimed nominal", MethodTurnClaimed, `{"turn_ref":"t-1","sequence_no":1,"accepted":true,"execution_id":"e1","provider_execution_id":"pe1","queue_position":2}`, ""},
+		{"refused claim needs no turn_id", MethodTurnClaimed, `{"turn_ref":"t-1","sequence_no":1,"execution_id":"e1","provider_execution_id":"pe1"}`, ""},
+		{"claimed without execution_id", MethodTurnClaimed, `{"turn_ref":"t-1","sequence_no":1,"accepted":true,"provider_execution_id":"pe1"}`, "execution_id"},
+		{"claimed without provider handle", MethodTurnClaimed, `{"turn_ref":"t-1","sequence_no":1,"accepted":true,"execution_id":"e1"}`, "provider_execution_id"},
+		{"dispatch nominal", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, ""},
+		{"dispatch without execution_id", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","provider_execution_id":"pe1"}`, "execution_id"},
+		{"dispatch without provider handle", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","execution_id":"e1"}`, "provider_execution_id"},
+		{"dispatch without turn_id", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_id"},
+				// §6.7 is six frames, not four: the CO-8 pair owes a turn_ref like every other
+		// notification, even though CO-8 already gives it an execution_id to attribute itself by.
+		{"claimed without turn_ref", MethodTurnClaimed, `{"sequence_no":1,"accepted":true,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_ref"},
+		{"dispatch without turn_ref", MethodTurnDispatch, `{"sequence_no":2,"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, "turn_ref"},
 	}
 	for _, c := range cases {
 		f := notifyFrame(t, c.method, c.params)

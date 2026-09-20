@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -39,10 +38,13 @@ func TestRealCoreStreamsRealJournalRows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first := readWSFrame(t, ws)
-	if first["type"] != "event" {
-		t.Fatalf("第一帧应是 event，实际 %v", first)
+	// 首帧是 hello 回显（REQ-F-17）：带了 from_seq=0 就该收到 echo，客户端不据此改游标。
+	// 之前这里直接期望 event —— 那是"补发非空时侥幸有帧"，空 journal 时同一条链会一字不发。
+	echo := readWSFrame(t, ws)
+	if echo["type"] != "hello" || echo["from_seq"] != float64(0) {
+		t.Fatalf(`带游标的第一帧应是 hello 回显 {"type":"hello","from_seq":0}，实际 %v`, echo)
 	}
+	first := readWSFrameWithType(t, ws, "event")
 	data, _ := first["data"].(map[string]any)
 	if data["event_type"] != "task_created" || data["aggregate_type"] != "task" || data["aggregate_id"] != "t-ws-1" {
 		t.Errorf("帧里的信封不对: %v", data)
@@ -70,8 +72,43 @@ func TestRealCoreStreamsRealJournalRows(t *testing.T) {
 
 }
 
-// --- 极简 WS 客户端（Go 标准库没有客户端）---
+// REQ-F-17 的原始症状必须在**真 Core + 空 journal + 真 socket** 上验一遍：boot 之后一条事件都没有时，
+// 客户端发 hello 就必须拿到首帧，否则面板永远停在 connecting。
+// 与 api/websocket 那组的分工：那边用替身 journal 逐条对语义，这边证真库真 SQL 真握手这条路上真的会发。
+func TestRealCoreFirstFrameOnEmptyJournal(t *testing.T) {
+	core := bootAndServe(t)
+	base := "http://" + core.endpoint
 
+	// 前置取证：journal 真的是空的，否则这条测的就不是 F-17 那一格。
+	var rows int64
+	if err := core.db.Read.QueryRow(`SELECT count(*) FROM event_journal`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("这条用例要求空 journal，实际 %d 行（boot 期间有人往 event_journal 写了东西）", rows)
+	}
+
+	ws := dialWS(t, core.endpoint, "/ws/v1/events?ticket="+issueTicket(t, base, core.token))
+	defer ws.Close()
+	if err := writeWS(ws, `{"type":"hello"}`); err != nil {
+		t.Fatal(err)
+	}
+	if f := readWSFrame(t, ws); f["type"] != "hello_ack" || f["server_seq"] != float64(0) {
+		t.Fatalf(`空 journal + 不带游标应回 {"type":"hello_ack","server_seq":0}，实际 %v`, f)
+	}
+
+	// 带游标那条走回显：没东西可推也不许沉默。
+	ws2 := dialWS(t, core.endpoint, "/ws/v1/events?ticket="+issueTicket(t, base, core.token))
+	defer ws2.Close()
+	if err := writeWS(ws2, `{"type":"hello","from_seq":0}`); err != nil {
+		t.Fatal(err)
+	}
+	if f := readWSFrame(t, ws2); f["type"] != "hello" || f["from_seq"] != float64(0) {
+		t.Fatalf(`空 journal + from_seq=0 应回 hello 回显，实际 %v`, f)
+	}
+}
+
+// --- 极简 WS 客户端（Go 标准库没有客户端）---
 func dialWS(t *testing.T, hostPort, path string) net.Conn {
 	t.Helper()
 	c, err := net.Dial("tcp", hostPort)
@@ -174,21 +211,8 @@ func (b *bufferedConn) Read(p []byte) (int, error) { return b.br.Read(p) }
 
 // --- 真库写入 ---
 
-var principalOnce sync.Once
-
-func seedPrincipalOnce(t *testing.T, core *Core) {
-	t.Helper()
-	principalOnce.Do(func() {
-		if _, err := core.db.Read.Exec(`INSERT INTO principals (id, principal_type, display_name, created_at, updated_at)
-			VALUES ('system', 'SYSTEM', 'Core', 1, 1)`); err != nil {
-			t.Fatal(err)
-		}
-	})
-}
-
 func writeTaskEvent(t *testing.T, core *Core, id, eventType, title string) error {
-	// event_journal.principal_id 有外键，主体行先建一次即可（靠 Read 池，不在写事务里做测试准备）。
-	seedPrincipalOnce(t, core)
+	// principals 由 boot 建好（local-user / system），这里不需要再准备。
 	return core.db.Write(context.Background(), func(tx *db.Tx) error {
 		m, err := json.Marshal(map[string]any{"title": title, "priority": "HIGH", "mode": "EXECUTE",
 			"risk_level": "LOW"})

@@ -81,12 +81,20 @@ func TestHealthReflectsARealBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 除 /health 外一律要口令；口令对了才轮到"还没实现"（501），不许假成功。
+	// 除 /health 外一律要口令；口令对了才轮到业务面（tasks 已实现 → 200），不许假成功。
 	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/tasks", "", nil); !isStatus(err, "401") {
 		t.Errorf("没带口令读 /api/v1/tasks 应 401，实际 %v", err)
 	}
-	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/tasks", ep.Token, nil); !isStatus(err, "501") {
-		t.Errorf("带对口令后应 501，实际 %v", err)
+	var listed map[string]any
+	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/tasks", ep.Token, &listed); err != nil {
+		t.Fatalf("带对口令读 tasks 应 200，实际 %v", err)
+	}
+	if items, ok := listed["items"].([]any); !ok || len(items) != 0 {
+		t.Errorf("空库的 tasks 列表应为空数组，实际 %v", listed)
+	}
+	// 还没接的面仍然 501，不许假成功。
+	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/projects", ep.Token, nil); !isStatus(err, "501") {
+		t.Errorf("未实现的端点应 501，实际 %v", err)
 	}
 }
 
@@ -94,12 +102,8 @@ func TestHealthReflectsARealBoot(t *testing.T) {
 // 平台层 fail-closed（db 自己在 touch_test.go 里钉），所以 boot 之后能写成就是这条顺序生效的证据。
 func TestBootLeavesTheStoreWritable(t *testing.T) {
 	core := bootAndServe(t)
+	// principals 已由 boot 建好（§1.4 单用户 + 两处外键），这里只验"boot 之后能写成、一行事件"。
 	err := core.db.Write(t.Context(), func(tx *db.Tx) error {
-		if _, err := tx.Append("principals",
-			[]string{"id", "principal_type", "display_name", "created_at", "updated_at"},
-			[]any{"system", "SYSTEM", "Core", int64(1), int64(1)}); err != nil {
-			return err
-		}
 		return tx.Create(db.AggTask, "t-boot",
 			[]string{"title", "created_at", "updated_at"}, []any{"x", int64(1), int64(1)},
 			db.EventDraft{EventID: "e-boot", Type: "task_created", Aggregate: db.AggTask,

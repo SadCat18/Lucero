@@ -33,12 +33,12 @@ func (d *DB) Migrate(dir string) error {
 	return d.migrate(os.DirFS(dir), ".", dir)
 }
 
-// MigrateFS applies pending .sql scripts read only from fsys, never from disk.
+// migrateFS applies pending .sql scripts read only from fsys, never from disk.
 // v0.1 ships them through `cmd/core -migrations <dir>` (see Migrate); this entry
 // exists so tests can drive the real migrator — ordering, bookkeeping and both
 // deviation checks — from memory with fstest.MapFS. It shares one implementation
 // with Migrate, so the two cannot drift apart.
-func (d *DB) MigrateFS(fsys fs.FS, dir string) error {
+func (d *DB) migrateFS(fsys fs.FS, dir string) error {
 	return d.migrate(fsys, dir, fmt.Sprintf("fs.FS(%s)", dir))
 }
 

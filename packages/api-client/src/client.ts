@@ -1,7 +1,6 @@
 import type { components, operations } from './gen/schema';
 
 export type Schemas = components['schemas'];
-export type CoreToken = string;
 
 export class CoreError extends Error {
   constructor(readonly status: number, readonly code: string, message: string,
@@ -11,17 +10,21 @@ export class CoreError extends Error {
 }
 
 export interface CoreClientConfig {
-  /** 同源（走 dev proxy）时留空 */
+  /** 同源（浏览器走 dev 反代）时留空 */
   baseUrl?: string;
-  /** 契约③ §1.2：除 /health 外全部需要。浏览器 WS 握手带不上它 → REQ-F-2 */
-  token?: CoreToken;
+  /**
+   * 只给**非浏览器宿主**用（node 侧联调、未来的 Tauri shell）：原样并入请求头。
+   * 浏览器面板一个都不传 —— 口令由反代/shell 注入（契约③ §1 第 2.2 项），
+   * 所以 `Bearer` 这个字面量不会进构建产物（有负向断言钉着）。
+   */
+  extraHeaders?: Record<string, string>;
 }
 
 type Query = Record<string, string | number | undefined>;
 
 export function createCoreClient(cfg: CoreClientConfig = {}) {
   const headers = (extra: Record<string, string> = {}) => ({
-    ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
+    ...(cfg.extraHeaders ?? {}),
     ...extra,
   });
 

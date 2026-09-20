@@ -135,6 +135,21 @@ type RedactionHit struct {
 // db enforcement point calls this after applying Rules(); audit owns the shape
 // so the "counts and names only" rule is not reinvented per writer.
 func RedactionDetails(hits []RedactionHit) (string, error) {
+	// Validated on the way in because these bytes land in a column covered by
+	// entry_hash: an unattributed hit written today can never be corrected
+	// tomorrow (T-28② ruled that recomputing a stored hash is forging the chain).
+	// Same fail-closed shape as Validate() rejecting an empty Marker.
+	for i, h := range hits {
+		switch h.Kind {
+		case HitKey, HitPattern:
+		default:
+			return "", fmt.Errorf("audit: redaction hit[%d] on %s: Kind %q is neither %q nor %q",
+				i, h.Column, h.Kind, HitKey, HitPattern)
+		}
+		if h.Match == "" {
+			return "", fmt.Errorf("audit: redaction hit[%d] on %s: Match is empty, so the row would name no rule", i, h.Column)
+		}
+	}
 	type payload struct {
 		Schema     int            `json:"schema"`
 		Redactions []RedactionHit `json:"redactions"`

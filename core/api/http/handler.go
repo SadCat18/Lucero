@@ -98,8 +98,11 @@ type Config struct {
 	State            func() string
 	MigrationVersion func() int64
 	Tickets          *Tickets
-	// AllowedOrigins 为 nil 时用默认的"只放行回环地址"。
-	AllowedOrigins func(origin string) bool
+
+	// 三个都注入时才挂 /api/v1/tasks；缺任何一个就维持"未实现 501"，不给前端半套端点。
+	Tasks    TaskService
+	TaskList TaskLister
+	Store    TaskStore
 }
 
 // NewHandler 装出 /api/v1 面：除 /health 外全部要求 Bearer；带 Origin 的外部请求 403；

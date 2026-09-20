@@ -355,6 +355,36 @@ func TestFreeTextReasonIsScrubbedByPatterns(t *testing.T) {
 	}
 }
 
+// T-40: these bytes sit inside a column covered by entry_hash, so an
+// unattributable hit cannot be repaired after the fact — recomputing the hash
+// would be forging the chain (T-28②). Reject on the way in instead.
+func TestRedactionDetailsRejectsUnattributableHits(t *testing.T) {
+	for name, hit := range map[string]RedactionHit{
+		"empty kind":      {Column: "payload_json", Kind: "", Match: "apikey", Count: 1},
+		"wrong case kind": {Column: "payload_json", Kind: "Key", Match: "apikey", Count: 1},
+		"invented kind":   {Column: "payload_json", Kind: "deny-key", Match: "apikey", Count: 1},
+		"empty match":     {Column: "payload_json", Kind: HitKey, Match: "", Count: 1},
+	} {
+		got, err := RedactionDetails([]RedactionHit{hit})
+		if err == nil {
+			t.Errorf("%s: accepted and would seal %s into the chain forever", name, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), string(hit.Kind)) && name != "empty match" {
+			t.Errorf("%s: error must name the offending kind, got %v", name, err)
+		}
+	}
+	// The two legitimate kinds still encode.
+	for _, k := range []HitKind{HitKey, HitPattern} {
+		if _, err := RedactionDetails([]RedactionHit{{Column: "c", Kind: k, Match: "apikey", Count: 2}}); err != nil {
+			t.Errorf("valid kind %q rejected: %v", k, err)
+		}
+	}
+	if got, err := RedactionDetails(nil); err != nil || got != `{"schema":1,"redactions":null}` {
+		t.Errorf("no hits: %s %v", got, err)
+	}
+}
+
 func TestCanonicalKey(t *testing.T) {
 	for in, want := range map[string]string{
 		"Authorization": "authorization",

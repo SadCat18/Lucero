@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
@@ -27,6 +28,17 @@ var errCrash = errors.New("fake-adapter: debug/crash requested")
 
 const adapterVersion = "0.1.0"
 
+// Methods §10 requires of this build. They stay literals rather than constants in
+// internal/adapter because a name Core does not call yet has no reason to exist
+// there twice (T-45).
+const (
+	methodSessionSend  = "session/send"
+	methodQuotaRead    = "quota/read"
+	methodDebugFail    = "debug/fail"
+	methodDebugHang    = "debug/hang"
+	methodDebugNoQuota = "debug/unknown_quota"
+)
+
 func main() {
 	if err := run(os.Stdin, os.Stdout, os.Stderr); err != nil {
 		if errors.Is(err, errCrash) {
@@ -37,10 +49,48 @@ func main() {
 	}
 }
 
+// fake is one process run: the handshake, the §6.2 sequence numbers, the §5 turn
+// state and whatever debug/* has armed. Everything the protocol remembers lives
+// here, so nothing is hidden in package globals a second test could trip over.
+type fake struct {
+	r    *adapter.Reader
+	w    *adapter.Writer
+	logs io.Writer
+	hs   *adapter.Handshake // nil until initialize succeeds: that is §2's gate
+
+	seq  int64 // §6.2 sequence_no, monotonic for the life of the process
+	open *turn // the turn a guide can steer into, nil when none
+	// queued holds §5 queue sends waiting for the open turn to close.
+	queued     []*turn
+	position   int64
+	sent       map[string]adapter.SendResult // §4 Idempotency-Key -> first answer
+	fail       *injection                    // armed debug/fail
+	quotaBlind bool                          // armed debug/unknown_quota
+}
+
+// turn is one CO-8 evidence pair. ref is §6.7's turn_ref: the JSON-RPC id Core
+// put on the send that started this turn, echoed back verbatim on every frame the
+// turn produces. executionID is the Core-side id the pair names (CO-8), and the
+// per-turn seq is why §6.7 can call the cursors independent - see reportable.
+type turn struct {
+	ref         string
+	executionID string
+	turnID      string
+	providerID  string
+}
+
+// injection is an armed debug/fail: the error code and how many calls are left
+// before it fires (§10 allows "the next call" or "the Nth").
+type injection struct {
+	code adapter.ErrorCode
+	left int
+}
+
 // run serves the protocol until stdin closes. logs receives everything that is not a
 // frame, so a caller can keep stdout and stderr apart the way Core's supervisor does.
 func run(in io.Reader, out io.Writer, logs io.Writer) error {
-	r, w := adapter.NewReader(in), adapter.NewWriter(out)
+	f := &fake{r: adapter.NewReader(in), w: adapter.NewWriter(out), logs: logs,
+		sent: map[string]adapter.SendResult{}}
 	fmt.Fprintf(logs, "fake-adapter up, pid=%d\n", os.Getpid())
 	// Check the self-declaration up front, against the same validator Core uses.
 	// Doing it per reply instead (as this file used to) turned a second
@@ -49,9 +99,8 @@ func run(in io.Reader, out io.Writer, logs io.Writer) error {
 	if _, err := selfHandshake(); err != nil {
 		return fmt.Errorf("Core would reject our own capability table: %w", err)
 	}
-	var hs *adapter.Handshake // nil until initialize succeeds: that is §2's gate
 	for {
-		f, err := r.Read()
+		req, err := f.r.Read()
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -60,30 +109,329 @@ func run(in io.Reader, out io.Writer, logs io.Writer) error {
 			// rather than us guessing what was meant (§1).
 			return err
 		}
-		if f.Kind() != adapter.KindRequest {
-			// Notifications and replies get no answer. $/cancel and stream frames
-			// belong here once the pump lands; logging instead of silently dropping
-			// keeps a missing feature visible in stderr.
-			fmt.Fprintf(logs, "ignoring %s frame %q\n", f.Kind(), f.Method)
-			continue
-		}
-		crash := f.Method == adapter.MethodDebugCrash && hs != nil
-		reply, err := handle(f, hs)
-		if err != nil {
+		if err := f.serve(req); err != nil {
 			return err
-		}
-		if err := w.Write(reply); err != nil {
-			return err
-		}
-		switch {
-		case crash:
-			fmt.Fprintf(logs, "crashing on demand\n")
-			return errCrash
-		case f.Method == adapter.MethodInitialize && reply.Error == nil:
-			hs = declaredHandshake()
 		}
 	}
 }
+
+// serve answers one request. Reading is allowed inside it (debug/hang does) because
+// the fake has one goroutine and a hang is expected to be ended by $/cancel, which
+// can only arrive by reading.
+func (f *fake) serve(req *adapter.Frame) error {
+	if req.Kind() != adapter.KindRequest {
+		if req.Method == adapter.CancelMethod {
+			// Nothing was in flight, so there is nothing to acknowledge. Saying so on
+			// stderr is the alternative to swallowing it (§15.3 gives a cancel no
+			// error reply to return when no request is pending).
+			fmt.Fprintf(f.logs, "$/cancel for %q ignored: nothing is in flight\n", cancelTarget(req))
+			return nil
+		}
+		fmt.Fprintf(f.logs, "ignoring %s frame %q\n", req.Kind(), req.Method)
+		return nil
+	}
+	if err := f.hs.Call(req.Method); err != nil {
+		// The nil handshake is the un-initialised state, so this is §2's
+		// PROTOCOL_NOT_INITIALIZED gate and §3's write_entry gate at once.
+		return f.reply(errReply(req, err))
+	}
+	if e := f.injected(); e != nil {
+		return f.reply(errReply(req, e))
+	}
+	switch req.Method {
+	case adapter.MethodInitialize:
+		if err := f.reply(result(req, initializeResult())); err != nil {
+			return err
+		}
+		f.hs = declaredHandshake()
+		return nil
+	case adapter.MethodHealth:
+		return f.reply(result(req, adapter.HealthResult{
+			Health: adapter.HealthHealthy, Confidence: adapter.ConfidenceHigh, CheckedAt: nowMillis(),
+		}))
+	case adapter.MethodDebugCrash:
+		if err := f.reply(result(req, map[string]any{"crashing": true})); err != nil {
+			return err
+		}
+		fmt.Fprintf(f.logs, "crashing on demand\n")
+		return errCrash
+	case methodDebugFail:
+		return f.debugFail(req)
+	case methodDebugHang:
+		return f.debugHang(req)
+	case methodDebugNoQuota:
+		f.quotaBlind = true
+		return f.reply(result(req, map[string]any{"quota_unknown": true}))
+	case methodQuotaRead:
+		return f.quotaRead(req)
+	case methodSessionSend:
+		return f.sessionSend(req)
+	default:
+		// Anything this build does not implement is refused with INTERNAL rather than
+		// a contract refusal, so "not built yet" can never be mistaken for a
+		// Provider-side decision.
+		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInternal,
+			Message: "fake-adapter: " + req.Method + " is not implemented in this build"}))
+	}
+}
+
+// injected consumes one armed debug/fail and reports the error it asks for, or nil
+// when nothing is armed or the call count has not been reached yet.
+func (f *fake) injected() *adapter.Error {
+	if f.fail == nil {
+		return nil
+	}
+	f.fail.left--
+	if f.fail.left > 0 {
+		return nil
+	}
+	code := f.fail.code
+	f.fail = nil
+	return &adapter.Error{Code: code, Message: "fake-adapter: failure injected by debug/fail (§10)"}
+}
+
+func (f *fake) debugFail(req *adapter.Frame) error {
+	var p struct {
+		Code string `json:"code"`
+		Nth  int    `json:"nth,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return f.reply(errReply(req, badParams(req.Method, err)))
+	}
+	code, ok := adapter.CodeByName(p.Code)
+	if !ok {
+		// A number instead of a name is how a test asks for a code outside §15.1:
+		// Core must degrade it to INTERNAL and keep the original visible.
+		n, err := strconv.Atoi(p.Code)
+		if err != nil || n >= 0 {
+			return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInvalidParams,
+				Message: fmt.Sprintf("debug/fail code %q is neither a §15.1 name nor a negative number", p.Code)}))
+		}
+		code = adapter.ErrorCode(n)
+	}
+	nth := p.Nth
+	if nth < 1 {
+		nth = 1 // §10's default: the next call
+	}
+	f.fail = &injection{code: code, left: nth}
+	return f.reply(result(req, map[string]any{"armed": true, "code": p.Code, "nth": nth}))
+}
+
+// debugHang stops answering, which is how §10's deadline case is produced. The
+// request is only released by a $/cancel naming it; §15.3 rule 5 makes that
+// acknowledgement a result frame, never an error reply, so CANCELLED keeps its
+// number off the wire.
+func (f *fake) debugHang(req *adapter.Frame) error {
+	fmt.Fprintf(f.logs, "hanging on %s until $/cancel names it\n", req.ID)
+	for {
+		fr, err := f.r.Read()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fr.Kind() != adapter.KindNotification || fr.Method != adapter.CancelMethod {
+			fmt.Fprintf(f.logs, "ignoring %s frame %q while hanging\n", fr.Kind(), fr.Method)
+			continue
+		}
+		if got := cancelTarget(fr); got != req.ID {
+			fmt.Fprintf(f.logs, "$/cancel names %q, not the hanging %q\n", got, req.ID)
+			continue
+		}
+		return f.reply(result(req, map[string]bool{"cancelled": true}))
+	}
+}
+
+// quotaRead answers §7. The self-Validate is the same rule selfHandshake applies to
+// the capability table: an illegal reply is this process's bug, and it must surface
+// as one instead of reaching Core as a surprise.
+func (f *fake) quotaRead(req *adapter.Frame) error {
+	res := adapter.UnknownQuota()
+	if !f.quotaBlind {
+		res = observedQuota()
+	}
+	if err := res.Validate(); err != nil {
+		fmt.Fprintf(f.logs, "our own quota reply breaks §7: %v\n", err)
+		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInternal,
+			Message: "fake-adapter: quota/read reply is illegal: " + err.Error()}))
+	}
+	return f.reply(result(req, res))
+}
+
+// sessionSend is §5's tri-state, §4's mandatory Idempotency-Key and CO-8's two-phase
+// evidence in one place.
+func (f *fake) sessionSend(req *adapter.Frame) error {
+	var p adapter.SendParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return f.reply(errReply(req, badParams(req.Method, err)))
+	}
+	// SendParams.Validate already carries §5's and CO-7's refusals with their codes,
+	// so honouring it is what makes the fake reject an unknown state rather than
+	// quietly picking one it likes.
+	if err := p.Validate(); err != nil {
+		return f.reply(errReply(req, err))
+	}
+	c, ok := f.hs.Effective("session.send")
+	if !ok || !containsMode(c.DeliveryModes, p.Delivery) {
+		// §5's red line: an unsupported state is named, never silently downgraded.
+		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrDeliveryModeUnsupported,
+			Message: fmt.Sprintf("fake-adapter declares %v and was asked for %s (§5)", c.DeliveryModes, p.Delivery)}))
+	}
+	if hit, again := f.sent[p.IdempotencyKey]; again {
+		hit.IdempotencyHit = true
+		return f.reply(result(req, hit))
+	}
+	res, err := f.accept(req.ID, p)
+	if err != nil {
+		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInternal,
+			Message: "fake-adapter: " + err.Error()}))
+	}
+	if vErr := res.Validate(p.Delivery); vErr != nil {
+		fmt.Fprintf(f.logs, "our own %s reply is illegal: %v\n", p.Delivery, vErr)
+		return f.reply(errReply(req, vErr))
+	}
+	if err := f.reply(result(req, res)); err != nil {
+		return err
+	}
+	f.sent[p.IdempotencyKey] = res
+	return nil
+}
+
+// accept is the part that changes state, and returns the reply only once the frames
+// that evidence it are on the wire: CO-7 forbids reporting a delivery the fake did
+// not actually open.
+func (f *fake) accept(ref string, p adapter.SendParams) (adapter.SendResult, error) {
+	switch p.Delivery {
+	case adapter.DeliveryQueue:
+		f.position++
+		pos := f.position
+		f.queued = append(f.queued, &turn{ref: ref, executionID: p.ExecutionID,
+			providerID: fmt.Sprintf("fake-q-%d", pos)})
+		// No turn_id here: CO-7 lets a queued reply claim only "queued + position".
+		return adapter.SendResult{Accepted: true,
+			Reason:        fmt.Sprintf("queued behind the open turn (%s)", p.Strategy()),
+			QueuePosition: &pos}, nil
+
+	case adapter.DeliveryGuide:
+		if f.open != nil {
+			// Steering: the open turn keeps its evidence pair and gets another delta.
+			if err := f.delta(f.open, p.Text); err != nil {
+				return adapter.SendResult{}, err
+			}
+			return adapter.SendResult{Accepted: true, Reason: "steered into the open turn (§5 guide)",
+				TurnID: f.open.turnID, ProviderExecutionID: f.open.providerID}, nil
+		}
+		// §5 makes guide "an interruption of the turn in flight"; with none, the only
+		// honest readings are a refusal or a new turn. The fake reports which it did,
+		// because a reply that silently opens a turn is §5's other half of the accident.
+		t, err := f.startTurn(ref, p)
+		if err != nil {
+			return adapter.SendResult{}, err
+		}
+		res := started(t)
+		res.Reason = "no turn was in flight, so guide opened one (§5)"
+		return res, nil
+
+	default: // start_now
+		t, err := f.startTurn(ref, p)
+		if err != nil {
+			return adapter.SendResult{}, err
+		}
+		return started(t), nil
+	}
+}
+
+func started(t *turn) adapter.SendResult {
+	return adapter.SendResult{Accepted: true, TurnID: t.turnID, ProviderExecutionID: t.providerID}
+}
+
+// startTurn opens the new turn with CO-8's pair and interrupts the one in flight, in
+// that order: a start_now preempts (§5), and the preempted run still owes output
+// after the new one has started. That is what makes two executions share a
+// connection for real instead of in a comment, which §6.7's FakeAdapter acceptance
+// asks for. Without an execution_id from Core there is nothing for CO-8's pair to
+// name, so no evidence frames go out - and §6.3 leaves that Execution UNKNOWN, which
+// is the honest outcome rather than the fake inventing an id.
+func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
+	prev := f.open
+	t := &turn{ref: ref, executionID: p.ExecutionID, turnID: adapter.NewRequestID().String()}
+	t.providerID = "fake-" + t.turnID
+	f.open = t
+	if err := f.evidence(t, p.Text); err != nil {
+		return nil, err
+	}
+	if prev != nil {
+		if err := f.notice(prev, &adapter.StreamFrame{Method: adapter.MethodStreamDelta,
+			Channel: adapter.ChannelStatus, Text: "interrupted by a start_now (§5)"}); err != nil {
+			return nil, err
+		}
+		if err := f.finish(prev, "INTERRUPTED"); err != nil {
+			return nil, err
+		}
+	}
+	return t, f.drainQueue()
+}
+
+// evidence emits turn/claimed then turn/dispatched: "the Adapter took the job" and
+// "a turn started" are two facts, and §7.1 lets Core show running only on the second.
+func (f *fake) evidence(t *turn, text string) error {
+	if t.executionID == "" {
+		fmt.Fprintf(f.logs, "no execution_id on this send (CO-24): emitting no turn/claimed or turn/dispatched\n")
+		return nil
+	}
+	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnClaimed,
+		ExecutionID: t.executionID, Accepted: true, ProviderExecutionID: t.providerID}); err != nil {
+		return err
+	}
+	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnDispatch, ExecutionID: t.executionID,
+		TurnID: t.turnID, ProviderExecutionID: t.providerID}); err != nil {
+		return err
+	}
+	return f.delta(t, text)
+}
+
+func (f *fake) delta(t *turn, text string) error {
+	return f.notice(t, &adapter.StreamFrame{Method: adapter.MethodStreamDelta,
+		Channel: adapter.ChannelAssistant, Text: "echo: " + text})
+}
+
+// drainQueue dispatches what §5's queue holds behind the turn that just ended, oldest
+// first. A queued send that ran gets the same evidence pair as one that started
+// immediately, because that is the only difference between "ran" and "never left the
+// queue".
+func (f *fake) drainQueue() error {
+	drained := f.queued
+	f.queued = nil
+	for _, t := range drained {
+		t.turnID = adapter.NewRequestID().String()
+		if err := f.evidence(t, "queued prompt"); err != nil {
+			return err
+		}
+		if err := f.finish(t, "OK"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// finish is §6.1's one mandatory signal. It names the turn by turn_ref only:
+// execution_id stays off the four output notifications (§6.7).
+func (f *fake) finish(t *turn, code string) error {
+	return f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnFinished, ResultCode: code})
+}
+
+func (f *fake) notice(t *turn, s *adapter.StreamFrame) error {
+	f.seq++
+	s.SequenceNo, s.TurnRef = f.seq, t.ref
+	fr, err := adapter.NewStream(adapter.NewRequestID().String(), s)
+	if err != nil {
+		return err
+	}
+	return f.w.Write(fr)
+}
+
+func (f *fake) reply(fr *adapter.Frame) error { return f.w.Write(fr) }
 
 // selfHandshake runs our own declaration through the validator Core uses, so an
 // illegal capability table is this process's bug rather than a peer-side surprise.
@@ -102,39 +450,48 @@ func declaredHandshake() *adapter.Handshake {
 	return hs
 }
 
-// handle answers one request. Anything this build does not implement is refused with
-// INTERNAL_ERROR rather than a contract refusal, so "not built yet" can never be
-// mistaken for a Provider-side decision.
-func handle(f *adapter.Frame, hs *adapter.Handshake) (*adapter.Frame, error) {
-	if err := hs.Call(f.Method); err != nil {
-		// The nil handshake is the un-initialised state, so this is §2's
-		// PROTOCOL_NOT_INITIALIZED gate and §3's write_entry gate at once.
-		return errorReply(f, err), nil
+func result(req *adapter.Frame, v any) *adapter.Frame {
+	fr, err := adapter.NewResponse(req.ID, req.RequestID, v)
+	if err != nil {
+		// Marshal of our own types only fails on a programming bug, and a nil frame
+		// would be written as nothing at all, so it has to be this process's failure.
+		panic("fake-adapter: " + err.Error())
 	}
-	switch f.Method {
-	case adapter.MethodInitialize:
-		return adapter.NewResponse(f.ID, f.RequestID, initializeResult())
-	case adapter.MethodHealth:
-		return adapter.NewResponse(f.ID, f.RequestID, adapter.HealthResult{
-			Health: adapter.HealthHealthy, Confidence: adapter.ConfidenceHigh, CheckedAt: nowMillis(),
-		})
-	case adapter.MethodDebugCrash:
-		return adapter.NewResponse(f.ID, f.RequestID, map[string]any{"crashing": true})
-	default:
-		return adapter.NewErrorReply(f.ID, f.RequestID, adapter.ErrInternal,
-			"fake-adapter: "+f.Method+" is not implemented in this build"), nil
-	}
+	return fr
 }
 
-func errorReply(f *adapter.Frame, err error) *adapter.Frame {
+func errReply(req *adapter.Frame, err error) *adapter.Frame {
 	code, message := adapter.ErrInternal, err.Error()
 	if e := new(adapter.Error); errors.As(err, &e) {
 		code, message = e.Code, e.Message
 	}
-	return adapter.NewErrorReply(f.ID, f.RequestID, code, message)
+	return adapter.NewErrorReply(req.ID, req.RequestID, code, message)
 }
 
-// initializeResult is the fake's self-declaration. debug.crash sits at EXPERIMENTAL,
+func badParams(method string, err error) error {
+	return &adapter.Error{Code: adapter.ErrInvalidParams, Message: method + " params: " + err.Error()}
+}
+
+// cancelTarget is the id $/cancel names (contract §1). A malformed cancel cancels
+// nothing, which is the safe direction.
+func cancelTarget(fr *adapter.Frame) string {
+	var p struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(fr.Params, &p)
+	return p.ID
+}
+
+func containsMode(modes []string, want string) bool {
+	for _, m := range modes {
+		if m == want {
+			return true
+		}
+	}
+	return false
+}
+
+// initializeResult is the fake's self-declaration. debug.* sits at EXPERIMENTAL,
 // which §9 allows only because adapter_key is "fake".
 func initializeResult() adapter.InitializeResult {
 	return adapter.InitializeResult{
@@ -162,9 +519,8 @@ func initializeResult() adapter.InitializeResult {
 				EffectiveBackend: adapter.BackendReadOnly, Confidence: adapter.ConfidenceUnknown,
 				Metadata: json.RawMessage(`{"reason":"Phase 0 §5: deep links unverified for all five"}`)},
 			// §9: debug.* is legal only for adapter_key=fake AND only at EXPERIMENTAL.
-			{Name: "debug.crash", SupportLevel: adapter.LevelExperimental,
-				EffectiveBackend: adapter.BackendNativeAPI, Confidence: adapter.ConfidenceHigh,
-				LastVerifiedAt: nowMillis()},
+			debugCapability("debug.crash"), debugCapability("debug.fail"),
+			debugCapability("debug.hang"), debugCapability("debug.unknown_quota"),
 		},
 	}
 }
@@ -174,6 +530,26 @@ func capability(name string, write bool, modes ...string) adapter.Capability {
 		Name: name, SupportLevel: adapter.LevelNative, EffectiveBackend: adapter.BackendNativeAPI,
 		WriteCapable: write, DeliveryModes: modes,
 		Confidence: adapter.ConfidenceHigh, LastVerifiedAt: nowMillis(),
+	}
+}
+
+func debugCapability(name string) adapter.Capability {
+	c := capability(name, true)
+	c.SupportLevel = adapter.LevelExperimental
+	return c
+}
+
+// observedQuota is §7's readable case: a real value, OBSERVED, and the used/remaining
+// pair that proves it is a full window rather than a Provider's all-zero default.
+func observedQuota() adapter.QuotaResult {
+	used, remaining, reset := 62.5, 37.5, nowMillis()+3600_000
+	return adapter.QuotaResult{
+		Observations: []adapter.QuotaObservation{{
+			QuotaKey: "weekly", QuotaType: "PERCENT", ObservationKind: adapter.ObservationObserved,
+			UsedPercent: &used, RemainingPercent: &remaining, ResetAt: &reset,
+			Confidence: adapter.ConfidenceHigh, Source: "fake/self-report",
+		}},
+		OverallConfidence: adapter.ConfidenceHigh,
 	}
 }
 

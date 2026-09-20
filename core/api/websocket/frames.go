@@ -17,12 +17,26 @@ import (
 
 // 帧的读写只用本项目用得上的那一格：单帧文本、控制帧、客户端必须掩码。
 const (
-	maxIncoming = 64 << 10 // 客户端只该发一条 hello；超过 64KiB 直接拒
-	opText      = 0x1
-	opClose     = 0x8
-	opPing      = 0x9
-	opPong      = 0xA
+	// maxIncoming 只用于**出站**：单帧超过这个大小我们不发。
+	maxIncoming = 64 << 10
+	// maxInbound 是入站上限：契约③ §2「WebSocket 帧」第 ① 条 —— 入站必须单帧、≤125 字节有效载荷
+	// （我们收的只有 {type:"resubscribe",from_seq} 一类小 JSON）。控制帧按 RFC 本来也 ≤125。
+	maxInbound = 125
+	opText     = 0x1
+	opBinary   = 0x2
+	opClose    = 0x8
+	opPing     = 0x9
+	opPong     = 0xA
 )
+
+// allowedInboundOpcode 实现同一条第 ③ 项：入站只允许 text/binary/close/ping/pong，其余按协议错误关。
+func allowedInboundOpcode(op byte) bool {
+	switch op {
+	case opText, opBinary, opClose, opPing, opPong:
+		return true
+	}
+	return false
+}
 
 // errProtocol 把"客户端不守协议"和"连接断了"分开：前者要回 close(1002)，后者安静收工。
 var errProtocol = errors.New("wsapi: 协议错误")
@@ -70,7 +84,9 @@ func (f *framer) writeJSON(v any) error {
 	return f.write(opText, b)
 }
 
-// read 收一帧。客户端帧必须掩码（RFC 6455 §5.1），没掩码或分片都按协议错误关掉。
+// read 收一帧，并在分配负载之前把契约③ §2「WebSocket 帧」的入站约定逐条判完：
+// 单帧（不分片）、RSV 为 0、opcode 在白名单、客户端必须掩码、有效载荷 ≤ maxInbound。
+// 任一条不过都返回 errProtocol，由调用方回 close(1002)。
 func (f *framer) read(br *bufio.Reader) (opcode byte, payload []byte, err error) {
 	var h [2]byte
 	if _, err = io.ReadFull(br, h[:]); err != nil {
@@ -79,11 +95,23 @@ func (f *framer) read(br *bufio.Reader) (opcode byte, payload []byte, err error)
 	if h[0]&0x80 == 0 {
 		return 0, nil, fmt.Errorf("%w: 不支持分片帧", errProtocol)
 	}
+	// RSV1-3 只在协商了扩展时才可置位；我们从不回 Sec-WebSocket-Extensions（契约③ §2 帧约定②），
+	// 所以置了就是对端违约。不挡的话会把一段压缩字节当 JSON 解，报错信息指向错的地方。
+	if h[0]&0x70 != 0 {
+		return 0, nil, fmt.Errorf("%w: 未协商任何扩展，RSV 必须为 0（实际 %#x）", errProtocol, h[0]&0x70)
+	}
 	opcode = h[0] & 0x0f
+	if !allowedInboundOpcode(opcode) {
+		return 0, nil, fmt.Errorf("%w: 入站 opcode %#x 不在允许集合里", errProtocol, opcode)
+	}
 	if h[1]&0x80 == 0 {
 		return 0, nil, fmt.Errorf("%w: 客户端帧必须掩码", errProtocol)
 	}
 	n := int(h[1] & 0x7f)
+	if n > maxInbound {
+		// 长度声明本身就先判，避免后面按它分配。
+		return 0, nil, fmt.Errorf("%w: 入站帧声明 %d 字节，超过 %d 上限", errProtocol, n, maxInbound)
+	}
 	switch n {
 	case 126:
 		var b [2]byte
@@ -91,19 +119,23 @@ func (f *framer) read(br *bufio.Reader) (opcode byte, payload []byte, err error)
 			return 0, nil, err
 		}
 		n = int(binary.BigEndian.Uint16(b[:]))
+		if n > maxInbound {
+			return 0, nil, fmt.Errorf("%w: 入站帧 %d 字节，超过 %d 上限", errProtocol, n, maxInbound)
+		}
 	case 127:
 		var b [8]byte
 		if _, err = io.ReadFull(br, b[:]); err != nil {
 			return 0, nil, err
 		}
+		// 64 位长度分支：在 make([]byte, n) 之前判，巨型声明撑不出内存分配。
 		v := binary.BigEndian.Uint64(b[:])
-		if v > maxIncoming {
-			return 0, nil, fmt.Errorf("%w: 入站帧超过 64KiB", errProtocol)
+		if v > maxInbound {
+			return 0, nil, fmt.Errorf("%w: 入站帧声明 %d 字节，超过 %d 上限", errProtocol, v, maxInbound)
 		}
 		n = int(v)
 	}
-	if n > maxIncoming {
-		return 0, nil, fmt.Errorf("%w: 入站帧超过 64KiB", errProtocol)
+	if n > maxInbound {
+		return 0, nil, fmt.Errorf("%w: 入站帧 %d 字节，超过 %d 上限", errProtocol, n, maxInbound)
 	}
 	var key [4]byte
 	if _, err = io.ReadFull(br, key[:]); err != nil {
@@ -129,13 +161,15 @@ func (f *framer) close(code uint16) {
 	_ = f.c.Close()
 }
 
-// hello 是连接后的第一帧（契约③ §5）：{"type":"hello","from_seq":N}
+// hello 是连接后的第一帧（契约③ §5 / F-16）：{"type":"hello","from_seq":N}。
+// from_seq 用指针：客户端**省略**它和**给 0** 是两回事（省略=只要此后新事件；0=从头补发），
+// OpenAPI 的 WsClientHello 也允许显式 null，两种都归"省略"。
 type hello struct {
 	Type    string `json:"type"`
-	FromSeq int64  `json:"from_seq"`
+	FromSeq *int64 `json:"from_seq"`
 }
 
-func serve(r *http.Request, conn net.Conn, br *bufio.Reader, cfg Config, from int64) {
+func serve(r *http.Request, conn net.Conn, br *bufio.Reader, cfg Config, from int64, declared bool) {
 	f := &framer{c: conn, w: bufio.NewWriter(conn)}
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(r.Context())
@@ -147,8 +181,14 @@ func serve(r *http.Request, conn net.Conn, br *bufio.Reader, cfg Config, from in
 	if op, payload, err := f.read(br); err == nil {
 		if op == opText {
 			var h hello
-			if json.Unmarshal(payload, &h) == nil && h.Type == "hello" && h.FromSeq > from {
-				from = h.FromSeq
+			// F-16：hello 的 from_seq **覆盖** ?from_seq=，不是取较大者——"客户端 hello 优先"。
+			// 带 from_seq = 从那里补发；省略或 null = 只要此后新事件（起点由 Head 定，绝不从 0 重放）。
+			if json.Unmarshal(payload, &h) == nil && h.Type == "hello" {
+				if h.FromSeq != nil && *h.FromSeq >= 0 {
+					from, declared = *h.FromSeq, true
+				} else {
+					declared = false
+				}
 			}
 		}
 	} else if errors.Is(err, errProtocol) {
@@ -169,6 +209,28 @@ func serve(r *http.Request, conn net.Conn, br *bufio.Reader, cfg Config, from in
 			return
 		}
 		from = oldest - 1
+	}
+
+	// 首帧（REQ-F-17）：journal 空不空都必须先说一句话，绝不让客户端停在"无首帧"。
+	// 带游标 → 回 hello 回显（客户端只当就绪信号，不据此改游标）；
+	// 不带 → 把起点抬到 journal 头并回 hello_ack{server_seq}，客户端必须把它记成新游标。
+	// 后一条同时堵掉"缺省即从 0 全量重放"（OpenAPI cursor-default：journal 大时等于自己 DDOS 自己）。
+	if declared {
+		if err := f.writeJSON(map[string]any{"type": "hello", "from_seq": from}); err != nil {
+			f.close(1011)
+			return
+		}
+	} else {
+		head, err := cfg.Journal.Head(ctx)
+		if err != nil {
+			f.close(1011)
+			return
+		}
+		from = head
+		if err := f.writeJSON(map[string]any{"type": "hello_ack", "server_seq": head}); err != nil {
+			f.close(1011)
+			return
+		}
 	}
 
 	stop := make(chan struct{})
