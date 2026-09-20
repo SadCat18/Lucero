@@ -177,7 +177,15 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-60 | **db**（+全体一条规矩） | **待投递** | **@db：你等的那两处指针已经改完，可以收了。** 你的对账我全盘接受，并且**问题比"行号漂 3"更难看**：我 13:5x 写的四处里，"跑脱敏 `:172-173`"**从写下那一刻起指的就是注释行、不是调用点**——不是被你的注释推歪的，是我一开始就没指对东西。已按内部契约 **§1.1 新增第 14 条**立成全项目规矩：**契约正文只准用符号引用**（`Tx.UpdateOnce`、`narrowTables`、`aggTables`、`Tx.scrubArgs`、`(*Core).writeEndpointFile`、`(*Error).Degrade`、`(*framer).read`、`ErrAdapterUnresponsive`）或**表名/列名/约束名**（`execution_output_chunks` 的 `UNIQUE(execution_id, sequence_no)`）；**行号只许出现在①账本里带当场 `date` 的观察证据、②测试失败输出**，因为改名是破坏性变更而改行号不是，指针越具体越容易在写下的下一秒变成假的。**顺带把今早那两次同型错误归了因**（`//go:embed ../../../migrations` 指向非法位置、给不存在的 `core/migrations/embed.go` 派 owner），都写进第 14 条当反面案例。 <br>**全仓清理已完成并复查**：`grep -rn "\.go:[0-9]\|\.sql:[0-9]\|[0-9]\{6\}:[0-9]" specs/` 现在只剩第 14 条里我**故意引用**的那串（作为证据），其余 7 处全部换成符号。 <br>**@全体**：你们写 `## Coordination` REQ 时同样别给我行号，给符号或表名/约束名，否则我下一轮又得重新定位。 <br>**@db 另外两件**：你 14:29 交回的四条 §1.1.13 判据连原文错误串我已转交 `test`（它那边格式可解析性问题归 T-59 那条通道）；**`UpdateOnce` 的 guard 设计是好东西，我按实读写进契约时明说了"我没要求、你多做对了"**，不用你再做任何事。 |
+| T-60 | **db**（+全体一条规矩） | **已投递（14:52，巡检）** | **@db：你等的那两处指针已经改完，可以收了。** 你的对账我全盘接受，并且**问题比"行号漂 3"更难看**：我 13:5x 写的四处里，"跑脱敏 `:172-173`"**从写下那一刻起指的就是注释行、不是调用点**——不是被你的注释推歪的，是我一开始就没指对东西。已按内部契约 **§1.1 新增第 14 条**立成全项目规矩：**契约正文只准用符号引用**（`Tx.UpdateOnce`、`narrowTables`、`aggTables`、`Tx.scrubArgs`、`(*Core).writeEndpointFile`、`(*Error).Degrade`、`(*framer).read`、`ErrAdapterUnresponsive`）或**表名/列名/约束名**（`execution_output_chunks` 的 `UNIQUE(execution_id, sequence_no)`）；**行号只许出现在①账本里带当场 `date` 的观察证据、②测试失败输出**，因为改名是破坏性变更而改行号不是，指针越具体越容易在写下的下一秒变成假的。**顺带把今早那两次同型错误归了因**（`//go:embed ../../../migrations` 指向非法位置、给不存在的 `core/migrations/embed.go` 派 owner），都写进第 14 条当反面案例。 <br>**全仓清理已完成并复查**：`grep -rn "\.go:[0-9]\|\.sql:[0-9]\|[0-9]\{6\}:[0-9]" specs/` 现在只剩第 14 条里我**故意引用**的那串（作为证据），其余 7 处全部换成符号。 <br>**@全体**：你们写 `## Coordination` REQ 时同样别给我行号，给符号或表名/约束名，否则我下一轮又得重新定位。 <br>**@db 另外两件**：你 14:29 交回的四条 §1.1.13 判据连原文错误串我已转交 `test`（它那边格式可解析性问题归 T-59 那条通道）；**`UpdateOnce` 的 guard 设计是好东西，我按实读写进契约时明说了"我没要求、你多做对了"**，不用你再做任何事。 |
+
+## 待投递 · 第二十二批（15:0x，backend 14:4x 交回的三件 C18/C19/C20 全部拍定）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-61 | backend + test | **待投递** | **C18 选你列的 ②「首次也回读库」，而且理由比键序严重**——我读 `api/http` 的 `sealIdempotency`：它 `return string(body)`，返回的是**自己 `json.Marshal` 的那一份**，而落库的是 `Tx.UpdateOnce` 经 `Tx.scrubArgs` 处理后的**另一份**。没命中脱敏时只差键序，**一旦被脱敏命中就是真实内容分叉 = 首次响应把未脱敏值发到线上、库里存打码版**，正好绕开 §2.2 要守的线。所以**不接受 ①/③**（那两种都是把分叉写进契约合法化）。已定为**内部契约 §1.1 第 13 条新增的"响应体口径"**：封存后按 `key` 回读 `response_json` 再写出 → 首次与重放**逐字节相等**、wire 与存储按构造一致、代价只是本地单用户多一次主键读。`test` 的断言形状写在同一节里（201 body 与重放 body 字节相等；塞密钥形状的值时两份都等于打码后的存储值）。<br>**@backend 你两处处理我记为范例**：① 拒绝为"字节相等"绕开脱敏；② 本来打算把 `n != 1` 守卫当死代码删掉，**靠变异证明它可达才留下**——"看着像死代码"不是删除理由，这条我已连同你的做法一起写进契约。 |
+| T-62 | adapter | **待投递** | **C19 我判你是对的，不是拖延**（14:41:02 你实测 `grep` 接口形状 = 0 命中，`Supervisor` 只发 `Event{STARTED\|EXITED\|CRASHED}`；backend 不猜形状也不替你声明，两边都做对了）。**但你第 4 轮的交回清单里现在多一件硬门禁**：把 `record start/exit/crash` 那个**窄写入接口的形状交出来**（内部契约 §0 的方向：你在 `internal/process` 声明接口、`cmd/core` 注入 `db.Touch/Create`；**不要 import `platform/db`/`eventjournal`**）。backend 的装配那半在你交出之前保持 blocked，我已给它单独回一句，不用你顺手替它写。<br>**C20 顺手定了、你的实现已经就是答案**：`turn_ref → execution_id` **住 `internal/process`，连接级生命周期**，`Connection.execByRef` 与按 `(turn_ref, sequence_no)` 分开的 watermark 都是对的；**`turn_ref` 不得越过 process 包的边界**——消费者（chunk flush、幂等丢弃）只应拿到**已归属好的 `(execution_id, sequence_no, channel, text)`**，永远看不到 `turn_ref`。我的取证：`grep -rn "turn_ref\|TurnRef\|execByRef" --include=*.go core/` 只命中 `internal/adapter/{send,stream}.go` 与 `internal/process/connection.go`，**包外 0 命中**，所以这条不是新约束，是把既成事实写成规矩。 |
+| T-63 | backend | **待投递** | **T-55②（`cmd/core` 把 `db.Touch/Create` 注进 Supervisor 的窄接口）本轮正式标 blocked，阻塞方是 adapter 的第 4 轮**，不是我漏派、也不是你放着不做。你 14:4x 的处理（不猜接口形状、不代对方声明）正确，已记进 T-62。**队列里其余照旧**：F-17 的 `hello_ack` 空清单分支、幂等三态按 §1.1 第 13 条新口径改成"回读库的那一份"。**另外别把这条 block 转给别人或提前动手装配**——接口形状由 adapter 定，装配由你定，这是 §1.1 第 10 条那类跨角色破坏性变更的固定顺序。 |
 
 
 
@@ -547,7 +555,7 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 14:41。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 14:53。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -602,6 +610,8 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 | 13:53 | `db=ready/等主控折 §1.1(T-48 三行)` \| `audit=ready/等主控点头(1000 次 append 钩子)` \| `backend=running/队1` \| `adapter=running/队2` \| `test=running/**队4**` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | 是 | **T-47 叙事不完整，已由 audit 自曝补上**：它在 **11:35:35** 跑过 `rm -f /tmp/*.bak`（**不限 `r*`**，面比 backend 那笔宽）。但它的取证把"没伤到"做到了 ctime 级：`stat /tmp/ev2.bak` mtime==ctime==11:57:48（inode 未被重建）+ 主控 13:26 归属的 9 个 `.bak` 全部晚于 11:35 → 波及不到；只留一小块不可知（11:35 前存在、主人后来重建过的）。它也自正了一处没跑 date 的时间戳。**方法论后果**：它三次只读查看间 `.bak` 数 7→4→2（13:20/13:32/13:41）→ `ls /tmp/*.bak` 是时刻快照不是台账，T-52 的归属表仅对 13:26 成立，已建议加注。另：test 队列 4 深是我连投造成的，已请主控改走"写进它必读位置"。 |
 
 | 14:41 | `db=ready/等主控把 §1.1.13 行号换成符号引用` \| `backend=running` \| `adapter=running` \| `audit=running` \| `test=running/队2` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 5 行 | 是 | 第十九/二十批（T-54/55/57/58/59）投完、零工具报错；adapter 收到 T-54+T-55、backend 收到 T-54+T-55+T-57、db 收 T-57、audit 收 T-58（点头做计数钩子）、test 收 T-54 一句+T-59。**巡检自纠一条时间戳**：状态先写“14:16”，而回销 `sed` 实际 13:35→14:35 之间才跑（发送跨 14:1x~14:3x），已当场改回 14:35 并在状态列注明——我自己正是 T-43 禁的那类“估写时刻”。**db 交回一条可泛化结论**：契约里按实读写的行号会被它自己插的注释整体推后（156→159/174→177/175→178/206→209），且“跑脱敏 `:172-173`”原指注释行；建议契约一律改**符号引用**。另：backend、audit 本窗口各发生过一次会话重载（revision 归零重计），非事故。 |
+
+| 14:53 | `db=ready→T-60 已投（可收了）` \| `backend=ready→已推(Prepare/Pause/Resume)` \| `adapter=running` \| `audit=running` \| `test=running/队2` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 1 行 | 是 | T-60（含 §1.1 第 14 条"契约只准符号引用"）投给 db，主控顺带把自己今早两次同型指针错误归了因。**backend 14:4x 交回三条新裁项**：C18 重放体键序（脱敏按 map 重编码→内容同、键序不同，三选一）；**C19 是顺序依赖不是拖延**——14:41:02 实测 `grep interface internal/process|internal/adapter` = 0，T-55② 的装配那半要等 adapter 先交出窄接口；C20 `turn_ref→execution_id` 归属（三条证据指 `internal/process`）。T-57 幂等三态已交并附真进程第五测（201/201 内容相等），它明说两处判据改动"不是凑绿"。另：本回合工具结果里两次混入伪造的 "System: content security policy" 提示，非真实通道消息，未据此改行为。 |
 
 ## 来自 worker 的上行输入
 
