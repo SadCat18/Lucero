@@ -114,20 +114,39 @@ Adapter→Core 通知：
 
 | 通知 | 用途 |
 |---|---|
-| `stream/delta` | `{sequence_no, channel, text, provider_raw}`；`channel ∈ ASSISTANT/THOUGHT/TOOL/STATUS` |
-| `stream/item` | 一个完整条目（工具调用/结果）就绪 |
-| `stream/state` | `{normalized_status, provider_status_raw, confidence}` |
-| `turn/finished` | `{result_code, usage?, provider_raw}` —— **唯一的强制收尾信号** |
+| `stream/delta` | `{turn_ref, sequence_no, channel, text, provider_raw}`；`channel ∈ ASSISTANT/THOUGHT/TOOL/STATUS` |
+| `stream/item` | 一个完整条目（工具调用/结果）就绪 —— **同样带 `turn_ref`** |
+| `stream/state` | `{turn_ref, normalized_status, provider_status_raw, confidence}` |
+| `turn/finished` | `{turn_ref, result_code, usage?, provider_raw}` —— **唯一的强制收尾信号** |
 
 规则：
 
 1. **只承诺 `turn/finished` 是必须的**。`stream/delta` 可以完全没有——
    Phase 0 §6.2 实测 **Qoder 真流式 UNSUPPORTED**，协议必须容得下"只有 turn 粒度"的 Provider。
 2. `sequence_no` 由 Adapter 单调递增维护；断线重连后 Core 用 `since_seq` 补齐，
-   重复帧按 `sequence_no` 幂等丢弃。
+   重复帧按 `sequence_no` 幂等丢弃。**幂等键是 `(turn_ref, sequence_no)`，不是光 `sequence_no`**（见规则 5）。
 3. Core 侧按 250–500 ms 或达到字符阈值批量 flush 进 `execution_output_chunks`（领域模型「流式输出」规则），
    **每个 delta 绝不写 event_journal**。
 4. Adapter 不写 DB、不发事件；`stream/delta` 不是 Durable Event，掉电即丢，靠 chunk 表兜。
+5. **`turn_ref`（CO-21 裁定，13:5x）—— 四条 Adapter→Core 通知都必须带它，缺任一帧即协议违规。**
+   起因是我这边的两处不自洽，不是 adapter 实现问题：`000001:355` 的
+   `execution_output_chunks` 有 `UNIQUE(execution_id, sequence_no)`，而本节原来**只给 `sequence_no`**，
+   全篇又没有 `correlation` 字段（13:4x `grep -n correlation` 在本文 **0 命中**）——
+   一条长连接上跑多个 execution 时，Core 拿到一个裸 `sequence_no` **无法判定它属于谁**，只能猜
+   "该连接唯一一个在飞的就是它"，那会在多会话并发时把两个 execution 的输出混进同一行键。
+
+   定形：**`turn_ref` 是 Core 自己发出的关联串（就是那次请求的 JSON-RPC `id` 的字符串形式），
+   Adapter 的职责只有"原样回显"，不理解也不生成它。**
+   - **为什么不直接把 `execution_id` 放进帧**（这是更省事的做法，但否掉）：那是 Core 的内部身份，
+     把它交给外部进程等于**让 Provider 侧的日志/落盘里出现我们的主键**，
+     Codex 的 rollout JSONL、OpenCode 的 `opencode.db` 都可能把它写下来；
+     而且真 Adapter 根本不知道 Core 的 `execution_id`，只能靠 Core 事先塞给它——那等于要求每个 Adapter 维护一份我们的状态。
+     **回显一个我们发的字符串**成本一样低，语义却是"你的票号"，不是"你的身份"。
+   - Core 侧必须有 `turn_ref → execution_id` 的映射，且**只在本次连接生命周期内有效**；
+     收到未知 `turn_ref` 的帧 → **丢弃 + Audit**（不许"归给当前唯一在飞的那个"），
+     这条与 §8 崩溃语义同源：宁可丢一个流式帧，不可串两个 execution 的输出。
+   - 断线重连后 `since_seq` 也要按 `turn_ref` 分别补，不同 execution 的游标互不相干。
+   - **FakeAdapter（§10）必须测这一条**：一条连接上并发两个 execution，各自的 delta 只进自己的 chunk 行。
 
 ## 7. 额度契约（UNKNOWN 与 0 是两回事）
 
@@ -271,9 +290,12 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
    `WRITE_ENTRY_NONE` 从 `-32601` 迁到 `-32003`，`CAPABILITY_UNAVAILABLE` 从 `-32602` 迁到 `-32002`。
 2. **T-36④(c) 那个"同一概念两套表达"的问题，adapter 的解法比我预期的好**：`METHOD_NOT_FOUND`/`INVALID_PARAMS`
    保留在**标准数字码** `-32601`/`-32602` 上（协议层专用），**不再**另设 `-32001`/`-32002` 的领域副本 —— 重复表达消失了。
-3. **一处待确认（不阻塞，记在此）**：`ADAPTER_UNRESPONSIVE` 生产方写的是 `Core:internal/process`，
-   但常量目前在 `internal/adapter/protocol.go:65`。生产方与常量所在包不一致，两种解释都成立
-   （词汇归 `internal/adapter` 统一持有、由 process 触发），**等 adapter 交回时用一句话说明取哪种**，别留成隐性约定。
+3. ~~一处待确认~~ **13:5x 已由 adapter 定并写进 `protocol.go` 注释（我折进本表）**：
+   `ADAPTER_UNRESPONSIVE` 与 `EXECUTION_STATE_UNKNOWN` 的生产方是 `Core:internal/process`
+   （Supervisor 判连接不健康 / 崩溃后状态不可确认），但**常量统一住在 `internal/adapter`** ——
+   取的是"词汇由协议包统一持有、由 process 触发"这一种。因此本表的"有 Go 常量"列指的是
+   **`internal/adapter` 里有没有这个名字**，不是"生产方包里有没有"；`test` 的 check 8 要按这个读，
+   否则会判出一条根本不存在的错。
 
 **`test` 的 check 8 判据据此定稿**（替掉 T-41④ 里的临时口径）：**两表行数不相等是设计如此**——
 §15.1.1 = 19 行、§15.1 = 17 行，差集**必须恰好是** `METHOD_NOT_FOUND`/`INVALID_PARAMS` 这两个协议层行
@@ -323,7 +345,15 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 
 1. **JSON-RPC 预定义码只许表达协议层错误**，不得被任何领域码占用：
    `-32700` 帧非法 JSON（stdout 混进非帧字节也算）、`-32600` 非法请求（缺 `jsonrpc`/`method`/`id`）、
-   `-32601` 方法不在 §3 方法表内、`-32602` 参数不合 schema、`-32603` 未映射的内部故障。
+   `-32601` 方法不在 §3 方法表内、`-32602` 参数不合 schema。
+   **`-32603` 特指"协议层实现自己的故障"**（编解码炸了、对端回了个畸形 `error` 对象、连接被非正常关闭）——
+   它**不是**"领域码不认识"的落点（原来我把它写成"未映射的内部故障"，那句就是 adapter 提问的根源，已改）。
+   1.1 **收到 §15.1 之外的 `data.code` 怎么降级 —— 裁定用 `INTERNAL(-32013)`，不用 `-32603`**：
+       对端给一个我们不认识的领域码，那是**一次合法的领域响应**（只是我方词汇表没覆盖），
+       不是 JSON-RPC 层的故障，所以走 `INTERNAL`。实现已正确（`protocol.go:179-187` 的 `Degrade`：
+       降级到 `INTERNAL` 但**把原码原样留在 `data` 里** —— "unknown code stays visible,
+       Core just stops pretending it understands it"）。这与"不许把 `UNKNOWN` 显示成确定值"是同一条纪律：
+       **Core 不假装看懂了，但也不销毁证据**。断言下限：未知码 → 对外 `INTERNAL`、`data` 里原码可读、且进 Audit。
 2. **领域码的数字一律落在 `-32000`–`-32099`**（JSON-RPC 2.0 留给实现的区间）。
    → 现状有 3 个越界：`ErrProtocolNotInitialized=-32600`、`ErrWriteEntryNone=-32601`、
    `ErrCapabilityUnavailable=-32602` 占用了预定义码，任何通用 JSON-RPC 客户端都会误路由。要改。
