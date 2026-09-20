@@ -209,6 +209,55 @@ Codex Adapter 的 CI 步骤：跑 `codex app-server generate-json-schema --out <
 `last_verified_at`，并在 PR 里显式记录新增/删除/改名。目的：把"厂商升级悄悄改变能力"变成可检测事件，
 而不是等运行时炸。
 
+## 15. 错误码集合（REQ-T-3 补：此前 §1/§3 两次引用本节却从未写出来）
+
+**命名分裂是故意的，不要"统一"**：Adapter 层（JSON-RPC `error.data.code`）用**大写蛇形**，
+HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们是两套协议的各自方言，
+强行合并只会把映射关系藏进字符串里。映射表在 §15.2，`frontend`/`test` 一律以本表为准，
+不得在 yaml 里放开成 free string。
+
+### 15.1 Adapter 层码
+
+| 码 | 含义 | 可重试 |
+|---|---|---|
+| `PROTOCOL_NOT_INITIALIZED` | 未完成握手就调任何方法（`initialize` 自身除外，见 §2） | 否 |
+| `PROTOCOL_VERSION_MISMATCH` | 握手 `major` 不符 | 否 |
+| `CAPABILITY_UNAVAILABLE` | 该能力当前无效（等级降级/未声明） | 视 health |
+| `WRITE_ENTRY_NONE` | 该 Adapter 声明 `write_entry:false`，任何写方法合法拒绝 | 否 |
+| `DELIVERY_MODE_UNSUPPORTED` | 三态投递里某态不被支持（**禁止静默降级**） | 否 |
+| `LOCAL_DATA_UNAVAILABLE` | 读到了 Provider 但本地正文取不到（Phase 0：WorkBuddy 桌面端） | 视源 |
+| `SESSION_NOT_FOUND` | `remote_session_id` 不存在/无权见 | 否 |
+| `AUTH_REQUIRED` | 需要用户在自己客户端完成登录（**不得代登录**） | 否 |
+| `RATE_LIMITED` | 供应商侧限流/额度耗尽，`data` 带 `retry_after_ms` 与 quota 快照 | 是 |
+| `DANGEROUS_FLAG_REFUSED` | 参数命中危险开关白名单外（`--auth none`、`bypassPermissions` 等，见 §9） | 否 |
+| `CANCELLED` | 收到 `$/cancel` 后确认中止 | — |
+| `TIMEOUT` | 超 `deadline_at`（含 §10 `debug/hang` 场景） | 是 |
+| `PROVIDER_ERROR` | 供应商原始错误透传，`data.provider_raw` 必须原样保留 | 视情 |
+| `INTERNAL` | Adapter 自己的 bug，必须同时进 `stderr` 与 Audit | 否 |
+
+### 15.2 → HTTP 映射（`error.code` 一律用左列，`http_status` 见右）
+
+| HTTP 码 | 状态 | 来自 |
+|---|---|---|
+| `protocol_not_initialized` | 503 | `PROTOCOL_NOT_INITIALIZED` |
+| `protocol_version_mismatch` | 426 | `PROTOCOL_VERSION_MISMATCH` |
+| `capability_unavailable` | 503 | `CAPABILITY_UNAVAILABLE` |
+| `write_entry_none` | 405 | `WRITE_ENTRY_NONE` |
+| `delivery_mode_unsupported` | 422 | `DELIVERY_MODE_UNSUPPORTED` |
+| `local_data_unavailable` | 409 | `LOCAL_DATA_UNAVAILABLE` |
+| `session_not_found` | 404 | `SESSION_NOT_FOUND` |
+| `auth_required` | 401 | `AUTH_REQUIRED` |
+| `rate_limited` | 429 | `RATE_LIMITED` |
+| `dangerous_flag_refused` | 403 | `DANGEROUS_FLAG_REFUSED` |
+| `cancelled` | 409 | `CANCELLED` |
+| `timeout` | 504 | `TIMEOUT` |
+| `provider_error` | 502 | `PROVIDER_ERROR` |
+| `internal` | 500 | `INTERNAL` |
+| `version_conflict` | 409 | —（HTTP 层专有，来自 ADR-017 的 `If-Match`，不经 Adapter） |
+
+新增码必须同时改 §15.1 与 §15.2，缺一即算契约不一致（`test` 可 grep 两表条目数是否相等）。
+
+
 ## 14. 批准后 `adapter` 角色的第一件事
 
 不是写真 Adapter，而是：**用本协议的 contract test 跑通 FakeAdapter 全 11 个方法 + 4 种故障注入**，

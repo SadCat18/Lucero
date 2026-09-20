@@ -20,9 +20,19 @@
    否掉的两个备选：`Sec-WebSocket-Protocol` 携带（把口令塞进协议协商字段，语义污染且要求服务端回显子协议）、
    同源反代注入（多一个组件，Tauri 未进场时无从属处）。
    **禁止**为绕开这条而放宽成"WS 无鉴权"——那等于给任意本地进程开一条只读的完整业务时间线。
-3. **不开放 CORS**（或只放行桌面 WebView 自身来源）；带 `Origin` 的外部请求一律 403。
+3. **不开放 CORS**。带 `Origin` 的请求只放行：桌面 WebView 自身来源，**加上显式配置的 dev origin**
+   （`LUCERO_DEV_ORIGIN`，必须精确到 host:port，如 `http://localhost:5173`）；其余一律 403。
+   **REQ-T-4 裁定：不因"回环"而默认放行** —— 任意端口的 localhost 都放行等于把 403 变成装饰，
+   任何本地网页都能驱动控制平面。dev 白名单是显式、精确、可关的。
 4. 单用户，不做账号体系。写操作必须带 `X-Lucero-Principal`（允许值 `local-user`），
    缺失即 `401`；`system` 与 adapter principal 只能由 Core 内部产生，**不接受外部声明**。
+   **REQ-T-4 裁定**：`POST /api/v1/ws-ticket` **不要求 Principal**（它是读侧连接的鉴权前置，不写业务状态），
+   但**必须带 Bearer**——否则它就成了绕过 §1.2 的口子。
+4.1 **`GET /health` 的 `state` 词表（REQ-T-1 裁定）**：`BOOTING` / `READY` / `STOPPING` / `STOPPED` / `UNKNOWN`。
+   刻意**不设 `DEGRADED`**：Core 整体不该有"半健康"，降级属于 Adapter/Capability 层的词汇，
+   混进来会让 UI 把"某个 Adapter 掉了"读成"整个 Core 可疑"。`migration_version` **不得写死常量**，
+   必须取库内 `MAX(version)` 比对（backend 已实测：`000003` 一落地，写死 `==2` 的断言立刻假红）。
+   `UNKNOWN` 保留为合法值——探针失败/还没读到库时不许谎报 `READY`。
 5. 版本前缀 `/api/v1` 冻结：只可**增加**字段与端点；改名、删字段、改语义一律走 `/api/v2` 并配 ADR。
 
 ## 2. 全局约定
@@ -124,7 +134,9 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | `core/test/**`、`scripts/**` | `test` | 不得在别人包里建 `_test.go` |
 | `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**` | `frontend` | 禁止 import Core 内部类型 |
 | `specs/**`、`docs/**`（角色自己的报告/进度文件除外）、`core/go.mod`、`core/go.sum`、`.gitignore`、`.gitattributes` | **主控** | worker 需变更时写 Coordination REQ |
+| `core/migrations/embed.go` | `db` | **REQ-T-2 / db REQ-A4 裁定（12:00）**：`//go:embed ../../../migrations` 本就非法——embed 只能取本包目录及其子目录，所以"从 `cmd/core` 嵌 `core/migrations`"这条要求是**我提的错方案**。正解：由 `db` 在 `core/migrations/` 内放一个 `embed.go`（`//go:embed *.sql` + 导出 `var FS embed.FS`），`backend` 的 `cmd/core` 只管把 `migrations.FS` 传给 db 的 `fs.FS` 版入口（T-27 那条已派）。谁都不必拥有 `core/` 根 |
 | `.qoder/progress/<role>.md` | 对应 role | 他人只读 |
+| `core/`（根目录本身） | **主控** | 根目录只允许 `go.mod`/`go.sum` 两文件；新增任何根级文件都算越界（防依赖树、临时脚本落根） |
 | `.qoder/progress/orchestration.md` | 主控独占 | 巡检额外可写心跳/待投递/NEEDS YOU 段 |
 | `.qoder/evidence/**`、`.scratch/**` | 任意角色可写自己那份 | 已 gitignore，不入库 |
 

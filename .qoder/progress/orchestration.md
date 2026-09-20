@@ -192,13 +192,24 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 **frontend 状态更正**：R-007 从 running 记为 **idle-等主控**（巡检 18:01 实测），T-26 投完即可自行推进非联调部分，不需再等我。
 
+## 待投递 · 第九批（12:02，backend 交回 Core 骨架后的连锁）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-30 | frontend | 待投递 | **B-F1 解除**。backend 已交 Core 骨架 + transport 薄层，真进程冒烟已过（`health` 200 / 无口令 401 / `ws-ticket` 两次拿到**两张不同票** / CORS 403），启动入口与 `core.endpoint` 读法写成了可照跑的命令。你现在可以做真联调：ticket 换连 → `hello_ack` → 断线按 `from_seq` 补发。三条裁定同步：`/health` 的 `state` 词表 = `BOOTING/READY/STOPPING/STOPPED/UNKNOWN`（**无 `DEGRADED`**）；`ws-ticket` **免 Principal 但必须带 Bearer**；CORS **不因回环默认放行**，dev origin 必须精确到 host:port 且显式配置。错误码一律改引契约② **§15**（我此前引用了两次却不存在的章节，已补全；HTTP 用小写蛇形，见 §15.2 映射表，yaml 里不得放开成 free string）。 |
+| T-31 | test | 待投递 | 你的实时面有落点了（同 T-30）。三件：① §15 错误码集合已存在，你那道"两表条目数相等"的 grep 可以真跑了（14 个 Adapter 码 ↔ 15 行 HTTP 映射，`version_conflict` 是 HTTP 专有、无 Adapter 来源，别按行数硬抹平）；② `migration_version` 断言**必须跟库里 `MAX(version)` 比**，backend 已实测写死 `==2` 被 `000003` 打假；③ 环境坑三条进你的脚本规范：**(a) 本机有代理在听，`curl` 打 `127.0.0.1` 必须带 `--noproxy '*'`，否则拿到空响应会被误判成"服务没起来"**；**(b) Windows 上 Go 传的 0600/0700 会被默认 ACL 映射成 `rwxrwxrwx`，权限断言只能得到假失败，别写**；(c) 见 ②。 |
+
+**主控欠账清偿**：契约② §15「错误码集合」此前被 §1/§3 各引用一次却始终不存在（test 的 REQ-T-3 指出），本轮补全，含 Adapter 码表 + HTTP 映射表 + 命名分裂的理由。
+**我提过的错方案已撤回**：db 的 REQ-A4 与 test 的 REQ-T-2 是同一件事——`//go:embed ../../../migrations` 本就非法（embed 只能取本包及子目录），是我在 T 里要求"backend 在 cmd/core 建 embed"造成的死路。正解归 `core/migrations/embed.go` → db，见契约③ §7 新行。
+`core/` 根目录现明确只允许 `go.mod`/`go.sum`（防止 4601 个 node_modules 那类事故重演）。
+
 ## 待投递 · 第八批（11:50，主控过度声明的返工）
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-27 | db | 待投递（**REQ-T3 的另一半，我 11:30 漏派**） | 把 `internal/platform/db/redact.go:87` 的 `RedactionHit{Column, Match, Count}` 改成带类型标签：`type HitKind string`，`HitKey="key"`/`HitPattern="pattern"`，结构 `struct{ Column string; Kind HitKind; Match string; Count int }`（内部契约 §2.2 已定文）。**同时废除 `approval/store_sqlite.go` 里 `strings.CutPrefix(h.Match,"key:")` 的分流约定**（audit 侧 `HitKind` 已就位，它现在是半迁移接缝）。破坏性变更按 §1.1 第 10 条：同轮跑全仓 + 通报受影响方。 |
-| T-28 | audit | 待投递 | ① 你对 REQ-T3 的判断成立，db 那一半是我漏派，见 T-27。② **窗口期数据处置**：不写回填脚本、不给旧行打标记——任何回填都要重算 `entry_hash`，那等于**伪造链**。改为 **Wave-2 验收前重建一次开发库**（删 dev DB、从 `000001` 重跑到 `000003`），归因不可信的行不留。③ **policy_rules 写路径判「不建」**（Wave-3 再议）：v0.1 的门禁唯一真相是 §3.1 的风险分类器，没有消费者的 CRUD 就是投机件。我已把"已登记≠有生产路径"写进事件契约 §6 脚注，`policy_created/updated` 保留但无人发是**已知状态**，不是缺陷，别为它补 CRUD。 |
-| T-29 | test | 待投递 | 把 audit 自翻的这条取证教训写成硬规范：**交叉校验必须打在"待验那一层"的原始输出上**——它那条 §3.4 用例最初是虚的（两次变异都不红），因为拿上一层的结果去验下一层，两层防御互相掩盖。落到你这里：状态机/投影/链这类断言，变异验证要打在被测层的**返回值或直接产物**上，不能读它下游消费者的判断。另：db 落地 HitKind 后（T-27），你那道 `TestRedactionCountersAreSealedBeforeHash` 要确认仍然抓得住回归。 |
+| T-27 | db | **已投递（11:56，巡检；附「CutPrefix 那半属 audit 可写范围、你不可代改」提醒）** | 把 `internal/platform/db/redact.go:87` 的 `RedactionHit{Column, Match, Count}` 改成带类型标签：`type HitKind string`，`HitKey="key"`/`HitPattern="pattern"`，结构 `struct{ Column string; Kind HitKind; Match string; Count int }`（内部契约 §2.2 已定文）。**同时废除 `approval/store_sqlite.go` 里 `strings.CutPrefix(h.Match,"key:")` 的分流约定**（audit 侧 `HitKind` 已就位，它现在是半迁移接缝）。破坏性变更按 §1.1 第 10 条：同轮跑全仓 + 通报受影响方。 |
+| T-28 | audit | **已投递（11:56，巡检）** | ① 你对 REQ-T3 的判断成立，db 那一半是我漏派，见 T-27。② **窗口期数据处置**：不写回填脚本、不给旧行打标记——任何回填都要重算 `entry_hash`，那等于**伪造链**。改为 **Wave-2 验收前重建一次开发库**（删 dev DB、从 `000001` 重跑到 `000003`），归因不可信的行不留。③ **policy_rules 写路径判「不建」**（Wave-3 再议）：v0.1 的门禁唯一真相是 §3.1 的风险分类器，没有消费者的 CRUD 就是投机件。我已把"已登记≠有生产路径"写进事件契约 §6 脚注，`policy_created/updated` 保留但无人发是**已知状态**，不是缺陷，别为它补 CRUD。 |
+| T-29 | test | **已投递（11:56，巡检）** | 把 audit 自翻的这条取证教训写成硬规范：**交叉校验必须打在"待验那一层"的原始输出上**——它那条 §3.4 用例最初是虚的（两次变异都不红），因为拿上一层的结果去验下一层，两层防御互相掩盖。落到你这里：状态机/投影/链这类断言，变异验证要打在被测层的**返回值或直接产物**上，不能读它下游消费者的判断。另：db 落地 HitKind 后（T-27），你那道 `TestRedactionCountersAreSealedBeforeHash` 要确认仍然抓得住回归。 |
 
 **主控纠错（第五笔，同一类）**：我 11:27 的 commit 与账本把 REQ-T3 记成"本轮解掉"，实际只解了 audit 一半、
 db 那一半根本没进任何待办 —— 巡检 11:43 用 `grep` 证伪。同一个病根（**"改完了"当成"两边都改完了"**）。
@@ -316,7 +327,7 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 11:43。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 11:56。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -347,6 +358,8 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 | 11:36 | `db=running/11:30 追加小活` \| `backend=running` \| `adapter=running` \| `audit=running` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | 否 | **停机 17.4 小时**（18:10 → 次日 11:36）：巡检被**失败熔断**自动 disable（`pauseReason: failureCircuit`，连续 3 次 `session-failed`），主控 11:19 已 `enable` 并把 6 个角色一次推齐——故本轮无“新状态”可回醒（唯一变化源自主控自己 6 分钟前的动作，报上去就是你 16:06 说的“按同一指纹反复吵用户”）。**独立取证两采样**：第一次 `go vet ./internal/...` 报 `internal/process/supervisor_test.go:140 healthy.Stop undefined`，第二次（11:36，文件 mtime 11:36:07）复跑**无输出 exit 0** → 是 adapter 在途中间态，**没当成债上报**。**给未来的自己**：熔断阈值已归零，再连续 3 轮失败会再次静默自禁；若发现指纹长时间不变，先怀疑 cron 停了，再谈“编排停滞”。 |
 
 | 11:43 | `db=running/fs.FS 已交付并自报 complete` \| `backend=running` \| `adapter=running` \| `audit=ready/等 db 的 HitKind` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | **是** | **抓到一个漏球并带证据回醒**：账本 203 行记 REQ-T3“已解”，实际只有 audit 那半落地——当场两条命令取证：`sed -n '80,92p' internal/platform/db/redact.go` 仍是 `{Column, Match, Count}` 无 `Kind`、`grep -n "REQ-T3\|HitKind" .qoder/progress/db.md` 零命中。audit 的 Next action 是“等 db”，而 db 无此待办 → 链停在这里（它同时警告窗口内写入的 audit 行不可当长期数据，因归因串参与 `entry_hash` 事后修不了）。audit 另请示 policy CRUD（Wave-3，它拒绝按猜测建）。`cmd/core` 的 `undefined: filepath` 是别的角色 11:33 在途文件，audit 已复测归因，未当成债。 |
+
+| 11:56 | `db=ready→T-27 已投(HitKind)` \| `backend=ready→已推(接 WS)` \| `adapter=running` \| `audit=ready→T-28 已投` \| `test=running→T-29 已投` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 3 行 | 是 | **backend 交出 Core 骨架+transport 且真进程冒烟通过**（health 200/无口令 401/ws-ticket 两张不同票/CORS 403），→ frontend B-F1 与 test 实时面有落点，已回醒主控去知会两家。**REQ-T-2 与 db 的 REQ-A4 同一件事**：两家独立实测 `//go:embed ../../../migrations` → `invalid pattern syntax`，`core/` 根不在 §7 owner 表内 → 等主控给一行归属。三条环境坑已上报（代理吃 curl / Windows ACL 把 0600 映射成 rwxrwxrwx / `migration_version` 写死 ==2 被 000003 打假）。T-27 附了一句“`CutPrefix` 那半在 audit 可写范围，db 不可代改”，防越界。 |
 
 ## 来自 worker 的上行输入
 
