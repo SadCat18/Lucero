@@ -117,6 +117,13 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     `version_conflict` 且**不 Touch**（不产生事件、不推进版本）；符合才 `Touch`。
     否掉的方案 `TouchIfVersion(...)`：把期望版本塞进 `Touch` 会让签名再变一次、
     并诱发"所有模块都想要条件写"的连锁扩展；透传读一行解决，且不加抽象。
+12. **故意不发事件的可变表**（写它们不需要 `Touch`/`Create`，用 `Append` 或各自的窄接口即可，
+    不必为它们补聚合版本，也别被"没有事件"当成漏设计）：`execution_leases`（heartbeat 高频，
+    进 journal 只会淹没事件）、`idempotency_keys`（纯基础设施状态，不是域事实）、
+    `settings`（配置而非业务状态）、`blobs.archived_at`（冷热迁移，无 `blob_*` 登记事件类型）、
+    `process_instances`（除 `process_started`/`process_exited`/`process_crashed`
+    三个已由 `process` 聚合表达的外，不逐条进 journal）。
+
 10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
    一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），
    所有既有建卡路径必须同轮改成 `Create`。因此**db 改注册表时必须自己先跑全仓**
@@ -165,6 +172,20 @@ func InitRedaction(denyKeys, patterns []string, marker string) error   // 编译
   `tx.RedactionHits() []RedactionHit{Column, Match, Count}` 暴露（**只有列名、规则名、次数，绝无原值**）；
   由 **`audit` 在同一事务内自己 `Append("audit_entries", …)`**。
   理由：`audit_entries` 带 `previous_hash`/`entry_hash` 链，属 audit 的知识，db 去写它等于伪造链条。
+- **命中结构必须自带类型标签（REQ-T3，11:28 裁定）**：原先 db 用 `RedactionHit{Column, Match, Count}` 单槽、
+  audit 用 `{Column, Key, Pattern, Count}` 双槽，分流靠 `store_sqlite.go` 里
+  `strings.CutPrefix(h.Match, "key:")` 这个**口头约定**。该串字参与 `entry_hash` 计算 —— 一旦 db 忘带或换前缀，
+  审计会把"deny-key 命中"静默记成"正则命中"，**归因错位且事后无法修正（改了链就断）**。
+  统一成带 kind 的一种形状，废除前缀约定：
+
+  ```go
+  type HitKind string
+  const (HitKey HitKind = "key"; HitPattern HitKind = "pattern")
+  type RedactionHit struct { Column string; Kind HitKind; Match string; Count int }
+  ```
+
+  属破坏性变更，按 §1.1 第 10 条走：db 与 audit 同一轮改完，`test` 的
+  `TestRedactionCountersAreSealedBeforeHash` 是护栏。
   日志走同一个 redactor：日志 handler 出口处套用，不在各业务调用点各自处理。
 - Secret 原值只允许以 `vault://<name>` 引用形式持久化（DPAPI abstraction，First Sprint 只留接口不实现）。
 - 边界外文本（Provider 返回的自由文本里可能自带密钥）只能靠 `Patterns` 兜，属已知上限

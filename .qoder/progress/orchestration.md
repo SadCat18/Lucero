@@ -187,10 +187,26 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-25 | test | 待投递 | T-18① 我原话是"把 `.scratch_loader.py` **移进** `.scratch/`"，主控 18:02 自查：仓库根已无该文件，**全仓也再无任何 loader**（`find . -name "*loader*"` 零命中），且它从未入库（`git log -- .scratch_loader.py` 空），所以没有 diff 可追。**不要为此重建它**——先回答两问：① 它当时对 `scripts/check_ownership.sh` 的补丁是否已完整落进脚本本体；② 若脚本以后再被改写，这个 loader 是否还需要重跑。若"一次性补丁器、用完即弃"，那**删掉比留在 .scratch 更干净**，我改口认可；只要答案不是"丢了"就行。顺带一句：变异回滚用相对路径会静默失败这条教训（frontend 报的）值得进你的 lint 判据——你脚本里所有路径要么绝对、要么显式从仓库根拼。 |
-| T-26 | frontend | 待投递 | **REQ-F-11 你的判断被采纳**，契约③ §2 已改成"幂等只适用于**改变业务状态**的 POST，凭证签发类显式豁免"，并把你那条反向断言写成硬性要求（同一请求两次必须拿到两张不同有效票；将来新增豁免要显式列进该表，不许口头豁免）。**§4 的两行旧写法我已修**（`adapters/{id}/sessions:discover` + `sessions/{id}:manage`），你按 §3 投影是对的、不用回改 yaml 里的这条，但仍请核一遍 35 path 是否与修后的 §3/§4 完全一致。**越界自纠已核实**：`packages/` 只剩 `api-client`、`validate-openapi.mjs` 进了 `apps/desktop/scripts/`、SCOPE 行回到 §7 原文——处理方式正确。**四道闸门 17:52 全绿我记账为阶段性证据**，但按纪律它仍只是"截至 17:52 的观察"，交回时要最后一次重跑。B-F1 维持 blocked（等 backend 的 `/api/v1`），继续做不依赖真后端的部分。 |
+| T-25 | test | **已投递（18:10，巡检）** | T-18① 我原话是"把 `.scratch_loader.py` **移进** `.scratch/`"，主控 18:02 自查：仓库根已无该文件，**全仓也再无任何 loader**（`find . -name "*loader*"` 零命中），且它从未入库（`git log -- .scratch_loader.py` 空），所以没有 diff 可追。**不要为此重建它**——先回答两问：① 它当时对 `scripts/check_ownership.sh` 的补丁是否已完整落进脚本本体；② 若脚本以后再被改写，这个 loader 是否还需要重跑。若"一次性补丁器、用完即弃"，那**删掉比留在 .scratch 更干净**，我改口认可；只要答案不是"丢了"就行。顺带一句：变异回滚用相对路径会静默失败这条教训（frontend 报的）值得进你的 lint 判据——你脚本里所有路径要么绝对、要么显式从仓库根拼。 |
+| T-26 | frontend | **已投递（18:10，巡检）** | **REQ-F-11 你的判断被采纳**，契约③ §2 已改成"幂等只适用于**改变业务状态**的 POST，凭证签发类显式豁免"，并把你那条反向断言写成硬性要求（同一请求两次必须拿到两张不同有效票；将来新增豁免要显式列进该表，不许口头豁免）。**§4 的两行旧写法我已修**（`adapters/{id}/sessions:discover` + `sessions/{id}:manage`），你按 §3 投影是对的、不用回改 yaml 里的这条，但仍请核一遍 35 path 是否与修后的 §3/§4 完全一致。**越界自纠已核实**：`packages/` 只剩 `api-client`、`validate-openapi.mjs` 进了 `apps/desktop/scripts/`、SCOPE 行回到 §7 原文——处理方式正确。**四道闸门 17:52 全绿我记账为阶段性证据**，但按纪律它仍只是"截至 17:52 的观察"，交回时要最后一次重跑。B-F1 维持 blocked（等 backend 的 `/api/v1`），继续做不依赖真后端的部分。 |
 
 **frontend 状态更正**：R-007 从 running 记为 **idle-等主控**（巡检 18:01 实测），T-26 投完即可自行推进非联调部分，不需再等我。
+
+## 复勤记录（09-20 11:30，额度恢复后）
+
+停机真相：**巡检被失败熔断自动 disable**（`pauseReason: failureCircuit`，连续 3 次 `session-failed`），
+日报也失败一次；7 个 worker 全部 `cold`，其中 5 个带未读产出。停机时长 ≈ 17 小时。
+已做：① `qoder_cron enable` 巡检（`consecutiveFailures` 归零）；② 全仓取证 11 包 ok；③ db 验收 complete；
+④ 一次推齐 6 个角色（backend/adapter/audit/test/frontend/db），不再走待投递队列（本轮是用户主动开口，通道可用）。
+
+本轮解掉的积压裁定：REQ-F-1/3/4/5/6/8/9（8 条全答）、REQ-T1/T2（前提已消失，撤回）、
+REQ-T3（`RedactionHit` 加 `Kind`，废除 `key:` 前缀约定，因为它参与 `entry_hash`、错位不可修正）、
+REQ-T5（§7 补 `core/cmd/fake-adapter/**` → adapter）、REQ-A3（§1.1 第 12 条无事件表清单，已贴）、
+BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
+
+新识别的**硬阻塞链**：adapter 的 `adapter/initialize` 被自己的未握手门禁挡死 → 握手永远完不成 →
+契约② §14 的 11 方法验收 + test 的真子进程被测面全卡在这。已列第一位修。
+
 
 **R-002 口径纠正**：db 自报 complete 但 T-20（透传读 + `policy_*` 入 catalog）仍在途 → 账本改回 `running`，并立规矩：
 **自报 complete 若其后还有未投完的待投递指向该角色，一律不置 complete**（否则巡检会停止观察它，正是我今天第四次犯的病的调度版）。
@@ -242,7 +258,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | REQ | role | sessionId | 状态 | Wave | 出口条件 |
 |---|---|---|---|---|---|
 | R-001 | survey | `7726e47f-d772-4f98-9b2a-2588ec5fd46b` | complete 且**主控已验收**（`51afde6`）；16:12 追加 WorkBuddy 动态探测中 | 0 | 五家矩阵 + 优先级 + fallback 链 |
-| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | **running（T-12 重开，17:20 已接；`000003` 已落盘）** | 2 | 000003 三表加 version + 映射变更须同轮通报受影响方（§1.1 第 10 条） |
+| R-002 | db | `d1d4cb6d-1a7a-430f-bed8-63b0bfd2fe5b` | **complete（11:19 主控全仓 11 包 ok 验收）→ 11:30 追加一件小活：迁移器 `fs.FS` 入口** | 2 | 平台层全交付（Create/Touch/透传读/无 ExecContext/强制脱敏/000003/catalog 56 条） |
 | R-003 | backend | `370101c0-0d5d-49ba-a84f-6d72695da0c1` | running | 2 | 状态机矩阵驱动 + 合法/非法迁移用例全覆盖 |
 | R-004 | adapter | `d27c7da2-b677-41b5-be92-bdcf81691273` | **running（16:38 派）** | 2 | 协议帧+握手+三态投递+进程监管+FakeAdapter；`go test ./internal/adapter/... ./internal/process/...` 绿 |
 | R-005 | audit | `06a5de3f-8e86-4c18-bc81-0f3215350246` | running | 2 | 哈希链 + RedactionRules + Decide 优先级链 + Resolve 幂等 |
@@ -287,7 +303,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 18:01。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 18:10。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -312,6 +328,8 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 | 17:51 | `db=自报complete→T-20又给新活` \| `backend=running+T-19已投` \| `adapter=running+T-22已投` \| `audit=已推(切片用例)` \| `test=running/q3+T-21已投` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 4 行 | 是 | 第五批 4 行一次投完零报错；推进了 audit（唯一 idle 且 Next action 自主）。**本轮唯一一次独立取证**：`CGO_ENABLED=0 go vet ./internal/adapter/` → 无输出 exit 0，证明 T-22 的“你自己包的红”在投递时已不存在（db/audit 也独立报它 17:44 自修）——这是主控 17:46 那条“超 5 分钟重新取证”纪律的第四个病例，我按先例做法附了对账句并在表内标明。**R-002 别按 complete 收尾**：db 自报 complete 后 30 秒我就把 `Tx.QueryRowContext/QueryContext` 透传（backend 写侧的硬前置）投给了它。audit 自正一条失实自述（sentinel 实未删→17:44 真删并 grep 取证）、并撤回自己上轮报的 adapter 红。 |
 
 | 18:01 | `db=running` \| `backend=running` \| `adapter=running/q1` \| `audit=running+T-23已投` \| `test=running/q1+T-24已投` \| `frontend=ready/等主控裁REQ-F系列` \| 待投递=0 | 推进 0 + 投递 2 行 | 是 | 第六批投完零报错。**两处独立核**：① frontend 的越界自纠按盘为真（`ls packages/` 只剩 `api-client`、`validate-openapi.mjs` 已在 `apps/desktop/scripts/`）；② **T-18① 落地方式与原话不符**——根目录 `.scratch_loader.py` 已消失，但 `find .scratch -name '*loader*'` 零命中，而指令要求的是“**移进** `.scratch/`”不是删；已请主控向 test 确认改名还是真删（我没拿任何角色的自述当证据）。新等主控：REQ-F-11（短票与 §2 幂等键字面冲突，它选豁免+反向断言）、§4 链映射表两行旧文字与 §3 现文矛盾。 |
+
+| 18:10 | `db=complete/待主控验收(其后无待投)` \| `backend=running+T-19在队` \| `adapter=running` \| `audit=running+T-23在队` \| `test=running+T-25已投` \| `frontend=ready→T-26已投` \| 待投递=0 | 推进 0 + 投递 2 行 | 是 | 第七批投完零报错。**按主控 18:05 新规矩判 R-002 这次可置 complete**：T-20 两条已落地且无任何待投指向 db。db 交付面含 `Tx.QueryRowContext/QueryContext` 透传（backend 写侧硬前置解除，且它与 backend 现有窄读接口逐字一致、不需再包一层）——已回醒主控。**本轮无我主动推的角色**（db 等验收、frontend 的 T-26 正文自带“继续做非联调部分”）。db 自推翻一次单点采样误报（点名 audit 的 build failed 最后重跑全 ok），与我 18:01 那条取证同类。 |
 
 ## 来自 worker 的上行输入
 
