@@ -192,6 +192,19 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 **frontend 状态更正**：R-007 从 running 记为 **idle-等主控**（巡检 18:01 实测），T-26 投完即可自行推进非联调部分，不需再等我。
 
+## 待投递 · 第八批（11:50，主控过度声明的返工）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-27 | db | 待投递（**REQ-T3 的另一半，我 11:30 漏派**） | 把 `internal/platform/db/redact.go:87` 的 `RedactionHit{Column, Match, Count}` 改成带类型标签：`type HitKind string`，`HitKey="key"`/`HitPattern="pattern"`，结构 `struct{ Column string; Kind HitKind; Match string; Count int }`（内部契约 §2.2 已定文）。**同时废除 `approval/store_sqlite.go` 里 `strings.CutPrefix(h.Match,"key:")` 的分流约定**（audit 侧 `HitKind` 已就位，它现在是半迁移接缝）。破坏性变更按 §1.1 第 10 条：同轮跑全仓 + 通报受影响方。 |
+| T-28 | audit | 待投递 | ① 你对 REQ-T3 的判断成立，db 那一半是我漏派，见 T-27。② **窗口期数据处置**：不写回填脚本、不给旧行打标记——任何回填都要重算 `entry_hash`，那等于**伪造链**。改为 **Wave-2 验收前重建一次开发库**（删 dev DB、从 `000001` 重跑到 `000003`），归因不可信的行不留。③ **policy_rules 写路径判「不建」**（Wave-3 再议）：v0.1 的门禁唯一真相是 §3.1 的风险分类器，没有消费者的 CRUD 就是投机件。我已把"已登记≠有生产路径"写进事件契约 §6 脚注，`policy_created/updated` 保留但无人发是**已知状态**，不是缺陷，别为它补 CRUD。 |
+| T-29 | test | 待投递 | 把 audit 自翻的这条取证教训写成硬规范：**交叉校验必须打在"待验那一层"的原始输出上**——它那条 §3.4 用例最初是虚的（两次变异都不红），因为拿上一层的结果去验下一层，两层防御互相掩盖。落到你这里：状态机/投影/链这类断言，变异验证要打在被测层的**返回值或直接产物**上，不能读它下游消费者的判断。另：db 落地 HitKind 后（T-27），你那道 `TestRedactionCountersAreSealedBeforeHash` 要确认仍然抓得住回归。 |
+
+**主控纠错（第五笔，同一类）**：我 11:27 的 commit 与账本把 REQ-T3 记成"本轮解掉"，实际只解了 audit 一半、
+db 那一半根本没进任何待办 —— 巡检 11:43 用 `grep` 证伪。同一个病根（**"改完了"当成"两边都改完了"**）。
+以后凡跨角色的破坏性变更，我按**两侧各自**分派与验收，不合并记一条。
+
+
 ## 复勤记录（09-20 11:30，额度恢复后）
 
 停机真相：**巡检被失败熔断自动 disable**（`pauseReason: failureCircuit`，连续 3 次 `session-failed`），
@@ -303,7 +316,7 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 18:10。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 11:43。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -330,6 +343,10 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 | 18:01 | `db=running` \| `backend=running` \| `adapter=running/q1` \| `audit=running+T-23已投` \| `test=running/q1+T-24已投` \| `frontend=ready/等主控裁REQ-F系列` \| 待投递=0 | 推进 0 + 投递 2 行 | 是 | 第六批投完零报错。**两处独立核**：① frontend 的越界自纠按盘为真（`ls packages/` 只剩 `api-client`、`validate-openapi.mjs` 已在 `apps/desktop/scripts/`）；② **T-18① 落地方式与原话不符**——根目录 `.scratch_loader.py` 已消失，但 `find .scratch -name '*loader*'` 零命中，而指令要求的是“**移进** `.scratch/`”不是删；已请主控向 test 确认改名还是真删（我没拿任何角色的自述当证据）。新等主控：REQ-F-11（短票与 §2 幂等键字面冲突，它选豁免+反向断言）、§4 链映射表两行旧文字与 §3 现文矛盾。 |
 
 | 18:10 | `db=complete/待主控验收(其后无待投)` \| `backend=running+T-19在队` \| `adapter=running` \| `audit=running+T-23在队` \| `test=running+T-25已投` \| `frontend=ready→T-26已投` \| 待投递=0 | 推进 0 + 投递 2 行 | 是 | 第七批投完零报错。**按主控 18:05 新规矩判 R-002 这次可置 complete**：T-20 两条已落地且无任何待投指向 db。db 交付面含 `Tx.QueryRowContext/QueryContext` 透传（backend 写侧硬前置解除，且它与 backend 现有窄读接口逐字一致、不需再包一层）——已回醒主控。**本轮无我主动推的角色**（db 等验收、frontend 的 T-26 正文自带“继续做非联调部分”）。db 自推翻一次单点采样误报（点名 audit 的 build failed 最后重跑全 ok），与我 18:01 那条取证同类。 |
+
+| 11:36 | `db=running/11:30 追加小活` \| `backend=running` \| `adapter=running` \| `audit=running` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | 否 | **停机 17.4 小时**（18:10 → 次日 11:36）：巡检被**失败熔断**自动 disable（`pauseReason: failureCircuit`，连续 3 次 `session-failed`），主控 11:19 已 `enable` 并把 6 个角色一次推齐——故本轮无“新状态”可回醒（唯一变化源自主控自己 6 分钟前的动作，报上去就是你 16:06 说的“按同一指纹反复吵用户”）。**独立取证两采样**：第一次 `go vet ./internal/...` 报 `internal/process/supervisor_test.go:140 healthy.Stop undefined`，第二次（11:36，文件 mtime 11:36:07）复跑**无输出 exit 0** → 是 adapter 在途中间态，**没当成债上报**。**给未来的自己**：熔断阈值已归零，再连续 3 轮失败会再次静默自禁；若发现指纹长时间不变，先怀疑 cron 停了，再谈“编排停滞”。 |
+
+| 11:43 | `db=running/fs.FS 已交付并自报 complete` \| `backend=running` \| `adapter=running` \| `audit=ready/等 db 的 HitKind` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | **是** | **抓到一个漏球并带证据回醒**：账本 203 行记 REQ-T3“已解”，实际只有 audit 那半落地——当场两条命令取证：`sed -n '80,92p' internal/platform/db/redact.go` 仍是 `{Column, Match, Count}` 无 `Kind`、`grep -n "REQ-T3\|HitKind" .qoder/progress/db.md` 零命中。audit 的 Next action 是“等 db”，而 db 无此待办 → 链停在这里（它同时警告窗口内写入的 audit 行不可当长期数据，因归因串参与 `entry_hash` 事后修不了）。audit 另请示 policy CRUD（Wave-3，它拒绝按猜测建）。`cmd/core` 的 `undefined: filepath` 是别的角色 11:33 在途文件，audit 已复测归因，未当成债。 |
 
 ## 来自 worker 的上行输入
 
