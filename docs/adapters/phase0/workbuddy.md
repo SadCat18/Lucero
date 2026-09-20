@@ -1,86 +1,140 @@
 # Phase 0 调查报告：WorkBuddy
 
-- 调查角色：`survey` ｜ 日期：2026-09-19 ｜ 方法：**纯静态取证**（exe 版本信息、捆绑 CLI 的 `--help`/`--version` 实测、SQLite schema + 枚举、审计日志结构、注册表）
-- 被调查实物与版本号（**三条独立版本线**，本身即是风险信号，见 §25）：
-  - WorkBuddy Desktop **5.5.6** — `D:\Program Files\WorkBuddy\WorkBuddy.exe`（Electron，运行中，12 进程）
-  - 内置 **CodeBuddy Code CLI 2.137.1** — `D:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\`
-    = npm 包 `@genie/agent-cli`，`bin/{codebuddy, cbc, cbc-prewarm}`，`dist/codebuddy.js`(23 MB)、`dist/codebuddy-headless.js`(19 MB)、`dist/web-ui/`
-    实测启动方式：`node bin/codebuddy --version` → `2.137.1`（要求 Node ≥ 18.20.8；本机用 `D:\DevTools\node-v24.19.0-win-x64\node.exe`）
-  - 沙箱组件 **5.5.5** — `…\cli\vendor\sandbox\5.5.5\{sandbox-cli,sandbox-cli-gc,sandbox-center}.exe`（运行中）
-- 厂商：Tencent（`package.json` 描述 "Use CodeBuddy, Tencent's AI assistant"；`@tencent/tencent-docs-ai-engine` 随包）；连接器市场 `https://static.workbuddy.cn/connectors-config-v2/…`
-- 认证方式：**未取证** —— `D:\WorkBuddyData\.workbuddy\credentials\` 与 `qimei-cache.json`、`device-id` 属用户凭据，本角色未打开（只记录存在）。
-  可程序化侧的证据是 `--serve` 的 `--auth {password,none}` 与 `mcp/{name}/auth`。
-- 原始输出归档：`D:\Project\Lucero\.scratch\phase0-workbuddy\`（`cb_help.txt` 100 行、`ps.json`）
-- 真实消息预算使用：**0 / 3**
+- 调查角色：`survey` ｜ 日期：2026-09-19 ｜ **两轮取证**：
+  - **第 1 轮 静态**（exe 版本信息、捆绑 CLI 的 `--help`/`--version`、SQLite schema + 枚举、审计日志、注册表）
+  - **第 2 轮 动态实测**（用户单次授权：启动桌面端与 CLI、起 `--serve`、在 `.scratch` 一次性项目里发真实消息）
+- 本报告凡标 **[实测]** 者为第 2 轮端到端跑过；标 **[静态]** 者仍只有结构证据。**第 1 轮结论中有 5 项被第 2 轮推翻或修正，见 §修正记录。**
 
-## 关键结构性事实
+## 实物与版本（第 1 轮 + 第 2 轮复核）
 
-1. **WorkBuddy = 桌面端 + 一个功能完整的 Claude-Code 形制 CLI（CodeBuddy Code）**。
-   该 CLI 不是附属品，它自带 `--serve`（Web UI + **REST API** + **ACP over HTTP SSE**）与 `--acp`（Agent Client Protocol over stdio ndJson）。
-   ACP 是**跨厂商标准协议**，若 Lucero 的 Adapter 协议支持 ACP，WorkBuddy 的接入成本会大幅下降。
-2. 桌面端为每个会话维护一个**本机 HTTP host**，注册表实测：
-   `.workbuddy/sessions/<pid>.json` → `{pid, sessionId:"interactive-<pid>", url/endpoint:"http://127.0.0.1:<port>", kind:"interactive", mode:"local", version:"2.137.1", lastHeartbeat, startedAt, updatedAt, cwd}`（本机 95 个文件）。
-   → **桌面端已有会话是可寻址的**，但端口的鉴权方式未取证。
-3. **会话正文（message/part）未在本机定位到**。已系统性排除，见"UNKNOWN 清单 #4"。这是五家中唯一一个"元数据齐全、正文缺位"的形态。
+| 组件 | 版本 | 取证方式 |
+|---|---|---|
+| WorkBuddy Desktop | **5.5.6** | exe FileVersion |
+| 内置 CodeBuddy Code CLI | **2.137.1** | `node bin/codebuddy --version`；[实测] `/api/v1/info.version`、`/api/v1/openapi` 的 `info.version` 三处一致 |
+| sandbox 组件 | 5.5.5 | `cli/vendor/sandbox/5.5.5/` |
+| OpenAPI 契约 | `CodeBuddy Code API (Beta)` **3.1.0 / 113 paths** | [实测] `GET /api/openapi.json` → 200（**公开路径，免鉴权**） |
+| 自动更新 | `autoUpdate.enabled = true` | [实测] `GET /api/v1/info` |
+
+实物路径：`D:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\`（`@genie/agent-cli`，`bin/{codebuddy,cbc}`、`dist/codebuddy.js` 23 MB、`dist/codebuddy-headless.js` 19 MB、`dist/web-ui/`）
+运行时要求 Node ≥ 18.20.8；本次用 `D:\DevTools\node-v24.19.0-win-x64\node.exe`。厂商 Tencent，模型网关 `https://copilot.tencent.com`。
+
+- 真实消息预算使用：**3 / 3（已用尽）**。明细：① `POST /api/v1/jobs` 派发（落为 1 条 user 消息，模型 turn 未执行）② `POST /api/v1/jobs/{id}/reply`（`delivered:true` 但 `saved:false`，未落库未执行）③ `codebuddy -p --output-format stream-json`（**端到端成功**）。另有 2 次 HTTP 400（缺字段）未触达模型，不计入。
+
+## 认证方式
+
+- [实测] `GET /api/v1/auth/status` → `{authEnabled: true, authenticated: true}`，**全程未出现登录/验证码/Windows Hello 界面**，也未读取任何凭据值。
+- [实测] CLI `system/init` 事件字段 `apiKeySource = "copilot.tencent.com"` → CLI **复用了既有的厂商网关登录态**，无需二次认证。
+- [静态] 凭据目录本体未打开：`config ls` 暴露 `sandbox.filesystem.denyRead` 明确把
+  `~/AppData/Local/CodeBuddyExtension/Data/Public/auth/` 等三份 auth 路径列为**连自家 agent 都禁止读** → 厂商自己就把凭据隔离做了，Adapter 不应尝试绕过。
+- 本地另有 3 个 home：`~/.codebuddy`（CLI 态）、`~/.workbuddy`（CLI 的自定义模型/插件/provider 配置，`CustomModelsProductProvider` 日志指向此）、`D:\WorkBuddyData\.workbuddy`（桌面态）。
+
+## 关键结构性事实（**[实测] 本节全部为跑通后的结论**）
+
+1. **会话正文确实落在本机**，且分两个物理隔离的根：
+   - CLI 族：`~/.codebuddy/projects/<cwd-slug>/<sessionId>.jsonl`
+   - 桌面族：`D:\WorkBuddyData\.workbuddy/projects/<cwd-slug>/<sessionId>.jsonl`（实测 11 个 cwd-slug 目录，含 `d-WorkBuddy-2026-08-05-15-44-51` 等）
+   - `cwd-slug` 生成规则 [实测]：小写盘符 + 路径分隔转 `-`（`D:\Project\...\probe-proj` → `d-Project-Lucero-.scratch-phase0-workbuddy-probe-proj`）
+   - **两族互不可见**：[实测] 我派发的 CLI 会话结束后，`workbuddy.db.sessions` 仍为 **36 行、匹配我 cwd 的桌面行 = 0**。
+     → Adapter 驱动 CLI 时**看不到也不碰用户桌面里已有的会话**，这是 WorkBuddy 适配范围的决定性边界。
+2. 同一份会话还会在 4 处留痕（[实测] 用唯一标记串全盘比对得出）：
+   `projects/<slug>/<id>.jsonl`（正文）、`jobs/<shortId>/state.json`（作业态，含 `intent/initialPrompt/respawnArgs`）、
+   `logs/<date>/<projName>__<32hex>.log`（服务日志，会**原样记录 prompt 文本**）、`traces/<pid>/trace_<id>.json`。
+   → 后三处同样含用户正文，**任何采集都必须脱敏**，且日志会写进 prompt 原文这一点对 §12「Secret 不得进普通日志」直接构成风险。
+3. `--serve` 的鉴权是**三层**：`X-CodeBuddy-Request: 1`（CSRF 类强制头，缺失即 403）+ `Bearer <password>` 或 `?password=`；
+   豁免路径含 `/api/openapi.json`、`/api/v1/auth/{status,login}`、`/api/v1/webhooks/*`、静态资源。可用 `CODEBUDDY_DISABLE_REQUEST_VALIDATION=1` 关闭。
+4. CLI 的 transcript 形制与 Qoder 的**不同族**（修正第 1 轮的判断）：WorkBuddy 的 jsonl 是**扁平** `{id, timestamp, type, role, content, providerData, __codebuddyLocal, sessionId, cwd}`，
+   而 Qoder 是嵌套 `{type, uuid, parentUuid, message:{role,…}, toolUseResult}`。见矩阵 §同构族修正。
 
 ## 能力矩阵（25 项）
 
 | # | 能力 | 等级 | 证据来源 | 实测结果 | 限制 / 失败降级 |
 |---|---|---|---|---|---|
-| 1 | 复用原客户端登录 | **UNKNOWN** | `.workbuddy/credentials/`（未打开）、`device-id`、`storage/user-<uuid>…` 目录命名 | 未取证：目录按 user id 分域，说明存在账号作用域存储 | 原因：读取凭据目录=使用用户登录态，本角色判定不越界。降级：让 Adapter 走 CLI 的既有登录态（CLI 与 Desktop 共享 `.codebuddy`/`.workbuddy`） |
-| 2 | 软件版本发现 | CLI + LOCAL_DATA | `--version`、exe VersionInfo、`sessions/*.json.version`、`sandbox/5.5.5/` 目录名 | 四条版本线同时可取：Desktop 5.5.6 / CLI 2.137.1 / sandbox 5.5.5 / 运行中 host 的 `version` 字段 | 无单一"软件版本"→ Core 必须存**多字段版本**而非一个字符串 |
-| 3 | 列出已有会话 | CLI | `codebuddy ps --help`、`agents --jobs --all --cwd`；LOCAL_DATA `workbuddy.db.sessions` | 实测 `ps --json` **exit=0**；`sessions` 表 36 行含 `status,cwd,model,mode,permission_mode,thought_level,archived(deleted_at)` | **已实测的坑**：无活动会话时 `ps --json` 输出纯文本 `No active sessions.` 而**不是合法 JSON** → Adapter 解析必须先判文本哨兵。降级：LOCAL_DATA 读 `sessions` 表（含桌面端历史会话，比 `ps` 全） |
-| 4 | 读取完整会话 | **UNKNOWN**（元数据 = LOCAL_DATA） | 见"UNKNOWN #4"的排除清单；`codebuddy logs <pidOrName> --help` | `sessions` 表有 title/status/model **无正文**；`tasks/<uuid>/N.json` 实测是任务项 `{subject,description,activeForm,status,id,createdAt,updatedAt}`，非对话 | 正文若在云端（`product.cloudhosted.json`、`edge-sync-mapping-v[2-4].db` 存在）则本地 Adapter 永远读不到 → **需主控决定是否授权探测 127.0.0.1 host endpoint**。降级：`codebuddy logs <pid>` 只覆盖 CLI 起的会话 |
-| 5 | 新消息增量同步 | LOCAL_DATA | `sessions/*.json{lastHeartbeat,updatedAt}`、`workbuddy.db.sessions.updated_at/last_activity_at`、`audit-log/*.jsonl{sequence,prevHash}` | 审计日志是**哈希链式、带 sequence** 的追加写 → CLI 侧会话可增量；`automation_runs.runs_json` 有运行历史 | 因 #4 正文缺位，桌面端会话的增量只能靠 `updated_at` 粗粒度。降级：轮询 mtime |
-| 6 | 双向同步 | EXPERIMENTAL | `--serve`(REST+SSE)、`--acp`、`sessions/<pid>.json.endpoint` | 双向机制在设计上存在（CLI 侧证据充分），**桌面端 endpoint 未探测** | 未实测。降级：CLI 单向 + DB 只读 |
-| 7 | 向指定已有会话发消息 | CLI | `-r/--resume [sessionId]`、`--session-id <uuid>`、`attach <pidOrName>`、`--fork-session`、`-c/--continue`、`--remote-control [client]` | `--resume` 明确接受 session id；`attach` 可接管后台会话 | **只能对 CLI 命名空间内的会话生效**；桌面端已有会话是否共享同一 session id 空间未证实（`sessions` 表 id 与 `interactive-<pid>` 两种形态并存）。降级：向桌面端 UIA 输入 |
-| 8 | 流式响应 | NATIVE（CLI 侧） | `--output-format stream-json`、`--input-format stream-json`、`--include-partial-messages`("Output raw SSE incremental messages from model requests")、`--replay-user-messages` | 帮助文本明示 **raw SSE 增量帧**可控，且支持流式**输入** | 仅 `--print` 模式下可用；且只覆盖 Adapter 自己起的会话。降级：`--output-format json` 整包 |
-| 9 | 中止当前生成/任务 | CLI | 子命令 `kill <pidOrName>` / `stop <pidOrName>`（互为别名）、`--max-turns`；`tool_usage` 类语义的 `cancelled_by_user` 未见于本家但 `automation_runtime_state.running` 存在 | kill/stop 双命令 + 后台会话按 pid 或 name 定位 | 只能中止 CLI/daemon 管的会话；桌面端 turn 中止无证据。降级：UIA 点停止 |
-| 10 | 读取模型列表 | LOCAL_DATA + CLI | `.workbuddy/models.json`、`--help` 中 `--model` 的枚举说明 | `models.json` = list[3]，元素键 `{id,name,vendor,url,apiKey,reasoning,supportsReasoning,supportsImages,supportsToolCall,useCustomProtocol}`；help 直列 12 个可用 model id（auto / glm-* / kimi-* / minimax-* / deepseek-* / custom-local:*） | `models.json` 是**自定义 provider 表**，不等于全量可选模型（后者在 help 文本里，随版本变）。降级：解析 `--help`（脆，标注为临时手段） |
-| 11 | 切换模型 | CLI | `--model`、`--fallback-model`、`--text-to-image-model`、`--image-to-image-model` | 四类模型分别可指（对话/回退/文生图/图生图）；`sessions.model`、`automations.model_id`、`model_is_thinking` 可观测 | **进程启动时参数**，未见"对已有会话改模型"的接口 → 切换 = 新会话。降级：UIA 下拉 |
-| 12 | 推理强度/参数控制 | CLI + LOCAL_DATA | `--effort <minimal,low,medium,high,xhigh,max>`；DB `sessions.thought_level`、`automations.model_is_thinking`、`context_window`；`--autocompact <auto\|tokens>` | effort 六档枚举实测存在于 help；DB 有对应列 | DB 列的实际取值分布未验证（未查非空率）。降级：`--autocompact` 控制窗口 |
-| 13 | 精确额度读取 | READ_ONLY | `workbuddy.db.session_usage`(29 行) 列 `{session_id, used, size, updated_at, credit_json}` | **`credit_json` 字段名直接指向额度**；`used`/`size` 是配额用量 | `credit_json` 内容与单位语义未取证（可能含账户标识）。判定为 READ_ONLY：本地有数据但无对外查询接口。降级：无 |
-| 14 | Reset 时间 | **UNKNOWN** | 同上 + `automations.{rrule,next_run_at}` | 未找到 quota-reset 字段；`next_run_at` 是**定时任务**时间不是额度重置 | 不要把 `next_run_at` 误读为 reset 时间（易错点，特此标注） |
-| 15 | 任务实时状态 | LOCAL_DATA + CLI | `sessions.status`(默认 `'Pending'`)、`automation_runtime_state{running,running_started_at,running_conversation_id}`、`automation_runs{status,dispatch_status,outcome,result_success,error}`、`tasks/<uuid>/N.json.status`、`ps --json` | 四级状态齐全：会话 / 自动化 / 单次运行 / 任务项；`automation_runs` 实测 18 行 | `sessions.status` 的完整枚举未取到（只观察到默认值 `Pending`）→ **禁止猜枚举**。降级：`codebuddy agents --jobs --all` |
-| 16 | 审批读取 | LOCAL_DATA | `audit-log/YYYY-MM-DD.jsonl` + `audit-log/manifest.jsonl` + `mcp-approvals.json`(2 B 空) | 审计行结构实测：`{sessionId, requestId, toolCallId, category, eventType, decision, commandPreview, commandHash, messageKey, messageParams, timestamp, source, schemaVersion, id, sequence, prevHash}`；`manifest.jsonl` = `segment-closed` 分段落盘 `{entryCount, firstHash, lastHash, fileSha256}` | 这是**已决策的事后审计**，不是"待批队列"。取不到 pending 状态 → 无法实时观测审批。且 `commandPreview` 含用户命令原文，**入库前必须脱敏**（对齐红线：Secret/正文不得进普通日志） |
-| 17 | 审批响应 | CLI | `--permission-mode <acceptEdits,bypassPermissions,default,plan,dontAsk,auto>`、`-y/--dangerously-skip-permissions`、`--permission-mode-before-plan`、`--subagent-permission-mode`、`--brief`(SendUserMessage) | 六档权限模式，且能为子代理单独设档；`--settings`/`--setting-sources` 可外部注入 | 全是**启动时**决定，不是"回应一个正在挂起的审批"。真正的 pending-approval 应答在 `--serve`/`--acp` 通道，**未探测**。降级：UIA 点按钮 |
-| 18 | 附件 | READ_ONLY | `models.json.supportsImages`、`input_history.attachments`（实测 `{prompt 86, steered_input 14}` 中 **24 条带 attachments**）、`.workbuddy/clipboard-images/`、`blobs/<2hex>/<sha>.{png,jpg}` | 附件以**内容寻址 blob** 落盘（sha256 文件名 + 两级桶目录） | CLI help 中**未见** `--image` 类参数（Codex 有 `-i/--image`）→ 主动上传附件的通道未证实。降级：写文件进 cwd |
-| 19 | MCP/Skill/Rule/Hook | CLI（五家最强） | 子命令 `mcp {add,add-json,remove,list,get}`、`plugin`、`config`；flag `--mcp-config <fileOrString>`、`--strict-mcp-config`、`--channels <plugin:name@marketplace \| server:configName>`、`--plugin-dir <dirs…>`、`--agents <json>`、`--settings`；目录 `skills/`、`plugins/`、`connectors/`、`connectors-marketplace/`、`experts/`、`.workbuddy/skills/` | MCP 可**每次调用注入**（`--mcp-config` + `--strict-mcp-config` 隔离）= 最适合被 Adapter 编排；插件有 marketplace 与 dev 目录两种来源 | `--dangerously-load-development-channels` 提示渠道有白名单管控。降级：读 `.workbuddy/settings.json` |
-| 20 | 本地会话数据库 | LOCAL_DATA | 实测 open | `D:\WorkBuddyData\.workbuddy\workbuddy.db`(651,264 B, **10 表**, drizzle 迁移) + `edge-sync-mapping-v[1-4].db` 四代并存 + `local_storage/entry_*.info`(gzip+base64 键值) + `storage/{device,skeleton,user-<uuid>[-personal]}/{global,scoped}/` | 存储**分域且多代并存**；正文不在这些位置（见 UNKNOWN #4） |
-| 21 | CLI | CLI | 实测 | 21 个子命令：`config mcp sandbox plugin doctor update install daemon ps logs attach kill stop rm respawn agents auto-mode agents(重名) + 主会话`；`--help` 100 行、`--version` 2.137.1 | `agents` 在 help 中出现**两次且语义不同**（agent view / 列出 agents，后者"requires --json"）→ 同一命令名两种行为，脚本化需实测确认 | 
-| 22 | SDK/API/App Server | EXPERIMENTAL | `--serve`("Start HTTP server (Web UI, REST API, ACP over HTTP SSE). Without --acp, ACP does not use stdio")、`--acp-transport stdio\|streamable-http`、`--port`、`--host`、`--auth password\|none` | **ACP（Agent Client Protocol）** = 标准化 agent 驱动协议，ndJson 帧；REST + Web UI 同进程 | 未探测任何端点（避免使用用户凭据、避免在用户机器上开服务）。`--auth none` 的 help 自述"让任意本地进程通过服务执行命令和读写文件"→ **安全红线**，Core 侧禁用 |
-| 23 | 精确跳转原客户端会话 | CLI | `attach <pidOrName>`、`HKCR\workbuddy` 注册 `URL Protocol`；`sessions/<pid>.json.endpoint` | attach 是按会话进入；deep link 存在但粒度未测 | Desktop 会话与 CLI 会话是否同一 id 空间未证实（见 #7）。降级：UIA |
-| 24 | UI Automation 可行性 | UI_AUTOMATION | Electron；`WorkBuddyShareTarget.exe`、`resources/app.asar.unpacked/node_modules/@tencent/tencent-docs-ai-engine/bin/win32-x64/editor_sdk.exe` 在跑 | 可行 | 优先级低；仅用于 #17 pending 审批与 #11 会话内改模型 |
-| 25 | 版本变化风险 | EXPERIMENTAL | 综合 | 实测风险：① 三/四条版本线独立演进（5.5.6 / 2.137.1 / 5.5.5）；② CLI 有 `update`/`install [target]` **自升级**能力 → 版本会自己变；③ `edge-sync-mapping.db` 存在 **v1/v2/v3/v4 四代**并存；④ 产品形态有 `product.{cloudhosted,internal,ioa,selfhosted}.json` 四种构建 | 高风险。Core 必须**按 CLI 版本而非 Desktop 版本**给 WorkBuddy 定契约，并把 `update` 关掉（若可配） |
+| 1 | 复用原客户端登录 | **NATIVE** [实测] | `GET /api/v1/auth/status`；`system/init.apiKeySource`；`config ls` 的 denyRead 清单 | `{authEnabled:true, authenticated:true}`，无登录弹窗；`apiKeySource="copilot.tencent.com"` | 复用范围 = **CLI 自己的认证域**；桌面凭据目录被厂商显式列为禁读。降级：`--auth none`（**安全红线，禁用**） |
+| 2 | 软件版本发现 | **NATIVE** [实测] | `GET /api/v1/info` | `{cwd,version:"2.137.1",os,arch,nodeVersion,gatewayMode:"local",tunnelUrl,uptime,userName,autoUpdate:{enabled:true}}` | 只有 CLI 版本，不含桌面 5.5.6 → 需与 exe 版本信息并记 |
+| 3 | 列出已有会话 | **NATIVE** [实测] | `GET /api/v1/sessions`、`/sessions/across-projects`、`/sessions/workspaces` | `across-projects` 返回 `{id,name,createdAt,updatedAt,messageCount,isCurrent,projectId,cwd,status,isPlayground,isUserDefinedTitle}`；实测列出我的 2 个探针会话 | **只列 `.codebuddy` 族**，桌面 36 个会话不在其中（实测）。降级：LOCAL_DATA 读 `.workbuddy/projects/*/*.jsonl` 文件名 + `workbuddy.db.sessions` |
+| 4 | 读取完整会话 | **LOCAL_DATA + NATIVE** [实测]（第 1 轮为 UNKNOWN，**已推翻**） | 实测定位 `projects/<slug>/<id>.jsonl` 双根；`GET /api/v1/sessions/{id}/history`、`/sessions/{id}/replay`、`/jobs/{id}/transcript` | `/history` 返回 `{sessionId,name,requests:[{userInput,finalReply}]}`，**`finalReply` 精确回读到我自己造的标记串**；`/jobs/{id}/transcript` 返回 ACP `updates[]` 帧 | `/transcript` 只回放了 `user_message_chunk`，**未含 agent 输出**（实测 100s 轮询无增长）→ 读回复要用 `/history` 或 jsonl。降级：直读 jsonl |
+| 5 | 新消息增量同步 | **NATIVE** [实测] | `--include-partial-messages` 的 `stream_event`；`GET /runs/{runId}/stream`、`/jobs/{id}/stream`、`/jobs/events`、`/acp`(SSE) | 一次 `-p` 跑出 **32 个 `stream_event`** 增量帧 + 2 个 `assistant` + 1 个 `result` | `jobs/{id}/transcript` 不增长（见 #4）→ 增量要靠 `/jobs/events` SSE 或 stream 端点，**不要用 transcript** |
+| 6 | 双向同步 | **NATIVE** [实测]（第 1 轮 EXPERIMENTAL） | 入站 `-p`/`/api/v1/jobs`，出站 stream-json/SSE | 端到端往返成功：发进去的标记串从 `result.result` 原样回来 | 写链稳定性差（见 #7） |
+| 7 | 向指定已有会话发消息 | **EXPERIMENTAL** [实测]（第 1 轮 CLI） | `POST /api/v1/jobs/{id}/reply`；CLI `-r/--resume <sessionId>`、`--session-id`、`--fork-session` | 端点存在且**语法可对**（body 必填 `text`；我给 `message` 时 400）；用 `text` 后返回 `{delivered:true, saved:false, notice:"Reply sent"}` —— **消息未落库、未触发模型 turn**（实测 messageCount 仍 1、stats 未增） | **实测不通**：`delivered` 是虚报。`-r <既有会话>` 续发因预算耗尽未测。降级：每轮起新 `-p` 进程 + `--resume`（未测）或 `sourceSessionId` 继承上下文 |
+| 8 | 流式响应 | **NATIVE** [实测] | `--output-format stream-json --include-partial-messages` | 事件族实测：`system/init`、`system/status`、`file-history-snapshot`、`stream_event`×32、`assistant`、`result/success`；服务端另有 `AgentMessageChunk`/`AgentThoughtChunk`/`ToolCall`/`PlanUpdate` 等 ACP schema（openapi 44 schemas） | `-p` 的流只在该子进程生命周期内；跨进程续流要用 `/runs/{id}/stream` 或 `/acp` |
+| 9 | 中止当前生成/任务 | **NATIVE** [实测]（第 1 轮 CLI） | `POST /api/v1/jobs/{id}/stop` | 实测返回 `{data:{stopped:true}}`，随后 worker 进程消失 | CLI 侧 `kill/stop <pidOrName>` 亦在。未测 `/runs/{runId}/cancel` |
+| 10 | 读取模型列表 | LOCAL_DATA [实测确认来源] | 服务日志 `[CloudProductManager]`、`AgentModelResolver`、`~/.workbuddy/models.json` | 模型目录来自**云端产品配置**：`fetch cloud product from https://copilot.tencent.com/v3/config success, agents(1): cli, models(52)` → 合并本地自定义后 `product config input: 55 models, 18 agents`；`models.json` = list[3] `{id,name,vendor,url,apiKey,reasoning,supportsReasoning,supportsImages,supportsToolCall,useCustomProtocol}` | **REST 无 `/models` 端点**（113 路径实测无）；且日志出现 `[Warning] enterpriseId is missing, skipping models API call` → 企业侧模型 API 会被跳过。降级：解析 `--help` 里的 model 枚举（脆） |
+| 11 | 切换模型 | CLI（[静态] + 契约级实测） | `--model`、`--fallback-model`、`--text-to-image-model`、`--image-to-image-model`；`POST /api/v1/jobs` body 有 `model` 字段 | jobs 派发体确实接受 `model`（openapi 契约） | 未用真实消息验证切换生效（预算）。降级：新会话带 `--model` |
+| 12 | 推理强度/参数控制 | CLI + NATIVE(契约) | `--effort <minimal,low,medium,high,xhigh,max>`；`POST /api/v1/jobs` body `effort` **带同一 6 值 enum**；`permissionMode` 6 值 enum | 档位枚举**在 OpenAPI 里是机器可读的** → 可直接映射到 Core 的归一字段 | 实测时我给 `-p` 传的是 `--permission-mode plan`（避免写操作），未测 effort |
+| 13 | 精确额度读取 | **NATIVE（读）** [实测]（第 1 轮 READ_ONLY） | `result.usage`、`result.modelUsage`；`GET /api/v1/stats`、`/stats/session` | `usage={input_tokens:26976, output_tokens:80, cache_creation_input_tokens:13216, cache_read_input_tokens:13760}`；`modelUsage.auto={inputTokens,outputTokens,cacheReadInputTokens,cacheCreationInputTokens,contextWindow:256000,maxOutputTokens:32000}`；REST 侧 `stats.modelUsage.auto` **数值与 CLI 完全一致** + `dailyModelTokens:[{date,tokensByModel:{auto:27056}}]` | `total_cost_usd` 与 `costUSD` 实测 **= 0** → 有槽位、本次为 0，**费用语义/是否恒 0 未证实**，Core 不得当作"免费"结论 |
+| 14 | Reset 时间 | **UNKNOWN** | 113 路径 + stats 全量 | 无 reset/quota-period 字段 | 唯一未能升上去的一项 |
+| 15 | 任务实时状态 | **NATIVE** [实测] | `GET /api/v1/jobs`、`/jobs/{id}`、`/jobs/events`；`jobs/<shortId>/state.json` | `AgentJob` 三组枚举实测可用：`state ∈ {working,blocked,done,failed,stopped}`、`status ∈ {busy,idle,waiting,stopped}`、`tempo ∈ {active,idle,blocked}`，另有 `alive/settled/firstTerminalAt/webUrl/pid/detail/waitingFor/needs/block` | [实测坑] `GET /api/v1/jobs/{id}` 与 `GET /api/v1/jobs` **形状不同**（详情端点返回的 data 里取不到 `state`，列表端点取得到）→ 别按 create/list 的形状去 parse detail |
+| 16 | 审批读取 | **NATIVE（契约）+ READ_ONLY（实测）** | `InterruptionRequest` schema、`AgentJob.block.questions[]`、`result.permission_denials`、`/api/v1/permission-bridge/request`、`audit-log/*.jsonl` | 实测 `permission_denials: []`（本次 `--permission-mode plan` 无拒绝）；审计日志哈希链 `{sessionId,requestId,toolCallId,category,eventType,decision,commandPreview,commandHash,sequence,prevHash,schemaVersion}` | **未制造出一次真实待审请求** → `InterruptionRequest`/`block.questions` 只有契约证据，载荷未验 |
+| 17 | 审批响应 | CLI [静态] | `--permission-mode`、`-y`、`/jobs/{id}/reply`、`/permission-bridge/request` | 权限模式可传（实测 `--permission-mode plan` 生效为只读规划） | 应答挂起审批未实测。降级：UIA |
+| 18 | 附件 | READ_ONLY [静态] | `models.json.supportsImages`、`input_history.attachments`、`blobs/<2hex>/<sha>` | 未测注入 | CLI help 无 `--image` 参数（Codex 有 `-i`）→ 注入通道未证实 |
+| 19 | MCP/Skill/Rule/Hook | **NATIVE** [实测]（第 1 轮 CLI） | `/api/v1/plugins*` 12 端点（list/validate/reconcile/reload/enable/disable/uninstall/update/marketplaces×5）、`/api/v1/settings*`、`/workspace-dirs*`；日志 `[MCP] reconcile revision=N projected`、`McpReadyService: headless mode — initializing MCP config (DYNAMIC scope)` | 插件市场可**浏览/增删/自动更新开关**；MCP 有 revision 化 reconcile 与 scope 模型（user→project→local，实测日志顺序） | [实测噪声] `PluginManager … Failed to install product-declared plugins: …` → 离线/网络受限时插件安装会降级但**不阻断会话** |
+| 20 | 本地会话数据库 | LOCAL_DATA [实测补全] | 实测 | `workbuddy.db`(10 表, 桌面元数据) + **`.workbuddy/projects/<slug>/*.jsonl`（桌面正文，第 1 轮漏查）** + `~/.codebuddy/projects/<slug>/*.jsonl`（CLI 正文）+ `~/.codebuddy/{jobs,traces,logs}` + `audit-log/*.jsonl` + `edge-sync-mapping-v[1-4].db` + `local_storage/entry_*.info` | **双根双格式**；元数据在 SQLite、正文在 JSONL → 一个 reader 不够，要 DB+JSONL 两半 |
+| 21 | CLI | **CLI** [实测端到端] | `--help` 100 行 + 21 子命令 + 实跑 | `-p --output-format stream-json` exit=0、8.8 s、`num_turns:3`、`is_error:false` | [实测坑·第 1 轮已记] `ps --json` 空集时输出**纯文本 `No active sessions.`**，非合法 JSON |
+| 22 | SDK/API/App Server | **NATIVE** [实测]（第 1 轮 EXPERIMENTAL） | `--serve` 实跑；`/api/openapi.json` 公开 | **113 个 `/api/v1/*` 端点 + 44 schemas**；分组：runs(发起/查询/SSE/cancel)、sessions、jobs(agent 派发/reply/stop/respawn/transcript/stream/events)、pty、fs(E2B 对齐 9 个)、process、files、plugins、settings、storage、workspace-dirs、acp(connect/SSE/JSON-RPC/DELETE)、instances/channels(wechat/wecom + qr)、webhooks、workers/daemon、traces/stats、keybindings、permission-bridge、team/messages | **Beta 标注** + 契约漂移：`POST /api/v1/runs` 的 OpenAPI body 只写 `{text,sender}`，实跑 400 要求 `{id,type}`（generic adapter 的 `parseInbound`）→ **OpenAPI 不能全信，写侧要实跑校验** |
+| 23 | 精确跳转原客户端会话 | CLI [静态] | `attach <pidOrName>`；`webUrl` 字段；`HKCR\workbuddy` URL Protocol | [实测] `jobs` 列表里每个作业带 `webUrl:"http://127.0.0.1:<port>/"`（已过滤的安全 Web UI 入口）→ 可跳到**作业级** UI | 跳到**桌面端某会话**仍未测 |
+| 24 | UI Automation 可行性 | UI_AUTOMATION | Electron + `@tencent/tencent-docs-ai-engine/bin/win32-x64/editor_sdk.exe`（在跑） | 可行 | [实测后] **优先级进一步下降**：读/列/停/额度全部有 API |
+| 25 | 版本变化风险 | **EXPERIMENTAL**（实测加重） | `/api/v1/info.autoUpdate.enabled=true`；`update`/`install` 子命令；`edge-sync-mapping-v[1-4].db` 四代并存；API 标 (Beta) | [实测] 自动更新**开着** → CLI 版本会自己变（2.137.1 非长期常量） | 契约漂移已实测到一例（#22）→ Core 必须按 `info.version` 做能力门控，不能只记一次 |
 
-## 建议接入层级与 fallback 链
+## 建议接入层级与 fallback 链（[实测] 修订）
 
-**双身份必须分开设计**：`WorkBuddy Desktop`（观察为主）与 `CodeBuddy CLI`（可控为主）不是同一个 Adapter。
+**双身份必须分开实现，且互不可见（实测）：**
 
 ```
-CodeBuddy CLI 链：
-  EXPERIMENTAL: codebuddy --acp（ACP/ndJson）—— 若 Adapter 协议支持 ACP，这是首选
-    └─ 失败 → CLI: codebuddy -p --output-format stream-json --include-partial-messages（每 turn 一子进程）
-         └─ 失败 → LOCAL_DATA: 只读 workbuddy.db（元数据/额度/审计）
-WorkBuddy Desktop 链：
-  LOCAL_DATA(只读 sessions/automations/session_usage/audit-log)
-    └─ 「向已有桌面会话发消息 / 读正文」：当前 UNKNOWN → 需先探测 sessions/<pid>.json 的 127.0.0.1 endpoint
-         └─ 失败 → UI_AUTOMATION
+CodeBuddy CLI 族 Adapter（可控、已端到端跑通）
+  写/跑：CLI `codebuddy -p --output-format stream-json --include-partial-messages`（子进程，每轮一次）
+    └─ 需要常驻：`--serve` REST（/api/v1/runs、/jobs、/acp）—— 但 /jobs reply 实测 delivered 而不落库
+  读：  GET /api/v1/sessions/across-projects → /sessions/{id}/history（finalReply）→ GET /api/v1/stats
+    └─ 服务没起时：LOCAL_DATA 直读 ~/.codebuddy/projects/<slug>/*.jsonl（同一 cwd-slug 规则可离线复算）
+  停：  POST /api/v1/jobs/{id}/stop  [实测 {stopped:true}]
+  禁止：--auth none（自述允许任意本地进程执行命令/读写文件）、自动开 bypassPermissions
+
+WorkBuddy 桌面族 Adapter（只读）
+  LOCAL_DATA：.workbuddy/projects/<slug>/*.jsonl（正文） + workbuddy.db(元数据/额度/自动化) + audit-log(审批，哈希链)
+    └─ 唯一写入口：UI_AUTOMATION
+  ⚠ 两族 session id 不互通：CLI 看不到桌面 36 个会话（实测 workbuddy.db 未新增行）
 ```
 
-## 仍需 UI Automation 的能力
+## 仍需 UI Automation 的能力（实测后收缩到 3 项）
 
-1. **#17 对待审请求的实时响应** —— 桌面端的 pending 审批无法从审计日志读到（只有已决策记录），CLI 侧权限模式又是启动时参数。
-2. **#11 在已有会话中切换模型** —— CLI 只有启动时 `--model`。
-3. **#4 读取桌面端已有会话正文** —— 若 endpoint 探测失败，则只剩 UIA 滚动读取（**不推荐**，见矩阵结论）。
+1. **#14 Reset 时间** —— 先判"该家不提供"，UIA 也未必有。
+2. **#17 应答挂起的审批** —— API 有 `InterruptionRequest` 契约但载荷未验、应答路径未跑通。
+3. **#23 跳到桌面端某个既有会话** —— deep link 粒度未测。
+（#11 会话内改模型已从 UIA 清单移出：`POST /jobs` 接受 `model`，属新会话指定而非改既有会话。）
 
-## UNKNOWN 清单与原因
+## 修正记录（第 1 轮 → 第 2 轮，防后续角色引用旧结论）
 
-| # | 能力 | 为什么是 UNKNOWN |
+| 项 | 第 1 轮结论 | 第 2 轮实测结论 | 原因 |
+|---|---|---|---|
+| #4 读取完整会话 | UNKNOWN（正文未定位） | **LOCAL_DATA + NATIVE，正文在本机两处** | **假阴性**：`find … \| head -10` 触发 SIGPIPE 提前杀掉了 find，遍历根本没走完 `.workbuddy`，`projects/` 子树从未被看到 |
+| #22 SDK/API | EXPERIMENTAL（未探测） | **NATIVE，113 端点 + 公开 OpenAPI** | 未起服务，无法知 `--serve` 的真实面 |
+| #1 复用登录 | UNKNOWN（不敢读凭据） | **NATIVE**（`auth/status` + `apiKeySource`） | 凭据禁读不影响判定"是否已复用" |
+| #13 额度 | READ_ONLY（本地有数无接口） | **NATIVE(读)**，CLI 与 REST 数值互证 | 只跑了 CLI 才知有 usage/stats 双出口 |
+| 同构族判断 | WorkBuddy ≈ Qoder（都 Claude-Code 形制） | **只对一半**：同为 jsonl 但 WorkBuddy 扁平、Qoder 嵌套 `{message:{…}}` | 第 1 轮只看键名集合，未比对嵌套结构 |
+
+## UNKNOWN 清单与原因（实测后剩余）
+
+| # | 能力 | 为什么仍是 UNKNOWN |
 |---|---|---|
-| 1 | 复用原客户端登录 | 认证材料在 `credentials/` 目录内，读取=使用用户登录态，本角色未越界 |
-| 4 | **读取完整会话（桌面端正文）** | 系统性排除后仍未定位：`sessions/*.json` 只有运行主机注册表、`local_storage/` 只有 `.info`(gzip)、`app/data/` 只有 `expert-history.json`、`blobs/` 是内容寻址图片、`tasks/<uuid>/N.json` 是任务项、`find -name "*.jsonl"` 在 `.workbuddy` 树内**只命中 `audit-log/`**、`storage/user-*/global/conversations.json` 实测只有 `pinned[{groupKey,id}]`。剩余可能是云端（存在 `product.cloudhosted.json` 与 `edge-sync-mapping-v4.db`）或未探测的 `sessions/<pid>.json.endpoint` HTTP 面 |
-| 6/22 | `--serve` / `--acp` 的实际 REST 与 ACP 帧 | 探测要在用户机器上启动一个可执行命令的本地服务（help 自述 `--auth none` 允许任意本地进程执行命令/读写文件）→ 属高风险副作用，本角色未做，**建议单独立项申请授权后在 `.scratch` 沙箱内做** |
-| 13 | `session_usage.credit_json` 的字段与单位 | 内容可能含账户标识，未展开；只确认字段存在 |
-| 14 | Reset 时间 | 无任何证据 | 
-| 15 | `sessions.status` 完整枚举 | 本机只观察到 DDL 默认值 `Pending`，**禁止把默认值猜成全集** |
+| 14 | Reset 时间 | 113 端点与 stats 全量无 reset/quota-period 字段 |
+| 7 | 对**既有会话**续发的可靠路径 | `/jobs/{id}/reply` 实测 `delivered:true / saved:false` 且不执行；`-r <sessionId>` 需再花 1 条真实消息，**预算 3/3 已用尽** |
+| 11/12 | 切模型与 effort 的实际生效 | 同上，预算耗尽；只有 CLI flag 与 OpenAPI 字段级证据 |
+| 16 | 待审请求的真实载荷 | 全程 `--permission-mode plan`（刻意选只读档以免改用户文件），`permission_denials:[]`，未制造出待审样本 |
+| 18 | 附件注入 | CLI 无 `--image` 类参数；未测 |
+| 23 | 桌面端 deep link 粒度 | 未测（会弹用户窗口） |
+| 13 | `total_cost_usd=0` 的语义 | 单次样本，无法区分"套餐 0 价"与"未计费上报" |
+
+## 残留与清理（第 2 轮授权要求写清）
+
+- **我自己起的服务/子进程：已全部终止。**
+  - `pid 22600`（`node … codebuddy --serve --port 8791 --host 127.0.0.1`）→ `taskkill /PID 22600 /T /F` 成功
+  - `pid 34852`（job worker）、`pid 37388`（会话进程）→ **#stop 之后自行退出**，收尾时 `Get-Process` 已不存在
+  - 端口 `8791`：`netstat` 中**已无 LISTENING**，仅剩内核层 `TIME_WAIT` 数条（会自行消失）；作业自带端口 `55518` 已释放
+  - 收尾时新增的 `127.0.0.1:51218/51219` 属 **AweSun（向日葵）**，与本探针无关（已核 pid 7272）
+- **未被触碰**：WorkBuddy 桌面端 13 个进程全程在跑且未受影响；`workbuddy.db` 仍 36 行（实测计数未变）；桌面配置/账号/既有会话 **0 次写入**
+- **留在 WorkBuddy 侧的文件 residue（未删，删除即为对第三方数据目录的写操作）**，均在 `~/.codebuddy`：
+  `projects/d-Project-Lucero-.scratch-phase0-workbuddy-probe-proj/`（2 个 jsonl，正文只有我造的标记串）、
+  `jobs/5c14baca/`、`sessions/22600.json`、`logs/2026-09-19/probe-proj__de303a4f….log`、`traces/37388/`、`traces/16604/`。
+  → 如需清除请由用户或主控显式授权一次删除动作。
+- **一个需要主控注意的副作用**：探针目录建在 `D:\Project\Lucero\.scratch\` 内，而 `D:\Project\Lucero` 是 git 仓库，
+  实测 `[GitInfoCollector] … active: <仓库地址>` → **WorkBuddy 读到了本项目的 git 仓库上下文**（只读，未产生任何文件改动）。
+  下次动态探针应放在 git 仓库之外。
