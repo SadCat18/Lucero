@@ -238,6 +238,49 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 | `ADAPTER_UNRESPONSIVE` | 进程存活但请求/心跳在 `deadline_at` 内无任何响应，Supervisor 已把 health 降级（应同时产生 `adapter_downgraded` 事件）。与 `TIMEOUT` 的分界：`TIMEOUT` 是**这一次操作**超期，本码是**这条连接**不健康 | 是（等恢复） |
 | `EXECUTION_STATE_UNKNOWN` | 该 Execution 的真实状态无法确认（§7 崩溃语义：`UNKNOWN` 是合法态，**不是** `FAILED`），故拒绝一切"推进/取消/发消息"类请求 | 视证据 |
 
+#### 15.1.1 数字码与生产方（13:2x 折入 `adapter` 交表，本文即唯一真相）
+
+来源：`core/internal/adapter/protocol_test.go` 的 `codeTable`（13:22 实读）。**这张表的意义是"谁能发、谁必须有常量"**：
+`Core:*` 行必须有 Go 常量；`Adapter` 行是 Core **只识别不生产**的词汇（`Symbol()` 优先读对端 `data.code`），
+**给它们造没人发的常量就是投机代码**；`result-frame` 行永不上 wire。
+
+| 数字码 | 码 | 生产方 | 有 Go 常量 |
+|---|---|---|---|
+| `-32000` | `PROTOCOL_NOT_INITIALIZED` | `Core:internal/adapter` | ✓ |
+| `-32001` | `PROTOCOL_VERSION_MISMATCH` | `Core:internal/adapter` | ✓ |
+| `-32002` | `CAPABILITY_UNAVAILABLE` | `Core:internal/adapter` | ✓ |
+| `-32003` | `WRITE_ENTRY_NONE` | `Core:internal/adapter` | ✓ |
+| `-32004` | `DELIVERY_MODE_UNSUPPORTED` | `Core:internal/adapter` | ✓ |
+| `-32005` | `LOCAL_DATA_UNAVAILABLE` | `Adapter` | ✗ |
+| `-32006` | `SESSION_NOT_FOUND` | `Adapter` | ✗ |
+| `-32007` | `AUTH_REQUIRED` | `Adapter` | ✗ |
+| `-32008` | `RATE_LIMITED` | `Adapter` | ✗ |
+| `-32009` | `DANGEROUS_FLAG_REFUSED` | `Core:internal/process` | ✗ |
+| `-32010` | `CANCELLED` | **`result-frame`**（§15.3 规则 5，不发 `error`） | ✗ |
+| `-32011` | `TIMEOUT` | `Adapter` | ✗ |
+| `-32012` | `PROVIDER_ERROR` | `Adapter` | ✗ |
+| `-32013` | `INTERNAL` | `Core:internal/adapter` | ✓ |
+| `-32014` | `ADAPTER_UNRESPONSIVE` | `Core:internal/process` | ✓ |
+| `-32015` | `EXECUTION_STATE_UNKNOWN` | `Core:internal/process` | ✗ |
+| `-32016` | `READ_ONLY` | `Adapter` | ✗ |
+| `-32601` | `METHOD_NOT_FOUND` | `Core:internal/adapter`（**协议层**） | ✓ |
+| `-32602` | `INVALID_PARAMS` | `Core:internal/adapter`（**协议层**） | ✓ |
+
+三点读法：
+1. **原来占住 JSON-RPC 预定义码的三处越界已修**：`PROTOCOL_NOT_INITIALIZED` 从 `-32600` 迁到 `-32000`，
+   `WRITE_ENTRY_NONE` 从 `-32601` 迁到 `-32003`，`CAPABILITY_UNAVAILABLE` 从 `-32602` 迁到 `-32002`。
+2. **T-36④(c) 那个"同一概念两套表达"的问题，adapter 的解法比我预期的好**：`METHOD_NOT_FOUND`/`INVALID_PARAMS`
+   保留在**标准数字码** `-32601`/`-32602` 上（协议层专用），**不再**另设 `-32001`/`-32002` 的领域副本 —— 重复表达消失了。
+3. **一处待确认（不阻塞，记在此）**：`ADAPTER_UNRESPONSIVE` 生产方写的是 `Core:internal/process`，
+   但常量目前在 `internal/adapter/protocol.go:65`。生产方与常量所在包不一致，两种解释都成立
+   （词汇归 `internal/adapter` 统一持有、由 process 触发），**等 adapter 交回时用一句话说明取哪种**，别留成隐性约定。
+
+**`test` 的 check 8 判据据此定稿**（替掉 T-41④ 里的临时口径）：**两表行数不相等是设计如此**——
+§15.1.1 = 19 行、§15.1 = 17 行，差集**必须恰好是** `METHOD_NOT_FOUND`/`INVALID_PARAMS` 这两个协议层行
+（13:2x 实测：`comm -13` = 这两个、`comm -23` = 空；命令与判据一起写进你的用例，别硬编码 17==19）。
+其余逐条核：**§15.1 的码集合 ∈ §15.1.1**（反向包含，不是相等）、**数字全部落在 `-32000`–`-32099` 或标准协议层码**、
+**只有 `Core:*` 且"有 Go 常量=✓"的行要求在指定包里有常量**；`Adapter`/`result-frame` 行**不得**要求常量（要求了就会天天误报）。
+
 ### 15.2 → HTTP 映射（`error.code` 一律用左列，`http_status` 见右）
 
 | HTTP 码 | 状态 | 来自 |
@@ -287,15 +330,17 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 3. **一个 §15.1 的码 ↔ 恰好一个数字**，且**数字表以本文为唯一真相**：
    §15.1 将增设「数字码」列，`protocol.go` 的常量必须与之逐项相等，由 `test` 用 grep 断言。
    理由就是我们刚踩的坑——两处各自维护枚举必然漂移。
-4. **`INVALID_PARAMS` / `METHOD_NOT_FOUND` 不作为 §15.1 的码**：它们是协议层错误，用 `-32602` / `-32601` 即可。
-   但实现里另有 `ErrInvalidParams=-32001`、`ErrMethodNotFound=-32002` 两个**领域**常量，
-   与预定义码构成同一概念两套表达。**这一条我不擅自判**——CO-4 的原始意图只有 adapter 清楚，
-   见第十二批 T-36②：由 adapter 给出「删哪个、留哪个、为什么」的一行结论，我再折进 §15.1。
+4. **`INVALID_PARAMS` / `METHOD_NOT_FOUND` 不作为 §15.1 的码**：它们是协议层错误，用 `-32602` / `-32601` 表达。
+   ~~但实现里另有 `ErrInvalidParams=-32001`、`ErrMethodNotFound=-32002`……这一条我不擅自判~~
+   → **13:2x 已定稿，且是 adapter 自己给的解**：这两个名字**只挂在标准码上**（见 §15.1.1 最后两行），
+   不再另设领域副本，"同一概念两套表达"随之消失。我当时判断"要问当事方"是对的，比我准备写的裁定好。
 5. `CANCELLED` 不走 `error`：`$/cancel` 的确认是结果帧（`result.cancelled = true`）；
-   本文保留 `CANCELLED` 只因为它是 HTTP 侧 `cancelled` 与 Audit 记录用的名字。
+   本文保留 `CANCELLED` 只因为它是 HTTP 侧 `cancelled` 与 Audit 记录用的名字。§15.1.1 给它的生产方就是
+   `result-frame`，**它虽有一个数字（`-32010`）但不许出现在任何 `error` 响应里**。
 
-**§15.1 的数字列当前为空**（等 adapter 交全表）。在它填上之前，`test` 那道数字一致性断言标 `blocked`，
-**不要**拿本文去断言实现红——数字的真实现状在 `protocol.go` 里，缺的是权威表而不是代码。
+**§15.1 的数字表状态**：~~当前为空、等 adapter 交全表、test 的数字一致性断言标 blocked~~
+→ **13:2x 已由 adapter 交出并折进 §15.1.1，`test` 的 check 8 判据同轮定稿**（见 §15.1.1 末尾），
+**不再需要 blocked**；但请以 §15.1.1 为准重跑一次，因为我 12:5x 那句"等全表"期间它可能被改过。
 
 
 ## 14. 批准后 `adapter` 角色的第一件事
