@@ -134,7 +134,7 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | `core/test/**`、`scripts/**` | `test` | 不得在别人包里建 `_test.go` |
 | `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**` | `frontend` | 禁止 import Core 内部类型 |
 | `specs/**`、`docs/**`（角色自己的报告/进度文件除外）、`core/go.mod`、`core/go.sum`、`.gitignore`、`.gitattributes` | **主控** | worker 需变更时写 Coordination REQ |
-| `core/migrations/embed.go` | `db` | **REQ-T-2 / db REQ-A4 裁定（12:00）**：`//go:embed ../../../migrations` 本就非法——embed 只能取本包目录及其子目录，所以"从 `cmd/core` 嵌 `core/migrations`"这条要求是**我提的错方案**。正解：由 `db` 在 `core/migrations/` 内放一个 `embed.go`（`//go:embed *.sql` + 导出 `var FS embed.FS`），`backend` 的 `cmd/core` 只管把 `migrations.FS` 传给 db 的 `fs.FS` 版入口（T-27 那条已派）。谁都不必拥有 `core/` 根 |
+| ~~`core/migrations/embed.go`~~ | — | **12:10 撤回本行：我曾给一个不存在的文件指派 owner**。`//go:embed ../../../migrations` 确实非法（embed 只能取本包及子目录），但结论不该是"那就在 migrations 里放 embed.go"——v0.1 **不做迁移内嵌**，交付方式是 `cmd/core -migrations <目录>`（backend 已这么跑，`find core -name embed.go` 零命中）。给不存在的路径派 owner = 制造"契约声明了却不存在的路径"，与我在事件契约 §6 刚写的「已登记 ≠ 有生产路径」自相矛盾。真要单二进制发布时（Phase 6）再补一行**并同时派工**。db 已接到的 `fs.FS` 版迁移入口保留，理由改为**可测性**（测试可用 `fstest.MapFS` 驱动迁移器，不碰磁盘），不再是内嵌 |
 | `.qoder/progress/<role>.md` | 对应 role | 他人只读 |
 | `core/`（根目录本身） | **主控** | 根目录只允许 `go.mod`/`go.sum` 两文件；新增任何根级文件都算越界（防依赖树、临时脚本落根） |
 | `.qoder/progress/orchestration.md` | 主控独占 | 巡检额外可写心跳/待投递/NEEDS YOU 段 |

@@ -202,13 +202,26 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 而且是以"纠正你"的名义。若 backend 照做，代码里就会留下一句错的断言，后人还得再查一遍。
 根因一样：我说那句时没有 `go doc` 查过。已写进长期记忆：**引用平台事实必须先跑可复现命令，凭记忆纠正别人是最高危的那种错**。
 
+## 待投递 · 第十一批（12:12）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-33 | db | 待投递 | **若你看过契约③ §7 那行 `core/migrations/embed.go` → 不要建它**，我已撤回（12:10）。v0.1 不做迁移内嵌，交付走 `cmd/core -migrations <目录>`（backend 已这么跑）。你 11:30 接到的 **`fs.FS` 版迁移入口保留，但理由换成可测性**：让测试用 `fstest.MapFS` 直接驱动迁移器（尤其那两条"目录下有文件但未记账 / 记账了但文件丢了"的偏差用例，用真磁盘临时目录测既慢又容易漏），不再有"给 embed 供数据"这个目的。其余约束（不包事务、不自写记账行、改完跑全仓并通报受影响方）不变。 |
+
+**主控纠错（第七笔，与前五笔同形但载体不同）**：我在契约③ §7 给一个**不存在的文件**指派了 owner，
+却没派任何待办 —— 巡检 12:04 用 `find` 证伪。这与我当天在事件契约 §6 立规矩批评的"已登记 ≠ 有生产路径"是同一件事，
+我自己隔了 20 分钟就犯。
+**新纪律（对我自己）**：契约里新增任何**具体文件路径**的 owner 行，必须同满足其一 ——
+① 同一轮有 T-行指向被派方；② 该行自己写明"暂不做/已撤回"并给出重开条件。二者皆无即视为空头契约。
+
+
 
 ## 待投递 · 第九批（12:02，backend 交回 Core 骨架后的连锁）
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-30 | frontend | 待投递 | **B-F1 解除**。backend 已交 Core 骨架 + transport 薄层，真进程冒烟已过（`health` 200 / 无口令 401 / `ws-ticket` 两次拿到**两张不同票** / CORS 403），启动入口与 `core.endpoint` 读法写成了可照跑的命令。你现在可以做真联调：ticket 换连 → `hello_ack` → 断线按 `from_seq` 补发。三条裁定同步：`/health` 的 `state` 词表 = `BOOTING/READY/STOPPING/STOPPED/UNKNOWN`（**无 `DEGRADED`**）；`ws-ticket` **免 Principal 但必须带 Bearer**；CORS **不因回环默认放行**，dev origin 必须精确到 host:port 且显式配置。错误码一律改引契约② **§15**（我此前引用了两次却不存在的章节，已补全；HTTP 用小写蛇形，见 §15.2 映射表，yaml 里不得放开成 free string）。 |
-| T-31 | test | 待投递 | 你的实时面有落点了（同 T-30）。三件：① §15 错误码集合已存在，你那道"两表条目数相等"的 grep 可以真跑了（14 个 Adapter 码 ↔ 15 行 HTTP 映射，`version_conflict` 是 HTTP 专有、无 Adapter 来源，别按行数硬抹平）；② `migration_version` 断言**必须跟库里 `MAX(version)` 比**，backend 已实测写死 `==2` 被 `000003` 打假；③ 环境坑三条进你的脚本规范：**(a) 本机有代理在听，`curl` 打 `127.0.0.1` 必须带 `--noproxy '*'`，否则拿到空响应会被误判成"服务没起来"**；**(b) Windows 上 Go 传的 0600/0700 会被默认 ACL 映射成 `rwxrwxrwx`，权限断言只能得到假失败，别写**；(c) 见 ②。 |
+| T-30 | frontend | **已投递（12:04，巡检）** | **B-F1 解除**。backend 已交 Core 骨架 + transport 薄层，真进程冒烟已过（`health` 200 / 无口令 401 / `ws-ticket` 两次拿到**两张不同票** / CORS 403），启动入口与 `core.endpoint` 读法写成了可照跑的命令。你现在可以做真联调：ticket 换连 → `hello_ack` → 断线按 `from_seq` 补发。三条裁定同步：`/health` 的 `state` 词表 = `BOOTING/READY/STOPPING/STOPPED/UNKNOWN`（**无 `DEGRADED`**）；`ws-ticket` **免 Principal 但必须带 Bearer**；CORS **不因回环默认放行**，dev origin 必须精确到 host:port 且显式配置。错误码一律改引契约② **§15**（我此前引用了两次却不存在的章节，已补全；HTTP 用小写蛇形，见 §15.2 映射表，yaml 里不得放开成 free string）。 |
+| T-31 | test | **已投递（12:04，巡检）** | 你的实时面有落点了（同 T-30）。三件：① §15 错误码集合已存在，你那道"两表条目数相等"的 grep 可以真跑了（14 个 Adapter 码 ↔ 15 行 HTTP 映射，`version_conflict` 是 HTTP 专有、无 Adapter 来源，别按行数硬抹平）；② `migration_version` 断言**必须跟库里 `MAX(version)` 比**，backend 已实测写死 `==2` 被 `000003` 打假；③ 环境坑三条进你的脚本规范：**(a) 本机有代理在听，`curl` 打 `127.0.0.1` 必须带 `--noproxy '*'`，否则拿到空响应会被误判成"服务没起来"**；**(b) Windows 上 Go 传的 0600/0700 会被默认 ACL 映射成 `rwxrwxrwx`，权限断言只能得到假失败，别写**；(c) 见 ②。 |
 
 **主控欠账清偿**：契约② §15「错误码集合」此前被 §1/§3 各引用一次却始终不存在（test 的 REQ-T-3 指出），本轮补全，含 Adapter 码表 + HTTP 映射表 + 命名分裂的理由。
 **我提过的错方案已撤回**：db 的 REQ-A4 与 test 的 REQ-T-2 是同一件事——`//go:embed ../../../migrations` 本就非法（embed 只能取本包及子目录），是我在 T 里要求"backend 在 cmd/core 建 embed"造成的死路。正解归 `core/migrations/embed.go` → db，见契约③ §7 新行。
@@ -338,7 +351,7 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 11:56。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 12:04。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -371,6 +384,8 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 | 11:43 | `db=running/fs.FS 已交付并自报 complete` \| `backend=running` \| `adapter=running` \| `audit=ready/等 db 的 HitKind` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | **是** | **抓到一个漏球并带证据回醒**：账本 203 行记 REQ-T3“已解”，实际只有 audit 那半落地——当场两条命令取证：`sed -n '80,92p' internal/platform/db/redact.go` 仍是 `{Column, Match, Count}` 无 `Kind`、`grep -n "REQ-T3\|HitKind" .qoder/progress/db.md` 零命中。audit 的 Next action 是“等 db”，而 db 无此待办 → 链停在这里（它同时警告窗口内写入的 audit 行不可当长期数据，因归因串参与 `entry_hash` 事后修不了）。audit 另请示 policy CRUD（Wave-3，它拒绝按猜测建）。`cmd/core` 的 `undefined: filepath` 是别的角色 11:33 在途文件，audit 已复测归因，未当成债。 |
 
 | 11:56 | `db=ready→T-27 已投(HitKind)` \| `backend=ready→已推(接 WS)` \| `adapter=running` \| `audit=ready→T-28 已投` \| `test=running→T-29 已投` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 3 行 | 是 | **backend 交出 Core 骨架+transport 且真进程冒烟通过**（health 200/无口令 401/ws-ticket 两张不同票/CORS 403），→ frontend B-F1 与 test 实时面有落点，已回醒主控去知会两家。**REQ-T-2 与 db 的 REQ-A4 同一件事**：两家独立实测 `//go:embed ../../../migrations` → `invalid pattern syntax`，`core/` 根不在 §7 owner 表内 → 等主控给一行归属。三条环境坑已上报（代理吃 curl / Windows ACL 把 0600 映射成 rwxrwxrwx / `migration_version` 写死 ==2 被 000003 打假）。T-27 附了一句“`CutPrefix` 那半在 audit 可写范围，db 不可代改”，防越界。 |
+
+| 12:04 | `全 6 角色 running` \| 待投余 T-30/T-31 → **已投空** | 推进 0 + 投递 2 行 | 是 | 第九批投完零报错，六个角色全在执行中故无 idle 可推。**抓到第二个同形状漏球**：账本 203 行裁定「`core/migrations/embed.go` → db」并写进契约③ §7，但**没有任何待投行把这件活派给 db**（T-27 只含 HitKind）；当场取证 `ls core/migrations/` 只有三个 .sql、`find core -name embed.go` 零命中 → 契约多了一行 owner、被约束方不知情。已请主控追一行派给 db 或明确判「v0.1 不内嵌」并把 §7 改成已裁不做。 |
 
 ## 来自 worker 的上行输入
 
