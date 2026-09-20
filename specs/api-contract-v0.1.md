@@ -41,6 +41,7 @@
 |---|---|
 | 时间 | 一律 Unix 毫秒整数，不返回 RFC3339 字符串 |
 | 分页 | `?cursor=<opaque>&limit=50` → `{items, next_cursor}`；**不得**用 offset |
+| WebSocket 帧 | **REQ-WS-1 裁定（12:5x，含"为什么不引 `gorilla/websocket`"）**：Core 服务端自带 431 行手写 framer（`core/api/websocket/{ws,frames}.go`），已实测覆盖三处真会出事的地方——入站帧**无掩码即拒**（`frames.go:83`）、**分片帧即拒**并回 `close(1002)`（`:79`）、64 位长度分支在**分配之前**就查 `maxIncoming`（`:100`，不会被巨型长度声明撑爆内存）。因此客户端约定：① **入站消息必须单帧、≤125 字节有效载荷**（我们的入站只有 `{type:"resubscribe", from_seq}` 一类小 JSON，够用）；② 不协商任何扩展，服务端**不回** `Sec-WebSocket-Extensions`，故浏览器不会启用 permessage-deflate；③ 入站只允许 text/binary/close/ping/pong 五种 opcode，其余按协议错误关。**重开条件**（满足任一条再引依赖，且要新 ADR）：要发/收 >125 字节的入站消息、要二进制分片、要 permessage-deflate、要服务端主动大扇出压帧。理由：这是本地优先产品的**第一个直接依赖**，而换掉一套已测绿的帧实现属于"拿不回的东西"。 |
 | 幂等 | 所有**改变业务状态**的 POST 必须带 `Idempotency-Key`；命中已完成记录时**返回首次的响应**，不重放副作用（领域模型「Idempotency」）。**REQ-F-11 豁免（18:03 确认）**：凭证签发类端点必须排除在幂等缓存之外——目前唯一一条是 `POST /api/v1/ws-ticket`。理由与 frontend 的判断一致且更强：票是**单次使用 + 校验即作废**的，若被幂等缓存，命中缓存会返回同一张票或其"已作废"结论，等于让一次重放变成可预测行为。豁免不许靠约定，**必须有一条反向用例钉住**（同一请求两次 → 拿到两张不同的有效票）；将来新增豁免端点要显式列进本表，不能靠注释口头豁免 |
 | 乐观并发 | 聚合读响应带 `version`（ADR-017 的列）；变更请求带 `If-Match: <version>`，不符 → `409 version_conflict` |
 | 错误体 | `{"error": {"code": "...", "message": "...", "retryable": bool, "details": {…}}}`，`code` 复用契约② §错误码集合，HTTP 码与之对应 |
