@@ -168,6 +168,39 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       （backend 原本准备把 `sealIdempotency` 里 `n != 1` 的守卫当死代码删掉，是变异证明它可达才留下的
       —— 这个做法正确，记为范例：**"看着像死代码"不是删除理由，变异验证才是**。）
 
+#### 判据表 U13（`test` 逐行解析用：一行一判据，命令列当场可跑）
+
+解析约定：**按 `|` 分列**；`定位符` 只允许符号名/用例名/表名（**本文禁止行号**，见 §1.1 第 14 条）；
+`状态` 列 `现存` = 用例已在库里（15:11:47 全包重跑时随包为 `ok`），`待建` = 还没有人写、
+**该行由"归属"列的角色负责，`test` 不许把 `待建` 当成红**。命令里的包路径相对 `core/`。
+
+| ID | 断言 | 定位符（用例名） | 当场命令 | 状态 / 归属 |
+|---|---|---|---|---|
+| U13-1 | `UpdateOnce` 打聚合表必须 error | `TestUpdateOnceRefusesEverythingElse` | `go test -count=1 -v -run TestUpdateOnceRefusesEverythingElse ./internal/platform/db/` | 现存 / db |
+| U13-2 | 打白名单外任意表必须 error | `TestWriteWhitelistRejectsAnythingElse` | `go test -count=1 -v -run TestWriteWhitelistRejectsAnythingElse ./internal/platform/db/` | 现存 / db |
+| U13-3 | guard 不匹配返 0 行**且原值未被覆盖**（"只封存一次"） | `TestUpdateOnceSealsResponseExactlyOnce` | `go test -count=1 -v -run TestUpdateOnceSealsResponseExactlyOnce ./internal/platform/db/` | 现存 / db |
+| U13-4 | 该入口**不取 version、不写事件** | `TestUpdateOnceTakesNoVersionAndWritesNoEvent` | `go test -count=1 -v -run TestUpdateOnceTakesNoVersionAndWritesNoEvent ./internal/platform/db/` | 现存 / db |
+| U13-5 | `response_json` 落库必须已脱敏（含"调用方已序列化的 JSON"也要扫） | `TestUpdateOnceRedactsPreSerializedJSON` | `go test -count=1 -v -run TestUpdateOnceRedactsPreSerializedJSON ./internal/platform/db/` | 现存 / db |
+| U13-6 | 首次 201 body 与重放 body **逐字节相等**（C18 选②） | `TestIdempotentReplayBodyIsByteIdentical` | `go test -count=1 -v -run TestIdempotentReplayBodyIsByteIdentical ./test/` | **SKIP（blocked）**：用例在 `core/test/crash_test.go`，自带 `t.Skip("blocked: 需要 POST /api/v1/tasks 与幂等回读路径可用（backend）")` / 待 backend |
+| U13-7 | 响应里含密钥形状时，**首次与重放两份都等于打码后的存储值** | 建议名 `TestIdempotentFirstResponseIsRedacted` | `go test -count=1 -v -run TestIdempotentFirstResponseIsRedacted ./api/http/` | **待建 / backend**（U13-5 只证到 db 落库层，**没有证到"首次响应体不外泄"**——C18 的真实风险点目前缺一层断言） |
+
+**状态列只允许三个值**（16:01 逐个实跑标定，不是推断）：`现存` = 该 `-run` 目标**真的跑出 PASS**
+（判据：加 `-v` 后 `--- PASS` 计数等于期望条数；U13-1~5 实测 **5**）；`SKIP（blocked）` = 用例存在但被
+`t.Skip`，**既不是红也不是绿**，必须连阻塞方一起读；`待建` = 库里没有这个用例。
+**为什么非要区分**：`go test -run <名字>` 在**一个都不匹配时照样输出 `ok`**——不加 `-v` 就会把"没跑到"
+读成"跑过了"。**这条判据自己就长在一个假绿坑上**，所以命令列从现在起一律带 `-v`。
+
+
+**为什么 U13-7 不能省**：U13-5 证明"库里存的是打码版"，C18 那个缺陷恰恰是
+**"库里对、发出去的那一份错"**——只测前者等于没测。两条合起来才封住
+"wire 内容 = 存储内容"这条口径；缺 U13-7 时 §1.1 第 13 条的响应体口径处于**未受检**状态，
+这一条要在 backend 交回时同时补齐，否则它那句"201/201 内容相等"只是自述。
+**变异要求（照旧）**：U13-1~7 每条都要能靠"把被测点改坏"证明会红，
+且变异**必须命中在声称的那一层**（T-29 与 audit 那条"早退导致假绿"的活例）。
+
+
+
+
 14. **契约里只准用符号引用定位，禁止写行号（db 提，14:4x 采纳并泛化为全项目规矩）**
     实证就在这次：我 13:5x 按**当时实读**写进第 13 条的四处行号（`touch.go:156/174/175-177/172-173`），
     40 分钟后被 db 自己**新加的 3 行注释**整体推后 3（`narrowTables` 156→159、`UpdateOnce` 174→177、

@@ -43,7 +43,7 @@ x-websocket-frames:
   cursor: seq
   order: 'F-16：客户端连上后必须先发 client_frames.hello 声明游标，服务端才开始回控制帧；?from_seq= 只是初值，客户端 hello 优先。§5 原文"连接后第一帧 hello"读起来像服务端先说，属歧义，以本条为准。'
   cursor-default: '带游标 → 补发 seq > from_seq 的事件；不带 → 只收此后新事件并回 hello_ack{server_seq} 明确起点。禁止"缺省即全量重放"（journal 可能很大，一次重连 = 自己 DDOS 自己）。'
-  known-gap: 'F-17：journal 为空时 Core 既不推事件也不回 hello_ack，客户端会停在"无首帧"状态（面板表现为 connecting，实为等待）。解除条件 = backend 让空清单分支也回 hello_ack。客户端防御已做：server_seq 低于游标不回退。'
+  known-gap: 'REQ-F-17 已修并实测（2026-09-20 14:22-14:23，对象为当时监听 127.0.0.1:62599 的 Core）：不发 client hello → 服务端 4 秒内零帧；发 client hello → 立刻收到 {"type":"hello_ack","server_seq":0}。即 F-16 的顺序要求成立、F-17 的空 journal 分支已回帧；live 测试 8/8 绿。客户端防御同在：server_seq 低于游标不回退。归因限制见 evidence/live-t53.txt 第 4 节。'
   client_frames:
     hello:
       description: 客户端连上后的第一帧（F-16）。from_seq 省略 = 只要此后新事件
