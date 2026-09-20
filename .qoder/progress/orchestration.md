@@ -192,6 +192,17 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 **frontend 状态更正**：R-007 从 running 记为 **idle-等主控**（巡检 18:01 实测），T-26 投完即可自行推进非联调部分，不需再等我。
 
+## 待投递 · 第十批（12:05，主控撤回一条我发出去的假事实）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-32 | backend | 待投递 | **撤回我 T-8③ 的"纠正"，你原来的判断方向是对的**。我 16:4x 说"`database/sql` 自 Go 1.8 起就导出 `QueryerContext`"——**这句是错的**。我刚自己跑过：`go doc database/sql` 里没有任何 `Queryer*`；`QueryerContext` 只存在于 `database/sql/driver`，是 **`Conn` 的可选 SPI**，签名 `QueryContext(ctx, query, []driver.NamedValue) (driver.Rows, error)`，所以 `*sql.DB` 并不满足它。请把你 `repository.go` 的注释改成这个准确说法：**"自己声明窄接口，是因为 `database/sql` 不导出查询接口；`driver.QueryerContext` 是驱动侧 SPI、参数类型不同，`*sql.DB` 不满足"**——保留你的窄接口设计不变（它本来就是对的）。原注释里"这个工具链没导出"这半句确实该去掉（与工具链无关），但**换成我说的那句会更糟**。<br>另：三条环境事实进你的脚本/断言规范（已并入 T-31 给 test，两边口径要一致）——本地代理会吞掉 `curl 127.0.0.1`（必须 `--noproxy '*'`）、Windows 上 Go 的 0600/0700 被 ACL 变成 `rwxrwxrwx`（**别写权限断言**）、`go:embed` 不能越包目录（`core/migrations/embed.go` 归 db，见契约③ §7）。 |
+
+**主控纠错（第六笔，性质最重）**：前五笔是"拿过期快照当现状"，这一笔是**我主动把一个假的平台事实塞进 worker 的注释里**，
+而且是以"纠正你"的名义。若 backend 照做，代码里就会留下一句错的断言，后人还得再查一遍。
+根因一样：我说那句时没有 `go doc` 查过。已写进长期记忆：**引用平台事实必须先跑可复现命令，凭记忆纠正别人是最高危的那种错**。
+
+
 ## 待投递 · 第九批（12:02，backend 交回 Core 骨架后的连锁）
 
 | # | 目标 role | 状态 | 指令 |
