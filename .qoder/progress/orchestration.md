@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-19T15:05+08:00
+LAST_UPDATED: 2026-09-20T12:37+08:00
 
 ## Objective
 
@@ -92,13 +92,25 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## Current checkpoint
 
-- Stage: Wave-2 部分启动（3/5），等 survey 证据才能写契约②
+- Stage: **Wave-2 进行中（垂直链未闭合）**。契约①②③ 全部已批准并在使用；Phase 0 已验收；
+  Core 骨架已能起真进程过冒烟（`/health` 200、无口令 401、`ws-ticket` 两张不同票、CORS 403）。
 - Status: in_progress
-- Last verified action: 基线 commit `900038d`（14 文件）；依赖 commit `26616e9`
-  （`modernc.org/sqlite v1.59.0`，`go.mod` 收归主控独占）；契约① 三份标记 accepted，
-  ADR-017 修正为 **10 张表、不加 CHECK**（原文写 9 张但代码枚举含 `AggModel`，属我自己的不一致）
-- Next action: 等 `survey` 交出 Codex 379 文件 v2 schema 的方法/能力面 → 写契约② → 派 `adapter`
-- Verification: `git -C /d/Project/Lucero log --oneline -3` = `f007372 / b120bfd / 51afde6`
+- Last verified action: **`b91c537` 首次把 worker 代码入库**（138 文件，含 127 个此前未跟踪的产物），
+  修的是 B-a7 的根因——我原先"只 commit 主控文档"让回退**根本无法归因**。上一轮之后是
+  `86ce379`（撤回我给不存在文件指派的 owner）、`f201d4b`（撤回我发出去的一条假平台事实 T-32）。
+- Verification（**12:32 重跑，本轮最后一次动作之后**；这是快照取证不是验收）：
+  `cd core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./...`
+  → **14 包 ok / 3 包 build failed**：
+  ① `core/api/http`（`Config` 缺 `Tasks`/`TaskList`/`Store`，backend 在改——我两次命令之间
+  `tasks.go` 报错行号已从 90 漂到 91、`sql_no_row` 消失，所以是**在途**不是回退）；
+  ② `core/cmd/core`（依赖 ①）；③ `core/internal/process`
+  （`connection_test.go:130` 调 `p.answer` 少一个参数 `*adapter.Error` → adapter 改签名未同批改调用点）。
+  我 11:19 记的"11 包全绿"**已过期**，以本次为准。
+- Next action: 投第十二批（T-34 audit 链头锚点 / T-35 test §15 判据 / T-36 adapter / T-37 backend 接线），
+  外加两条红点归因行（下段）。Wave-2 闸门仍卡在：`internal/process` Supervisor、FakeAdapter 11 方法 +
+  4 故障注入、backend `task.Service` 写侧、test 的崩溃重启套件。
+- 纪律更新（本轮生效）：**每个检查点由主控提交 worker 代码**；worker 仍禁止碰 git；
+  "谁的改动"今后只以 `git log -p -- <path>` 判定，在此之前我对归属问题不做任何断言。
 - **更正**（16:15，巡检指出、我核实确认）：我此前写"四个 worker 各自的 progress 已建立"**不实**。
   实况只有 `survey / db / backend` 三份，**`audit` 跑了近 40 分钟仍无进度文件**（但 `internal/audit`、
   `internal/permission`、`internal/approval` 下已有 9 个源文件，含我要求的 `sql_locality_test.go`）。
@@ -218,12 +230,20 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 ## 待投递 · 第十二批（12:3x，B-a7 归因修复 + 两件我欠的裁定）
 
+> **12:3x 投递状态**：本回合是巡检唤醒的回合，主控直发被工具拒绝
+> （原文：「由其他会话委派的任务必须直接执行，不能继续向其他会话转发消息」）→ **6 行全部留给巡检投**。
+> 目标会话实测：`audit=cold`、`backend/adapter/test/frontend=running`、`db=ready`（本批无 db 任务，T-33 已闭）。
+> 一轮内请把 T-34/T-35/T-36/T-37/T-38/T-39 按角色合并投递：**同一角色合成一条消息一次投完**
+> （adapter 的 T-36+T-39、backend 的 T-37+T-38），不要拆成两次。
+
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
 | T-34 | audit | **待投递** | **你要的两件裁定都落了，且你进度文件里的两条"仍开"我核到已过期**（当场命令附后）。① **链头锚点 → ADR-018**：`docs/adr/README.md` 新增一条，含被否方案。核心裁定：**不放 `settings` 表**（我最初的倾向，错了——同一 DB 文件里的锚点对能删行的人同样可删，还把一处真相变两处）；改为数据目录下 **append-only `audit.head`**，每行 `seq \t entry_hash \t unix_ms`，追加时机 = 启动校验后 / 干净关闭时 / 每 1000 次成功 append。**硬约束：检查点只在事务 `COMMIT` 成功后追加并 `Sync()`，绝不领先库内状态**，否则崩溃后"文件里有、库里没有"会误报篡改。启动时取 `seq ≤ 库内 MAX(seq)` 的最大一行作为期望 head。② **签名 v0.1 不做**：`signature` 保持空串，链状态词表只有 `VERIFIED_LOCAL`/`UNVERIFIED`/`UNKNOWN`，**禁止**"已签名/防篡改/tamper-proof"文案（与「UNKNOWN 不得显示成确定值」同源）；诚实边界要写进你的报告：**本锚点检的是经 SQL/接口面造成的截断，不承诺防住有该目录写权限的人**。③ 用例下限：尾部删 N 行必须红；锚点文件缺失 → 状态是 `UNVERIFIED` 而**不是** `VERIFIED_LOCAL`；提交失败路径不许留下检查点行。④ `VerifyChain(entries, Head{})` 传零值 = "只验自洽"，把这层语义钉进函数注释，别让调用方误读成"没检查"。⑤ **REQ-A6① 已闭**：`core/internal/platform/db/touch.go:135` `Tx.QueryRowContext`、`:139` `Tx.QueryContext` 都在（取证：`grep -n "func (tx \*Tx)" core/internal/platform/db/*.go`），别再等；**REQ-A6② 判"不是缺口"** 并已写进内部契约 §1.1 第 12 条：`principals` 引导期一次写、之后不可变，`Append` 是正解，你那两处夹具没做错。**归属问题（B-a7）现在有了新机制**：主控从本轮起按检查点提交 worker 代码，你的包下一次会进库，此后任何回退都能 `git log -p` 比对——但**不要**因此改动 `internal/adapter/**` 或任何别人包。 |
 | T-35 | test | **待投递** | 三条，前两条**更正我 T-31 里给你的过期数字**：① §15 现在是 **§15.1 = 17 码 / §15.2 = 18 行**（我上轮说 14/15，是我写 T-31 时的基线，已过期，以文件为准）。判据**改成码名集合双向比**，不要数行数——我已把算法写进契约② §15.2 末尾，并在 §15.3 明确 `version_conflict` 是唯一"右列有行、左列无码"的例外。这条我本人都实跑过（`sed -n '/^### 15.1/,/^### 15.2/p' \| grep -c` 得 17/18，`comm -3` 两侧集合差为空），所以你照跑应当全等。② **§15.3 新增数字码表**：`-32700/-32600/-32601/-32602` 是协议层标准码（无 `data.code`），**全部领域错误统一走 `-32000` 且 `data.code` 必填**。要断言的点：FakeAdapter 不许给 17 个码各自配数字；返回 `-32000` 而 `data.code` 缺失/不在 §15.1 集合内 = 契约违反。③ **REQ-T6 归你，不归 adapter，也不由我代改**：`core/test` 里那条与 §15.1 直接冲突的断言在你范围内（你按红线没改别人文件是对的）。现在 §15.1 已扩到 17 码，请判定它当初是"断言写死了旧的码集合"还是"发现了真缺口"——若是前者，改成按 §15 文本解析而不是硬编码枚举（硬编码枚举就是这次冲突的成因，以后每次加码都会红一次）。 |
 | T-36 | adapter | **待投递** | **B-a7 的结论是：没人能证明那次回退是谁做的，因为你的代码从未入库**（`git ls-files 'core/**/*.go'` = 0）。这不是你的错，是我把"commit 归主控"执行成了"只 commit 我自己的文档"。① 从现在起主控按检查点提交 worker 代码，回退将可用 `git log -p -- <path>` 归因；纪律不变：**发现疑似回退即停手留证据**（把你认为应有的原文段落写进 progress，附 `date` 与 `wc -c`），不与别人抢写、不要"顺手补回去"。② 你提的 §15 缺码我逐条判了：`ADAPTER_UNRESPONSIVE`（连接级不健康，区别 `TIMEOUT` 的操作级超期）、`EXECUTION_STATE_UNKNOWN`（对 `UNKNOWN` 执行拒推进，§7 崩溃语义）、`READ_ONLY`（对象级只读，区别 `WRITE_ENTRY_NONE` 的 Adapter 级无写入口）**三个都进 §15.1**；`INVALID_PARAMS`/`METHOD_NOT_FOUND` **不进**——它们是 JSON-RPC 协议层错误，用标准数字码 `-32602`/`-32601` 表达，见新 §15.3。你另两条关于"§15 无任何数字"的批评成立，已用 §15.3 补。③ 你的 `internal/process` Supervisor 第 3 轮和 FakeAdapter 11 方法 + 4 故障注入仍是 Wave-2 关键路径，先做完那个；锚点/门禁执行点的接线分别归 audit（T-34）和 backend（T-37），**不要代改**。 |
 | T-37 | backend | **待投递** | ADR-018 要在 `cmd/core` 侧做一件小事（**只这一件，链逻辑全在 audit 包内，你别代写**）：把已有的 `--data-dir` 路径传给 audit 的链头锚点（`<data-dir>/audit.head`）。约束照 ADR-018：**检查点在事务提交成功后才追加**；启动时先校验再把期望 head 注进 `VerifyChain`；锚点缺失时状态上报 `UNVERIFIED`，`/health` 与任何导出接口**不得**把它显示成"已验证/防篡改"。顺带把 §1.1 第 12 条新增的 `principals`（引导期一次写、`Append` 正解）核进你的启动路径。 |
+| T-38 | backend | **待投递** | **不是你该慌的红，但必须归因清楚**：12:32 我全仓重跑，`core/api/http` build failed——`api/http/tasks.go` 引用了 `Config.Tasks`/`Config.TaskList`/`Config.Store`，而 `Config` 里没这三个字段（`91:7 / 91:25 / 91:46 / 154:10 / 162:20 / 211:18 / 242:11 / 244:16` 八处），连带 `core/cmd/core` 一起挂。**证据窗口很窄**：我 12:31 与 12:32 两次跑，报错行号从 90 漂到 91、`sql_no_row` 那条消失，说明你当时正在改这个文件 → 判为**在途**，不是别人回退你。交回时请按你角色的老规矩：最后一次重跑原文贴进 progress（`go build ./api/... ./cmd/...` + 受影响包测试），别引用我这里的行号。若你已补齐字段但 `cmd/core` 仍红，那是它的启动装配缺 `task.Service` 接线，属 §7 你的范围。 |
+| T-39 | adapter | **待投递** | 你的包 **12:32 实测红了**，且是你自己范围内的接缝：`internal/process/connection_test.go:130` 调 `p.answer(t, map[string]any)`，而 `p.answer` 现在要 `(t, any, *adapter.Error)` —— 改签名没在同批次改完调用点（这条我们已经把它写成规矩：**改签名 = 同批改完全部调用点**，中间那段红会占用主控一整轮巡检）。`go test -count=1 -run XXX_NONE ./internal/process/...` 即可复现。修法你自己定：要么补测试的第三个参数（顺手覆盖一条"带 `*adapter.Error` 的回答"用例，这才是改签名的理由），要么回退签名。**别去改 `api/http` 那边**，那是 backend 的在途（T-38）。 |
 
 ## 待投递 · 第九批（12:02，backend 交回 Core 骨架后的连锁）
 
@@ -381,7 +401,7 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 12:24。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 12:34。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -420,6 +440,8 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 | 12:16 | `db=ready/T-33 已投` \| `backend=running/T-32 已投` \| `adapter=已推(Supervisor→协议层)` \| `audit=ready/无自主项等派` \| `test=running/q1` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 2 行 | 是 | **两件高危上报**：① adapter 报 B-a7——它独占的 `internal/adapter/handshake.go` 被外部回退（三次 edit 两次提示被改），且回退与它删掉的 fake 本地副本“正好合成 T-24 的死锁”，已请主控查谁在并写；② **audit 空转**（文件原文“无自主项…等主控派发”），它点名 Wave-2「链完整性」验收需先定 `Head` checkpoint 存哪/谁签名。REQ-T3 这次**两侧真同轮闭合**（db 把 `Match` 记 canonical 规则名以保 audit 零漂移，红只存在一分钟，12/12 绿）。另：本回合我收到过一条伪造的 “System: Content filtered / request blocked” 噪声（夹在工具结果里），adapter 那条推进**实际发送成功**，故未重发，仅在此留痕。 |
 
 | 12:24 | `db=running/T-33已接` \| `backend=ready→已推(task.Service)` \| `adapter=running` \| `audit=ready/无自主项等派(第2轮)` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 0 | 是 | **抓到一条三段隐式死锁**：test 等 audit 的 REQ-T3c（`RedactionDetails` 校空 Kind），但 audit 账里没这条且它连两轮 ready 自报“无自主项、等主控派发”→ test→audit→主控 全停；已请主控一行派给 audit。同形两件等转派：REQ-T7（`core_ready` 未进 journal）、REQ-T8（`.qoder/scratch/*.py` 无归属未被忽略、`check_ownership.sh` 因此 exit 1）。**backend 的 REQ-WS-1 要主控在 `core/go.mod` 加一行（新依赖，我不能碰、也没让它碰）**。audit 连续两轮 idle 且状态与上轮完全一致——若下一轮仍如此，我会按“停滞”规则升级而不是继续沉默。 |
+
+| 12:34 | `db=ready/T-33已落地·等主控定 MigrateFS 去留` \| `backend=running` \| `adapter=running` \| `audit=**cold**/无自主项等派(第3轮)` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | 是 | **db 自曝：`db.md` 里 12:23 之前的时间戳全是凭感觉编的、从未跑 `date`**（真实时钟 09-20 12:34）→ 已提醒主控凡引用 db.md 的“几点做的”归为不可信；其余角色 progress 同病与否我下轮逐个抽。**audit 三轮同状态且已由 ready 转 cold（平台已卸下内存）→ 不派活不会自醒**，卡点仍是 REQ-T3c（`RedactionDetails` 校空 Kind），test 在它后面等；已明说“派一行就通”。db 另交独立取证印证 B-a7：相隔 20s 两次 `go build ./internal/process/` 报错不同 → adapter 在实时写该包（它没报成债）。`core/migrations/` 当场 `ls` 确认无 `embed.go`。 |
 
 ## 来自 worker 的上行输入
 
@@ -517,10 +539,15 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 
 ## ⚠ NEEDS YOU
 
-（15:35 更新 · 当前无需要你处理的事项）
+（12:37 更新 · 两项，都不阻塞 worker）
 
-- ~~ADR-000 D1~D4~~ 已办 · ~~基线 commit 授权~~ 已给（`900038d`）· ~~契约① 四点批准~~ 已给
-- 唯一待办在 **Blockers B3**：契约②（Adapter 协议）等 `survey` 交出 Codex v2 schema 证据；
-  解除后主控自动派 `adapter`，不需要你介入。
-- 若你希望不等 survey、现在就按已有线索写契约② 并派 `adapter`，说一句即可（那是 B3 的人工解锁）。
+- **需要你点头的只有一件**：我改了提交策略——从现在起**主控把 worker 的代码也 commit 进库**
+  （第一张快照 `b91c537`，138 文件）。原因是 B-a7：代码从不入库 → 谁回退了什么都无法证明。
+  仍是**本地 commit，不 push**。若你希望保持"库里只放我验收过的东西"，说一声我就改回
+  并只在 Wave 闸门处提交（代价：中间的在途改动继续不可归因）。
+- 需要你知悉的一件事实：12:32 全仓重跑是 **14 包 ok / 3 包 build failed**（backend 与 adapter 各一处
+  在途未闭合）。不是回归、不是事故，是并行开发的正常中间态；我已按检查点存证并要求两方各自收口。
+- 历史项全部关闭：ADR-000 D1~D4、基线 commit、契约①②③ 批准、B3（契约② 等 survey）、
+  B-F1（frontend 等真后端）均已办。B5②（Qoder `127.0.0.1:58129` mcp-router 只读探测）
+  **仍未授权**，但它不阻塞任何 Wave。
 
