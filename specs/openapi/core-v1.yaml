@@ -794,7 +794,7 @@ components:
       properties:
         next_cursor:
           type: [string, "null"]
-          description: 无更多数据时为 null，不是空字符串
+          description: '无更多数据时的形态契约未定：我原先写"必须是 null 而非空串"，但实测 Core 在 2026-09-20 16:16 返回空串 ""（自属实例复现两次），故此处只声明两种都可表示"没有下一页"，正式口径等 REQ-F-19 裁定'
     # ── 枚举（对齐 000001 的 CHECK 与契约① §5）────────────────────────────
     ProjectStatus: { type: string, enum: [ACTIVE, ARCHIVED, UNAVAILABLE, UNKNOWN] }
     AdapterHealth: { type: string, enum: [UNKNOWN, STARTING, HEALTHY, DEGRADED, UNAVAILABLE, STOPPED] }

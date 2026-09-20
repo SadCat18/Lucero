@@ -94,6 +94,43 @@ WorkBuddy 桌面 5.5.6 / 内置 CLI 2.137.1 / sandbox 5.5.5）。`adapter_instan
 Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射表写进 Adapter 的
 `metadata_json`，Core 不感知原生命名。
 
+### 4.1 写方法清单（Q1 裁定，16:2x —— 补上 §3 一直没给的清单）
+
+**起因有两层。** 表层：`internal/adapter` 的 `writeMethods` 排除了 `approval/respond`，
+注释理由是"审批走 permission channel、由 Permission Engine 而不是 `write_entry` 管"，并引用
+**"§12.11 (ruled 2026-09-19)"** —— 而 `grep -rn "12\.11" specs/` **零命中**（`test` 11:3x 先报，我 16:2x 复核一致）。
+**那是一个不存在的条款号。** 里层更要紧：我去核对这张表时发现**代码与本文的方法集合本身就不一致**——
+
+| 方法 | 在 §4 方法表里？ | 在代码 `writeMethods` 里？ | 处置 |
+|---|---|---|---|
+| `session/create` | **✗ 没有** | ✓ 有 | **§4 少一行、代码多一项**：要么本文补 `session/create` 的签名与语义，要么代码删这一项。**归 adapter 选，选完同轮回执**（我不擅自判，因为我不知道它是不是第 3 轮为 FakeAdapter 加的） |
+| `approval/cancel` | ✗ 没有 | ✗ 没有 | **它根本不存在**。我起草本节时把代码注释里的这句当事实抄了一遍，16:3x 核对才拦下——**这正是" phantom 条款号"会怎么扩散的现场样本**：一句无出处的注释，两轮后就长进了权威文档 |
+| `approval/respond` | ✓ 有（C→A，幂等） | **✗ 被刻意排除** | 见下面的裁定 |
+
+**裁定：`approval/respond` 算写方法**，声明 `write_entry:false` 的 Adapter 必须对它返回 `WRITE_ENTRY_NONE`。
+理由不是分类洁癖：
+- **回应审批 = 授权一个外部动作被执行**（写文件、跑命令），是全部能力里后果最重的一次写。
+- **两道门不许互相顶替**：Permission Engine 管"**Core 要不要问这个审批**"，`write_entry` 管
+  "**这个 Adapter 物理上能不能办事**"。拿前者豁免后者，等于"因为门禁把关了，所以允许往一扇没有把手的门推人"。
+- **实测面**：Phase 0 #17「审批响应」在 Z Code 是 `UI_AUTOMATION`、WorkBuddy 桌面端是 `CLI` ——
+  一个声明无写入口的 Adapter **本来就没有回答审批的通道**。放行它只会让 Core 发出一条注定失败
+  或被对端静默忽略的指令，而 **UI 以为审批已经送达** —— 那就是 §12 的"把 UNKNOWN 显示成确定值"，P0 同型。
+
+**本文口径下的写方法集合**（只列 §4 方法表里真实存在的名字）：
+`session/send`（三态 `start_now`/`guide`/`queue` 全在内）、`session/stop`、`model/select`、
+**`approval/respond`**、`debug/*`（§9，仅 `adapter_key=fake`）。
+**读方法 / 非 C→A 调用**：`adapter/initialize`（握手，§2 豁免）、`adapter/health`、`session/list`、
+`session/read`、`model/list`、`quota/read`、`approval/list`、`session/locate`（v0.1 只留桩），
+以及 `stream/*`（**A→C 通知，不是"方法调用"，不在写入口判定范围内**）。
+
+**两处 `model/select` 的门不要混**：代码注释说它的拒绝"其实是能力门（`CAPABILITY_UNAVAILABLE`）"——
+**两句都对**：`write_entry:false` 时返 `WRITE_ENTRY_NONE`，声明了写入口但当前不具备时返
+`CAPABILITY_UNAVAILABLE`。判据：**两个码不许互相代替**，因为它们对应两个不同的用户结论（"这家不能写" vs "现在不行"）。
+
+**代码侧引用规矩**：注释里引本文**只准写 `§4.1`** 或方法名，禁止引用不存在的条款号。
+可机判形式：任何 `§<数字>` 引用都必须能被 `grep -n "^#\+ <同号>" specs/**/*.md` 查到，查不到即缺陷。
+
+
 ## 5. 三态投递原语（Phase 0 §6.4 的直接结论）
 
 `session/send` 的 `delivery` ∈ **`start_now` / `guide` / `queue`**，是协议一等概念：
