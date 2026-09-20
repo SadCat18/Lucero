@@ -127,6 +127,28 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     不是聚合根，因此**没有 `Create` 路径不是缺口**。用 `tx.Append("principals", …)` 就是合法正解
     （现有两处测试夹具这么插是对的，不算"绕过平台层"）；不要为它加 `version` 列或 `principal_*` 事件。
     将来若引入多用户/凭据轮换，再按新 ADR 升级为聚合。
+13. **`Tx.UpdateOnce`：无事件可变表的唯一合法 UPDATE 入口（REQ-DB-1 裁定，13:5x 按 db 交付原文写）**
+    第 12 条只说了"这些表不需要 `Touch`/`Create`"，却没给 UPDATE 入口，于是幂等中间件封不了自己的响应
+    （backend 只能回 `409 idempotency_replay`）。db 已交付，签名与语义以 `platform/db/touch.go:174` 为准：
+
+    ```go
+    func (tx *Tx) UpdateOnce(table, id, guardCol string, guardVal any,
+        setSQL string, args []any) (int64, error)   // 返回实际改动行数
+    ```
+
+    - **白名单写死在 db 里**：`narrowTables`（`touch.go:156`）当前**只有 `idempotency_keys`**，
+      可写列 `state`/`response_json`/`updated_at`/`expires_at`，主键 `key`。白名单外一律 error
+      （"not in platform/db's narrow update whitelist"）。**加表要过我这关**（写 REQ，不许顺手加）。
+    - **聚合表物理封死**：`aggTables[table]` 命中就直接 error（`:175-177`），
+      所以第 12 条那张表**不可能被误用来绕过版本**。
+    - **`guardCol`/`guardVal` 是"只封存一次"的关键**：第一次写把 `state` 改掉并落 `response_json` → 1 行；
+      重放时条件不匹配 → **0 行**，调用方据此**回读已封存的响应**而不是覆盖它。
+      平台层因此**不需要理解状态机语义**（"谁算第一次"由调用方的 guard 表达），这是这条入口能保持窄的原因。
+    - **仍然跑脱敏**（`:172-173`）：`response_json` 正是最可能带密钥的列，别指望它是第二个豁免口。
+    - **不发事件、不取 version**（这就是"无事件表"的定义）。
+    - 判据归 `test`：`UpdateOnce` 打聚合表必须 error；打白名单外表必须 error；
+      guard 不匹配时返回 0 行且**原值未被覆盖**；`response_json` 里放一个密钥形状的值，
+      落库后必须是被脱敏的（这一条打在 db 的返回值/直接产物上，不是打在读侧）。
 
 10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
    一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），
