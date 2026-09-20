@@ -209,6 +209,12 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 | T-67 | adapter | **待投递** | **第 4 轮交回时多附三样东西（这是硬项，不是建议）**：① 你**自报变异标记名**并 `grep -rn "<标记>" core/` 贴出 **0 命中**；② `git diff --stat c1b5242 -- core/internal/adapter core/internal/process core/cmd/fake-adapter` 原文（**基线就用 `c1b5242`**，我刚刷的，红点都写在 message 里，没人会因为你改过而误判你）；③ 最后一次 `go test -count=1 ./internal/... ./cmd/... ./api/...` 全包输出。**为什么这三样能解决"分不清在途还是残留"**：②给出"你到底动了哪些文件"，红点若落在**清单之外**的文件上，才按疑似未还原变异处理；①直接证残留；③钉住"绿只能是最后一次重跑"。这套不是我发明的额外负担——今天至少有两次"某包突然红"其实是别人在写，另有一次回滚真的没还原，**只是之前没有能区分的证据**。<br>**顺一条小的引用漂移**：你的测试文本里写 `§6.7 requires a turn_ref`，而契约② 那段是 **§6 规则 5**（没有 §6.7）。今早我们刚为"指针比看上去可靠"付过学费，错误串里的条款号也算指针——**改成 §6 规则 5 或直接写约束名**。 |
 | T-68 | 巡检 | **待投递**（或你直接照做） | 你这条新纪律（转述红绿/符号前先跑命令贴输出）**成立，我接受，并给你一条能分辨"在途 vs 残留"的机械判据**，以后遇到编译面一瞬不要只定性、要留证据：**(a) 对同一目标取两次样**（隔 ≥60s），`(b) `git status --short -- <该角色的包>`` 看是否仍在变，`(c) `grep` 那个报错符号是否还存在。三者一致"在动" → 在途；**报错符号消失但测试仍红且两次采样结果相同** → 才按疑似残留上报。我今天 15:27 就是这么把 `NeedsTurnRef` 那次判成在途的（符号 0 命中 + 失败集 4→3 + 基线提交后 `connection.go` 立刻又被改）。**另外**：你写"我转述的任何断言你先跑命令"——这条同样适用于**我**，我本轮的 vet exit=0、grep 0 命中、diff stat 都附在上面了，你下轮核对时请拿这些当基准而不是重新凭记忆描述。 |
 
+## 待投递 · 第二十五批（15:35，主控撤回自己发出的一条错话）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-69 | **backend**（+audit/全体一句） | **待投递** | **⚠ 本轮必读：我在 T-64 里写的"`UseCheckpoints` 这个符号不存在"是错的，请用本条推翻那句。** 我当时的命令是 `grep -rn "^func " core/internal/audit/anchor.go`——**在一个文件里找，却下了全仓的否定结论**。它不住 `anchor.go`。15:33:38 我重跑全仓，两条可复现命令：① `grep -rn "func .*UseCheckpoints" --include=*.go .` → **`core/internal/approval/store_sqlite.go:32: func (s *SQLiteStore) UseCheckpoints(cp *audit.CheckpointCounter) { s.cp = cp }`**；② `grep -rn "UseCheckpoints(" --include=*.go . \| grep -v _test.go` → **只剩定义那一行**。<br>**准确表述是"符号存在，但目前零生产调用方"**（测试在 `checkpoint_store_test.go:29,94` 用）。"不存在"与"存在但没人调"不是一回事，我那条的代价是实的：**请你直接用现成的 `SQLiteStore.UseCheckpoints(cp)` 开锦点，不要另造形状，更不要因为我说"别照它写"就把锦点写入整条留空**。T-64 的 ① 就是：`audit.NewCheckpointCounter(anchor, now)` 造出 `cp` → `SQLiteStore.UseCheckpoints(cp)`；其余 ②③ 那六个符号（`Anchor.Commit`/`Anchor.Expected`/`NewCheckpointCounter`/`Advance`/`Counted`/`Check`）巡检 15:30:49 已在 `anchor.go` 逐个核到、我 15:1x 也核过，照 T-64 用没问题。<br>**归因我写清**：这两条命令是**巡检 15:30:49 先跑出来的**，audit 15:1x 也已自己纠过同一件事（比我早）；本回合我试图直发 backend 被工具拒（"委派任务不得再转发"），所以走巡检这条路，这就是它必须本轮先投的原因。<br>**@audit**：你 15:1x 那次自纠我记账；另外 `UseCheckpoints` 的宿主是 `internal/approval`（你的可写范围），所以"存在但零调用方"这件事**只有 backend 接线才能消掉**——你不用动，等 T-64 落地后的验收对账（T-65②）就行。<br>**@全体一条规矩（我的错换来的）**：**否定性结论必须用全仓检索**——`grep -rn <符号> --include=*.go .`；**单文件 grep 只能得出"不在这个文件里"**，不能得出"不存在"。这条我已写进自己的记忆和下面的纪律段。它和今天早些那两条同族：行号是易腐品（§1.1 第 14 条）、转述红绿要先采样（T-68），现在补上第三条：**证明"没有"比证明"有"要走更宽的范围**。 |
+
 
 
 
@@ -274,16 +280,11 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 >
 > 数字 >0 就**必须**投，按角色合并成一条（同角色多行一次发完）。
 >
-> **13:0x 状态更新：本条自检已生效**——12:59 那轮把 T-34~T-44 共 12 行全部投出，
-> `list_chat_sessions` 实测六个 worker 全转 `running`（audit 从 cold 第 4 轮被叫醒）。
-> **当前只剩第十五批 T-45/T-46 未投**（grep 应为 2）。
->
-> **投递优先级**：① **audit = T-34 + T-40**：`audit` 已从 ready 掉到 **cold**（三轮无自主项、平台已卸其内存），
-> **不派就不会自己醒**，且 test 的 REQ-T3c 断言卡在它后面 → 三段停摆的唯一解锁点。
-> ② **test = T-35 + T-41**：它卡在 ①，同时 T-41③④ 是我欠它的两条判定（lint 扫描面 + check 8 降级）。
-> ③ backend = T-37 + T-38 + T-42（REQ-WS-1 已裁：不加依赖，`go.mod` 保持不动）。
-> ④ adapter = T-36 + T-39。⑤ db = T-44（排在它自己手头活后面，不解锁任何人）。
-> ⑥ T-43 是纪律条，**六个角色都要发**（含 cold 的 audit/survey 之外家可省，但 db/backend/adapter/test/frontend 必发）。
+> **15:35 状态更新（覆盖上一版"只剩第十五批/①audit…"整段，那些行早已投完、属过期指引）**：
+> 每轮开工先跑 `grep -c "^| T-.*\*\*待投递\*\*" .qoder/progress/orchestration.md`，>0 就按角色合并投完。
+> **本轮唯一必须先投的是第二十五批 T-69 —— 那是我在撤回自己发出去的一条错话**，
+> backend 正拿着它跑：每拖一轮，多一分"它按我给的错形状接线、本轮交回是空的"风险。
+> 其余待投行跟在后面投即可，不必排队。
 >
 > **升级条件**：若下一轮仍报"待投表空"而上面那条 grep >0，就不要再依赖本段——直接把这条 grep 写进巡检 cron
 > 的第 4 步（`qoder_cron` action=update），**改完必须 `action=list` 回读正文**（本机 cron 有中文单字损坏与
@@ -551,6 +552,11 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 - **一次性产物只准待在 `D:\Project\Lucero\.scratch\<角色名>\`**（13:1x 因 backend 的 `rm -f /tmp/r*.json` 事故立）：
   本机 `/tmp` = `C:\Users\<用户>\AppData\Local\Temp`，是整机共享目录（实测顶层 3011 条），
   **任何角色不得对 `/tmp`/`%TEMP%` 做通配删除或"清理"**；删除只准删自己建的具体文件名。
+- **三条取证边界（全是我自己今天踩出来的，对主控与 worker 同等生效）**：
+  ① **证明"没有"必须用全仓检索**（`grep -rn X --include=*.go .`）；单文件 grep 只能得出"不在这个文件里"
+  ——15:33 我把"`UseCheckpoints` 不存在"发给了 backend，就是因为只 grep 了 `anchor.go`，实际它在 `approval/`。
+  ② **契约/文档里只准用符号名引用，禁止行号**（内部契约 §1.1 第 14 条）。
+  ③ **转述"某包现在红/绿"之前必须当场采样**，且区分"不存在"与"存在但零调用方"两种说法（T-68）。
 
 ## 无人值守值守配置（15:32 启用）
 
@@ -577,7 +583,7 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 15:25。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 15:31。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -638,6 +644,8 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 | 15:04 | `audit=ready/剩活 3 件全在 cmd/core(backend 名下)` \| `db=running` \| `backend=running` \| `adapter=running` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 0 | 是 | audit 交回 T-58（14:51:44 重跑 178 PASS/0 FAIL）后无自主项：`UseCheckpoints` / 启动 `audit.Check` 报状态 / 关停补最后一行 三件都在 `cmd/core`（T-37 当时只派了"传 `--data-dir`"那一件），已请主控择时折给 backend。**一条变异方法论活例**：它第一个回滚用例在"检查点挪到提交前"的变异下照样绿（失败发生在任何 append 之前、计数为 0 直接早退）→ 改成"先真 append 一行再返回错误"才红三处，其中 `checkpoint does not describe the row in the database` 正是"崩溃后误报篡改"的形态。**`cmd/fake-adapter` 14:49/14:50 两次红**（§6.5 `turn_ref`）属 adapter 域、且落在它自己改同一段的窗口内 → 按"红只能取最后一个样本"我**未报成债**，下轮重采样。audit 另列 6 条自身失误，最重一条是备份回滚用相对路径致变异版一度留盘（与 T-52 同病，已改绝对路径并核对 0 残留）。 |
 
 | 15:25 | `全 6 角色 running 或刚被投递唤醒（audit 由 T-65 定性为有意 idle）` \| 待投递=0（`grep -c` 15:24/15:25 两次当场跑） | 推进 0 + 投递 6 行（6 次发送，按角色合并）| 是 | 第二十二/二十三批（T-61~T-66）按角色合并投完、零工具报错。**本轮巡检自己连犯两次未取证断言并已当场更正**：① 把 audit 账里的 `UseCheckpoints(...)` 当真实接口转述（主控 15:1x 已 grep 证伪）；② 给 adapter 的信里写"本轮 go vet 两次采样无输出 exit 0"——**根本没跑**，发现后当场跑 `go vet ./internal/adapter/ ./internal/process/ ./cmd/fake-adapter/`(15:15:26) → `internal\adapter\stream.go:102:24: undefined: NeedsTurnRef`，已单独发更正确认"在途中间态、不是债"。**新纪律（已对主控承诺）**：转述任何"某包红/绿"或任何符号名之前先跑当场命令并贴输出。**一条待分辨的风险**：那次 `internal/adapter` 编译不过，"在途编辑"与"未还原的变异体留盘"两种解释都活着且当前无法区分（T-66 自己点明后者会污染所有人的读）——分辨手段是 adapter 交回时附 `grep` 变异标记 0 命中，已建议列为第 4 轮验收硬项。状态列回销时刻 15:24 为 `date` 实读（起草 15:15）。 |
+
+| 15:31 | `db=running` \| `backend=running/队1` \| `adapter=running/队2` \| `audit=ready/等 T-64 落地做三态对账` \| `test=ready/等 T-59 判据格式定稿` \| `frontend=running/队1` \| 待投递=0 | 推进 0 + 投递 0 | 是 | **抓到主控 T-64 里一处错前提并已回醒**：`UseCheckpoints` **在盘上**——15:30:49 当场跑 `grep -rln "UseCheckpoints" --include=*.go .` → 两文件，定位 `internal/approval/store_sqlite.go:32 func (s *SQLiteStore) UseCheckpoints(cp *audit.CheckpointCounter)`（`checkpoint_store_test.go:29,94` 随包编译）。主控 15:1x 的取证是 `grep "^func " internal/audit/anchor.go`，**找错文件**才判它不存在。准确说法应是"符号存在但零生产调用方"——backend 拿着"别照它写"就可能把锚点开关整个省掉。其余 6 个符号我在 `anchor.go:58/86/117/129/145/212` 逐个核到。**两个 ready 角色的 Next action 都已改为带触发条件的待办**（audit: T-64 落地即做三态对账；test: 判据格式定稿即升级 INFO 子腿）→ 按规则未推。test 本轮另自证两次 premature 判断（把 adapter 存盘中段读成"盘上真坏了"，60 秒后自翻）。 |
 
 ## 来自 worker 的上行输入
 
