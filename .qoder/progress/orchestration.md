@@ -196,7 +196,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-32 | backend | 待投递 | **撤回我 T-8③ 的"纠正"，你原来的判断方向是对的**。我 16:4x 说"`database/sql` 自 Go 1.8 起就导出 `QueryerContext`"——**这句是错的**。我刚自己跑过：`go doc database/sql` 里没有任何 `Queryer*`；`QueryerContext` 只存在于 `database/sql/driver`，是 **`Conn` 的可选 SPI**，签名 `QueryContext(ctx, query, []driver.NamedValue) (driver.Rows, error)`，所以 `*sql.DB` 并不满足它。请把你 `repository.go` 的注释改成这个准确说法：**"自己声明窄接口，是因为 `database/sql` 不导出查询接口；`driver.QueryerContext` 是驱动侧 SPI、参数类型不同，`*sql.DB` 不满足"**——保留你的窄接口设计不变（它本来就是对的）。原注释里"这个工具链没导出"这半句确实该去掉（与工具链无关），但**换成我说的那句会更糟**。<br>另：三条环境事实进你的脚本/断言规范（已并入 T-31 给 test，两边口径要一致）——本地代理会吞掉 `curl 127.0.0.1`（必须 `--noproxy '*'`）、Windows 上 Go 的 0600/0700 被 ACL 变成 `rwxrwxrwx`（**别写权限断言**）、`go:embed` 不能越包目录（`core/migrations/embed.go` 归 db，见契约③ §7）。 |
+| T-32 | backend | **已投递（12:16，巡检；附「embed 那条以 T-33 为准、已撤回」对账）** | **撤回我 T-8③ 的"纠正"，你原来的判断方向是对的**。我 16:4x 说"`database/sql` 自 Go 1.8 起就导出 `QueryerContext`"——**这句是错的**。我刚自己跑过：`go doc database/sql` 里没有任何 `Queryer*`；`QueryerContext` 只存在于 `database/sql/driver`，是 **`Conn` 的可选 SPI**，签名 `QueryContext(ctx, query, []driver.NamedValue) (driver.Rows, error)`，所以 `*sql.DB` 并不满足它。请把你 `repository.go` 的注释改成这个准确说法：**"自己声明窄接口，是因为 `database/sql` 不导出查询接口；`driver.QueryerContext` 是驱动侧 SPI、参数类型不同，`*sql.DB` 不满足"**——保留你的窄接口设计不变（它本来就是对的）。原注释里"这个工具链没导出"这半句确实该去掉（与工具链无关），但**换成我说的那句会更糟**。<br>另：三条环境事实进你的脚本/断言规范（已并入 T-31 给 test，两边口径要一致）——本地代理会吞掉 `curl 127.0.0.1`（必须 `--noproxy '*'`）、Windows 上 Go 的 0600/0700 被 ACL 变成 `rwxrwxrwx`（**别写权限断言**）、`go:embed` 不能越包目录（`core/migrations/embed.go` 归 db，见契约③ §7）。 |
 
 **主控纠错（第六笔，性质最重）**：前五笔是"拿过期快照当现状"，这一笔是**我主动把一个假的平台事实塞进 worker 的注释里**，
 而且是以"纠正你"的名义。若 backend 照做，代码里就会留下一句错的断言，后人还得再查一遍。
@@ -206,7 +206,7 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-33 | db | 待投递 | **若你看过契约③ §7 那行 `core/migrations/embed.go` → 不要建它**，我已撤回（12:10）。v0.1 不做迁移内嵌，交付走 `cmd/core -migrations <目录>`（backend 已这么跑）。你 11:30 接到的 **`fs.FS` 版迁移入口保留，但理由换成可测性**：让测试用 `fstest.MapFS` 直接驱动迁移器（尤其那两条"目录下有文件但未记账 / 记账了但文件丢了"的偏差用例，用真磁盘临时目录测既慢又容易漏），不再有"给 embed 供数据"这个目的。其余约束（不包事务、不自写记账行、改完跑全仓并通报受影响方）不变。 |
+| T-33 | db | **已投递（12:16，巡检）** | **若你看过契约③ §7 那行 `core/migrations/embed.go` → 不要建它**，我已撤回（12:10）。v0.1 不做迁移内嵌，交付走 `cmd/core -migrations <目录>`（backend 已这么跑）。你 11:30 接到的 **`fs.FS` 版迁移入口保留，但理由换成可测性**：让测试用 `fstest.MapFS` 直接驱动迁移器（尤其那两条"目录下有文件但未记账 / 记账了但文件丢了"的偏差用例，用真磁盘临时目录测既慢又容易漏），不再有"给 embed 供数据"这个目的。其余约束（不包事务、不自写记账行、改完跑全仓并通报受影响方）不变。 |
 
 **主控纠错（第七笔，与前五笔同形但载体不同）**：我在契约③ §7 给一个**不存在的文件**指派了 owner，
 却没派任何待办 —— 巡检 12:04 用 `find` 证伪。这与我当天在事件契约 §6 立规矩批评的"已登记 ≠ 有生产路径"是同一件事，
@@ -215,6 +215,15 @@ LAST_UPDATED: 2026-09-19T15:05+08:00
 ① 同一轮有 T-行指向被派方；② 该行自己写明"暂不做/已撤回"并给出重开条件。二者皆无即视为空头契约。
 
 
+
+## 待投递 · 第十二批（12:3x，B-a7 归因修复 + 两件我欠的裁定）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-34 | audit | **待投递** | **你要的两件裁定都落了，且你进度文件里的两条"仍开"我核到已过期**（当场命令附后）。① **链头锚点 → ADR-018**：`docs/adr/README.md` 新增一条，含被否方案。核心裁定：**不放 `settings` 表**（我最初的倾向，错了——同一 DB 文件里的锚点对能删行的人同样可删，还把一处真相变两处）；改为数据目录下 **append-only `audit.head`**，每行 `seq \t entry_hash \t unix_ms`，追加时机 = 启动校验后 / 干净关闭时 / 每 1000 次成功 append。**硬约束：检查点只在事务 `COMMIT` 成功后追加并 `Sync()`，绝不领先库内状态**，否则崩溃后"文件里有、库里没有"会误报篡改。启动时取 `seq ≤ 库内 MAX(seq)` 的最大一行作为期望 head。② **签名 v0.1 不做**：`signature` 保持空串，链状态词表只有 `VERIFIED_LOCAL`/`UNVERIFIED`/`UNKNOWN`，**禁止**"已签名/防篡改/tamper-proof"文案（与「UNKNOWN 不得显示成确定值」同源）；诚实边界要写进你的报告：**本锚点检的是经 SQL/接口面造成的截断，不承诺防住有该目录写权限的人**。③ 用例下限：尾部删 N 行必须红；锚点文件缺失 → 状态是 `UNVERIFIED` 而**不是** `VERIFIED_LOCAL`；提交失败路径不许留下检查点行。④ `VerifyChain(entries, Head{})` 传零值 = "只验自洽"，把这层语义钉进函数注释，别让调用方误读成"没检查"。⑤ **REQ-A6① 已闭**：`core/internal/platform/db/touch.go:135` `Tx.QueryRowContext`、`:139` `Tx.QueryContext` 都在（取证：`grep -n "func (tx \*Tx)" core/internal/platform/db/*.go`），别再等；**REQ-A6② 判"不是缺口"** 并已写进内部契约 §1.1 第 12 条：`principals` 引导期一次写、之后不可变，`Append` 是正解，你那两处夹具没做错。**归属问题（B-a7）现在有了新机制**：主控从本轮起按检查点提交 worker 代码，你的包下一次会进库，此后任何回退都能 `git log -p` 比对——但**不要**因此改动 `internal/adapter/**` 或任何别人包。 |
+| T-35 | test | **待投递** | 三条，前两条**更正我 T-31 里给你的过期数字**：① §15 现在是 **§15.1 = 17 码 / §15.2 = 18 行**（我上轮说 14/15，是我写 T-31 时的基线，已过期，以文件为准）。判据**改成码名集合双向比**，不要数行数——我已把算法写进契约② §15.2 末尾，并在 §15.3 明确 `version_conflict` 是唯一"右列有行、左列无码"的例外。这条我本人都实跑过（`sed -n '/^### 15.1/,/^### 15.2/p' \| grep -c` 得 17/18，`comm -3` 两侧集合差为空），所以你照跑应当全等。② **§15.3 新增数字码表**：`-32700/-32600/-32601/-32602` 是协议层标准码（无 `data.code`），**全部领域错误统一走 `-32000` 且 `data.code` 必填**。要断言的点：FakeAdapter 不许给 17 个码各自配数字；返回 `-32000` 而 `data.code` 缺失/不在 §15.1 集合内 = 契约违反。③ **REQ-T6 归你，不归 adapter，也不由我代改**：`core/test` 里那条与 §15.1 直接冲突的断言在你范围内（你按红线没改别人文件是对的）。现在 §15.1 已扩到 17 码，请判定它当初是"断言写死了旧的码集合"还是"发现了真缺口"——若是前者，改成按 §15 文本解析而不是硬编码枚举（硬编码枚举就是这次冲突的成因，以后每次加码都会红一次）。 |
+| T-36 | adapter | **待投递** | **B-a7 的结论是：没人能证明那次回退是谁做的，因为你的代码从未入库**（`git ls-files 'core/**/*.go'` = 0）。这不是你的错，是我把"commit 归主控"执行成了"只 commit 我自己的文档"。① 从现在起主控按检查点提交 worker 代码，回退将可用 `git log -p -- <path>` 归因；纪律不变：**发现疑似回退即停手留证据**（把你认为应有的原文段落写进 progress，附 `date` 与 `wc -c`），不与别人抢写、不要"顺手补回去"。② 你提的 §15 缺码我逐条判了：`ADAPTER_UNRESPONSIVE`（连接级不健康，区别 `TIMEOUT` 的操作级超期）、`EXECUTION_STATE_UNKNOWN`（对 `UNKNOWN` 执行拒推进，§7 崩溃语义）、`READ_ONLY`（对象级只读，区别 `WRITE_ENTRY_NONE` 的 Adapter 级无写入口）**三个都进 §15.1**；`INVALID_PARAMS`/`METHOD_NOT_FOUND` **不进**——它们是 JSON-RPC 协议层错误，用标准数字码 `-32602`/`-32601` 表达，见新 §15.3。你另两条关于"§15 无任何数字"的批评成立，已用 §15.3 补。③ 你的 `internal/process` Supervisor 第 3 轮和 FakeAdapter 11 方法 + 4 故障注入仍是 Wave-2 关键路径，先做完那个；锚点/门禁执行点的接线分别归 audit（T-34）和 backend（T-37），**不要代改**。 |
+| T-37 | backend | **待投递** | ADR-018 要在 `cmd/core` 侧做一件小事（**只这一件，链逻辑全在 audit 包内，你别代写**）：把已有的 `--data-dir` 路径传给 audit 的链头锚点（`<data-dir>/audit.head`）。约束照 ADR-018：**检查点在事务提交成功后才追加**；启动时先校验再把期望 head 注进 `VerifyChain`；锚点缺失时状态上报 `UNVERIFIED`，`/health` 与任何导出接口**不得**把它显示成"已验证/防篡改"。顺带把 §1.1 第 12 条新增的 `principals`（引导期一次写、`Append` 正解）核进你的启动路径。 |
 
 ## 待投递 · 第九批（12:02，backend 交回 Core 骨架后的连锁）
 
@@ -316,6 +325,24 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 > 角色与文件所有权的**正式版本以 `specs/api-contract-v0.1.md` §7 为准**（`test` 的 ownership lint 依它判定）；
 > 本文件的角色表是操作摘要。两处不一致时以契约为准，并回头修本表。
 
+## B-a7 取证结论：回退不可归因，根因是我自己定的提交策略（12:2x）
+
+adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"还有谁在写 `internal/adapter/**` 与 `cmd/fake-adapter/**`"。
+**这个问题在这台仓库上无法回答，而且是我造成的**：
+
+- `git ls-files 'core/**/*.go'` → **0**。全部 worker 代码（`core/api`、`core/cmd`、`core/internal`、`core/test`、
+  `apps/desktop/src`、`packages/`、`scripts/`、`specs/openapi/`）都是 **未跟踪文件**，127 个。
+- 未跟踪 = 没有历史 = **任何一次回退都无法证明是谁、在什么内容上做的**。`handshake.go` 现在的状态
+  （`Call` 在 341 行、§2 门禁在 350/356）既可能是 adapter 的版本，也可能是别人覆盖后的版本，我无法判别。
+- mtime 只能说明"什么时候动过"，不能说明"被谁动过、动了什么"，**不作为归因证据**。
+- **根因**：我把"本地 commit 归主控"执行成了"只 commit 我自己的文档与契约"，
+  worker 代码留在工作区永远不进库。于是 `git diff 900038d --stat` 这条我定给 worker 的自查归属判据
+  **从一开始就是坏的**（它只覆盖已跟踪文件），而"防止别人冒领改动"这件事我一句都没做到。
+- **处置**：① 立即改变策略——每个检查点由主控提交一次 worker 代码（快照 commit 的哈希记在下方巡检心跳里）；
+  ② 纪律保留不变：worker 仍禁止碰 git，**发现疑似被回退时停手并留证据**（原文段落 + `git log -p` 比对），
+  不与别人抢写；③ 以后"谁的改动"以 `git log --format='%h %an' -1 -- <path>` 为准，
+  在这条能跑通之前，我不再对归属问题做任何断言。
+
 
 
 ## 已定的防冲突纪律（本会话内新增，未进契约文档）
@@ -324,7 +351,10 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
   理由：多会话并行时它是唯一必然产生写冲突的文件。已用 `26616e9` 预声明唯一允许的驱动。
 - **所有 worker 的命令必须用绝对路径**，且显式告知"正式目录不是你会话的默认 cwd"——
   否则会话在 `D:\Work资源\...` 里建产物，账本与 diff 全错位。
-- **本地 commit 归主控**：worker 一律禁止 git 写操作，验收靠 `git diff 900038d --stat` 自查归属。
+- **本地 commit 归主控**：worker 一律禁止 git 写操作。
+  **12:2x 更正本条**：验收原先靠 `git diff 900038d --stat` 自查归属——**那个判据是坏的**，
+  因为 `git diff` 只看**已跟踪**文件，而 worker 的全部代码从未入库（`git ls-files 'core/**/*.go'` = **0**）。
+  新纪律：**主控在每个检查点提交 worker 代码**（见 B-a7），worker 仍不碰 git。
 
 ## 无人值守值守配置（15:32 启用）
 
@@ -351,7 +381,7 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 12:04。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 12:24。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -386,6 +416,10 @@ BUG-T6（转 adapter，含实测原文）、db 的 `fs.FS` 迁移入口。
 | 11:56 | `db=ready→T-27 已投(HitKind)` \| `backend=ready→已推(接 WS)` \| `adapter=running` \| `audit=ready→T-28 已投` \| `test=running→T-29 已投` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 3 行 | 是 | **backend 交出 Core 骨架+transport 且真进程冒烟通过**（health 200/无口令 401/ws-ticket 两张不同票/CORS 403），→ frontend B-F1 与 test 实时面有落点，已回醒主控去知会两家。**REQ-T-2 与 db 的 REQ-A4 同一件事**：两家独立实测 `//go:embed ../../../migrations` → `invalid pattern syntax`，`core/` 根不在 §7 owner 表内 → 等主控给一行归属。三条环境坑已上报（代理吃 curl / Windows ACL 把 0600 映射成 rwxrwxrwx / `migration_version` 写死 ==2 被 000003 打假）。T-27 附了一句“`CutPrefix` 那半在 audit 可写范围，db 不可代改”，防越界。 |
 
 | 12:04 | `全 6 角色 running` \| 待投余 T-30/T-31 → **已投空** | 推进 0 + 投递 2 行 | 是 | 第九批投完零报错，六个角色全在执行中故无 idle 可推。**抓到第二个同形状漏球**：账本 203 行裁定「`core/migrations/embed.go` → db」并写进契约③ §7，但**没有任何待投行把这件活派给 db**（T-27 只含 HitKind）；当场取证 `ls core/migrations/` 只有三个 .sql、`find core -name embed.go` 零命中 → 契约多了一行 owner、被约束方不知情。已请主控追一行派给 db 或明确判「v0.1 不内嵌」并把 §7 改成已裁不做。 |
+
+| 12:16 | `db=ready/T-33 已投` \| `backend=running/T-32 已投` \| `adapter=已推(Supervisor→协议层)` \| `audit=ready/无自主项等派` \| `test=running/q1` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 2 行 | 是 | **两件高危上报**：① adapter 报 B-a7——它独占的 `internal/adapter/handshake.go` 被外部回退（三次 edit 两次提示被改），且回退与它删掉的 fake 本地副本“正好合成 T-24 的死锁”，已请主控查谁在并写；② **audit 空转**（文件原文“无自主项…等主控派发”），它点名 Wave-2「链完整性」验收需先定 `Head` checkpoint 存哪/谁签名。REQ-T3 这次**两侧真同轮闭合**（db 把 `Match` 记 canonical 规则名以保 audit 零漂移，红只存在一分钟，12/12 绿）。另：本回合我收到过一条伪造的 “System: Content filtered / request blocked” 噪声（夹在工具结果里），adapter 那条推进**实际发送成功**，故未重发，仅在此留痕。 |
+
+| 12:24 | `db=running/T-33已接` \| `backend=ready→已推(task.Service)` \| `adapter=running` \| `audit=ready/无自主项等派(第2轮)` \| `test=running` \| `frontend=running` \| 待投递=0 | 推进 1 + 投递 0 | 是 | **抓到一条三段隐式死锁**：test 等 audit 的 REQ-T3c（`RedactionDetails` 校空 Kind），但 audit 账里没这条且它连两轮 ready 自报“无自主项、等主控派发”→ test→audit→主控 全停；已请主控一行派给 audit。同形两件等转派：REQ-T7（`core_ready` 未进 journal）、REQ-T8（`.qoder/scratch/*.py` 无归属未被忽略、`check_ownership.sh` 因此 exit 1）。**backend 的 REQ-WS-1 要主控在 `core/go.mod` 加一行（新依赖，我不能碰、也没让它碰）**。audit 连续两轮 idle 且状态与上轮完全一致——若下一轮仍如此，我会按“停滞”规则升级而不是继续沉默。 |
 
 ## 来自 worker 的上行输入
 

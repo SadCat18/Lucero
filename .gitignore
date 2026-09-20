@@ -29,3 +29,7 @@ Thumbs.db
 # .qoder/progress/*.md 与 orchestration.md 必须入库（账本 = Event Journal 前身，不可丢）
 .qoder/evidence/
 .scratch/
+# 主控的一次性打补丁脚本落点，与 .scratch/ 同类（12:0x 实测 upd.py/fix_t6.py 在此，未被上面两条匹配）
+.qoder/scratch/
+# 审计链头检查点与运行期锚点（ADR-018）：本地数据，入库会让"删行"被 diff 掩盖
+*.head

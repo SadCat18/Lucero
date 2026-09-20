@@ -3,7 +3,7 @@ TASK_ID: audit-permission
 STATUS: in_progress
 SCOPE: 权限判定、Approval 聚合与裁决、Temporary Grant、Audit 哈希链与敏感规则集、§9 绕审批门禁；不实现脱敏执行点，approvals/temporary_grants 的 SQL 只准出现在 internal/approval
 EVIDENCE_DIR: .qoder/evidence/audit/
-LAST_UPDATED: 2026-09-19T18:19+08:00
+LAST_UPDATED: 2026-09-20T12:03+08:00
 
 ## Objective
 
@@ -13,7 +13,8 @@ LAST_UPDATED: 2026-09-19T18:19+08:00
 
 ## Completion criteria
 
-- [x] `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test ./internal/audit/... ./internal/permission/... ./internal/approval/...` 通过（162 个 test/subtest PASS，0 FAIL；18:19:50 最后一次重跑，全仓 13 个包全 ok）
+- [x] `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test ./internal/audit/... ./internal/permission/... ./internal/approval/...` 通过（165 个 test/subtest PASS，0 FAIL；2026-09-20 11:33 最后一次重跑；全仓 14 个包中 13 ok，
+  唯一红的是 `cmd/core`——别的角色 11:31→11:33 之间正在写的 `main.go:184 undefined: filepath`，与我无关）
 - [x] 哈希链：改写、删除（含尾部删除）、乱序追加均被拒
 - [x] 正则任一编译失败 → `Validate()` 返回 error（fail-closed，测试证明）
 - [x] 脱敏：deny-key 命中后原值不出现；`vault://name` 完整保留；伪造 `sk-`/`ghp_` 喂入后落库结果与 Audit details 均无原值
@@ -54,13 +55,72 @@ LAST_UPDATED: 2026-09-19T18:19+08:00
 - Status: in_progress
 - Last verified action: 16:52 实跑 `go test -count=1` 三包 ok（**149 PASS / 0 FAIL**）+ 全仓 `go test ./...`
   11 个包全 ok（含新出现的 adapter/quota/session/test 包，无回归）+ grep 命中全在 internal/approval 下
-- Next action: 交主控验收 §3.1 落地（`Decide` 已是三返回值 + 风险默认），并等 Wave-2 的下一步派发；
-  我三包内**没有未阻塞的自主项**了。若主控点头，我可以替 backend 预置 `permission.Service` 的调用骨架
-  ——但那是 backend 的文件，需要明确授权才动。
+- Next action: 无自主项——REQ-T3 我这半已闭合。等主控派发；**若 Wave-2 要一条"链完整性"验收**，
+  现成可用的只有 `audit.VerifyChain(entries, Head{Seq,Hash})`，而 `Head` 必须由**链外**保管（DB 内任何一行都可被删），
+  这一点需要主控定"checkpoint 存哪儿/谁签名"，定了我再动。
+  （T-23 第 1 条驳回的"替 backend 预置骨架"已撤回，接口形状与错误语义改写进上面 Coordination。）
 - Verification: `go test -count=1 ./internal/{audit,permission,approval}/...` = 3 包 ok
   （18:19:50 = 162 PASS / 0 FAIL；18:21:08 复核仍绿），全仓 13 包 0 FAIL
 
 ## Completed
+
+### 第 10 轮（2026-09-20 11:56~12:03，接 T-28）
+
+44. **REQ-T3 我这半收尾完成**：db 已落 `HitKind`（`redact.go:87-92`），于是
+    `toAuditHits` 里那处 `strings.CutPrefix(h.Match, "key:")` 被删成直接复制 `h.Kind`，
+    `strings` import 随之消失。`grep -rn CutPrefix internal/approval/*.go` → **0 hits**。
+    两侧结构体现在逐字同形：`{Column; Kind HitKind; Match; Count}`。
+45. 新增跨包哨兵 `TestHitKindsAgreeAcrossPackages`：kind 是**跨包字符串转换**过去的，
+    所以断言 `audit.HitKey == db.HitKey` 且 `audit.HitPattern == db.HitPattern`。
+    变异验证：把 `audit.HitKey` 篡成 `"denykey"` → 该用例红
+    （`audit {denykey,pattern} and db {key,pattern} disagree`）。
+    **一条诚实的限制**：同一轮里"落库行的 kind 值"用例**没有**跟着红——因为写进去的值来自 db 那份常量，
+    audit 侧改字面只让命名不一致、不改数据。也就是说这条红是**命名哨兵**，不是数据哨兵；
+    数据侧的归因正确性仍由 `TestStoreRedactsSecretsBeforeTheyLand` 的 `"kind":"key"` 断言看着。
+46. **T-28② 窗口期处置收到**：不回填、不打标（回填=重算 `entry_hash`=伪造链），改为 Wave-2 验收前重建 dev DB。
+    我这侧**不需要任何改动**：三包所有真库用例都在 `t.TempDir()` 里从 `000001` 重新迁移
+    （`grep` 核对：approval / permission 两个夹具文件各只有 1 处建库点，全走 TempDir，无仓库内路径），
+    所以重建开发库不会影响任何一条测试，我的结果也不依赖那个 dev DB 的历史。
+47. **T-28③ policy CRUD 判不建，已按裁定不做**（我上一轮就是"不猜、等你点头"，现在答案是"不建"）。
+    `policy_created`/`policy_updated` 保留登记、无人发是**已知状态**；已从 Remaining 划掉，不再当缺口报。
+48. **REQ-A1 实测更新**：`cmd/core/main.go:109-110` 已是
+    `rules := audit.Rules(); db.InitRedaction(rules.DenyKeys, rules.Patterns, rules.Marker)`
+    ——**生产接线取的是 audit 的单一来源**，我原先担心的"cmd/core 可能传手抄列表"在事实上已关。
+    残余只剩"摊平后的三个参数无类型约束"。另实测 db 的测试手抄本（`touch_test.go:15 auditRules()`）
+    **今天与 `audit.Rules()` 逐字相同：25 keys / 8 patterns，差集为空**（用行级提取比对的，不是眼看）。
+    → 请 `test`/`db` 把这份手抄换成注入或跨包等值断言（`test/` 可同时 import 两包），否则它哪天漂移都没人报。
+
+### 第 9 轮（2026-09-20 11:19~11:33，接 T-23 三件事 + REQ-T3）
+
+40. **驳回已收**：不替 backend 写任何东西。`permission.Service` 的构造、四值 `Effect`、`Reason` 取值规则、
+    以及**错误语义 `(DENY, "", err) = 不知道、不是被拒绝`** 全部写进上面 Coordination，backend 自己接。
+41. **REQ-T3（audit 半）**：`audit.RedactionHit` 换成契约给的带标签形状 `{Column; Kind HitKind; Match; Count}`
+    + `HitKind ∈ {key, pattern}`，JSON 随之外变（`{"kind":"key","match":"apikey","count":1}`）。
+    我原先的双槽 `Key`/`Pattern` 一并删掉。**db 半未落地**（11:31 实测其结构无 `Kind`），
+    所以前缀猜测没被"顺手留着"而是**关进一个函数**：`toAuditHits` 是唯一 `CutPrefix("key:")` 的地方，
+    注释点名它必须被删、以及为什么不能拖（该串进 `entry_hash`，归因错位事后修不了）。
+42. **T-23 第 3 条（新用例）** `internal/approval/blocking_sweep_test.go`：
+    - `TestBlockingStateRegressions`：空=NONE、自己的 pending 阻塞、**别的 execution 读 NONE**、空 id 报错、
+      批准后解阻、再来一条 pending 又阻塞、**过期未 sweep 的 pending 既不阻塞也不放行**（回落到在案的 APPROVED）、
+      换新 handle 重开同一文件后答案一致（证明来自磁盘不是内存）。
+    - `TestSweepExpiredRegressions`：到期前不动、到期只翻该翻的（2 条事件 + 2 条审计 + version→2）、
+      **NULL expires_at 永不超期**、**已决行不被改判**、再 sweep 不产生第二个事件也不再取版本、
+      时钟推到很远仍不动无期限行、重开后 `BlockingState` 读到 `EXPIRED`。
+    - `TestApprovalWithoutExecutionIDIsInvisibleToEveryExecution`（§3 第 4 条专项）：先断言库里那行**真的是
+      `execution_id IS NULL`**（否则"通过"可能来自数据而不是逻辑），再对三个 execution id 逐个断言
+      `BlockingState=NONE` 且 `ForExecution` 空，加**阳性对照**（同一个 service 对绑定行必须读得出 PENDING），
+      再加**交叉一致性**：`st.ListByExecution` 的原始结果与 `SELECT id FROM approvals WHERE execution_id=?` 逐条对齐。
+43. **变异验证（这轮抓到我自己的测试有一个是虚的）**：
+    ① 去掉 service 侧的绑定复筛 → **没红**（SQL 还拦着）；② 去掉 SQL 的绑定条件 → **还是没红**（service 复筛兜住了）；
+    交叉校验最初比的是 `svc.ForExecution`（已过复筛）所以也一样没抓到——**这一条我当时报了"通过"其实不成立**。
+    改成直接比 **`st.ListByExecution` 原始输出** 后，同一个 SQL 变异立刻红：
+    `ListByExecution(exec-1) returned … bound to "" — the query is not binding`。
+    教训写进自述纪律：**两层防御会互相掩盖，交叉校验必须打在待验那层的原始输出上**，
+    并且"某处坏掉仍然绿"本身就是设计缺陷，不能靠"另一层有测试"含混过去。
+    ③ 默认整体放行 / 空 `Reason` / sweep 改判已决行 —— 三处都按预期红。
+
+**policy 事件**：`policy_created`/`policy_updated` 已在 catalog（`events.go:50-51`），但 `Decide` 是纯读判定、
+不发事件；要发它得先有人**写** `policy_rules`，全仓今天没有这条写路径。我没有按猜测建 policy CRUD（见 Coordination 待点头）。
 
 ### 第 8 轮（18:03~18:19，接 T-23：§3.1 风险默认）
 
@@ -239,7 +299,7 @@ LAST_UPDATED: 2026-09-19T18:19+08:00
 
 1. `internal/audit/redaction.go`（127 行）— `RedactionRules{DenyKeys,Patterns,Marker}` + `Rules()` 唯一导出面；
    `CanonicalKey()`、`IsVaultRef()`、`RedactionHit`/`RedactionDetails()`、`Validate()`。
-   **不含任何替换逻辑**（§2.1 要求）。规则覆盖：26 个 deny key + 8 条 pattern
+   **不含任何替换逻辑**（§2.1 要求）。规则覆盖：**25** 个 deny key + 8 条 pattern（12:03 数过；本行原写 26 是错的）
    （PEM / `gh[pousr]_` / `github_pat_` / `sk-` / Slack `xox*` / AWS `AKIA` / JWT 三段式 / `Bearer`）。
 2. `internal/audit/hashchain.go`（127 行）— `Entry`（对齐 `audit_entries` 列）、`ComputeEntryHash`、`Seal`、
    `VerifyChain`、`Head`/`Checkpoint`。哈希输入用**长度前缀**分帧，防止相邻字段之间挪字节不改总长的伪造。
@@ -367,6 +427,35 @@ LAST_UPDATED: 2026-09-19T18:19+08:00
   **(B)** 把 `permission.Engine.Default` 改成 `ALLOW`，改为"只对显式列出的高风险动作要求审批"。
   我倾向 (A)：(B) 会把"没配规则"这件事变成"全放开"，正是 ADR-011 想消掉的那种默认。
   选定后我这边都是一次小改 + 重跑切片。
+- **`permission.Service` 的形状与错误语义（T-23 第 1 条：我不动 backend 的文件，这里给全）**：
+  ```go
+  eff, why, err := perm.Decide(ctx, permission.Request{...})
+  ok, err := perm.CheckTemporaryGrant(ctx, principalID, scopeType, scopeID, action)
+  var _ permission.Service = (*permission.Engine)(nil)   // 编译期已钉住
+  ```
+  - **构造**：`permission.New(NewSQLiteSource(d), now)`，`now` 必须非 nil（传 nil 直接 panic，这是故意的：
+    没有时钟就没法判授权过期）。`Source` 只有三个读方法，Permission 不写任何表。
+  - **`eff` 四值**：`ALLOW` / `DENY` / `REQUIRE_APPROVAL` / `ALLOW_TEMPORARY`。
+  - **`why`（§3.1）**：命中规则=该 `policy_rules.id`；命中授权=`temporary_grants.id`；
+    紧急停止=`EMERGENCY_STOP`；走到默认=`DEFAULT_HIGH_RISK` / `DEFAULT_UNKNOWN_RISK` / `DEFAULT_ALLOW`。
+    **`err == nil` 时 `why` 一定非空**（有用例钉），所以调用方没有"不知道谁批的"这种状态。
+  - **错误语义（关键）**：`err != nil` 当且仅当**判定不了**（`PrincipalID`/`Action` 为空、
+    读不到 settings 的紧急停止位、读不到 policy_rules / temporary_grants、pattern 匹配不了）。
+    此时返回的 `eff` **恒为 `DENY`**，`why` 为 `""`。**约定：`(DENY, "", err)` 不是"被拒绝"，是"不知道"，
+    调用方不得当成 DENIED 记审计了事——要么修好数据源要么停下。** 真正的拒绝一定带非空 `why`。
+  - **不要绕过它**：任何"我先自己看一眼 approvals 表 / 我先按 action 猜个风险"都算 §9.2 违规；
+    默认策略已经内置（空 `policy_rules` 也能判），没有"策略表还没建所以先放行"的理由。
+- **REQ-T3 状态：audit 这一半已改完，db 那一半还没落地**。11:31 实测 `internal/platform/db/redact.go:87` 的
+  `RedactionHit` 仍是 `{Column, Match, Count}`、**无 `Kind`**。我已把 audit 侧改成契约给的新形状
+  （`{Column; Kind HitKind; Match; Count}`，`HitKind ∈ {key,pattern}`，JSON 也跟着变）。
+  唯一还在猜前缀的地方被隔离进 `approval.store_sqlite.go:toAuditHits` 一个函数、附注释点名它必须被删：
+  db 一给 `Kind`，那里就是 `Kind: h.Kind` 两行。**在它改掉之前，任何已落库的 audit 行都属于"归因可能错位且事后无法修正"
+  的窗口**（该串参与 `entry_hash`），所以这一条不要在 `000004` 之前用来做长期数据。`test` 的
+  `TestRedactionCountersAreSealedBeforeHash` 是护栏。
+- **policy 事件（T-23 末段）**：`policy_created`/`policy_updated` 我确认已在 catalog（`events.go:50-51`、已登记 `Registered`）。
+  但**`Decide` 不写策略、也不改策略**，它是纯读判定，没有可发的"策略变更事件"——要发这两个事件必须有人先能
+  **写 `policy_rules`**，而全仓今天没有这条写路径（`AggPolicy` 在 db 注册表里，但没人建行）。
+  我没有按猜测去建 policy CRUD：那是 Wave-3 Permission Engine 完整版的活。你点头我就写（约 60 行 + 用例，归我包内）。
 - **→ `backend`**：只能调 `approval.Service.BlockingState(executionID)`；`approvals` 表对你不可见。
   `BlockingState` 返回值域是 `PENDING / APPROVED / REJECTED / EXPIRED / CANCELLED / NONE`
   （`NONE` = 该 execution 没有绑定任何审批，可继续）。
@@ -510,26 +599,28 @@ LAST_UPDATED: 2026-09-19T18:19+08:00
 
 ## Recovery note
 
-- Interruption point: 真库链路 + Q6 语义同步完成（17:16 全绿，变异验证已做）。
-  6 项 Coordination 等回复：REQ-A1（InitRedaction 类型化）、REQ-A2（db 侧 vault:// 脱敏绕过，**仍未修**）、
-  REQ-A3（RedactionHit 两份形状）、REQ-A4（含⑤默认 Effect，决定垂直链能否跑通）、REQ-A5（§9 执行点接线）、
-  **REQ-A6/A7（新）**。B3 = 平台写路径缺口。
+- Interruption point: REQ-T3 我这半闭合（12:07:52 三包全绿）。
+  Coordination 现状（12:08 复核）：**已关** REQ-A2（db `isCleanVaultRef`）、REQ-A3（两侧 RedactionHit 同形）、
+  REQ-A4⑤（§3.1 裁定并已落地）、REQ-A7（Kind 字段已落，我这半已跟上）、B3（AggGrant + 000003）。
+  **仍开**：REQ-A6① `Tx` 无事务内读（我的链头与三处"先读再改"靠单写串行化 + seq 自检兜，能错但会回滚）；
+  REQ-A6② `principals` 不是聚合、没有 Create 路径（两份测试夹具因此直插）；
+  REQ-A5 §9 门禁的执行点（在 adapter/process 包，等它们接）；checkpoint 签名"Head 存哪儿/谁签"待裁；
+  REQ-A1 残余只是"摊平参数无类型约束"，生产接线已取 `audit.Rules()`。
 - **自述纪律（第 6 轮新增）**：本轮第一次出现"报告里有据可查的错话"（声称已删的变量其实还在）。
   规则改为：**凡是"我删掉了 / 我改过了"这类否定性声明，必须附一条 grep 或实跑输出**，没有就不写。
 - **流程账**：C2 指出的「先干活后建账」成立，本角色此后一律**先落进度文件再动代码**；
   同时留一条事实：本文件 16:13 已在盘上（17697 字节），16:20 主控复核时也在——违规在**顺序**，不在缺失。
-- First action after recovery: 做「垂直链切片」真库用例（见 Current checkpoint 的 Next action）：
-  种子 policy_rules → Decide 判出 → Request → Resolve(APPROVED+Temporary) → Decide 变 ALLOW_TEMPORARY →
-  SweepExpired 回默认；顺带把 `ponytail:` 三处"read pool + 串行化"注记的必要性用实测确认。先跑
+- First action after recovery: 先跑
   `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/audit/... ./internal/permission/... ./internal/approval/...`
-  确认仍绿（其他角色在并行改 `core/internal/`，`internal/session` 当前 vet 红，注意别把别人的编译错记成我的），
-  再看 B1 是否解除；解除则实现 `internal/approval/store_sqlite.go`（`approvals`/`temporary_grants` SQL 只能出现在这个包内），
-  配一个真库测试：建单 → 双击 Resolve → 断言 event_journal 只有 1 条 `approval_resolved`、
-  `audit_entries` 只有 1 条且 `VerifyChain` 通过。
+  确认仍绿（别的角色在并行改 `core/internal/`、`cmd/`、`api/`，红点要先归因再动手），
+  再看本文件 Blockers / Coordination 有没有被主控回话。我这边没有未阻塞的自主项。
+- 已闭合、不要再当缺口报的：三包规则/判定/聚合层、§9 门禁、真库 Store 与哈希链持久化、
+  `permission.Source` 读真库、垂直链切片、REQ-T3 带标签命中记录（两侧同形 + 跨包哨兵）。
 - 第 3 轮**已**有真库证据的事：`approvals`/`temporary_grants` 落库、`approval_requested`/`_resolved`/`_expired`
   事件与版本、`audit_entries` 哈希链持久化与校验、写入前脱敏 + 命中记录。
-- 仍**没有**证据、不得推断其存在的事：`audit_entries.signature` 签名（未实现）、
-  `grant_issued`/`grant_expired` 事件与 `revoked_at` 更新（B3/REQ-A6）、§9 门禁在 adapter 启动路径上的实际拦截
-  （我只交付了判定，执行点未接线）、§5.4/§5.5 的投影与 UNKNOWN 行为（属 backend）、
-  以及 `permission.Source` 读真库（`policy_rules`/`temporary_grants`/紧急停止位）——**我的权限链今天仍只在
-  假 Source 上验证过，规则行有没有被正确读出来尚未证明**。这是下一步动作，也是它唯一的缺口。
+- 仍**没有**证据、不得推断其存在的事：① `audit_entries.signature` 的 checkpoint 签名（未实现，且
+  "Head 存哪儿/谁签名"未裁定——**没有它，尾部删除仍检不出**，`VerifyChain` 只能证明链内自洽）；
+  ② §9 门禁在 adapter 启动路径上的实际拦截（我只交付判定与拒绝形状，执行点在别人包里）；
+  ③ §5.4/§5.5 的投影与 UNKNOWN 行为（属 backend，我只交付了 outcome 常量与 details 键约定）；
+  ④ `policy_rules` 的写路径（T-28③ 判不建，故策略表今天只能靠手工/夹具）。
+  任何"审计已防篡改"的说法在 ① 落地前都不成立。

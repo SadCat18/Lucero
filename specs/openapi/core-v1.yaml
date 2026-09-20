@@ -1,0 +1,1400 @@
+# specs/openapi/core-v1.yaml
+#
+# 机器可读投影 —— owner: frontend（契约③ §6.1）
+# 权威来源：specs/api-contract-v0.1.md §2/§3/§5（REST + WS 与全局约定）
+#           specs/events/event-contract-v0.1.md §2/§6（信封与事件目录）
+#           specs/adapter-protocol/adapter-protocol-v0.1.md §5/§7（三态投递、额度 UNKNOWN）
+# 规则：本文件与契约③ 不一致时以契约③ 为准（§6.1），谁先发现谁写 Coordination。
+# 资源字段名对齐 core/migrations/000001_core_schema.sql 的列名（该文件冻结，只读投影，不修改）。
+# WS 帧（§5）OpenAPI 3.1 无标准表达方式，故放在根级扩展 `x-websocket-frames`，帧类型在 components.schemas。
+openapi: 3.1.0
+info:
+  title: Lucero Core API
+  version: 1.0.0-draft
+  description: |
+    单用户本地控制平面。只绑 127.0.0.1；除 `/api/v1/health` 外全部需要 Bearer（`core.endpoint` 里的 core-token）。
+    写操作必须带 `X-Lucero-Principal: local-user`，缺失即 401。
+    `/api/v1` 前缀冻结：只可增加字段与端点；改名/删字段/改语义走 `/api/v2` + ADR。
+    **UNKNOWN 是合法状态**：可空数值一律 `null` + 伴随 `confidence`；任何端点都不得用 `0`/`false`/`"offline"` 表示"不知道"。
+servers:
+  - url: http://127.0.0.1:{port}
+    description: 'port 由 Core 选定并写入数据目录下的 core.endpoint（host:port + token）'
+    variables:
+      port:
+        default: "0"
+security:
+  - bearerAuth: []
+tags:
+  - name: core
+  - name: project
+  - name: adapter
+  - name: session
+  - name: task
+  - name: execution
+  - name: approval
+  - name: quota
+  - name: notification
+  - name: search
+
+x-websocket-frames:
+  # 契约③ §5 + §2.1 + F-9/F-16/F-17 裁定（2026-09-20 12:33）。握手不吃 Authorization，靠一次性短票。
+  endpoint: /ws/v1/events
+  handshake: 'ticket 必填（§2.1：从 POST /api/v1/ws-ticket 换，单次使用、30s、校验即作废，复用被拒并 close 1008）'
+  cursor: seq
+  order: 'F-16：客户端连上后必须先发 client_frames.hello 声明游标，服务端才开始回控制帧；?from_seq= 只是初值，客户端 hello 优先。§5 原文"连接后第一帧 hello"读起来像服务端先说，属歧义，以本条为准。'
+  cursor-default: '带游标 → 补发 seq > from_seq 的事件；不带 → 只收此后新事件并回 hello_ack{server_seq} 明确起点。禁止"缺省即全量重放"（journal 可能很大，一次重连 = 自己 DDOS 自己）。'
+  known-gap: 'F-17：journal 为空时 Core 既不推事件也不回 hello_ack，客户端会停在"无首帧"状态（面板表现为 connecting，实为等待）。解除条件 = backend 让空清单分支也回 hello_ack。客户端防御已做：server_seq 低于游标不回退。'
+  client_frames:
+    hello:
+      description: 客户端连上后的第一帧（F-16）。from_seq 省略 = 只要此后新事件
+      $ref: '#/components/schemas/WsClientHello'
+  frames:
+    hello:
+      description: 带游标连接时的首帧回显（§5 原文形态）。客户端把它当作"已就绪"信号，且不据此改游标
+      $ref: '#/components/schemas/WsHello'
+    hello_ack:
+      description: 不带游标连接时的首帧；客户端必须把 server_seq 记成新游标，否则下次重连又落在旧位置
+      $ref: '#/components/schemas/WsHelloAck'
+    event:
+      description: '{"type":"event","data":<event_journal 一行>}。推送只发生在 DB 事务提交之后（ADR-008）'
+      $ref: '#/components/schemas/WsEventFrame'
+    resync_required:
+      description: journal 已裁剪到无法补发。客户端必须回去走 REST 全量拉，不得用部分事件流假装状态完整
+      $ref: '#/components/schemas/WsResyncRequired'
+    ping:
+      description: 心跳，**故意不带 event_id**；UI 用它区分"活着"与"卡住"，不得伪造空事件
+      $ref: '#/components/schemas/WsPing'
+
+paths:
+  # ── core ────────────────────────────────────────────────────────────────
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      tags: [core]
+      security: []
+      summary: 唯一免鉴权端点
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        "503": { $ref: '#/components/responses/Error' }
+
+  /api/v1/ws-ticket:
+    post:
+      operationId: createWsTicket
+      tags: [core]
+      summary: 换一张一次性短票给 WS 握手（§2.1 REQ-F-2 裁定）
+      description: |
+        浏览器不能给 WebSocket 握手带自定义头，所以 /ws/v1/events 不接受 Authorization 头，改走本端点换票：
+        `POST /api/v1/ws-ticket` → `{ticket, expires_in: 30}` → `/ws/v1/events?ticket=…`。
+        票单次使用、30 秒过期、服务端校验后立即作废、不入库明文 —— **每次（重）连都要新一张**。
+        这不是"WS 免鉴权"。
+        T-30 裁定：本端点**免 `X-Lucero-Principal`**（它不改业务状态，只是凭证签发），但**仍必须带 Bearer**。
+        也故意不吃 `Idempotency-Key`：票若被幂等缓存，重放会交出已作废的票（§2 豁免表唯一一条，
+        反向用例 = 同一请求两次必须拿到两张不同有效票）。
+      responses:
+        "200":
+          description: 成功（实测 Core 返回 200 而非 201）
+          content: { application/json: { schema: { $ref: '#/components/schemas/WsTicket' } } }
+        "401": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── project ─────────────────────────────────────────────────────────────
+  /api/v1/projects:
+    post:
+      operationId: createProject
+      tags: [project]
+      summary: 建项目；canonicalize 后的 path 冲突返回 409
+      description: 有副作用的 POST → `Idempotency-Key` 必填（契约③ §2）。成功产 `project_created`。
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateProjectRequest' } } }
+      responses:
+        "201":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Project' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+    get:
+      operationId: listProjects
+      tags: [project]
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProjectList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/projects/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getProject
+      tags: [project]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Project' } } }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateProject
+      tags: [project]
+      summary: 永不改状态（状态变更必须走 `:verb`）
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UpdateProjectRequest' } } }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Project' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── adapter ─────────────────────────────────────────────────────────────
+  /api/v1/adapters:
+    get:
+      operationId: listAdapters
+      tags: [adapter]
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/AdapterList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/adapters/{key}/probe:
+    post:
+      operationId: probeAdapter
+      tags: [adapter]
+      summary: 触发握手 + 能力核定（有副作用 → Idempotency-Key）
+      description: 路径参数 `key` 是 `adapter_key`（非实例 id）。产 `adapter_registered` / `adapter_health_changed`。
+      parameters: [{ $ref: '#/components/parameters/Key' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/AdapterInstance' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/adapters/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getAdapter
+      tags: [adapter]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/AdapterInstance' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/adapters/{id}/capabilities:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: listAdapterCapabilities
+      tags: [adapter]
+      summary: 逐能力等级 + effective_backend + last_verified_at
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/AdapterCapabilityList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/adapters/{id}/sessions:discover:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: discoverAdapterSessions
+      tags: [session]
+      summary: 从 Provider 拉会话清单，按 remote_session_id 去重 upsert 本地行
+      description: |
+        幂等：重复 discover 不产生新行，只返回同一批 session id。产 `session_discovered`。
+        返回体即"发现的 session id 列表"，面板拿它再去 :manage / :sync（§3 17:35 裁定，REQ-F-7）。
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/DiscoveredSessionList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/models:
+    get:
+      operationId: listModels
+      tags: [adapter]
+      parameters:
+        - name: adapter
+          in: query
+          description: adapter_instance_id 过滤
+          schema: { type: string }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/ModelList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── session ─────────────────────────────────────────────────────────────
+  /api/v1/sessions:
+    get:
+      operationId: listSessions
+      tags: [session]
+      parameters:
+        - name: project
+          in: query
+          description: project_id 过滤（F-8 批准）
+          schema: { type: string }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/SessionList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/sessions/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getSession
+      tags: [session]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/sessions/{id}:manage:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: manageSession
+      tags: [session]
+      summary: 置 managed（受管理会话才开同步与通知）；产 `session_managed`
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ManageSessionRequest' } } }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/sessions/{id}/messages:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: listSessionMessages
+      tags: [session]
+      parameters:
+        - name: after_seq
+          in: query
+          description: 增量游标，对应 messages.sequence_no
+          schema: { type: integer, format: int64 }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/MessageList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/sessions/{id}:sync:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: syncSession
+      tags: [session]
+      summary: 显式增量同步；返回 sync_state + next_cursor；产 `session_synced`
+      description: "`sync_state: UNKNOWN` 不得折成 Offline/Failed。"
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/SyncResult' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── task ────────────────────────────────────────────────────────────────
+  /api/v1/tasks:
+    post:
+      operationId: createTask
+      tags: [task]
+      summary: 建任务；`Idempotency-Key` 强制（契约① §8 高风险写）
+      description: 命中已完成记录时返回首次响应，不重放副作用、不产生新事件。产 `task_created`。
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateTaskRequest' } } }
+      responses:
+        "201":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        default: { $ref: '#/components/responses/Error' }
+    get:
+      operationId: listTasks
+      tags: [task]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TaskStatus' }
+        - name: project
+          in: query
+          schema: { type: string }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/TaskList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getTask
+      tags: [task]
+      summary: 单任务详情（F-8 批准；链上 accept 前用它取最新 version）
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateTask
+      tags: [task]
+      summary: 只允许 priority/title/description/mode；不改状态
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UpdateTaskRequest' } } }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:queue:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: queueTask
+      tags: [task]
+      summary: "状态动作（custom verb，不硬套 REST）：CREATED → QUEUED"
+      description: 产 `task_queued`，并触发调度 → `execution_created` → `task_preparing`。矩阵外的迁移按 §5 拒绝。
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:pause:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: pauseTask
+      tags: [task]
+      description: 产 `task_paused`
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReasonRequest' } } }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:resume:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: resumeTask
+      tags: [task]
+      description: 产 `task_resumed`
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:cancel:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: cancelTask
+      tags: [task]
+      description: 产 `task_cancelled`（Audit ✓）
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReasonRequest' } } }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:accept:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: acceptTask
+      tags: [task]
+      summary: 链上最后一步 User Accept → ACCEPTED（终态）
+      description: 产 `task_accepted`（Audit ✓）。`AGENT_COMPLETED != ACCEPTED`。
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/tasks/{id}:transfer:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: transferTask
+      tags: [task]
+      summary: 建 Handoff
+      description: 产 `task_transferring` + `handoff_created`。
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TransferRequest' } } }
+      responses:
+        "201":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Handoff' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── execution ───────────────────────────────────────────────────────────
+  /api/v1/executions:
+    get:
+      operationId: listExecutions
+      tags: [execution]
+      summary: 该任务全部 Execution（含 attempt_no/trigger_type/predecessor）
+      parameters:
+        - name: task_id
+          in: query
+          required: true
+          schema: { type: string }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExecutionList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/executions/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getExecution
+      tags: [execution]
+      summary: 含三份快照：model / permission / environment
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Execution' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/executions/{id}/output:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getExecutionOutput
+      tags: [execution]
+      summary: 流式批次（读 execution_output_chunks，非事件）
+      description: |
+        收到 `execution_output_flushed` 后用它补拉。注意 delta 级输出**不进 event_journal**（契约② §6.3），
+        所以这是面板拿 token 级内容的唯一已定义途径（见 REQ-F-5）。
+      parameters:
+        - name: after_seq
+          in: query
+          description: execution_output_chunks.sequence_no
+          schema: { type: integer, format: int64 }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/OutputChunkList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/executions/{id}:cancel:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: cancelExecution
+      tags: [execution]
+      summary: 中止当前生成（映射 session/stop）
+      description: Adapter 不支持时返回 **501 而非假成功**。产 `execution_cancelled`。
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Execution' } } }
+        "501":
+          description: 该 Adapter 不支持 stop —— 显式失败，不得伪装成已中止
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/executions/{id}/send:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: sendExecutionMessage
+      tags: [execution]
+      summary: 发消息（映射 session/send，带三态 delivery）
+      description: |
+        链上 Send Message 一步；高风险写 → `Idempotency-Key` 必填。
+        产 `execution_started` → `task_running` → `message_recorded`。
+        三态：`start_now` 立即开一轮 / `guide` 当前轮中转插话 / `queue` 排队。
+        不支持某态时必须显式返回 `DELIVERY_MODE_UNSUPPORTED`，严禁降级成 queue 却报告"按你说的做了"。
+        本端点未出现在契约③ §3 端点表（只出现在 §4）→ REQ-F-1。
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SendMessageRequest' } } }
+      responses:
+        "202":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/SendResult' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── approval ────────────────────────────────────────────────────────────
+  /api/v1/approvals:
+    get:
+      operationId: listApprovals
+      tags: [approval]
+      parameters:
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ApprovalState' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/approvals/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getApproval
+      tags: [approval]
+      summary: 单审批详情（F-8 批准）
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Approval' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/approvals/{id}:resolve:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: resolveApproval
+      tags: [approval]
+      summary: 幂等决议（同 Idempotency-Key 重放返回首次响应）
+      description: |
+        产 `approval_resolved` (+`grant_issued`) → `execution_approval_resolved` → `task_running`。
+        面板只发决议，**不得在 UI 判"该不该批"**（裁决权在 Core 的 Permission/Approval Engine）。
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ResolveApprovalRequest' } } }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Approval' } } }
+        "409": { $ref: '#/components/responses/Error' }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── quota ───────────────────────────────────────────────────────────────
+  /api/v1/quota:
+    get:
+      operationId: getQuota
+      tags: [quota]
+      summary: 观测值 + observation_kind + confidence
+      description: |
+        **UNKNOWN ≠ 0**：整个读不到时 `observations: []` 且 `overall_confidence: UNKNOWN`。
+        任一字段取不到即 `null` + 降低 `confidence`；面板必须显示"未知"。
+      parameters:
+        - name: adapter
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/QuotaResponse' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── notification ────────────────────────────────────────────────────────
+  /api/v1/notifications:
+    get:
+      operationId: listNotifications
+      tags: [notification]
+      parameters:
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/NotificationState' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/NotificationList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/notifications/{id}:read:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: readNotification
+      tags: [notification]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Notification' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  /api/v1/notifications/{id}:handle:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      operationId: handleNotification
+      tags: [notification]
+      description: 产 `notification_handled`
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/Notification' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+  # ── search ──────────────────────────────────────────────────────────────
+  /api/v1/search:
+    get:
+      operationId: search
+      tags: [search]
+      summary: FTS5；返回命中 + 片段 + 上下文 id
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: scope
+          in: query
+          description: 逗号分隔，例 `messages,tasks`
+          schema: { type: string }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: 成功
+          content: { application/json: { schema: { $ref: '#/components/schemas/SearchList' } } }
+        default: { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 共享口令 core-token，来自数据目录下 `core.endpoint`。防的是本机任意进程，不是外网。
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: 聚合根 UUIDv7
+      schema: { type: string }
+    Key:
+      name: key
+      in: path
+      required: true
+      description: adapter_key（probe 按 key 寻址，非实例 id）
+      schema: { type: string }
+    Cursor:
+      name: cursor
+      in: query
+      description: 不透明游标；禁止 offset 分页
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 50, minimum: 1 }
+    Principal:
+      name: X-Lucero-Principal
+      in: header
+      required: true
+      description: 写操作必填，允许值仅 `local-user`；缺失即 401。`system`/adapter principal 只能由 Core 内部产生。
+      schema: { type: string, enum: [local-user] }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 有副作用的 POST 必填；命中已完成记录时返回首次响应，不重放副作用
+      schema: { type: string }
+    IfMatch:
+      name: If-Match
+      in: header
+      description: 聚合版本号（ADR-017 的 version 列）；不符 → 409 version_conflict
+      schema: { type: integer, format: int64 }
+  responses:
+    Error:
+      description: 统一错误体（契约③ §2）。`code` 的取值集合契约② 尚未收口 → REQ-F-4。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  schemas:
+    # ── 基础类型 ──────────────────────────────────────────────────────────
+    Timestamp:
+      type: integer
+      format: int64
+      description: Unix 毫秒整数。一律不返回 RFC3339 字符串。
+    NullableTimestamp:
+      type: [integer, "null"]
+      format: int64
+    JsonMap:
+      type: object
+      description: |
+        数据库里的 `*_json` 列。F-6 裁定：响应里一律是**已解码对象**，Core 在边界解一次，UI 不再解第二遍
+        （多一道字符串解析就多一道绕过脱敏与校验的缝隙）。
+        任何取值都不得含 secret 明文，只允许 `vault://` 引用。
+      additionalProperties: true
+    Confidence:
+      type: string
+      description: UNKNOWN 是合法值，且不得被折成确定值
+      enum: [HIGH, MEDIUM, LOW, UNKNOWN]
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string }
+            retryable: { type: boolean }
+            details: { $ref: '#/components/schemas/JsonMap' }
+    ErrorCode:
+      type: string
+      description: '契约② §15.2 的 HTTP 面错误码：闭集（§15 明写"命名分裂是故意的"，Adapter 层大写蛇形不得出现在这里，也不得放开成 free string）。后 4 条是 Core transport 自有码（实测自 api/http/handler.go 的 writeError），§15.2 尚未收编 → REQ-F-14；与 version_conflict 同类，HTTP 层专有、不经 Adapter。映射：protocol_not_initialized/capability_unavailable=503、protocol_version_mismatch=426、write_entry_none=405、delivery_mode_unsupported=422、local_data_unavailable/cancelled/version_conflict=409、session_not_found=404、auth_required/unauthorized=401、rate_limited=429、dangerous_flag_refused/origin_not_allowed=403、timeout=504、provider_error=502、internal=500、method_not_allowed=405、not_implemented=501。'
+      enum: [protocol_not_initialized, protocol_version_mismatch, capability_unavailable,
+             write_entry_none, delivery_mode_unsupported, local_data_unavailable, session_not_found,
+             auth_required, rate_limited, dangerous_flag_refused, cancelled, timeout, provider_error,
+             internal, version_conflict,
+             unauthorized, origin_not_allowed, method_not_allowed, not_implemented]
+    CursorPage:
+      type: object
+      required: [next_cursor]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+          description: 无更多数据时为 null，不是空字符串
+    # ── 枚举（对齐 000001 的 CHECK 与契约① §5）────────────────────────────
+    ProjectStatus: { type: string, enum: [ACTIVE, ARCHIVED, UNAVAILABLE, UNKNOWN] }
+    AdapterHealth: { type: string, enum: [UNKNOWN, STARTING, HEALTHY, DEGRADED, UNAVAILABLE, STOPPED] }
+    CapabilityHealth: { type: string, enum: [UNKNOWN, HEALTHY, DEGRADED, UNAVAILABLE] }
+    SupportLevel:
+      type: string
+      enum: [NATIVE, COMPATIBLE, CLI, LOCAL_DATA, UI_AUTOMATION, READ_ONLY, EXPERIMENTAL, UNSUPPORTED]
+    ModelAvailability: { type: string, enum: [AVAILABLE, UNAVAILABLE, DEGRADED, UNKNOWN] }
+    SyncState:
+      type: string
+      description: UNKNOWN 不得折成 UNAVAILABLE
+      enum: [UNKNOWN, SYNCED, SYNCING, LOCAL_AHEAD, REMOTE_AHEAD, CONFLICT, DEGRADED, UNAVAILABLE]
+    TaskPriority: { type: string, enum: [LOW, NORMAL, HIGH, CRITICAL] }
+    RiskLevel: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL, UNKNOWN] }
+    TaskStatus:
+      type: string
+      description: |
+        契约① §5.1 的状态机**只在 Core 里裁决**；面板只做投影。
+        AGENT_COMPLETED != ACCEPTED；UNKNOWN 不得显示成 FAILED/0/Offline。
+      enum: [CREATED, QUEUED, PREPARING, RUNNING, WAITING_APPROVAL, WAITING_INPUT, BLOCKED, PAUSED,
+             TRANSFERRING, AGENT_COMPLETED, VERIFYING, WAITING_ACCEPTANCE, ACCEPTED, FAILED,
+             CANCELLED, INTERRUPTED, UNKNOWN]
+    ExecutionStatus:
+      type: string
+      enum: [CREATED, STARTING, RUNNING, WAITING_APPROVAL, WAITING_INPUT, PAUSED, TRANSFERRING,
+             SUCCEEDED, FAILED, CANCELLED, INTERRUPTED, UNKNOWN]
+    ExecutionTriggerType:
+      type: string
+      enum: [INITIAL, RETRY, HANDOFF, RESUME, MANUAL_SWITCH, AUTO_SWITCH, REVIEW, RECOVERY]
+    ApprovalState: { type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED] }
+    NotificationState: { type: string, enum: [UNREAD, READ, PENDING, HANDLED, IGNORED, EXPIRED] }
+    NotificationPriority: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+    DeliveryMode:
+      type: string
+      description: 契约② §5 三态一等原语
+      enum: [start_now, guide, queue]
+    OutputChannel: { type: string, enum: [ASSISTANT, STDOUT, STDERR, TOOL, STATUS] }
+    QuotaType: { type: string, enum: [PERCENT, CREDITS, TOKENS, REQUESTS, CURRENCY, TIME_WINDOW, CUSTOM] }
+    ObservationKind: { type: string, enum: [OBSERVED, ESTIMATED] }
+    HandoffState:
+      type: string
+      enum: [CREATED, PREPARING, READY, STARTING_TARGET, COMPLETED, FAILED, CANCELLED]
+    EventType:
+      type: string
+      description: 契约① §6 事件目录 v0.1 的完整投影。目录外的 event_type 属 P0（禁止事项 1）。
+      enum: [
+        project_created, project_archived,
+        adapter_registered, adapter_health_changed, adapter_downgraded, adapter_restart_exhausted,
+        adapter_capability_verified,
+        model_discovered,
+        session_discovered, session_managed, session_synced,
+        message_recorded,
+        task_created, task_queued, task_preparing, task_running, task_waiting_approval,
+        task_agent_completed, task_verifying, task_waiting_acceptance, task_accepted, task_failed,
+        task_cancelled, task_interrupted, task_paused, task_blocked, task_resumed, task_transferring,
+        task_state_corrected,
+        execution_created, execution_started, execution_output_flushed, execution_paused,
+        execution_resumed, execution_approval_requested, execution_approval_resolved,
+        execution_cancelled, execution_failed, execution_succeeded, execution_interrupted,
+        approval_requested, approval_resolved, approval_expired, approval_cancelled,
+        grant_issued, grant_revoked, grant_expired,
+        quota_observed,
+        notification_created, notification_handled,
+        handoff_created, handoff_ready, handoff_completed, handoff_failed,
+        process_started, process_exited, process_crashed,
+        core_ready, core_shutdown
+      ]
+    # ── 资源 ──────────────────────────────────────────────────────────────
+    Health:
+      type: object
+      required: [state, ready]
+      properties:
+        state:
+          type: string
+          description: 'T-30 裁定词表，闭集；没有 DEGRADED（降级属于 adapter/能力面，不是 Core 生命周期）。migration 失败时 Core 不得进入 READY。'
+          enum: [BOOTING, READY, STOPPING, STOPPED, UNKNOWN]
+        version:
+          type: [string, "null"]
+          description: '实测 Core 返回 "0.1.0-dev"（字符串）'
+        migration_version:
+          type: [integer, "null"]
+          description: '实测 Core 返回整数 3（= schema_migrations.version）；原先投影成字符串是错的，按 §6.1 以 handler 实测为准'
+        ready:
+          type: boolean
+          description: 前端该看的权威闸门（state==READY 才 true）
+    Project:
+      type: object
+      required: [id, name, status, version, created_at, updated_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        canonical_path: { type: [string, "null"] }
+        project_type: { type: string }
+        status: { $ref: '#/components/schemas/ProjectStatus' }
+        trust_domain_id: { type: [string, "null"] }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+        version: { type: integer, format: int64 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        archived_at: { $ref: '#/components/schemas/NullableTimestamp' }
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        canonical_path: { type: [string, "null"] }
+        project_type: { type: string }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+    UpdateProjectRequest:
+      type: object
+      description: 只允许非状态字段；改状态必须走 `:verb`
+      properties:
+        name: { type: string }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+    AdapterInstance:
+      type: object
+      required: [id, adapter_key, display_name, health, enabled]
+      properties:
+        id: { type: string }
+        adapter_key: { type: string }
+        display_name: { type: string }
+        adapter_version: { type: [string, "null"] }
+        protocol_version: { type: [string, "null"] }
+        software_version: { type: [string, "null"] }
+        enabled: { type: boolean }
+        health:
+          allOf: [{ $ref: '#/components/schemas/AdapterHealth' }]
+          description: UNKNOWN ≠ STOPPED/UNAVAILABLE
+        effective_backend: { type: [string, "null"] }
+        last_heartbeat_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        last_healthcheck_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+        version: { type: integer, format: int64 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    AdapterCapability:
+      type: object
+      required: [capability_name, support_level, health]
+      properties:
+        id: { type: string }
+        adapter_instance_id: { type: string }
+        capability_name: { type: string }
+        support_level: { $ref: '#/components/schemas/SupportLevel' }
+        effective_backend: { type: [string, "null"] }
+        health: { $ref: '#/components/schemas/CapabilityHealth' }
+        last_verified_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+    Model:
+      type: object
+      required: [id, remote_model_id, canonical_key, display_name, availability]
+      properties:
+        id: { type: string }
+        adapter_instance_id: { type: string }
+        remote_model_id: { type: string }
+        canonical_key: { type: string }
+        display_name: { type: string }
+        availability: { $ref: '#/components/schemas/ModelAvailability' }
+        capabilities: { $ref: '#/components/schemas/JsonMap' }
+        parameter_schema: { $ref: '#/components/schemas/JsonMap' }
+        provider_raw:
+          allOf: [{ $ref: '#/components/schemas/JsonMap' }]
+          description: 归一化字段必须同时可取到原始值（契约③ §2「原始数据」）
+        discovered_at: { $ref: '#/components/schemas/Timestamp' }
+        last_seen_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        version: { type: integer, format: int64 }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    Session:
+      type: object
+      required: [id, adapter_instance_id, managed, sync_state, state_confidence]
+      properties:
+        id: { type: string }
+        adapter_instance_id: { type: string }
+        project_id: { type: [string, "null"] }
+        remote_session_id: { type: [string, "null"] }
+        title: { type: [string, "null"] }
+        managed: { type: boolean }
+        sync_state:
+          allOf: [{ $ref: '#/components/schemas/SyncState' }]
+          description: UNKNOWN 不得折成 Offline/Failed
+        sync_cursor: { type: [string, "null"] }
+        remote_revision: { type: [string, "null"] }
+        state_confidence: { $ref: '#/components/schemas/Confidence' }
+        provider_status_raw: { $ref: '#/components/schemas/JsonMap' }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+        last_message_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        last_synced_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        version: { type: integer, format: int64 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        archived_at: { $ref: '#/components/schemas/NullableTimestamp' }
+    WsTicket:
+      type: object
+      required: [ticket, expires_in]
+      properties:
+        ticket: { type: string, description: '单次使用、30 秒过期；不得入库明文、不得写日志' }
+        expires_in: { type: integer, description: 秒 }
+    DiscoveredSession:
+      type: object
+      required: [session_id, remote_session_id]
+      properties:
+        session_id: { type: string, description: 本地行 UUIDv7（upsert 后的结果） }
+        remote_session_id: { type: string }
+    DiscoveredSessionList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DiscoveredSession' } }
+    ManageSessionRequest:
+      type: object
+      required: [managed]
+      properties:
+        managed: { type: boolean }
+        project_id: { type: [string, "null"] }
+    SyncResult:
+      type: object
+      required: [sync_state, next_cursor]
+      properties:
+        sync_state: { $ref: '#/components/schemas/SyncState' }
+        next_cursor: { type: [string, "null"] }
+        added_messages: { type: integer }
+        state_confidence: { $ref: '#/components/schemas/Confidence' }
+    Message:
+      type: object
+      required: [id, session_id, role, kind, created_at]
+      properties:
+        id: { type: string }
+        session_id: { type: string }
+        remote_message_id: { type: [string, "null"] }
+        role: { type: string, enum: [USER, ASSISTANT, SYSTEM, TOOL] }
+        kind: { type: string, enum: [MESSAGE, TOOL_CALL, TOOL_RESULT, STATUS, SUMMARY] }
+        sequence_no: { type: [integer, "null"], format: int64 }
+        text_content: { type: [string, "null"] }
+        content: { $ref: '#/components/schemas/JsonMap' }
+        provider_raw: { $ref: '#/components/schemas/JsonMap' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        synced_at: { $ref: '#/components/schemas/NullableTimestamp' }
+    Task:
+      type: object
+      required: [id, title, status, priority, risk_level, mode, version, created_at, updated_at]
+      properties:
+        id: { type: string }
+        project_id: { type: [string, "null"] }
+        parent_task_id: { type: [string, "null"] }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        task_type: { type: string }
+        mode: { type: string }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        risk_level: { $ref: '#/components/schemas/RiskLevel' }
+        requested_by: { type: [string, "null"] }
+        budget: { $ref: '#/components/schemas/JsonMap' }
+        policy_snapshot: { $ref: '#/components/schemas/JsonMap' }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+        version:
+          type: integer
+          format: int64
+          description: '变更请求回带 `If-Match: <version>`'
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        accepted_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        archived_at: { $ref: '#/components/schemas/NullableTimestamp' }
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        description: { type: [string, "null"] }
+        project_id: { type: [string, "null"] }
+        task_type: { type: string }
+        mode: { type: string }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        session_id: { type: [string, "null"] }
+        metadata: { $ref: '#/components/schemas/JsonMap' }
+    UpdateTaskRequest:
+      type: object
+      description: 只允许 priority/title/description/mode
+      properties:
+        title: { type: string }
+        description: { type: [string, "null"] }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        mode: { type: string }
+    ReasonRequest:
+      type: object
+      properties:
+        reason: { type: [string, "null"] }
+    TransferRequest:
+      type: object
+      required: [target_adapter]
+      properties:
+        target_adapter: { type: string }
+        target_session: { type: [string, "null"] }
+        reason: { type: [string, "null"] }
+    Handoff:
+      type: object
+      required: [id, task_id, source_execution_id, state]
+      properties:
+        id: { type: string }
+        task_id: { type: string }
+        source_execution_id: { type: string }
+        target_adapter_instance_id: { type: string }
+        target_session_id: { type: [string, "null"] }
+        target_execution_id: { type: [string, "null"] }
+        reason: { type: [string, "null"] }
+        state: { $ref: '#/components/schemas/HandoffState' }
+        package_sha256: { type: [string, "null"] }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        completed_at: { $ref: '#/components/schemas/NullableTimestamp' }
+    Execution:
+      type: object
+      required: [id, task_id, status, attempt_no, trigger_type, state_confidence, version]
+      properties:
+        id: { type: string }
+        task_id: { type: string }
+        adapter_instance_id: { type: string }
+        session_id: { type: [string, "null"] }
+        model_id: { type: [string, "null"] }
+        predecessor_execution_id: { type: [string, "null"] }
+        attempt_no: { type: integer, minimum: 1 }
+        trigger_type: { $ref: '#/components/schemas/ExecutionTriggerType' }
+        status: { $ref: '#/components/schemas/ExecutionStatus' }
+        state_confidence: { $ref: '#/components/schemas/Confidence' }
+        provider_execution_id: { type: [string, "null"] }
+        model_snapshot: { $ref: '#/components/schemas/JsonMap' }
+        permission_snapshot: { $ref: '#/components/schemas/JsonMap' }
+        environment_snapshot: { $ref: '#/components/schemas/JsonMap' }
+        result_code: { type: [string, "null"] }
+        error_code: { type: [string, "null"] }
+        error_message: { type: [string, "null"] }
+        started_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        heartbeat_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        finished_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        version: { type: integer, format: int64 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    SendMessageRequest:
+      type: object
+      description: §3（18:03 补）逐字：body {text, delivery, attachments?}。model_id 不在 §3 的 body 里，故不投影。
+      required: [text, delivery]
+      properties:
+        text: { type: string }
+        delivery: { $ref: '#/components/schemas/DeliveryMode' }
+        attachments:
+          type: array
+          description: 附件 id 列表。§3 未列上传/取附件的端点 → REQ-F-13
+          items: { type: string }
+    SendResult:
+      type: object
+      required: [delivery, accepted]
+      properties:
+        delivery:
+          allOf: [{ $ref: '#/components/schemas/DeliveryMode' }]
+          description: 实际生效的态；不支持时必须显式报错而不是静默降级
+        accepted: { type: boolean }
+        message_id: { type: [string, "null"] }
+        execution_id: { type: [string, "null"] }
+    OutputChunk:
+      type: object
+      required: [sequence_no, channel, content, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        execution_id: { type: string }
+        sequence_no: { type: integer, format: int64 }
+        channel: { $ref: '#/components/schemas/OutputChannel' }
+        content: { type: string }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    Approval:
+      type: object
+      required: [id, approval_type, action, state, risk_level, requested_at]
+      properties:
+        id: { type: string }
+        task_id: { type: [string, "null"] }
+        execution_id: { type: [string, "null"] }
+        session_id: { type: [string, "null"] }
+        adapter_instance_id: { type: [string, "null"] }
+        approval_type: { type: string }
+        action: { type: string }
+        resource: { type: [string, "null"] }
+        risk_level: { $ref: '#/components/schemas/RiskLevel' }
+        state: { $ref: '#/components/schemas/ApprovalState' }
+        request: { $ref: '#/components/schemas/JsonMap' }
+        resolution: { $ref: '#/components/schemas/JsonMap' }
+        grant_id: { type: [string, "null"] }
+        requested_at: { $ref: '#/components/schemas/Timestamp' }
+        expires_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        resolved_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        resolved_by: { type: [string, "null"] }
+        version: { type: integer, format: int64 }
+    ResolveApprovalRequest:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, enum: [APPROVED, REJECTED] }
+        note: { type: [string, "null"] }
+    QuotaResponse:
+      type: object
+      required: [observations, overall_confidence]
+      properties:
+        observations:
+          type: array
+          description: '整个读不到时为空数组 —— 配合 overall_confidence: UNKNOWN 显示"未知"，不得显示 0'
+          items: { $ref: '#/components/schemas/QuotaObservation' }
+        overall_confidence: { $ref: '#/components/schemas/Confidence' }
+    QuotaObservation:
+      type: object
+      required: [quota_key, quota_type, observation_kind, confidence]
+      properties:
+        quota_account_id: { type: [string, "null"] }
+        quota_key: { type: string }
+        quota_type: { $ref: '#/components/schemas/QuotaType' }
+        observation_kind:
+          allOf: [{ $ref: '#/components/schemas/ObservationKind' }]
+          description: 预测值一律 ESTIMATED
+        used_value: { type: [number, "null"] }
+        remaining_value: { type: [number, "null"] }
+        used_percent: { type: [number, "null"], minimum: 0, maximum: 100 }
+        remaining_percent: { type: [number, "null"], minimum: 0, maximum: 100 }
+        window_start: { $ref: '#/components/schemas/NullableTimestamp' }
+        window_end: { $ref: '#/components/schemas/NullableTimestamp' }
+        reset_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        confidence: { $ref: '#/components/schemas/Confidence' }
+        source: { type: [string, "null"] }
+        provider_raw: { $ref: '#/components/schemas/JsonMap' }
+        observed_at: { $ref: '#/components/schemas/Timestamp' }
+    Notification:
+      type: object
+      required: [id, notification_type, priority, state, title, created_at]
+      properties:
+        id: { type: string }
+        notification_type: { type: string }
+        priority: { $ref: '#/components/schemas/NotificationPriority' }
+        state: { $ref: '#/components/schemas/NotificationState' }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        project_id: { type: [string, "null"] }
+        task_id: { type: [string, "null"] }
+        approval_id: { type: [string, "null"] }
+        actions: { type: array, items: { $ref: '#/components/schemas/JsonMap' } }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        read_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        handled_at: { $ref: '#/components/schemas/NullableTimestamp' }
+        expires_at: { $ref: '#/components/schemas/NullableTimestamp' }
+    SearchHit:
+      type: object
+      required: [hit_type, id, snippet]
+      properties:
+        hit_type: { type: string, enum: [message, task, session, project] }
+        id: { type: string }
+        snippet: { type: string }
+        project_id: { type: [string, "null"] }
+        task_id: { type: [string, "null"] }
+        session_id: { type: [string, "null"] }
+        context_ids: { type: array, items: { type: string } }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    EventJournalEntry:
+      type: object
+      description: 契约① §2 信封
+      required: [seq, event_id, event_type, aggregate_type, aggregate_id, aggregate_version, created_at]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: 本机严格顺序 —— 客户端游标用它
+        event_id: { type: string, description: UUIDv7，全局唯一 }
+        event_type: { $ref: '#/components/schemas/EventType' }
+        aggregate_type: { type: string, description: 单数域名单数名，与 event_type 前缀一致 }
+        aggregate_id: { type: string }
+        aggregate_version: { type: integer, format: int64, minimum: 1 }
+        correlation_id: { type: [string, "null"], description: 链条第一个事件的 event_id，一条命令及其全部下游共享 }
+        causation_id: { type: [string, "null"], description: 直接触发本事件的那个事件的 event_id }
+        principal_id: { type: [string, "null"] }
+        payload:
+          allOf: [{ $ref: '#/components/schemas/JsonMap' }]
+          description: '必含 `schema: 1`；入库前已过强制脱敏'
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    # ── WS 帧（契约③ §5 / 契约① §2）───────────────────────────────────────
+    WsClientHello:
+      type: object
+      description: 'F-16：客户端→服务端的第一个控制帧。不带 from_seq 表示只要此后新事件。'
+      required: [type]
+      properties:
+        type: { type: string, enum: [hello] }
+        from_seq: { type: [integer, "null"], format: int64 }
+    WsHello:
+      type: object
+      required: [type, from_seq]
+      properties:
+        type: { type: string, enum: [hello] }
+        from_seq: { type: integer, format: int64 }
+    WsEventFrame:
+      type: object
+      required: [type, data]
+      properties:
+        type: { type: string, enum: [event] }
+        data: { $ref: '#/components/schemas/EventJournalEntry' }
+    WsResyncRequired:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [resync_required] }
+        reason: { type: [string, "null"], description: journal 已裁剪到无法从 from_seq 补发 }
+    WsHelloAck:
+      type: object
+      description: 不带 from_seq 时的首帧
+      required: [type, server_seq]
+      properties:
+        type: { type: string, enum: [hello_ack] }
+        server_seq:
+          allOf: [{ type: integer, format: int64 }]
+          description: 连接建立时 journal 的头游标 —— 客户端据此把游标抬到"此后"
+    WsPing:
+      type: object
+      description: 故意不带 event_id
+      required: [type, server_seq]
+      properties:
+        type: { type: string, enum: [ping] }
+        server_seq: { type: integer, format: int64 }
+    WsFrame:
+      description: 服务端下发的任一帧
+      oneOf:
+        - { $ref: '#/components/schemas/WsHello' }
+        - { $ref: '#/components/schemas/WsEventFrame' }
+        - { $ref: '#/components/schemas/WsResyncRequired' }
+        - { $ref: '#/components/schemas/WsHelloAck' }
+        - { $ref: '#/components/schemas/WsPing' }
+    # ── 列表分页（{items, next_cursor}）────────────────────────────────────
+    ProjectList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Project' } }
+    AdapterList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/AdapterInstance' } }
+    AdapterCapabilityList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/AdapterCapability' } }
+    ModelList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Model' } }
+    SessionList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Session' } }
+    MessageList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Message' } }
+    TaskList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Task' } }
+    ExecutionList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Execution' } }
+    OutputChunkList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/OutputChunk' } }
+    ApprovalList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+    NotificationList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+    SearchList:
+      allOf:
+        - { $ref: '#/components/schemas/CursorPage' }
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/SearchHit' } }

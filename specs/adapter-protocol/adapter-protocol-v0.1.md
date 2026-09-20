@@ -234,6 +234,9 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 | `TIMEOUT` | 超 `deadline_at`（含 §10 `debug/hang` 场景） | 是 |
 | `PROVIDER_ERROR` | 供应商原始错误透传，`data.provider_raw` 必须原样保留 | 视情 |
 | `INTERNAL` | Adapter 自己的 bug，必须同时进 `stderr` 与 Audit | 否 |
+| `READ_ONLY` | **目标对象**（某会话/某执行）当前只读：它由只读链（`LOCAL_DATA`）发现，这一轮没有写入口。与 `WRITE_ENTRY_NONE` 的分界是"整个 Adapter 声明无写入口" vs "对象级/本轮不可写" | 视链 |
+| `ADAPTER_UNRESPONSIVE` | 进程存活但请求/心跳在 `deadline_at` 内无任何响应，Supervisor 已把 health 降级（应同时产生 `adapter_downgraded` 事件）。与 `TIMEOUT` 的分界：`TIMEOUT` 是**这一次操作**超期，本码是**这条连接**不健康 | 是（等恢复） |
+| `EXECUTION_STATE_UNKNOWN` | 该 Execution 的真实状态无法确认（§7 崩溃语义：`UNKNOWN` 是合法态，**不是** `FAILED`），故拒绝一切"推进/取消/发消息"类请求 | 视证据 |
 
 ### 15.2 → HTTP 映射（`error.code` 一律用左列，`http_status` 见右）
 
@@ -253,9 +256,37 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 | `timeout` | 504 | `TIMEOUT` |
 | `provider_error` | 502 | `PROVIDER_ERROR` |
 | `internal` | 500 | `INTERNAL` |
+| `read_only` | 409 | `READ_ONLY` |
+| `adapter_unresponsive` | 503 | `ADAPTER_UNRESPONSIVE` |
+| `execution_state_unknown` | 409 | `EXECUTION_STATE_UNKNOWN` |
 | `version_conflict` | 409 | —（HTTP 层专有，来自 ADR-017 的 `If-Match`，不经 Adapter） |
 
-新增码必须同时改 §15.1 与 §15.2，缺一即算契约不一致（`test` 可 grep 两表条目数是否相等）。
+**新增码必须同时改 §15.1 与 §15.2，缺一即算契约不一致。** 一致性判据**不比行数**，
+按**码名集合**双向比（`test` 以此为准，别自己发明更聪明的算法）：
+① §15.2『来自』列出现的每个反引号码 ∈ §15.1 码列；② §15.1 每个码 ∈ §15.2『来自』列。
+**唯一例外**：`version_conflict` 在 §15.2 有行而 §15.1 无码（HTTP 专有，右列写的是 `—` 而非码名，所以它天然不会进①的集合）。
+当前基线：§15.1 = 17 码，§15.2 = 18 行。
+
+### 15.3 数字码（JSON-RPC `error.code`）——回 adapter：§15 此前确实一个数字都没有
+
+`error.code` 是 JSON-RPC 的**数字**字段，`error.data.code` 才是本文的大写蛇形字符串。两者不互相替代：
+
+| 数字码 | 用途 | 是否有 `data.code` |
+|---|---|---|
+| `-32700` | 帧不是合法 JSON（stdout 上混进了非帧字节也算） | 否 |
+| `-32600` | 非法请求：缺 `jsonrpc`/`method`/`id`，或 `id` 类型不符 | 否 |
+| `-32601` | `METHOD_NOT_FOUND`：方法名不在 §3 方法表内 | 否 |
+| `-32602` | `INVALID_PARAMS`：参数缺字段/类型不符/枚举值非法（schema 校验失败） | 否 |
+| `-32000` | **领域错误的唯一数字码**：§15.1 全部 17 个码都走它，真判别符在 `data.code` | 是（必填） |
+
+两个决定和它们的理由：
+- **不给 17 个码各配一个数字**。那样就造出了第二套需要人工同步的枚举，映射表一旦漂移就没人发现；
+  消费者本来就必须读 `data.code`（它带 `retry_after_ms`、`provider_raw` 等结构化上下文），数字码对它们是纯噪声。
+  JSON-RPC 2.0 也把 `-32000`–`-32099` 整段留给实现自定义，用一个即合规。
+- **`INVALID_PARAMS` / `METHOD_NOT_FOUND` 不进 §15.1**：它们是**协议层**错误，发生在业务码来不及参与之前，
+  用标准数字码表达即可，不需要再发明字符串。adapter 提的这两个码因此是"已覆盖"，不是"缺失"。
+- `CANCELLED` 例外于本表：中止不是错误。`$/cancel` 的确认走结果帧（`result.cancelled = true`），
+  不发 `error`；§15.1 保留 `CANCELLED` 只因为它会作为 HTTP 侧 `cancelled` 与 Audit 记录出现。
 
 
 ## 14. 批准后 `adapter` 角色的第一件事

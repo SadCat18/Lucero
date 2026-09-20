@@ -36,23 +36,20 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 
 ## Current checkpoint
 
-- Stage: 第 2 轮（协议层）已交付；按主控两次指令跳到 FakeAdapter，已落**第 4 轮切片 1**
-  （真子进程骨架：握手门 + health + debug/crash + §1 stdout 纯度）。
-  **第 3 轮 `internal/process` Supervisor 仍空的**——§8 的"崩溃不带崩 Core"完整回归要到那轮才成立，
-  现在拿到的只是它的原语（真进程、退出码 2、父进程存活可断言）
+- Stage: 第 3 轮部分交付 —— T-22/T-24 两个红修完，`internal/process` Supervisor 骨架 +
+  §8 崩溃隔离回归已落；第 4 轮 FakeAdapter 剩 12 个方法与 4 种注入未做，
+  Supervisor 也还没接 DB 登记与协议 pump
 - Status: in_progress
-- Last verified action: 交付前最后一次重跑（本机 **18:22:18**，三包一起，还原全部变异之后）：
-  `CGO_ENABLED=0 go test -count=1 ./internal/adapter/... ./cmd/fake-adapter/... ./test/...`
-  → `ok internal/adapter 0.970s` / `ok cmd/fake-adapter 1.279s` / `ok core/test 2.596s`；
-  `go vet ./cmd/fake-adapter/ ./internal/adapter/` 干净、`gofmt -l` 0 行、`go build ./...` 无输出
-- Next action: 回到第 3 轮 `core/internal/process/`：Supervisor 拉起 + stdout/stderr 双管道 +
-  握手门前置 + 退避 `1s,2s,4s,8s,≤30s` + 连续 5 次→`UNAVAILABLE`+停重启+Notification；
-  **消费 `000003` 的 §14 三列**（写 `state`、`RUNNING`→`STARTING`、按状态对账写 `STOPPING` 或
-  `last_error`/`shutdown_reason`、退出后回读 `state` 再判 §6.3），并真正发
-  `adapter_downgraded`/`adapter_restart_exhausted`（§11 双事件，走注入的写函数）；
-  握手完成后、喂第一帧之前调 `Cursor.Reset`
+- Last verified action: 交付前最后一次重跑（本机 **09-20 12:10:12**，我的三包；11:58 那次四包同跑也已全绿）：
+  `ok internal/adapter 0.919s` / `ok internal/process 1.257s` / `ok cmd/fake-adapter 1.280s`；
+  `go vet` 三包干净、`gofmt -l` 0 行；测试函数 34 + 5 + 5 个 PASS，0 FAIL（helper 的 SKIP 是子进程入口，设计如此）。
+  **`core/test` 另计**：11:58 四包同跑时它还 `ok 3.243s`，12:09 我按 §15.1 加上 `error.data.code` 之后
+  它出现 1 条 FAIL（21 PASS / 1 FAIL，就是 REQ-T6 那条旧 substring 断言）——不是我包的红，
+  也不是可以靠撤回契约合规来消掉的红。
+- Next action: 把 Supervisor 接到协议层上 —— 在 `internal/process` 里加"起一个 fake-adapter 真子进程 +
+  握手 + 喂帧"的所有者：握手完成后调 `Cursor.Reset`，按 CO-8 的 `turn/claimed`/`turn/dispatched`
+  落库顺序暴露给调用者，并加 `$/cancel` 与 deadline 的 pending 表（pump）
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/adapter/... ./internal/process/... ./cmd/fake-adapter/...`
-  （`internal/process` 落地前那一段仍会 `[setup failed]`，CO-7 口径）
 
 ## Completed
 
@@ -136,6 +133,43 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 - `ErrorCode` 的两个"待补号"从 `-32005/-32006` 挪到 `-32048/-32049`：`test` 角色报来 §1 表把
   `-32005/-32006` 给了 `READ_ONLY`/`EXECUTION_STATE_UNKNOWN`，同号两符号是误读温床（见 CO-4 与 B-a4 的复测：
   那张表在本 worktree 仍查不到，所以这是**留间距**而非修现网冲突）。
+- **T-24 的两个硬阻塞（都用真子进程复现后才动手，没采信转述）**：
+  - **BUG-T6-①** 复现结论与报告不同：**单次 `adapter/initialize` 是通的**（fake 的 `handle()` 早就豁免了它），
+    真正的坑在库级门禁 `Handshake.Call` —— 它把 `adapter/initialize` 自己也按"未握手"拒掉，
+    所以任何"把所有方法都过这道门"的调用者（`test` 的 in-proc 桩、我要写的 Supervisor、以及删掉本地副本之后的 fake）
+    永远握不上手。修法是把规则收进 `Call` 一处：未握手时 initialize 放行、已握手后再来 initialize
+    回 `INVALID_PARAMS`（§2.2 运行中不重谈版本）。fake 里那份重复豁免随即删除，单一事实源。
+  - **BUG-T6-②** 复现成立：`run()` 在每次回复后要把"自己回复的字节"再解码来做自校验，
+    于是**第二次 initialize 的错误回复（`result` 为空）解不开 → 进程直接死 → 其后一帧永远没有回话**，
+    调用者只能等 deadline。修法是结构性的：自校验改成对静态声明做（启动时一次 + 握手成功时一次），
+    不再有任何"每帧回包再解码"的路径；`replyResult`/`json.Unmarshal(reply.Result)` 整段删除。
+  - 两条各配一条真子进程回归测试：`TestFakeAdapterSurvivesSecondInitialize`
+    （第二次 initialize 收到拒绝，且随后 `adapter/health` 仍能正常服务）；
+    库侧 `TestCallGate` 新增"未握手时 initialize 放行 / 已握手后再来回 INVALID_PARAMS"两行。
+- **第 3 轮 Supervisor 骨架（`core/internal/process/`，520 行含测试）**：
+  `BackoffFor` 落 §8 的 1s/2s/4s/8s、30s 封顶（`attempt>=6` 到顶；8s 之后是否先走 16s 记 CO-19 待裁）；
+  `Supervisor{Launch, Restart, Sink, Backoff, MaxCrashes}` + `Start/Run/Stop`；
+  `Child` 带分离的 stdout/stderr/stdin 与**可重复调用**的 `Wait`；事件 `STARTED/EXITED/CRASHED/UNAVAILABLE`
+  通过 `Sink` 回调交出去，**这个包不写 DB、不发事件**（§0 与 CO-3：登记与 §14 状态写由持库句柄的调用方做）。
+  五个用例：退避表；连续 5 次崩溃后 `ErrUnavailable` 且**恰好只启 5 次**；干净退出不吃预算；
+  `Stop` 杀子进程并回收状态；
+  **§8 崩溃隔离** `TestCrashedAdapterLeavesAnotherAlone`：一个 Adapter 进程连崩到 UNAVAILABLE，
+  父进程（在这里就是测试二进制，充当 Core）存活且与另一个 Adapter 继续完整对话、
+  并核对 §1 的 stderr 分流（诊断行不混进帧流）。
+  它**只覆盖 Supervisor 能证明的那半**：Execution 转 `UNKNOWN` 是 execution owner 写的状态值，不在这里冒充。
+- **按 §15.1 改回包形状**（见 B-a4 那条）：`Error` 现在同时携带数字 `error.code` 与
+  §15.1 的名字 `error.data.code`，`Error.Symbol()` 优先采信对端给的 `data.code`，
+  未知号码显示成 `UNKNOWN_CODE(-n)` 而不是瞎猜名字。
+- 过程中的两次自伤，如实记：
+  ① helper 子进程原本 `sleep 30s` 等父进程杀，导致每个测试被拖满、并留下过 `process.test.exe` 泄漏进程
+  （已 `taskkill`，helper 改成"stdin 关闭即退"）；
+  ② 第二次变异（把干净退出也当崩溃）与四包并跑叠在一起，让 `core/test` 出现 120s 超时 FAIL——
+  单独复跑 `./test/` 是 `ok 3.099s`，还原变异后四包并跑又是 `ok 3.243s`，
+  所以那次 FAIL 只出现在我带着变异的那次命令里，不作为别人包红的结论报出去。
+- 本轮新增 2 次变异检验（累计 11 次）：预算判据 `>=`→`>` → `launched 6 times, want exactly 5` +
+  `UNAVAILABLE at crash 6`；ON_FAILURE 的 `code == 0` 豁免删掉 → `budget exhausted ... (exit 0), want a clean return`。
+  另有一次**天然变异**：`Call` 的 initialize 豁免被外部编辑回退后，fake 的三条测试立刻全红
+  （错误原文就是 T-24 转述的那句），这同时是"断言会失效"的证据，也是下面 B-a7 的证据。
 - 第 2 轮共 4 次变异检验，全部命中：`session/create` 从清单删掉 → `TestCallGate` 1 行 FAIL；
   `QueuePosition` 降级拦截改成恒假 → `TestSendResultValidate` 3 行 FAIL；
   §6.1 `sequence_no` 门退回"只拦负数" → `TestDecodeStream` 1 行 FAIL；
@@ -164,6 +198,32 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 - **B-a2 已解除**：`core/internal/eventjournal/events.go:13-14,67` 现有
   `AdapterDowngraded` / `AdapterRestartExhausted` 两行常量，第 3 轮发事件不再撞未登记。
   登记方式已裁为 §11 双事件（audit 写 `audit_entries` 事件行 + adapter 写 `event_journal`）。
+- **B-a7（新，需要主控处置）我的独占路径被别的会话并发改写**：本轮 `core/internal/adapter/handshake.go`
+  里我加的 `Call` initialize 豁免被回退过一次（`Call` 回到"未握手一律拒答"的原样），
+  而 `core/cmd/fake-adapter/main.go` 里我删掉的本地副本没被回退 —— 两边一撞正好合成 T-24 报的死锁，
+  症状完全对得上；同一文件我三次编辑里两次提示"file changed since your last read / 已被回退"。
+  我已重新落库级修复并用四包重跑确认。请确认还有谁在写 `core/internal/adapter/**` 与
+  `core/cmd/fake-adapter/**`（按契约③ §7 两处都归 adapter），否则这类"修好又被打回"会反复出现。
+- **B-a4 部分解决（09-20 12:0x 复测，HEAD `0367aa5`）**：契约② 现在 **264 行**，多出的是
+  **`## 15. 错误码集合`（212 行起，REQ-T-3 补）** —— 也就是我一路在报的"§1/§3 引用了一节却从未写出来"，
+  这一节终于存在了。但它与消息里那张表不是一回事，差集如下（我已按 §15 对齐能对齐的部分）：
+  - §15.1 把符号钉在 **`error.data.code`**（大写蛇形），`error.code` 仍是 JSON-RPC 的数字 ——
+    我已实现：`NewErrorReply` 同时发两者，`Error.Symbol()` 优先读对端给的 `data.code`
+    （对端可能用一个 Core 没被给过号码的 §15 码），并在 `TestErrorCarriesSymbolInData` 钉住。
+  - §15.1 的符号名是 **`INTERNAL`**，不是 `INTERNAL_ERROR` → 已改。
+  - §15.1 **没有任何数值**：我用的数字仍只存在于消息里（`-32600..-32603`、`-32001..-32006`、
+    `-32050..-32099` 保留），仍要落进 §15 才能被别的角色引用（CO-4 未闭）。
+  - §15.1 缺我用到的 `INVALID_PARAMS`、`METHOD_NOT_FOUND`，也缺消息里点过名的
+    `READ_ONLY`、`ADAPTER_UNRESPONSIVE`、`EXECUTION_STATE_UNKNOWN`；同时 §15.1 新增了 8 个我还没有调用点的码
+    （`SESSION_NOT_FOUND`/`AUTH_REQUIRED`/`RATE_LIMITED`/`DANGEROUS_FLAG_REFUSED`/`CANCELLED`/`TIMEOUT`/`PROVIDER_ERROR`
+    加已有的若干）—— 我**没有**把它们一次性声明成死常量，各自等有调用点的那轮（pump 的 `$/cancel`→`CANCELLED`、
+    deadline/`debug/hang`→`TIMEOUT`、§9 白名单→`DANGEROUS_FLAG_REFUSED`）。
+  - §15 末尾要求"新增码必须同时改 §15.1 与 §15.2，`test` 可 grep 两表条目数是否相等"——
+    两表当前都是 14 行 + HTTP 专有一行，`test` 若按条目数校验请注意这一点。
+  - 其余条款仍未落盘（当场计数全为 0）：`### 4.1`、`### 4.2`、`### 6.1`、`### 6.2`、`### 6.3`、
+    `### 7.1`、`### 7.2`、`### 12.11`、`turn/claimed`、`checked_at`、`client_request_id`、`queue_strategy`。
+    注意 `db` 与主控引用的"`§6` 表那两行 / §6.4 在 135~143 行"在 `0367aa5` 上不存在——
+    §6 仍是原来的四行表。可能又被回退或在另一份工作副本上。
 - **B-a3 仍未解除**："`stream/delta` 不进 event_journal"的**跨库**断言要等 db/backend 的
   chunk 写路径。包内已有结构约束（`purity_test.go`：零跨包 import + 禁 `database/sql`/`os/exec`），
   但那只证明"这一层写不进去"，不等于"链路上没人替它写"。
@@ -241,6 +301,28 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
   （§3/§7 只出现过 `HIGH` 与 `UNKNOWN`）。我按 `HIGH|MEDIUM|LOW|UNKNOWN` 校验，
   并且**把它同时用作 §4.1 health 与 §6 stream/state 的枚举**——三处共用一套。
   若你另设集合（比如加 `PROVIDER_REPORTED`），三处一起改，改点在各文件顶的 `confidences` 表。
+- **REQ-T6 → `test` 角色（我改不了 `core/test/**`，请他们处理）**：
+  `test/adapter_contract_test.go:223` 的
+  `if strings.Contains(string(raw), ` + '`"code":"`' + `)`
+  现在会误报：§15.1 要求 Adapter 层符号放在 `error.data.code`（大写蛇形字符串），
+  所以我按 §15 发出的回包里出现了第二个 ` "code":" `。当场原文：
+  ```
+  {"jsonrpc":"2.0","id":"1","error":{"code":-32600,"message":"not handshaken",
+   "data":{"code":"PROTOCOL_NOT_INITIALIZED"}},"request_id":"019e..."}
+  --- FAIL: TestErrorCodeIsJSONRPCNumber
+  ```
+  顶层 `error.code` 明明是数字 `-32600`。建议直接删掉那行 substring 判断：
+  它下面的 `probe.Error.Code json.Number` + `.Int64()` 已经是更强、且不会误伤的写法
+  （它只解 `error.code` 那一个字段）。除这条之外 core/test 是 21 PASS / 0 其他 FAIL。
+  我没有为了让这条旧断言变绿而撤回 §15.1 的形状。
+- **CO-19 → 主控**（一处未写明的退避细节）：§8 的 `1s,2s,4s,8s,上限30s` 没说 8s 之后是先 16s 还是直接 30s。
+  我实现成"继续翻倍、超过即封顶"，即 `attempt5=16s, attempt>=6=30s`，并在 `TestBackoffFor` 里钉住。
+  你要的是后者的话，改 `BackoffFor` 一行 + 表里两行期望。
+- **Supervisor 的接缝形状先确认一下（省返工）**：这轮 `internal/process` 刻意**不 import**
+  `platform/db`/`eventjournal`/`audit`，只把 `STARTED/EXITED/CRASHED/UNAVAILABLE` 事件从 `Sink` 回调交出去。
+  也就是说 §8 的"发 Notification + `adapter_restart_exhausted`"、§14 的 `state`/`last_error`/`shutdown_reason`
+  三列写，都要由持库句柄的接线方（backend 的 app 层？还是我在 supervisor 里收注入的写函数？）来做。
+  请点名归谁，我在下一轮接上；现在这样不会自己偷偷写库。
 - **CO-17 → 主控**（契约缺口）：`quota_type` 的取值集合全仓库无冻结（`grep quota_type` 只有 §7 的
   `PERCENT` 一例）。我只做非空校验并留 `ponytail` 式余地；额度归 backend，若你要 Core 侧按类型
   分派显示，请给集合与单位语义（`PERCENT`/`CREDITS`/`REQUESTS`?）。

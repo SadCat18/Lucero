@@ -122,7 +122,11 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     进 journal 只会淹没事件）、`idempotency_keys`（纯基础设施状态，不是域事实）、
     `settings`（配置而非业务状态）、`blobs.archived_at`（冷热迁移，无 `blob_*` 登记事件类型）、
     `process_instances`（除 `process_started`/`process_exited`/`process_crashed`
-    三个已由 `process` 聚合表达的外，不逐条进 journal）。
+    三个已由 `process` 聚合表达的外，不逐条进 journal）、
+    **`principals`（REQ-A6② 裁定，12:3x 补）**：本机主体是**引导期一次写入、之后不可变**的身份行，
+    不是聚合根，因此**没有 `Create` 路径不是缺口**。用 `tx.Append("principals", …)` 就是合法正解
+    （现有两处测试夹具这么插是对的，不算"绕过平台层"）；不要为它加 `version` 列或 `principal_*` 事件。
+    将来若引入多用户/凭据轮换，再按新 ADR 升级为聚合。
 
 10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
    一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），

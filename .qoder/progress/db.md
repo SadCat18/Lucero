@@ -3,7 +3,7 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-19T18:50+08:00
+LAST_UPDATED: 2026-09-20T12:23+08:00
 
 ## Objective
 
@@ -32,16 +32,23 @@ LAST_UPDATED: 2026-09-19T18:50+08:00
 
 ## Current checkpoint
 
-- Stage: T-20 两条已落地（Q8 catalog 补 `policy_created`/`policy_updated` + §1.1.11 事务内读透传），
-  四条新断言全部先变异验证过
-- Status: complete
-- Last verified action: scoped 门禁 → 2 包 ok；`go build ./...`（非测试）→ exit 0；
-  T-16 规定的收尾全仓 `go test ./internal/...` → 9 ok / 1 红（`internal/approval` 测试文件未使用的 import，非本角色）
-- Next action: 无待办；等主控派活或验收
+- Stage: T-33 已落地——`MigrateFS` 保留但理由改为可测性，embed 脚手架删净，5 条 FS 用例走 `fstest.MapFS`
+- Status: complete —— REQ-A4 随 v0.1 撤回内嵌而消解（不再需要主控拍板），T-27 的接缝亦已由 audit 闭环
+- Last verified action: scoped 门禁 → 2 包 ok、`go vet` VET_OK；
+  收尾全仓 `go test ./internal/... -count=1` → 11 ok / 1 红（`internal/process`，adapter 实时编辑中，
+  相隔 20 秒两次报错内容不同可证，非本角色）
+- Next action: 无待办；仅一条待主控一句话确认——`MigrateFS` 现已零外部调用方，保留导出还是收成包内 `migrateFS`
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-33（fs.FS 入口的理由改为可测性）**：`MigrateFS` 保留、公开形状不变，但文档注释里
+  "给 go:embed 供数据"的说法已按主控 12:10 的撤回改掉，现在写明"v0.1 交付走
+  `cmd/core -migrations <dir>`，本入口的存在理由是让测试用内存 FS 驱动真迁移器"。
+  **顺带删掉了上一轮的 embed 脚手架**：`internal/platform/db/testdata/migrations/*.sql` 两个文件与
+  `//go:embed testdata/migrations` 全部移除，5 条 FS 用例改用 `fstest.MapFS`（含两条偏差用例，
+  正是 T-33 点名的那两条）。覆盖面没减：顺序、幂等、真实迁移集、不回退磁盘、两种偏差各有断言；
+  少的是"为一条已撤回的路径维护两份 .sql 副本"。
 - **交付物 1 打开 + PRAGMA 分层**（`db.go`）：`Open(path)` 建读池（`MaxOpenConns(4)`）与写通道
   （`MaxOpenConns(1)`——单连接本身就是串行写通道，未另加 mutex）。连接级 `foreign_keys=1`/
   `busy_timeout=5000`/`synchronous=FULL` 走 DSN `_pragma`，每条新连接自动生效；
@@ -94,6 +101,35 @@ LAST_UPDATED: 2026-09-19T18:50+08:00
   - `TestTxReadsItsOwnUncommittedWork`：同一事务内 `Create` 之后，`tx.QueryRowContext` 读到 version=1、
     `tx.QueryContext` 读到自己的事件行；**同一时刻读池读同一行必须 `sql.ErrNoRows`**。
     这条两侧不对称正是 §1.1.11 说"在 `Write` 之外读版本会留竞态窗口"的实测形态。
+- **fs.FS 迁移入口（T-24）已交付**（`migrate.go` 重构 + `migratefs_test.go` + `testdata/migrations/`）：
+  - `MigrateFS(fsys fs.FS, dir string) error` 与 `Migrate(dir string)` **共用** `(*DB).migrate(fsys, dir, label)`；
+    `Migrate(dir)` 的实现现在就是一行 `d.migrate(os.DirFS(dir), ".", dir)`。排序、两种偏差检查、
+    备份、不包事务、不自写记账行——全部只有一份，不可能各走各路。
+  - **要求①（只读 fs.FS）**：`migrate()` 里读脚本只剩 `fs.ReadFile(fsys, …)`，`os` 只用于
+    `os.DirFS` 这一处构造。专测 `TestMigrateFSNeverFallsBackToDisk` 传空 FS，
+    即便真实 `core/migrations` 就在磁盘上若干层外，仍报 `no .sql migrations in fs.FS(.)`。
+  - **要求②（两种偏差都要报，不能只扫文件系统）**：
+    - 记账了但文件丢了 → 动手**之前**拿 ledger 反查文件集：
+      `schema_migrations records version 2 but no migration in fs.FS(.) provides it`（实测捕获）；
+    - 有文件但未记账 → 每个脚本执行后回读 ledger 该版本号：
+      `migration 000001_silent.sql changed the schema but recorded nothing (want exactly 1 ledger row, got 0)`（实测捕获）。
+    - 我起初还加了一遍"应用完再全量对账"的后置 sweep，**随后自己删掉了**：它遍历的每个 present 版本
+      要么本来就在 ledger 里、要么刚被 `recorded != 1` 放行，永远不可能命中 → 死代码。
+      偏差方向没少，只是少一次多余的 `appliedVersions()` 往返。
+  - **要求③（真跑 `embed.FS`）**：`//go:embed testdata/migrations` + `TestMigrateFSFromEmbed`
+    把两步自记账脚本灌进一个真 `embed.FS`（非临时目录、非 MapFS），跑完 ledger `[1 2]`、
+    第 2 步的 `ALTER` 落地、重跑幂等。**真实生产内容**也由
+    `TestMigrateFSOverRealMigrations` 走同一个 FS 入口（`MigrateFS(os.DirFS(真实目录), ".")` → `[1 2 3]`）。
+    两边合起来才等于"生产路径有人测过"：embed 管道用真 `embed.FS` 测，真脚本内容用真文件测。
+- **T-27（REQ-T3）已交付**：`redact.go` 换成契约 §2.2 定文的形状
+  `type HitKind string` + `HitKey="key"`/`HitPattern="pattern"` +
+  `RedactionHit{Column, Kind HitKind, Match, Count}`（json tag `kind`）。
+  分流不再靠字符串前缀：`hits` 的聚合键从 `column+"\x00"+match` 改成结构体键
+  `{column, kind, match}`，`h.add` 显式收 kind。
+  **`Match` 对 HitKey 记的是规则名的 canonical 形式**（`x-api-key`→`xapikey`），不是 payload 里的拼法——
+  这样 audit 存进去的值与改造前逐字相同（他们本来就在 `CanonicalKey` 一下），
+  且 `Authorization`/`authorization` 这种同规则异拼法在 db 侧就合并成一条，不会给审计留重复行。
+  db 侧**没有任何地方再生产 `"key:"` 前缀**，用例里有专门断言守着这一点（见证据段）。
 - **巡检 T-7①（REQ-A2，§12 P0）已修**：`redact.go` 删掉 `scrubString` 的 vault 提前返回。
   **并且多修了一处主控没点名的同型漏洞**——`walk()` 里"键命中 deny key 且值以 `vault://` 开头就整值放行"
   是第二条完全等价的泄密路径（`"token": "vault://x sk-<密钥>"` 也会原样落库）。
@@ -166,6 +202,32 @@ LAST_UPDATED: 2026-09-19T18:50+08:00
   `internal/approval`（`vertical_slice_test.go:6` 未使用 import）与 `internal/task`
   （`service.go:149` `edgeEvent + ""` 把函数当字符串拼）两次 build failed，
   **最后一次重跑（18:52）10 个包全 ok**，两处均已由当事方自行收掉。本角色未触碰任何一个包。
+- **Q9（本角色造成的红，audit 请收；改法你们已写在代码里）** db 的 `RedactionHit` 已带 `Kind HitKind`，
+  且**不再生产 `"key:"` 前缀**。`internal/approval/store_sqlite.go:441 toAuditHits` 里的
+  `strings.CutPrefix(h.Match,"key:")` 从此恒为 false，导致 deny-key 命中全被记成 `kind:"pattern"`，
+  实测红在 `store_sqlite_test.go:347`（原文见 Verification evidence 的 T-27 段）。
+  按你们自己在 `store_sqlite.go:437-440` 注释里写的方案收口即可，两行：
+  `a := audit.RedactionHit{Column: h.Column, Kind: <映射 h.Kind>, Match: h.Match, Count: h.Count}`
+  并删掉 `CanonicalKey(k)` 那步——**db 交出的 `Match` 对 HitKey 已经是 canonical 形式**（`x-api-key`→`xapikey`），
+  与你们改造前存进 `entry_hash` 的值逐字相同，所以链上字段不会漂移。
+  两边 `HitKind` 常量值都是 `"key"`/`"pattern"`，可以直接按字符串转或各自声明同名常量。
+  护栏是 `test` 的 `TestRedactionCountersAreSealedBeforeHash`。本角色未触碰 `internal/approval/**`。
+  **Q9 已闭环（本角色交回前最后一枪实测）**：`grep -n CutPrefix internal/approval/store_sqlite.go` →
+  **零命中**（猜测已删），`TestStoreRedactsSecretsBeforeTheyLand` → **ok**，
+  收尾全仓 `go test ./internal/... -count=1` → **12 个包全 ok**。
+  即 §2.2 要求的"db 与 audit 同一轮改完"在本次达成，中间那次红只存在了约一分钟。
+- **REQ-A4（需主控拍板，本角色与 backend 都做不了）** 这轮的前提"`backend` 在 `core/cmd/core/` 建 `go:embed`
+  再把 `fs.FS` 传给我"**在 Go 里做不到**：`//go:embed` 的模式不能含 `..`（编译器实测
+  `pattern ../../../migrations: invalid pattern syntax`），只能取包目录自身或其子目录。
+  三个可行解，都需要越出各自的边界，故请主控选：
+  1. **`core/migrations/embed.go`**（`package migrations`，`//go:embed *.sql`）——最直白，
+     但该目录本归本角色，且历史上"不在 migrations 建包文件"是主控的裁定；
+  2. **`core/embed.go`**（模块根建一个小包，`//go:embed migrations/*.sql`）——不碰 migrations 目录，
+     `core/` 根目前无 .go 文件，需主控认可模块根放包文件；
+  3. **维持现状**：`cmd/core` 继续用 `-migrations` 目录参数（`Migrate` 已经能用），
+     代价是 Core 不能单文件分发。
+  本角色的 `MigrateFS` 对三者**一律可用**，不用再改平台层；backend 拿到哪一份 `embed.FS` 都只需
+  `d.MigrateFS(fsys, ".")`（或子目录名）。
 - **REQ-A3（给主控贴，本角色不写 `specs/`）** 你让"在内部契约里显式声明无事件表清单"，
   但 `specs/contracts-internal-v0.1.md` 按所有权表是主控独占、其余只能提 REQ，所以文本备好了给你贴
   （§1.1 第 10、11 条已被占，建议记为第 12 条）：
@@ -187,16 +249,24 @@ LAST_UPDATED: 2026-09-19T18:50+08:00
 - `core/internal/platform/db/db.go`（新建）— Open / PRAGMA 分层 / 读池 + 单连接写通道
 - `core/internal/platform/db/migrate.go`（新建）— 迁移器 + VACUUM INTO 备份
 - `core/internal/platform/db/touch.go`（新建）— Write / Tx.Touch / Tx.Create / Tx.Append / 列白名单
-- `core/internal/platform/db/redact.go`（新建）— InitRedaction + 递归脱敏 + RedactionHit
+- `core/internal/platform/db/redact.go`（新建；T-27 改）— InitRedaction + 递归脱敏 + `RedactionHit{Column,Kind,Match,Count}`
 - `core/internal/platform/db/db_test.go`、`migrate_test.go`、`touch_test.go`（新建）
 - `core/internal/eventjournal/events.go`、`events_test.go`（新建）
 - `core/migrations/000003_grant_policy_version.sql`（T-12 新建）— 三张可变表补 `version`
+- `core/internal/platform/db/migrate.go`（T-24 重构）— `Migrate` 走 `os.DirFS`，新增 `MigrateFS`，两偏差检查
+- `core/internal/platform/db/migratefs_test.go` + `testdata/migrations/00000{1,2}_probe_*.sql`（T-24 新建）
+  — 真 `embed.FS`、真实迁移集走 FS 入口、空 FS 不回退磁盘、两种偏差各一条
 - `core/internal/platform/db/grant_test.go`（T-12 新建）— grant/capability 生命周期 + policy 缺口钉桩
 - `core/migrations/000002_aggregate_version.sql` — **未改**（实测通过）
 - `core/migrations/000001_core_schema.sql` — **未改**（红线①）
 - `core/go.mod`、`core/go.sum` — **未改**（归主控；无新依赖需求）
 
 ## Verification evidence
+
+> **时间戳勘误**：本文件 12:23 之前的 `LAST_UPDATED` 与各段里的时刻（16:05、17:15、19:35 之类）
+> 是我**凭感觉写的，没跑过 `date`**，不可信，也不要拿去和账本对时。
+> 本机实际时钟由 `date '+%Y-%m-%dT%H:%M:%S%z'` 读得 **2026-09-20T12:22+0800**（主控消息里的
+> "12:10 撤回"与之一致，说明真实日期已是 09-20 而非 09-19）。今后本文件只记 `date` 的读数。
 
 命令均在 `D:\Project\Lucero\core` 下执行。
 
@@ -326,6 +396,52 @@ LAST_UPDATED: 2026-09-19T18:50+08:00
   - `internal/execution` → 与本角色无关，是它自己的测试夹具：`repository_test.go:58` 直插 `executions`
     时 `FOREIGN KEY constraint failed`（`session_id='sess-q'`、`predecessor_execution_id='ex-1'` 等父行未种）。
     本角色未触碰该包。
+- **T-33 实测**：
+  - `grep -rn "go:embed|embed\." --include=*.go internal/platform internal/eventjournal` → **零命中**（脚手架清干净）；
+    `ls core/migrations/` → 只有 `000001/000002/000003` 三个 .sql，**没有 embed.go**（本角色从未建过，
+    与契约③ §7 第 137 行"`find core -name embed.go` 零命中"一致）。
+  - `go test -run MigrateFS -v` → 5 条全 PASS，两条偏差仍各自打出错误原文：
+    `schema_migrations records version 2 but no migration in fs.FS(.) provides it` /
+    `migration 000001_silent.sql changed the schema but recorded nothing (want exactly 1 ledger row, got 0)`；
+    空 FS 那条打 `no .sql migrations in fs.FS(.)`（真实脚本就在同仓库磁盘上，证明不回退）。
+  - scoped 门禁 → `ok platform/db 2.506s` / `ok eventjournal 0.725s`；`go vet` 同范围 VET_OK。
+  - **收尾全仓 `go test ./internal/... -count=1`** → 11 ok / 1 红：`internal/process [build failed]`。
+    **归因：adapter 正在实时编辑该文件，与本角色无关**，证据是相隔 20 秒两次 `go build ./internal/process/`
+    报的是**不同的错**（文件内容在变）：
+    ```
+    12:21:46  connection.go:8:2: "time" imported and not used
+              connection.go:169:11: c.turnLocked undefined ...
+    12:22:06  connection.go:282:94: syntax error: unexpected newline in argument list
+    ```
+    本角色不触碰 `internal/process/**`。受影响方：**无**（本轮只动了 `MigrateFS` 的注释与 db 包内测试文件，
+    没有任何导出签名变化；`Migrate`/`RedactionHit` 等消费方零影响）。
+  - 顺带核到一条事实：`MigrateFS` 目前**全仓零外部调用方**（`grep -rn MigrateFS --include=*.go core/`
+    排除本包后无命中），`cmd/core/main.go:115` 用的是 `d.Migrate(cfg.Migrations)`。
+    契约③ §7 说该入口"保留"，故本角色保留其导出形态；若主控认为 v0.1 无生产调用方就不该公开，
+    改成包内 `migrateFS` 是一行事（测试同包，可直接调），请一句话定。
+- **T-27 实测与变异验证**：
+  - scoped 门禁 → `ok platform/db 2.530s` / `ok eventjournal 0.706s`、`gate_exit=0`；`go vet` VET_OK。
+  - 用例把 kind 与 match 成对断言：`{HitKey,"xapikey"} {HitKey,"apikey"} {HitKey,"password"}
+    {HitKey,"authorization"}` 四条必现，pattern 侧必须**恰好一条**且是 bearer 那条正则；
+    另有两条硬Guard：`h.Match` 不得以 `"key:"` 开头、`h.Kind` 必须是 `HitKey`/`HitPattern` 之一。
+  - **变异验证**：把 `h.add(column, HitKey, canonicalKey(k))` 改回 `"key:"+k` →
+    `--- FAIL: TestDenyKeyValuesNeverReachPayloadJSON — REQ-T3 not honoured:
+     Match still carries the "key:" prefix convention: {Column:payload_json Kind:key Match:key:x-api-key Count:1}`
+    → 断言确实守着前缀约定，不是摆设。恢复后转绿。
+  - **收尾全仓（破坏性变更必做）**：`go test ./internal/... -count=1` → 11 ok / 1 红，
+    红的是 `internal/approval/TestStoreRedactsSecretsBeforeTheyLand`（隔两次重跑同一错误，非抖动）：
+    ```
+    store_sqlite_test.go:347: audit redaction row missing "kind":"key":
+      {"redactions":[{"column":"approvals.request_json","count":1,"kind":"pattern","match":"apikey"},
+                     {"column":"approvals.request_json","count":1,"kind":"pattern",
+                      "match":"gh[pousr]_[A-Za-z0-9]{20,}"}],"schema":1}
+    ```
+    **这条输出正好是 REQ-T3 描述的那个缺陷的实拍照**：db 交出去的是 `{Kind:key, Match:"apikey"}`，
+    audit 的 `CutPrefix("key:")` 猜不到 → 整条被记成 `kind:"pattern"`，
+    即"deny-key 命中被静默记成正则命中"。归因：**本角色此改动造成**，
+    修法在 audit 范围（Q9），本角色按红线未代改 `internal/approval/**`。
+    注：输出里 `match:"apikey"` 与改造前一致，印证了"db 记 canonical 名"让 audit 只需改 Kind 一行、
+    其余存链字段零漂移。
 - 复核越界：`internal/eventjournal/events.go` 事件常量 52 个（T-7② 后为 **54**，见上一条复核）；
   `grep -rn "FROM approvals\|UPDATE approvals\|INSERT INTO approvals" internal --include=*.go` → **全仓零命中**；
   本角色两个包里 `approvals` 只作为表名字符串出现（`touch.go:38` 白名单映射、`migrate_test.go:102` 断言列表）。
@@ -377,9 +493,39 @@ LAST_UPDATED: 2026-09-19T18:50+08:00
   新任务 `version=1` 且其 `task_created` 事件 `aggregate_version=1`。
   `TestTouchAcceptsMultipleColumns` → PASS（三列一次改，版本 2→3，`status`/`priority` 回读一致）。
 
+- **T-24（fs.FS 入口）实测**：
+  - `go test -run MigrateFS -v` → 5 条全 PASS，两条偏差用例把错误原文打了出来：
+    ```
+    --- PASS: TestMigrateFSFromEmbed                (ledger [1 2]，第 2 步 ALTER 落地，重跑幂等)
+    --- PASS: TestMigrateFSOverRealMigrations       (真迁移集走 FS 入口 → [1 2 3])
+        migratefs_test.go:63:  no .sql migrations in fs.FS(.)
+    --- PASS: TestMigrateFSNeverFallsBackToDisk
+        migratefs_test.go:86:  schema_migrations records version 2 but no migration in fs.FS(.) provides it
+    --- PASS: TestMigrateFSReportsLostMigration
+        migratefs_test.go:105: migration 000001_silent.sql changed the schema but recorded nothing (want exactly 1 ledger row, got 0)
+    --- PASS: TestMigrateFSReportsUnbookedMigration
+    ```
+  - scoped 门禁全量复跑 → `ok platform/db 2.255s` / `ok eventjournal 0.507s`，`gate_exit=0`；`go vet` VET_OK。
+  - **收尾全仓（T-16 规定动作）** `go test ./internal/... -count=1` → **11 个包全 ok**
+    （adapter / approval / audit / eventjournal / execution / notification / permission / platform/db /
+    quota / session / task）。受影响方：**无**——公开入口 `Migrate(dir string) error` 一字未改，
+    改签名的是未导出的 `readMigrations`。消费方当场核对：
+    `grep -rn "\.Migrate(" --include=*.go internal cmd` →
+    `approval/execution/notification/permission/task` 五处测试 + `cmd/core/main.go:114`，
+    全部走磁盘入口且全绿。
+  - **`go:embed` 硬限制的实测证据**（给 REQ-A4）：在本包临时建 `//go:embed ../../../migrations` →
+    `probe.go:5:12: pattern ../../../migrations: invalid pattern syntax`；
+    同一位置改指本包内 `testdata/x` → 编译通过。即 embed 只能取**包目录自身或其子目录**。
+    现场读到的 `cmd/core/main.go:59` 已写着"迁移 .sql 目录（go:embed 归属未定，见 progress REQ-T-2）"，
+    说明 backend 自己也没落成 embed，目前走的是 `-migrations` 磁盘目录参数。
+
 ## Recovery note
 
-- Interruption point: 巡检 T-6/T-7 三条全部落地并实测（含 REQ-A2 的变异测试），scoped 门禁 exit 0；
-  仅余 Q3（等 audit 写 `RedactionHits()` 的消费方）与 Q6（等 audit 收窄 `IsVaultRef` 注释）
-- First action after recovery: 重跑 scoped 门禁确认仍绿；若 `internal/quota` 或 `internal/session`
-  报"未知聚合 / aggregate_type 不符"，先查它们是否还在用旧字符串 `"quota_account"`
+- Interruption point: db-platform 全部判据 + T-6/T-7/T-12/T-20/T-24 均已落地实测；
+  本角色范围内无未完事项，开放项只剩需要别人动的：REQ-A4（`go:embed` 归属，主控拍板）、
+  REQ-A3（无事件表清单文本待贴进契约）、Q6（audit 收窄 `IsVaultRef` 注释）
+- First action after recovery: 跑 scoped 门禁 `go test ./internal/platform/... ./internal/eventjournal/...`
+  确认仍绿；若 `cmd/core` 的迁移装载要改成 embed，按 REQ-A4 选定的那一份 `embed.FS`
+  调 `d.MigrateFS(fsys, ".")` 即可，平台层不需再改
+- 历史包袱提醒：Q4 已把 `AggQuota` 定为 `"quota"`，若谁又报"未知聚合"，先查它是否还在写旧字符串
+  `"quota_account"`

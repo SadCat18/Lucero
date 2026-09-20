@@ -3,7 +3,7 @@ TASK_ID: wave2-tests
 STATUS: in_progress
 SCOPE: Wave-2 三类测试（ownership lint / 状态机矩阵 / Adapter 契约 harness）+ Crash 骨架；对业务代码只读
 EVIDENCE_DIR: .qoder/evidence/test/
-LAST_UPDATED: 2026-09-19T18:16+08:00
+LAST_UPDATED: 2026-09-20T12:13+08:00
 
 ## Objective
 
@@ -42,17 +42,57 @@ LAST_UPDATED: 2026-09-19T18:16+08:00
 
 ## Current checkpoint
 
-- Stage: T-A(7 条，运行时解析 §7)/T-B/T-C(+真子进程被测面)/T-D 骨架 + T-11/T-14/T-18/T-21/T-24 全部落地；
-  18:14 验收：go test 20 PASS / 8 SKIP / 0 FAIL，lint exit 1（2 条 = REQ-T5 的 §7 缺行）
-  此前报的 4 条越界已全部闭环，只剩 Q1/Q2 等主控裁
-- Status: in_progress（T-D 的 5 条用例 blocked，见 Blockers）
-- Last verified action: 17:25 `go test -count=1 ./test/...` → ok（17 PASS / 7 SKIP / 0 FAIL）；
-  17:23 lint → exit 1，4 项真越界；--selftest OK
-- Next action: 等主控裁 Q1（approval/respond 是否算 §3 写方法）与 Q2（session/create 不在 §4 方法表）；
-  裁定落地后第一件事是把 `TestWriteEntryOpenQuestions` 从 Skip 改成硬断言（并同步 `writeMethods` 表）
-- Verification: `.qoder/evidence/test/go-test-final.txt`、`.qoder/evidence/test/ownership-lint-final.txt`
+- Stage: T-29 已落成硬规范并自审过全包；12:13 验收 22 PASS / 10 SKIP / 0 FAIL。
+  同轮复核 T-27：②③ 已落（db 带 Kind、mapper 不再切 `key:` 前缀），REQ-T3 只剩 ①。T-D 里两条已从骨架变**真跑**（真启 Core、真硬杀、真重启）；
+  REQ-T5 闭环（§7 补行后 lint 不再报）；REQ-T3 我这边形状已跟上新裁定，另一半仍是别人的活。
+  11:59 验收：go test 22 PASS / 10 SKIP / 0 FAIL；lint exit 1（4 条，全是新发现的 `.qoder/scratch/*.py`）
+- Status: in_progress
+- Last verified action: 上述四条命令 11:59 一次性重跑；`core/cmd/core` 真启动真被杀真重启
+- Next action: 把 REQ-T7（core_ready 未进 journal）与 REQ-T8（`.qoder/scratch/` 无归属且未被忽略）
+  交主控转派；backend/adapter 任一落地后第一件事是重跑对应 Skip 用例并按需改成硬断言
+- Verification: `.qoder/evidence/test/{go-test,ownership-lint,selftest}-final.txt`
 
 ## Completed
+
+- **12:0x~12:13 轮（T-29）**：
+  - T-29 的两条规范写进 `core/test/statemachine_test.go` 的包文档（全包共用一处，不复制多份）：
+    变异必须打在**待验层的原始输出**上（返回值 / 它直接交给下游的那一行数据），
+    禁止用下游消费者的判断给上游发绿。
+  - 按这条规范给 `TestRedactionCountersAreSealedBeforeHash` 加了**自破坏探针**：把 audit 刚交给
+    Appender 的那一行拿回来，在 hash 之后改 `details_json`，再让同一条判据去查 →
+    必须同时看到"hash 不等"与"`VerifyChain` 拒"。这条探针读的是那一行本身，不借任何下游判断。
+  - 全包自审结论（逐处核过断言对象）：状态机/投影打 `Check`/`ProjectTaskState` 返回值；
+    链打 `Seal` 返回值与 Appender 收到的那一行；lint 打扫描器自己的输出（合成件）；
+    Crash 打库里的行数与 health 响应体。没有"拿上一层验下一层"的残留。
+  - **REQ-T3 复核后收窄**：`db.RedactionHit` 已带 `Kind HitKind`（redact.go:87、97-101），
+    approval 的 mapper 改成 `audit.HitKind(h.Kind)` 直传、`CutPrefix("key:")` 已消失；
+    Skip 理由相应改成只剩 ①`RedactionDetails` 不校验空 Kind（REQ-T3c 给 audit）。
+  - **又一处我自己的假红，当场纠正**：`TestErrorCodeIsJSONRPCNumber` 用 `"code":"` 子串判线格式，
+    而 adapter 把符号名合规地放在 `error.data.code` 里 → 我的断言误伤。删掉子串判断，
+    保留 `json.Number` 解码那条结构化判据（code 若真是字符串就解不出来）——
+    顺带说明：结构化判据本来就覆盖它，多余的第二条判断只是噪声源。
+
+- **11:3x~11:59 轮（复批后的六项）**：
+  - **T-D 两条从骨架变真跑**：`TestCrashKillCoreAndRestart`（build `cmd/core` → 起进程 → 读 `core.endpoint`
+    → Bearer 打 `/api/v1/health` 拿到 `state=READY/migration_version=3` → `Process.Kill()`（≈SIGKILL）
+    → 热 `-wal` 保留 → 平台层重开 → `PRAGMA integrity_check=ok` + tables≥33 + schema_migrations 记账在）
+    与 `TestCrashRestartSameDataDir`（**同一数据目录、不加 `-take-over-lock`** 重启 → 换新 endpoint → 仍 READY，
+    证明残留锁与热 wal 被自动回收）。两条都 PASS。
+  - REQ-T5 **已闭环**：§7 11:25 补了 `core/cmd/fake-adapter/**`→adapter，我的运行期解析当场跟上
+    （规则 30→31 条），那两条命中自动消失。REQ-T1/T2 的前提也已按盘复核为**不存在**
+    （`packages/` 只剩 api-client；`git status --untracked-files=all | grep -c node_modules` = 0），不再报。
+  - REQ-T3 我这边跟上新形状（`audit.RedactionHit{Column, Kind, Match, Count}`），
+    并新增 `TestRedactionKindIsMandatory` 记录**未落的另一半**（三条实测行号见下）。
+  - BUG-T6 **进展核实**：`adapter/initialize` 不再被自己的未握手门禁挡掉，握手能通；
+    但 `quota/read` 回 `INTERNAL_ERROR: quota/read is not implemented in this build` →
+    旗标开时我的子进程用例会红（如实报），旗标关时 Skip。
+  - 脚本加了 **fail-closed 前置检查**：缺 `core/internal`/`core/go.mod`/契约③ 或 `.go` 文件数 <20 时
+    `exit 2` 拒绝出报告，并在报告头打印扫描面（本次 73 个文件）——防的是"扫描面为空 → 每条 0 命中 → 全绿"这种
+    比误报更危险的伪装成功。`--selftest` 里用「把脚本拷进空仓库副本」验它必须 exit 2。
+  - T-25 两问的答案：**①** loader 的补丁全部落进脚本本体（`load_owner_table` / `OWNER_HOLE` / `ANYROLE` /
+    `cross_package_refs` / `orphan_modules` / `api_prefix_diff` / `OWNER_ROWS` 七个标记逐个 grep 到）；
+    **②** 不需要重跑——一次性补丁器，以后改脚本用按内容定位的直接编辑。所以删除比留档干净，谢谢改口认可。
+
 
 - **T-A**（`scripts/check_ownership.sh`，7 秒跑完）7 条（17:2x 按主控要求改版）：①approvals SQL 局部性 ②跨包写表 +
   `Append(表名)` + `.Exec` 旁门 ③变更文件 vs 契约③ §7 所有权矩阵（含冻结件 `000001`）
@@ -99,122 +139,89 @@ LAST_UPDATED: 2026-09-19T18:16+08:00
 
 ## Remaining
 
-- T-C 第二实现：`adapters/fake` 可执行后接真子进程（用例本身不用改）
-- 契约③ §6.3 要求的「yaml + 本文件 + 事件目录三处同步」lint：等 `specs/openapi/core-v1.yaml` 落地（frontend）
-- T-D 的 5 条 skip → 真跑
+- REQ-T3 的另一半：`db.RedactionHit` 仍无 `Kind`（platform/db/redact.go:87）、
+  approval 的 mapper 仍在用被废除的 `key:` 前缀（approval/store_sqlite.go:445）、
+  `audit.RedactionDetails` 不校验空 Kind（redaction.go:127）→ 12:0x 复核：前两条已随 T-27 落地，
+  只剩这一条；改完我把 `TestRedactionKindIsMandatory` 转成硬断言
+  （口径已写在注释里：`RedactionDetails(空 Kind hits)` 必须返回 error）。
+- FakeAdapter 的 §14 全量：等 `quota/read` 等未实现方法补齐，再开 `LUCERO_TEST_FAKE_ADAPTER=1` 跑全表。
+- T-D 剩余 3 条：interrupted/recoverable 识别（Recovery Engine）、Idempotency 不重发、Approval 不丢
+  ——`cmd/core` 现在只有 health + ws-ticket + 单实例锁，其余 501，断言清单已在各 Skip 里。
 
 ## Blockers
 
-- **T-D 5 条用例 blocked**（都不是本角色能解的）：
+- **T-D 剩 3 条 blocked**（11:5x 更新：5 条里已有 2 条变真跑）：
   `TestCrashRestartIdentifiesInterrupted` / `TestCrashNoDuplicateMessageAfterRestart` /
-  `TestCrashApprovalNotLost` / `TestCrashEventJournalComplete` → 等 **backend** 的 `core/cmd/core`
-  （契约③ §7 已把 `core/cmd/**`、`core/api/**` 判给 backend）+ Recovery Engine；
-  `TestCrashAdapterKillDoesNotTakeCoreDown` → 等 **adapter** 的 `adapters/fake/`（目前空目录）+ Process Supervisor。
-  断言清单已逐条写在 Skip 文案里，接线后即可填。
-- **`TestProjectionRejectedJournalAndAudit` blocked**：§5.4 要求"被拒时 Notification + Audit 各一条"，
-  但全仓 `grep projection_rejected` 只命中 `internal/task/projection.go` 的一条注释，
-  没有任何 Service 产出这两条记录，也没有测试可用的 task Service。纯函数那一半已钉住。
-- **`TestWriteEntryOpenQuestions` blocked**：等主控裁 Q1/Q2（见 Coordination）。
+  `TestCrashApprovalNotLost` / `TestCrashEventJournalComplete` → 等 **backend** 的 Recovery Engine 与
+  带副作用的 HTTP 端点（`cmd/core` 现在只有 health + ws-ticket + 单实例锁，其余 501）；
+  `TestCrashAdapterKillDoesNotTakeCoreDown` → 等 **adapter** 的 Process Supervisor（第 3 轮已派）。
+- `TestFakeAdapterSubprocess`：旗标开启时会红——握手已通但 `quota/read` 报
+  `not implemented in this build`；默认关闭并如实 Skip（BUG-T6 剩这一半）。
+- `TestProjectionRejectedJournalAndAudit`：§5.4 的两条记录仍无产出方（`projection_rejected` 全仓只命中注释）；
+  已归入 backend 本轮 `task.Service` 动作集，我代做等于替它写业务。
+- `TestWriteEntryOpenQuestions` / `TestRedactionKindIsMandatory` / `TestCoreReadyEventIsJournalized`：
+  分别等主控裁 Q1/Q2、等 db+audit 落 REQ-T3 另一半、等 backend 落 REQ-T7。
 
 ## Coordination
 
-- **REQ-T5（§7 与 CO-1 打架）**：契约② §10 的 **CO-1 裁定**明写 FakeAdapter 源码住
-  `core/cmd/fake-adapter/`（adapter 的 progress 也据此把该路径写进 SCOPE，引用是**成立的**，我上一轮怀疑错了），
-  但契约③ §7 没有这一行（只有 `core/cmd/core/**`→backend）→ 我的 lint 把这个契约批准的正当落点判成"无归属越界"。
-  请照 16:52 那次补行的方式给 §7 加一行 `core/cmd/fake-adapter/**` → `adapter`。
-  另：`core/internal/notification/**` 你 17:45 已补 → 我的运行期解析当场跟上（`--explain` 可查），
-  这正好证明"不内嵌副本"是必要的——内嵌版会把它报成越界。
-- **BUG-T6（给 adapter，T-C 实测）**：见上"新发现的缺陷"①②。修好后我把 `LUCERO_TEST_FAKE_ADAPTER=1`
-  那条用例从 Skip 变成正式第二被测面，全表在真进程上重跑一遍再报。
-- **REQ-T5（§7 与 CO-1 打架）**：契约② §10 的 **CO-1 裁定**明写 FakeAdapter 源码住 `core/cmd/fake-adapter/`，
-  adapter 据此把该路径写进自己 SCOPE 的引用**成立**（我上一轮怀疑它伪造，怀疑错了，已就地纠正）；
-  但契约③ §7 没有这一行（只有 `core/cmd/core/**`→backend），于是 lint 把契约批准的正当落点判成"无归属越界"。
-  请照 16:52 那次补行的方式加一行 `core/cmd/fake-adapter/**` → `adapter`（当前命中 main.go + main_test.go 两条）。
-  旁证：`core/internal/notification/**` 你 17:45 补了行 → 我的运行期解析当场跟上（`--explain` 可查），
-  内嵌副本那版会把它误报成越界——这条正是"不要内嵌旧副本"要求的价值。
-- **BUG-T6（给 adapter，T-C 真子进程实测）**：
-  ① `adapter/initialize` 自己也被"未握手"门禁挡掉 → 握手永远完不成，实测原文
-     `PROTOCOL_NOT_INITIALIZED: adapter/initialize: adapter/initialize has not completed (contract §2)`；
-     这是 §14 验收（全 11 方法 + 4 种故障注入）的硬阻塞。
-  ② 手工探针另见 `our own initialize reply does not decode: unexpected end of JSON input`，
-     且其后有一帧完全没回话 → Core 侧只能挂到 deadline 才发现。
-  修好后我把 `LUCERO_TEST_FAKE_ADAPTER=1` 那条从 Skip 提成正式第二被测面，全表在真进程上重跑再报。
-- **REQ-T3（新的真不一致，来自 T-14③ 的接缝）**：脱敏命中的两个端点形状不同 ——
-  `db.RedactionHit{Column, Match, Count}`（单槽）vs `audit.RedactionHit{Column, Key, Pattern, Count}`（双槽），
-  分流靠 `internal/approval/store_sqlite.go` 里 `strings.CutPrefix(h.Match, "key:")` 这个**约定**。
-  内部契约 §2.2 只写了 `RedactionHit{column, key|pattern, count}`，没规定 `Match` 怎么拼。
-  后果：db 哪天不带 `key:` 前缀（或换前缀），审计会把"某个 deny-key 命中"静默记成"某条正则命中"，
-  而这串字参与 `entry_hash` —— 归因错位且事后无法修正（改了链就断）。
-  建议二选一：把前缀约定写进 §2.2，或让 db 导出带 kind 的结构（`HitKind: "key"|"pattern"`）。
-  我已把当前分流形状钉进 `TestRedactionCountersAreSealedBeforeHash`，任一侧改形状该用例先红。
-
-- **REQ-T1（现场越界，最紧急）**：`packages/toolchain/node_modules/` 下 **4601** 个第三方文件
-  既没被忽略也没被跟踪——`.gitignore` 第 4 行是根锚定的 `/node_modules/`，子目录不吃。
-  任何一次 `git add -A` 会把整棵依赖树写进版本库。`.gitignore` 归主控，请改成 `node_modules/`。
-- **REQ-T2（归属空洞）**：`packages/toolchain/**`（package.json / package-lock.json /
-  scripts/validate-openapi.mjs 已由 frontend 建出）在契约③ §7 没有归属行 → lint 判"谁写都越界"。
-  请补一行（建议 frontend，它同时是 `specs/openapi/core-v1.yaml` 的 owner，`validate-openapi.mjs` 就是为它服务的）。
-- **已按 17:20 要求办妥，无需再处理**：权威源换到契约③ §7；§7 最后两行（evidence/.scratch 不入库）
-  与 T-A 第 5 条合并为同一条，没写第二遍；frontend 三条可写范围已进表；§6.3 那条做成了
-  "yaml 缺席只标记、yaml 落地即判"的形态，不会常驻红。
-  顺带一条好消息：`specs/openapi/core-v1.yaml` 已在 17:2x 由 frontend 生成，与契约③ §3 的资源前缀
-  **11 对 11 完全一致**，所以第三腿从今天起就是活的。
-- **CO-T3（引用了不存在的裁定）**：`internal/adapter/handshake.go:378` 的 writeMethods 注释引用
-  "§12.11 (ruled 2026-09-19)"，但 `grep -rn "12\.11" specs/ docs/adr/` 全文无命中。
-  若该裁定成立请回写契约② §3（写方法清单），否则不构成判据。
-  连带两问：**Q1** approval/respond 被移出写方法集合 → `write_entry:false` 的只读 Adapter 现在允许
-  Core 调它，是否与 §3 字面"任何写方法返回 WRITE_ENTRY_NONE"一致？
-  **Q2** `session/create` 出现在 writeMethods 里，但协议 §4 方法表没有这个方法。
-- **CO-T4（两处所有权来源冲突）**：`specs/adapter-protocol/**` 按 §7 归主控、按 orchestration 角色表归
-  adapter，且 adapter 已据此派发并在改（17:07 lint 已报）。lint 暂不计越界，只提示，请裁定。
-- **CO-T5（文档漂移）**：`specs/contracts-internal-v0.1.md` §5 仍写"000002 给 **9 张**表加 version"，
-  实际 `000002` 是 10 条 ALTER（与 ADR-017 修正后一致）。账本已记录 9→10 的更正，这一行漏改。
-- **INFO-T6（我按实现口径钉的一处）**：§5.3 的 `execution_interrupted → RUNNING→INTERRUPTED`
-  在 §5.1 里只对 Recovery 开放，`guardAny` 因此用 `Check(..., Recovery, ...)` 校验投影。
-  我按"Recovery 是 Normal 超集"钉住了这个口径；若主控认为 §5.3 只应在 Recovery 场合驱动 Task，需改契约并连带改测试。
+- **REQ-T7（给 backend，实测）**：契约① §6 登记了 `core_ready` / `core_shutdown`（后者还要 Audit），
+  但 `cmd/core` 启动两次、`/health` 都回 READY、迁移记账到 v3 之后，`event_journal` 仍是 **0 行**。
+  已钉成 `TestCoreReadyEventIsJournalized`（Skip 带实测原文），补上即转硬断言。
+- **REQ-T8（新越界，非我这个角色能修）**：`.qoder/scratch/` 下有 4 个一次性 Python 补丁器
+  （`fin.py`/`fix_t6.py`/`upd.py`/`upd2.py`，时间戳 18:23~11:25，`grep -ln qoder/scratch` 指向 `adapter.md`，
+  脚本内容是在改 `.qoder/progress/adapter.md`）。`.gitignore` 只忽略 `.qoder/evidence/` 与 `.scratch/`，
+  **不覆盖 `.qoder/scratch/`**，§7 也没有这一行 ⇒ 主控任何一次 `git add -A` 会把别人的临时工具写进版本库。
+  建议：并入已忽略的 `.scratch/<role>/`，或给 §7 补行 + .gitignore 加 `.qoder/scratch/`。
+- **Q1/Q2 重述（主控说在文件里找不到原文，这次带条款原文）**：
+  - **Q1** `approval/respond` 算不算契约② §3 的"写方法"？§3 原文：
+    "**`write_entry: false` 是合法声明**…此时**任何写方法返回 `WRITE_ENTRY_NONE`**，Core 必须把该 Adapter
+    归为"只读观测型"，UI 不得渲染任何写操作入口，也不得降级去点 UI 假装写成功——除非该 Adapter 显式声明了
+    `UI_AUTOMATION` 等级的对应能力。" §3 **没给写方法清单**。`internal/adapter/handshake.go` 的 `writeMethods`
+    刻意排除 `approval/respond`，注释理由是 "approvals travel on the permission channel and are gated by
+    Permission Engine, not by write_entry" 并引用 **"§12.11 (ruled 2026-09-19)"**；
+    本轮再查（11:3x）：`grep -rn "12\.11" specs/` **仍然零命中**。
+    现实后果：`write_entry:false` 的只读 Adapter 现在允许 Core 调 `approval/respond`。
+    要么把清单回写进 §3（我就把 `approval/respond` 加进我的 `writeMethods` 断言表），要么维持现状但把例外写明。
+  - **Q2** `session/create` 出现在 `handshake.go` 的 `writeMethods` 里，但契约② §4 方法表**没有这个方法**
+    （`grep -rn "session/create" specs/` 零命中）。是要新增端点，还是写方法表里的笔误？
 
 ## Changed files
 
-- `scripts/check_ownership.sh`（新建）— 6 条越界检查 + `--selftest`
-- `scripts/crash_recovery.sh`（新建）— FIRST SPRINT §7 的跑法与 blocked 清单
-- `core/test/statemachine_test.go`（新建）— §5.1/§5.2 独立转录双向对账
-- `core/test/projection_test.go`（新建）— §5.3/§5.4 投影
-- `core/test/adapter_contract_test.go`（新建）— 协议 §2/§3/§5/§7/§9 + CO-4 线格式
-- `core/test/crash_test.go`（新建）— §7 Crash 清单（2 真跑 + 5 skip）
-- `core/test/audit_chain_test.go`（新建）— T-14 哈希链时序不变量（逐列篡改 + Seal 顺序 + 脱敏接缝）
-- `core/test/adapter_contract_test.go`（改）— 加第二个被测面：真子进程 FakeAdapter（真 build + stdio ndjson）；
-  并按 T-21 更正 §5.4 措辞、按 T-24 把 check_2 的扫描换成 `cross_package_refs` 四桶分类
-- `.qoder/progress/test.md`（新建/更新）— 本文件
+- `scripts/check_ownership.sh` — 7 条检查；§7 运行期解析（无副本、<12 条规则即 exit 2）、
+  fail-closed 前置检查（扫描面异常直接拒绝出报告）、`--explain`/`--rules`、`--selftest` 合成越界自证
+- `scripts/crash_recovery.sh` — FIRST SPRINT §7 的跑法与 blocked 清单
+- `core/test/statemachine_test.go` — §5.1/§5.2 独立转录，双向对账 + 终态 + UNKNOWN
+- `core/test/projection_test.go` — §5.3/§5.4 投影（含 T-21 更正后的四条待填断言）
+- `core/test/adapter_contract_test.go` — 协议 §2/§2.2/§3/§5/§7/§9 + CO-4 线格式；
+  第二被测面 = 真子进程 FakeAdapter（真 build + stdio ndjson）
+- `core/test/audit_chain_test.go` — T-14 哈希链时序不变量（13 列篡改 / Seal 顺序 / 脱敏接缝），
+  已跟 REQ-T3 的 Kind 新形状；`TestRedactionKindIsMandatory` 记剩余一半
+- `core/test/crash_test.go` — §7 Crash 清单：2 条真跑（杀 Core + 同目录无干预重启 + integrity）+ 骨架
+- `.qoder/progress/test.md` — 本文件
 
 ## Verification evidence
 
-- 18:1x `LUCERO_TEST_FAKE_ADAPTER=1 go test -run TestFakeAdapter` → 真 build+真启动成功、
-  §2 未握手拒答断言通过、握手缺陷按原文报出后 Skip 后续（未拿桩绿冒充真进程绿）
-- 17:50 四条验收一次性重跑：`go test -count=1 -v ./test/...` → **20 PASS / 7 SKIP / 0 FAIL** exit 0；
-  `check_ownership.sh` → exit 0（0 越界）；`--selftest` → exit 0；`crash_recovery.sh` → exit 0
-  → `.qoder/evidence/test/{go-test,ownership-lint,selftest,crash}-final.txt`
-- 17:23 `bash scripts/check_ownership.sh` → exit 1，4 项越界（REQ-T1 的 **4722** 个文件汇总成 1 条 +
-  packages/toolchain 3 个文件），其余 6 条检查 0 越界 → `.qoder/evidence/test/ownership-lint-final.txt`
-- 17:23 `bash scripts/check_ownership.sh --selftest` → SELFTEST OK（新增两腿：前缀差集合成件报出 1 条、
-  事件目录那一腿必须真读到契约① 否则判为永真式）
-- `bash scripts/crash_recovery.sh` → 1 PASS + 5 SKIP，退出码 0
-- CanonicalKey 的归一形状已实测并钉住：`Access_Token` → `accesstoken`（去下划线 + 小写）。
-- 变异验证 6 次：T-B 假边、T-C 两处（major / write_entry）、T-D 补提交、
-  T-14 把不参与哈希的 `signature` 加进篡改表（立即报红，证明篡改循环不是空转）、
-  §6.3 前缀差集合成件。每次都红，还原后绿。
-- **REQ-T1/T2 已闭环**（不是我修的，是报告生效）：主控 17:2x 把 `node_modules/` 补成非根锚定；
-  frontend 按 T-17 裁定把 `packages/toolchain/` 并进 `apps/desktop` 的 devDependencies。
-  本 lint 最后一条越界随之归零。
-- check_7 曾经报过一条 `yaml 有 /api/v1/ws-ticket 但契约③ §3 没写`：查证是我的比对范围取窄了
-  （ws-ticket 是 T-17 写在 §2.1 的合法端点），已改为比对整份契约③。**留一句给主控**：
-  §3 的"最小端点集"因此与实际端点面不完全重合，要不要把 ws-ticket 归位进 §3 由你判。
-- T-A 第 1 条现在有真证据了：`internal/approval/store_sqlite.go` 落地后，5 处 `FROM approvals`
-  全部位于 `internal/approval/`（16:37 那次是 0 命中＝还没实现，不是通过）
-- 期间观察到的在途变更（不是我的）：`adapter` 于 16:50 把 `ErrorCode` 从符号字符串改成 JSON-RPC 整数、
-  17:08 又调整了 writeMethods 归类——我的 harness 因此**不写死具体码值**，只钉"线上是数字且等于 Go 常量"
+- 11:59 四条验收一次性重跑：`go test -count=1 -timeout 350s ./test/...` → **22 PASS / 10 SKIP / 0 FAIL**（exit 0）；
+  `check_ownership.sh` → exit 1（4 条 = REQ-T8）；`--selftest` → exit 0；`crash_recovery.sh` 前两条为 PASS
+  → `.qoder/evidence/test/{go-test,ownership-lint,selftest}-final.txt`
+- 真跑凭据：`core.endpoint` 由 Core 自己写出（`{"host_port":"127.0.0.1:xxxx","token":...}`）、
+  `/api/v1/health` 回 `{"state":"READY","version":"0.1.0-dev","migration_version":3,"ready":true}`、
+  `Process.Kill()` 后目录里留着 `lucero.db-wal/-shm`、重开后 `PRAGMA integrity_check` = `ok`、
+  tables=44、schema_migrations=[1,2,3]
+- **本轮三次自纠（都是我先说错/写错、核实后改）**：
+  ① 我怀疑 adapter 伪造 `CO-1` 引用来扩 SCOPE —— 实际 CO-1 在契约② §10:169，引用成立；真问题是 §7 漏同步（REQ-T5，已由你补行）。
+  ② 我的 `literal` 桶第一版放宽到"字符串里含表名"，被 `"stream frames must be notifications"`
+     和 `--dangerously-bypass-approvals-and-sandbox` 里的 `approvals` 淹掉 → 收紧为"整个字面量等于表名"。
+  ③ 我写的同目录重启用例有竞态（读上一代残留 `core.endpoint` 拿已死端口去请求）→ 改成"文件 mtime 前移 + 端口换掉"；
+     另外两条占位代码 `Process.Wait()` 造成 600s / 150s 死锁，已删。
+- 变异验证累计：T-B 假边、T-C major/write_entry、T-D 补提交、T-14 塞 `signature`、§6.3 前缀合成件、
+  T-24 `cross_package_refs` 三断言、前置检查必须 exit 2 —— 每次都能红，还原后绿
+- REQ-T1/T2 前提复核为不存在：`packages/` 只剩 `api-client`、`git status --untracked-files=all` 里 node_modules 计数 0
 
 ## Recovery note
 
-- Interruption point: lint 改版完成并跑过（7 条），四类交付齐；等主控回 Q1/Q2 与 REQ-T1/T2
-- First action after recovery: 重跑 `bash scripts/check_ownership.sh` 看 REQ-T1/T2 是否已被修；
-  然后看 `adapters/fake/` 是否有可执行物，有就给 `subjects()` 加第二个实现
+- Interruption point: 11:59 交付完成。等主控转派 REQ-T7 / REQ-T8、裁 Q1/Q2，等 db+audit 落 REQ-T3 另一半、
+  等 adapter 补 FakeAdapter 未实现方法、等 backend 落 Recovery Engine 与写端点
+- First action after recovery: 依次重跑 `LUCERO_TEST_FAKE_ADAPTER=1 go test -run TestFakeAdapter`、
+  `go test -run 'TestRedactionKind|TestCoreReady|TestCrash'`、`bash scripts/check_ownership.sh`，
+  任一从 Skip 转 PASS/FAIL 即按注释里的口径把断言改成硬的；改完必须再跑一遍变异验证才算数

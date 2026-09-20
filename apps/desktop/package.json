@@ -1,0 +1,29 @@
+{
+  "name": "@lucero/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Lucero 垂直链观察面板（浏览器里的 Vite + Vue 3 + TS；本 Sprint 不碰 Tauri）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "validate": "node scripts/validate-openapi.mjs",
+    "codegen": "openapi-typescript ../../specs/openapi/core-v1.yaml -o ../../packages/api-client/src/gen/schema.ts"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^10.1.0",
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "openapi-typescript": "^7.4.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8",
+    "vue-tsc": "^2.2.0"
+  }
+}

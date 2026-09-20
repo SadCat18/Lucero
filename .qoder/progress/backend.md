@@ -29,6 +29,9 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 - [x] §5.4 的另一半"Notification + Audit 各一条" —— 第六批闭环（真表 + 真 notification.Service，第 32 条）；
       Audit 侧目前是接缝 + 计数用例，生产适配器属 `cmd/core` 接线（见 Remaining）
 - [x] `internal/notification` 新归属：`Service.Notify` + 只读 `Get`/`ListByState` + §6 键对账（第 31 条五包全绿）
+- [x] 最小可联调 Core 骨架：`/api/v1/health`（免鉴权、四字段取自真库）+ `/api/v1/ws-ticket`（一次性短票，
+      REQ-F-11 反向用例过）+ 其余 501 + CORS/Bearer/Principal 三道闸；单实例锁可被 crash 后的接管；
+      **真进程冒烟通过**（第 36 条原文），联调命令已写进 Completed 第七批
 
 ## Scope boundaries
 
@@ -41,12 +44,12 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 
 ## Current checkpoint
 
-- Stage: Wave-2 backend 第六批 —— B-backend-2/3 均解除；写侧第一步（§5.3/§5.4 落库路径）+ notification 包落地跑绿
-- Status: in_progress（写侧目前只完成 `ApplyExecutionEvent`；其余 Task 动作、transport 层未做）
-- Last verified action: Verification evidence 第 30~34 条
-- Next action: 给 `task.Service` 补剩余状态动作（`Create`/`Queue`/`Prepare`/`Pause`/`Resume`/`Cancel`/`Accept`），
-  复用本轮那条同事务路径（读 status+version → If-Match → `Check` → `Touch`），每个动作一条真表用例
-- Verification: `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 180s ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/` 全 ok
+- Stage: Wave-2 backend 第九批 —— T-32/T-33 落口径（注释改写，零行为变化）；八包最后一次重跑全绿
+- Status: in_progress（写侧仍只有 ApplyExecutionEvent；task 其余动作与 execution.Service 未做）
+- Last verified action: Verification evidence 第 45~47 条（第八批的 40~44 仍是同批用例清单）
+- Next action: 回到 `task.Service` 补剩余状态动作（Create/Queue/Prepare/Pause/Resume/Cancel/Accept），
+  每个动作一条真表用例；`/api/v1/tasks` 等端点随之从 501 换成真 handler
+- Verification: `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 240s ./api/... ./cmd/core/ ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/` 八包全 ok
 
 ## Completed
 
@@ -112,6 +115,37 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
   否则那条断言会把"应当恰有一行 notification_created"误判成违规。
 - 完成判据里"§5.4 的另一半（Notification+Audit 各一条）"本轮已交付，见第 32 条。
 
+### 第七批：Core 骨架 + transport 薄层（解锁 frontend B-F1 与 test 的 Crash 用例）
+
+- `core/api/http/handler.go`（package `httpapi`）：`/api/v1/health`（唯一免鉴权）、`/api/v1/ws-ticket`
+  （一次性短票：30s、单次使用、校验即作废、只在内存不入库）、其余 `/api/v1` 与 `/ws/v1` 一律 501 +
+  契约③ §2 的错误体。中间件顺序 CORS → Bearer（常量时间比较）→ `X-Lucero-Principal`。
+  零业务判断、零状态迁移，也不 import 任何业务包 —— 纯 transport。
+- `core/cmd/core/{main,lock}.go`：把已存在的环节真接上（Config → 单实例锁 → SQLite → 装脱敏 →
+  Migration → endpoint 文件 → HTTP → Ready）；`Vault`/`Recovery`/`AdapterSupervisor`/`Scheduler`
+  四个还没人交付的组件**没有摆 nil 占位**。Ctrl-C 走 graceful shutdown（先 STOPPING 再 Shutdown）。
+- 联调入口：`go run ./cmd/core -data-dir <dir> -migrations migrations`，从 `<dir>/core.endpoint`
+  取 `host_port` 与 `token`。
+
+### 第八批：/ws/v1/events 真接通
+
+- `core/api/websocket/{ws,frames}.go`（package `wsapi`）：握手（`Sec-WebSocket-Accept` 用 RFC 6455 §1.3）、
+  帧读写（客户端必须掩码、不认分片、入站上限 64KiB）、`hello` → 补发 → 实时 → 心跳 → `resync_required`。
+  出站一律单帧文本；心跳是 `{"type":"ping","server_seq":N}`，**故意不带 event_id**（契约① §2）。
+  零业务判断，事件全部来自注入的 `Journal` 读视图。
+- 顺序有意为之：**先判 CORS、再判是不是真握手、最后才 Redeem 票**。
+  反过来的话，一个坏握手或一个被挡的外部页面就会白烧一张一次性凭证（两条用例分别钉住 `Redeem` 次数为 0）。
+- 游标两处都收：`?from_seq=`（契约① §8）与 hello 里的 `from_seq`（契约③ §5），后者优先。
+  游标比 journal 最老一行还老 → 第一帧 `resync_required`，然后退到现存最老一行继续推，
+  不把门关上（客户端按契约改走 REST 全量拉）。
+- 没有 EventBus 之前"实时"= 200ms 级轮询已提交的行；这仍然满足 ADR-008（读的就是已提交状态，
+  不需要谁通知），`ponytail:` 已标注升级路径。`framer` 加了互斥锁：主循环写文本帧、读协程写 pong。
+- `cmd/core/journal.go`：`event_journal` 的读视图（`After`/`Oldest`）。归属见 REQ-WS-2。
+- `cmd/core` 的 handler 把两个面拼起来：`/ws/v1/events` 走短票，其余 `/api/v1` 走 Bearer，
+  来源判定共用 `httpapi.LoopbackOrigin` 一份规则。
+- 手写帧的代价与上限：`go run` 起不来第三方 WS 库（go.mod 归主控，见 REQ-WS-1），
+  所以帧这一层是我自己实现的，用 RFC 官方常量做外部锚点；`-race` 在这台机器跑不了（要 CGO）。
+
 ## Remaining
 
 - `task.Service` 的其余状态动作：`Create`（`Tx.Create` + `task_created`）、`Queue`/`Prepare`/`Pause`/`Resume`/
@@ -124,6 +158,9 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
   源码里带 `ponytail:` 标注，等 transport 落地时统一加。
 - `session.Service` / `quota.Service` 公开面，以及 §3 新补的 `POST /executions/{id}/send` 所需的面。
 - §7 垂直链的完整端到端测试属 `test` 角色；我这五包只有 Task 半边（`TestVerticalChainTaskHalf`）。
+- WS 的两件后续：① 用真正的"提交后通知"替掉 `Poll` 轮询（等 EventBus / Scheduler）；
+  ② `journalReader` 从 `cmd/core` 迁走（REQ-WS-2 定了归属之后）。
+  不支持 `permessage-deflate`：要压缩得单开一层，现在忽略该扩展头。
 
 ## Blockers
 
@@ -139,100 +176,6 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
   `permission` 的 `Decide` 现在返回三个值，他们的 `vertical_slice_test.go:58` 等 10 处还是两个变量的旧写法。
   交付前当场重跑确认仍红（第 34 条原文），我没碰那个目录。提醒 audit 注意 §1.1 第 10 条那类连锁：
   改导出签名要在同一轮改完自己的调用点/用例。
-
-### 第五批：处理巡检投递 T-8（含 T-4）
-
-25. **T-8② session 超时复跑**（原文，命令照主控给的）：
-    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/session/ -count=1 -timeout 90s -v`
-    ```
-    === RUN   TestForTaskReturnsSessionsOfEveryProvider
-    --- PASS: TestForTaskReturnsSessionsOfEveryProvider (0.01s)
-    --- PASS: TestGetDoesNotCoerceUnknown (0.01s)
-    --- PASS: TestListMessagesOrdersBySequenceThenTime (0.01s)
-    --- PASS: TestEventCatalogMatchesContract6 (0.00s)
-    --- PASS: TestWordListsMatchSchemaChecks (0.01s)
-    PASS
-    ok  	github.com/SadCat18/lucero/core/internal/session	1.665s
-    ```
-    结论：**没有超时**，1.665s。那个 601.566s 是第三批（第 12 条）定位并修掉的 `ForTask` 单连接死锁
-    —— 边持游标边对同一个 `*sql.DB` 发第二条查询。栈里的 `sql.DB.connectionOpener` 是任何 `sql.DB`
-    都有的后台 goroutine，不是"开了库等不到东西"的证据；真正的证据是超时 + 栈停在 `(*DB).query`。
-    修完到现在每次重跑都是 1.5~1.7s。vet 通过确实不等于测试通过，所以我按主控要求跑的是测试而不是只交 vet。
-26. **T-8③ 注释事实核实：我那句是错的，但投递给的理由也不准确 —— 结论是符号在另一个包。**
-    四条可复现命令的实测结果：
-    ```
-    $ go doc database/sql                    # 导出类型里没有任何 Queryer / QueryerContext / Execer
-    $ go doc database/sql.QueryerContext     # doc: no symbol QueryerContext in package database/sql
-    $ var _ sql.QueryerContext               # 编译报 undefined: sql.QueryerContext
-    $ go doc database/sql/driver.QueryerContext
-    package driver // import "database/sql/driver"
-    type QueryerContext interface { QueryContext(ctx, query string, args []NamedValue) (Rows, error) }
-    ```
-    即：`QueryerContext` 从来只在 `database/sql/driver`（Go 1.8 加的就是 driver 包），
-    而且是**驱动侧 SPI**（参数 `[]driver.NamedValue`、返回 `driver.Rows`），`*sql.DB` 并不满足它；
-    `database/sql` 压根没导出过这个名字。所以我上一轮注释里"本工具链没导出它"的框定是错的（好像这台机器异常），
-    投递里"`database/sql` 自 Go 1.8 起导出 `QueryerContext`"同样是错的（包名搞错）。
-    做法不变（窄 `Queryer` 保留），四包注释已改成上面这个准确理由，证据命令留在
-    `internal/session/repository.go`。探针目录 `core/.scratch/` 已删（它在 module 内，留着会红 `go build ./...`）。
-27. **T-4 两处破坏性变更：我的代码本来就没踩**（实测过才敢说）：
-    `tx.Create(db.AggTask, id, []string{"title", ...}, ...)` 里 `id` 一直是独立参数、没进 `columns`
-    （`TestRepositoryReadsWhatTouchWrote` / `TestPayloadLandsInJournalWithSchema` / `rejection_db_test.go`
-    三处真表写入全过）；`ErrAggregateNotFound` 我还没在业务代码里引用（写侧 Service 才用得上）。
-    聚合表从不用 `Append` 写：只 `Append("principals", ...)`，而 principals 不在 aggTables 里。
-    `event_journal.principal_id` 外键这件事我在第 18 条之前就是靠"先建 principals 行"过的，
-    与 db 给的事实一致（空 PrincipalID → NULL，不撞外键）。
-28. **`"schema":1` 由平台层补 → 我把业务包里那份重复保证删了**（C8 就此关闭）：
-    `task.Payload()` / `execution.Payload()` 现在只做 struct→map；两个 catalog 测试的期望键
-    改成与 §6 的"payload 关键字段"列**逐键相等**（不再自己加一个 schema 键），
-    另两个重复的 `TestPayloadCarriesSchemaVersion` 删除；保证本身改由真表钉：
-    `TestPayloadLandsInJournalWithSchema` 读 `event_journal.payload_json` 断言含 `"schema":1`
-    且 `title`/`priority` 在场 —— 少一个环节都会红。
-29. **交付前最后一次重跑**（第 26 条的四包注释改动之后，此后只动过 markdown）：
-    `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 120s ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/...`
-    ```
-    ok  	github.com/SadCat18/lucero/core/internal/task	1.776s
-    ok  	github.com/SadCat18/lucero/core/internal/execution	1.704s
-    ok  	github.com/SadCat18/lucero/core/internal/session	1.596s
-    ok  	github.com/SadCat18/lucero/core/internal/quota	1.580s
-    ```
-    `gofmt -l internal/` → 空；`go vet` 这四包 → 无输出。
-    （更早一次同批重跑是 `1.826 / 1.731 / 1.607 / 1.582`，那是注释改动之前，只作过程记录。）
-
-### 第六批：写侧第一步 + notification 包（B-backend-2/3 解除后）
-
-30. **B-backend-2 解除的当场证据**：`grep -n "func (tx \*Tx)" internal/platform/db/touch.go` →
-    `125 RedactionHits / 135 QueryRowContext / 139 QueryContext / 146 Touch / 200 Create / 236 Append`；
-    `AggNotification` 也在注册表里（`touch.go:32`，`:45` 映射到 `notifications`）。
-31. **交付前最后一次重跑**（本批所有代码改动之后，此后只动过 markdown）：
-    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 180s ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/`
-    ```
-    ok  	github.com/SadCat18/lucero/core/internal/task	1.879s
-    ok  	github.com/SadCat18/lucero/core/internal/execution	1.640s
-    ok  	github.com/SadCat18/lucero/core/internal/session	1.540s
-    ok  	github.com/SadCat18/lucero/core/internal/quota	1.546s
-    ok  	github.com/SadCat18/lucero/core/internal/notification	1.634s
-    ```
-    同批 `gofmt -l` 这五包 → 空；`go vet` 这五包 → 无输出。
-32. **§5.4 闭环跑通**（`TestApplyExecutionEventRejection`，真库真表 + 真 `notification.Service`）：
-    Task 停在 `PREPARING` v1、`aggregate_type='task'` 事件零新增；`aggregate_type='notification'` 恰一行
-    （`notification_type=projection_rejected`、`state=UNREAD`、`priority=HIGH`、`task_id` 指向那条 Task）；
-    Audit 恰一次；`Result.Rejection.Reason` 非空。同组另三条：推进路径 `→ WAITING_APPROVAL v2` 且
-    `task_waiting_approval` 的 payload 真带 `approval_id`；If-Match 不符 → `ErrVersionConflict`，
-    事件行与状态版本都没动；reporter 为 nil → 返回 error 而不是静默吞。
-33. 第 32 条那组断言做过**变异验证**：临时让被拒分支照样 `Touch`，用例按要求失败（对照组不受影响）：
-    ```
-    --- FAIL: TestApplyExecutionEventRejection (0.04s)
-        service_test.go:166: §5.4：aggregate_type=task 的事件必须零新增（只剩建行那条），实际 2
-    ```
-    变异代码从 `/tmp/service.go.bak` 还原后才跑的第 31 条。
-34. **别人的红（只报不修）**：`go test -count=1 ./internal/approval/` →
-    ```
-    internalpprovalertical_slice_test.go:58:17: assignment mismatch: 2 variables but eng.Decide returns 3 values
-    （:61 :67 :70 :87 :98 :108 :115 :121 :202 同错，too many errors）
-    FAIL	github.com/SadCat18/lucero/core/internal/approval [build failed]
-    ```
-    `permission.Decide` 改三值返回后 audit 侧调用点没同批改完 —— 正是内部契约 §1.1 第 10 条说的连锁。
-    全仓其余包当场 `ok`（第六批那次 `./internal/...` 除这一包外十个包全绿），只有它红。
 
 ## Coordination
 
@@ -260,12 +203,33 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
   所以我删掉了 `task`/`execution` 两份 `Payload()` 里的重复注入与两个重复用例，改为真表断言
   `TestPayloadLandsInJournalWithSchema`（读 `event_journal.payload_json`）。
   `task`/`execution` 仍保留 struct→map 的 marshal 助手（C4-① 要求 payload 留业务包），只是不再各自保证 schema。
-- **C15 → 主控（T-8③ 的核对结果：两边说法都不准，正解在第三个包）** 我说"这台工具链没导出
-  `sql.QueryerContext`"、投递说"`database/sql` 自 Go 1.8 起就导出了"——实测 `QueryerContext` 只在
-  **`database/sql/driver`**（Go 1.8 新增的正是 driver 包那批 `*Context` 接口），且是驱动侧 SPI
-  （`[]driver.NamedValue` / `driver.Rows`），`*sql.DB` 不满足；`database/sql` 从来没导出过这个名字。
-  完整命令与输出见 Verification 第 26 条。窄 `Queryer` 按主控意见保留，四包注释已改成准确理由。
-  不需要动工具链，也不需要改任何契约；这条只是把事实钉平，别让下一个人再去试 `sql.QueryerContext`。
+- **REQ-WS-1 → 主控** 机器上没有可用的 WS 依赖（`go.mod` 里没有任何 websocket 库），
+  而 `/ws/v1/events` 是 frontend 与 test 的硬前置 → 我按 RFC 6455 手写了两百来行服务端帧层。
+  这是"不加依赖"的代价换"今天就能联调"；如果你更想要 gorilla/websocket，请在 go.mod 上加一行并允许下载，
+  我把 `api/websocket` 的帧层换掉，用例不动（它们走的是真连接，不依赖内部实现）。
+- **REQ-WS-2 → 主控/db** `event_journal` 的**读**视图没有归属：§7 把 eventjournal 包给了 db，
+  但它现在只有 catalog + `Registered()`，`internal/platform/db` 也只有写入口（Touch/Create/Append）。
+  我暂时把 `journalReader` 放在 `cmd/core`（transport 的接线点，只读已提交的行）。
+  若 db 愿意收，我就删这一处；`Journal` 接口不变，换实现即可。
+
+- **REQ-T-1 → 主控** `/health` 的 `state` 词表三份契约都没定义（只给四字段名）。我按启动阶段实现成
+  `BOOTING/READY/STOPPING`（常量在 `api/http/handler.go`），`ready` 布尔才是前端的权威闸门；要换词表说一声。
+- **REQ-T-2 → 已撤回（T-33）** v0.1 不做迁移内嵌，继续 `cmd/core -migrations <目录>`。
+  我实测的那条限制（`//go:embed ../migrations/*.sql` → `invalid pattern syntax`，embed 不能越包目录）
+  已由主控并进环境事实清单；`-migrations` 的帮助文本已从"待裁"改成引用 T-33。
+- **REQ-T-3 → 主控（悬空引用）** 契约③ §2 说错误体 `code` "复用契约② §错误码集合"，但
+  `specs/adapter-protocol/adapter-protocol-v0.1.md` 里没有错误码那一节（grep "错误码" 只命中 `debug/fail`）。
+  transport 层暂用 `unauthorized / origin_not_allowed / method_not_allowed / not_implemented`，
+  其中只有 `version_conflict` 是契约白纸黑字写过的。等集合落地再对齐，不自己造词表。
+- **REQ-T-4 → 主控（两条解释我不敢自己定）** ① `/ws-ticket` 按"不改变业务状态"处理，因此**不**要求
+  `X-Lucero-Principal`（也不进幂等缓存，REQ-F-11 明令）；② CORS 默认放行回环来源
+  （`127.0.0.1:*` / `localhost` / `[::1]`），否则 Vite 开发服直接 403 —— 等于我一边"解锁 frontend"一边把它挡在门外；
+  非回环一律 403。两条请点头或改。
+
+- **C15 → 已裁定并落地（关闭）** 主控在 T-32 撤回了自己那句"`database/sql` 自 Go 1.8 起导出 `QueryerContext`"，
+  结论与我的核对一致：**`database/sql` 从来不导出任何 `Queryer*`**，`driver.QueryerContext` 是驱动侧 SPI
+  （收 `[]driver.NamedValue`、返回 `driver.Rows`），`*sql.DB` 不满足它 → 调用方自定义窄接口是标准做法、与这台机器无关。
+  四包注释已按 T-32 给的措辞改写（权威版在 `internal/session/repository.go`，另三条指过去），窄接口设计保留不动。
 - **C9 → 主控（我的推断，需确认）** C2 补登 `execution_resumed`（payload `from`）后，我把它定义为
   `PAUSED|WAITING_INPUT|INTERRUPTED → RUNNING` 三条边共用；其中 `INTERRUPTED→RUNNING` 归 resumed
   是我的推断（§5.2 只给了边，§6 没说 from 的取值集合）。若只想要前两条，删 `events.go` 里那一个 case 即可，
@@ -321,7 +285,9 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 - `core/internal/task/rejection_db_test.go`（新建）— 真库真表的 §5.4 差分测试（拒投影 0 事件/状态版本不动
   vs 合法投影 +1 事件/version 2）；`internal/task` 的调用点已全部对齐三值签名
 
-我未创建/修改：`core/api/**`、`core/cmd/**`（见 C10）、`core/migrations/**`、`internal/platform/**`、
+第七批起我**有权**写 `core/api/**` 与 `core/cmd/core/**`（契约③ §7），那两个目录下的新文件都在范围内；`core/cmd/fake-adapter/**` 是 adapter 的，我没碰。
+
+我未创建/修改：`core/migrations/**`、`internal/platform/**`、
 `internal/eventjournal/**`、`internal/approval|permission|audit/**`、`core/go.mod`、`core/go.sum`、`specs/**`。
 
 第六批（写侧第一步 + notification 新包）：
@@ -330,6 +296,16 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 - `core/internal/task/service.go`（新建）— `ApplyExecutionEvent` + `RejectionReporter`/`RejectionReport`/`Command`/`Result` + `ErrVersionConflict`
 - `core/internal/task/service_test.go`（新建）— 真表 4 条：推进、If-Match 409、§5.4 闭环（真 notification.Service + Audit 计数）、无 reporter 必失败
 - `core/internal/task/rejection_db_test.go`（改）— 计数收窄到 `aggregate_type='task'`
+
+第八批（WS）：
+- `core/api/websocket/ws.go`、`core/api/websocket/frames.go`、`core/api/websocket/ws_test.go`（新建）
+- `core/cmd/core/journal.go`、`core/cmd/core/ws_smoke_test.go`（新建）
+- `core/api/http/handler.go`（改）— 回环来源判定导出为 `LoopbackOrigin`，供 REST 与 WS 共用一份规则
+- `core/cmd/core/main.go`（改）— handler 拼成 mux：`/ws/v1/events` + 其余走 REST
+
+第七批（骨架 + transport）：
+- `core/api/http/handler.go`、`core/api/http/handler_test.go`（新建）
+- `core/cmd/core/main.go`、`core/cmd/core/lock.go`、`core/cmd/core/core_test.go`（新建）
 
 第四批（只读侧补齐）：
 - `core/internal/task/domain.go`（新建）— Task 聚合类型（**没有** adapter/session 字段，ADR-013 的结构性体现）
@@ -448,10 +424,207 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
     SUCCEEDED 与 UNKNOWN 两行走不进来（有反面数据，所以不是空断言）；
     `TestListByTaskShowsEveryAttempt`：同一 Task 跨两家软件四次尝试，TaskID 全部不变、attempt_no 递增。
 
+### 第五批：处理巡检投递 T-8（含 T-4）
+
+25. **T-8② session 超时复跑**（原文，命令照主控给的）：
+    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/session/ -count=1 -timeout 90s -v`
+    ```
+    === RUN   TestForTaskReturnsSessionsOfEveryProvider
+    --- PASS: TestForTaskReturnsSessionsOfEveryProvider (0.01s)
+    --- PASS: TestGetDoesNotCoerceUnknown (0.01s)
+    --- PASS: TestListMessagesOrdersBySequenceThenTime (0.01s)
+    --- PASS: TestEventCatalogMatchesContract6 (0.00s)
+    --- PASS: TestWordListsMatchSchemaChecks (0.01s)
+    PASS
+    ok  	github.com/SadCat18/lucero/core/internal/session	1.665s
+    ```
+    结论：**没有超时**，1.665s。那个 601.566s 是第三批（第 12 条）定位并修掉的 `ForTask` 单连接死锁
+    —— 边持游标边对同一个 `*sql.DB` 发第二条查询。栈里的 `sql.DB.connectionOpener` 是任何 `sql.DB`
+    都有的后台 goroutine，不是"开了库等不到东西"的证据；真正的证据是超时 + 栈停在 `(*DB).query`。
+    修完到现在每次重跑都是 1.5~1.7s。vet 通过确实不等于测试通过，所以我按主控要求跑的是测试而不是只交 vet。
+26. **T-8③ 注释事实核实：我那句是错的，但投递给的理由也不准确 —— 结论是符号在另一个包。**
+    四条可复现命令的实测结果：
+    ```
+    $ go doc database/sql                    # 导出类型里没有任何 Queryer / QueryerContext / Execer
+    $ go doc database/sql.QueryerContext     # doc: no symbol QueryerContext in package database/sql
+    $ var _ sql.QueryerContext               # 编译报 undefined: sql.QueryerContext
+    $ go doc database/sql/driver.QueryerContext
+    package driver // import "database/sql/driver"
+    type QueryerContext interface { QueryContext(ctx, query string, args []NamedValue) (Rows, error) }
+    ```
+    即：`QueryerContext` 从来只在 `database/sql/driver`（Go 1.8 加的就是 driver 包），
+    而且是**驱动侧 SPI**（参数 `[]driver.NamedValue`、返回 `driver.Rows`），`*sql.DB` 并不满足它；
+    `database/sql` 压根没导出过这个名字。所以我上一轮注释里"本工具链没导出它"的框定是错的（好像这台机器异常），
+    投递里"`database/sql` 自 Go 1.8 起导出 `QueryerContext`"同样是错的（包名搞错）。
+    做法不变（窄 `Queryer` 保留），四包注释已改成上面这个准确理由，证据命令留在
+    `internal/session/repository.go`。探针目录 `core/.scratch/` 已删（它在 module 内，留着会红 `go build ./...`）。
+27. **T-4 两处破坏性变更：我的代码本来就没踩**（实测过才敢说）：
+    `tx.Create(db.AggTask, id, []string{"title", ...}, ...)` 里 `id` 一直是独立参数、没进 `columns`
+    （`TestRepositoryReadsWhatTouchWrote` / `TestPayloadLandsInJournalWithSchema` / `rejection_db_test.go`
+    三处真表写入全过）；`ErrAggregateNotFound` 我还没在业务代码里引用（写侧 Service 才用得上）。
+    聚合表从不用 `Append` 写：只 `Append("principals", ...)`，而 principals 不在 aggTables 里。
+    `event_journal.principal_id` 外键这件事我在第 18 条之前就是靠"先建 principals 行"过的，
+    与 db 给的事实一致（空 PrincipalID → NULL，不撞外键）。
+28. **`"schema":1` 由平台层补 → 我把业务包里那份重复保证删了**（C8 就此关闭）：
+    `task.Payload()` / `execution.Payload()` 现在只做 struct→map；两个 catalog 测试的期望键
+    改成与 §6 的"payload 关键字段"列**逐键相等**（不再自己加一个 schema 键），
+    另两个重复的 `TestPayloadCarriesSchemaVersion` 删除；保证本身改由真表钉：
+    `TestPayloadLandsInJournalWithSchema` 读 `event_journal.payload_json` 断言含 `"schema":1`
+    且 `title`/`priority` 在场 —— 少一个环节都会红。
+29. **交付前最后一次重跑**（第 26 条的四包注释改动之后，此后只动过 markdown）：
+    `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 120s ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/...`
+    ```
+    ok  	github.com/SadCat18/lucero/core/internal/task	1.776s
+    ok  	github.com/SadCat18/lucero/core/internal/execution	1.704s
+    ok  	github.com/SadCat18/lucero/core/internal/session	1.596s
+    ok  	github.com/SadCat18/lucero/core/internal/quota	1.580s
+    ```
+    `gofmt -l internal/` → 空；`go vet` 这四包 → 无输出。
+    （更早一次同批重跑是 `1.826 / 1.731 / 1.607 / 1.582`，那是注释改动之前，只作过程记录。）
+
+### 第六批：写侧第一步 + notification 包（B-backend-2/3 解除后）
+
+30. **B-backend-2 解除的当场证据**：`grep -n "func (tx \*Tx)" internal/platform/db/touch.go` →
+    `125 RedactionHits / 135 QueryRowContext / 139 QueryContext / 146 Touch / 200 Create / 236 Append`；
+    `AggNotification` 也在注册表里（`touch.go:32`，`:45` 映射到 `notifications`）。
+31. **交付前最后一次重跑**（本批所有代码改动之后，此后只动过 markdown）：
+    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 180s ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/`
+    ```
+    ok  	github.com/SadCat18/lucero/core/internal/task	1.879s
+    ok  	github.com/SadCat18/lucero/core/internal/execution	1.640s
+    ok  	github.com/SadCat18/lucero/core/internal/session	1.540s
+    ok  	github.com/SadCat18/lucero/core/internal/quota	1.546s
+    ok  	github.com/SadCat18/lucero/core/internal/notification	1.634s
+    ```
+    同批 `gofmt -l` 这五包 → 空；`go vet` 这五包 → 无输出。
+32. **§5.4 闭环跑通**（`TestApplyExecutionEventRejection`，真库真表 + 真 `notification.Service`）：
+    Task 停在 `PREPARING` v1、`aggregate_type='task'` 事件零新增；`aggregate_type='notification'` 恰一行
+    （`notification_type=projection_rejected`、`state=UNREAD`、`priority=HIGH`、`task_id` 指向那条 Task）；
+    Audit 恰一次；`Result.Rejection.Reason` 非空。同组另三条：推进路径 `→ WAITING_APPROVAL v2` 且
+    `task_waiting_approval` 的 payload 真带 `approval_id`；If-Match 不符 → `ErrVersionConflict`，
+    事件行与状态版本都没动；reporter 为 nil → 返回 error 而不是静默吞。
+33. 第 32 条那组断言做过**变异验证**：临时让被拒分支照样 `Touch`，用例按要求失败（对照组不受影响）：
+    ```
+    --- FAIL: TestApplyExecutionEventRejection (0.04s)
+        service_test.go:166: §5.4：aggregate_type=task 的事件必须零新增（只剩建行那条），实际 2
+    ```
+    变异代码从 `/tmp/service.go.bak` 还原后才跑的第 31 条。
+34. **别人的红（只报不修）**：`go test -count=1 ./internal/approval/` →
+    ```
+    internalpprovalertical_slice_test.go:58:17: assignment mismatch: 2 variables but eng.Decide returns 3 values
+    （:61 :67 :70 :87 :98 :108 :115 :121 :202 同错，too many errors）
+    FAIL	github.com/SadCat18/lucero/core/internal/approval [build failed]
+    ```
+    `permission.Decide` 改三值返回后 audit 侧调用点没同批改完 —— 正是内部契约 §1.1 第 10 条说的连锁。
+    全仓其余包当场 `ok`（第六批那次 `./internal/...` 除这一包外十个包全绿），只有它红。
+
+### 第七批：最小可联调的 Core 骨架（T 投的插队项）
+
+35. **交付前最后一次重跑**（本批所有代码改动之后；此后只改 markdown、删 /tmp 临时件、杀自己起的 smoke 进程）：
+    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 240s ./api/... ./cmd/core/ ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/`
+    ```
+    ok  	github.com/SadCat18/lucero/core/api/http	1.256s
+    ok  	github.com/SadCat18/lucero/core/cmd/core	0.431s
+    ok  	github.com/SadCat18/lucero/core/internal/task	1.705s
+    ok  	github.com/SadCat18/lucero/core/internal/execution	1.450s
+    ok  	github.com/SadCat18/lucero/core/internal/session	1.324s
+    ok  	github.com/SadCat18/lucero/core/internal/quota	1.421s
+    ok  	github.com/SadCat18/lucero/core/internal/notification	1.471s
+    ```
+    `gofmt -l api cmd internal` → 空；`go vet` 这七包 → 无输出。
+36. **真进程冒烟**（frontend/test 要的就是这条能跑）：
+    `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe run ./cmd/core -data-dir <目录> -migrations migrations`
+    再从 `<目录>/core.endpoint` 读 `host_port`+`token`，实测返回：
+    ```
+    GET  /api/v1/health            → 200 {"state":"READY","version":"0.1.0-dev","migration_version":3,"ready":true}
+    GET  /api/v1/tasks  无口令     → 401
+    GET  /api/v1/tasks  带口令     → 501        （明确未实现，不假成功）
+    GET  /api/v1/tasks  外部 Origin → 403
+    POST /api/v1/ws-ticket x2      → 两张不同的票，都 expires_in:30
+    ```
+    坑记一笔：这台机器有本地代理在听，`curl` 不加 `--noproxy '*'` 打 127.0.0.1 会拿到空响应
+    —— 我第一次冒烟就误判成"Core 没起来"，其实端口在 LISTENING。前端联调也会撞上同一条。
+37. 冒烟自己抓到两处我写错的东西：① `migration_version` 我原本断言 `==2`，而 db 已经落了
+   `000003_grant_policy_version.sql`（`temporary_grants`/`policy_rules` 加 version）→ 真值是 3。
+   用例改成跟库里 `SELECT max(version) FROM schema_migrations` 比，不写死数字（下次加 .sql 不会红）。
+   ② 我断言 `core.endpoint` 权限 0600 —— **Windows 上 Go 传的 mode 被默认 ACL 映射掉**，
+   断言只会得到假失败；删掉该断言并注明真实边界是 Bearer + 只绑回环（这两条有测）。
+38. 传输层鉴权做过变异验证：把 Bearer 校验那一行临时短路，两个包按要求一起红
+   （`handler_test.go:87 缺口令/错口令/只写 Bearer 没值：应 401，实际 501`、
+   `core_test.go:86 没带口令读 /api/v1/tasks 应 401，实际 501`），还原后才跑的第 35 条。
+   REQ-F-11 那条反向用例（两次签票必须拿到两张不同的有效票）在 httptest 与真进程两个层面都验了。
+39. 单实例锁有真用例：同目录第二个 `boot` → `ErrAlreadyRunning`；
+   写入死 pid 的锁文件能自动接管（**crash 测试 kill 之后能重启**，否则 test 角色那 4 条会卡在锁上）；
+   正常退出会把锁文件删掉。锁的实现是 `O_EXCL`+pid+死进程接管，
+   没用 `x/sys/windows.LockFileEx`（那是新的直接依赖，归主控裁定），Windows 上
+   `os.FindProcess` 对已退进程报错足以为"死"的判据，Unix 上判不出 → 留 `-take-over-lock` 显式接管。
+
+### 第八批：/ws/v1/events（T 批准我按 Next action 走）
+
+40. **交付前最后一次重跑**（此后只改本文件）：
+    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 240s ./api/... ./cmd/core/ ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/`
+    ```
+    ok  	github.com/SadCat18/lucero/core/api/http	1.430s
+    ok  	github.com/SadCat18/lucero/core/api/websocket	2.171s
+    ok  	github.com/SadCat18/lucero/core/cmd/core	0.967s
+    ok  	github.com/SadCat18/lucero/core/internal/task	1.752s
+    ok  	github.com/SadCat18/lucero/core/internal/execution	1.580s
+    ok  	github.com/SadCat18/lucero/core/internal/session	1.486s
+    ok  	github.com/SadCat18/lucero/core/internal/quota	1.487s
+    ok  	github.com/SadCat18/lucero/core/internal/notification	1.510s
+    ```
+    `gofmt -l api cmd internal` → 空；`go vet` 这八包 → 无输出；`go build ./...` → exit=0。
+41. `api/websocket` 用例清单（`-v` 全 PASS）：`TestAcceptKeyIsTheRFCVector`（RFC 6455 §1.3 官方常量
+    `dGhlIHNhbXBsZSBub25jZQ==` → `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`，手写帧必须有外部锚点，
+    否则我的实现配我的客户端会一起错到同一个方向）、`TestBadTicketNeverUpgrades`、
+    `TestMalformedHandshakeDoesNotBurnTicket`、`TestOriginGuardRunsBeforeTheTicket`（后两条都断言
+    `Redeem` 调用次数为 0：坏握手/被 CORS 挡掉的请求不许烧一次性凭证）、
+    `TestBackfillThenLiveThenHeartbeat`（补发两行→实时第三行→`{"type":"ping","server_seq":3}` 且无 event_id）、
+    `TestResyncRequiredWhenJournalTrimmed`、`TestProtocolViolationsAreClosed`（分片/未掩码 → close 帧）。
+42. 真栈端到端 `TestRealCoreStreamsRealJournalRows`（`cmd/core`）：boot → REST 用 Bearer 签真票 →
+    `Tx.Create` 往真 SQLite 落一行 task → 真 WebSocket 收帧（`payload_json` 已解成对象、含平台补的
+    `"schema":1`、`aggregate_type=task`）→ 连接后再落一行，验实时增量确实靠"读已提交的行"到达、seq 严格递增。
+    这一条把 journal SQL / schema 注入 / 短票 / 帧格式四件事绑在一起，任一坏了都红。
+43. 变异验证：把 `case <-poll.C` 的轮询短路 → 用例按要求失败
+    （`ws_test.go:302: 等 "event" 帧失败: read tcp 127.0.0.1:...->...: i/o timeout`）；还原后才跑的第 40 条。
+44. **两条本机验不了的，说清别让人以为验过**：① `-race` 在这台机器**跑不了**（要 CGO，无 C 编译器），
+    所以 `framer.mu`（主循环写文本帧 + 读协程写 pong 的并发）只有代码审查背书，没有竞争检测器；
+    ② 我不处理 `Sec-WebSocket-Extensions`，即不支持 permessage-deflate，要压缩得重来一层。
+    另报一条当场 `go test ./...` 看到的别人的红（我没碰）：
+    `test/adapter_contract_test.go:225 TestErrorCodeIsJSONRPCNumber` 失败
+    —— adapter 的 error.code 被编成字符串，标准 JSON-RPC 客户端解不出来。
+
+### 第九批：T-32 注释口径 + 三条环境事实
+
+45. **T-32 落注（只改注释与一处 flag 帮助文本，零行为变化）**：`grep -rn "QueryerContext" --include=*.go .`
+    → 四包各一条，权威版在 `internal/session/repository.go`，另外三包指过去。口径照主控给的那句写：
+    `database/sql` 不导出查询接口；`driver.QueryerContext` 是驱动侧 SPI、参数类型不同、`*sql.DB` 不满足它，
+    因此窄接口是标准做法、与工具链版本无关。这条同时把上一版"这台机器缺符号"的错误框定彻底去掉，
+    免得后来人照着错方向去怀疑工具链。`-migrations` 帮助文本改为"v0.1 不做迁移内嵌（T-33）"。
+46. **交付前最后一次重跑**（改完之后；此后只动本文件与长期记忆）：
+    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 240s ./api/... ./cmd/core/ ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/`
+    ```
+    ok  	github.com/SadCat18/lucero/core/api/http	1.440s
+    ok  	github.com/SadCat18/lucero/core/api/websocket	2.255s
+    ok  	github.com/SadCat18/lucero/core/cmd/core	0.977s
+    ok  	github.com/SadCat18/lucero/core/internal/task	1.873s
+    ok  	github.com/SadCat18/lucero/core/internal/execution	1.606s
+    ok  	github.com/SadCat18/lucero/core/internal/session	1.493s
+    ok  	github.com/SadCat18/lucero/core/internal/quota	1.478s
+    ok  	github.com/SadCat18/lucero/core/internal/notification	1.617s
+    ```
+    `gofmt -l api cmd internal` → 空；`go build ./...` → exit=0。
+47. 三条环境事实按 T-31/T-32 的口径落定，且都有代码或记录证据：
+    ① `curl 127.0.0.1` 会被本地代理吞 → 自测 HTTP 一律 `--noproxy '*'`（上一轮就是靠它才发现服务其实活着）；
+    ② Windows 上 Go 的 `0600/0700` 被 ACL 变成 `rwxrwxrwx` → **不写权限断言**（我第七批那条已删，原因记在第 37 条）；
+    ③ `go:embed` 不能越包目录 → 内嵌方案由 T-33 撤回，走运行期 `-migrations` 目录。
+    长期记忆里 `QueryerContext` 那条有重复（我一条、主控一条），已删掉我这本的旧条、保留主控那份准确版。
+
 ## Recovery note
 
-- Interruption point: 四包领域层 + 只读侧全绿；写侧未动，卡在 B-backend-2（`Tx` 事务内无读方法）。
-  第 6、7 条证据是**历史快照**，已被第 12~14 条取代（db 包现已编译干净、测试通过）。
-- First action after recovery: 重跑 Verification 第 9 条确认四包仍绿；然后做 Next action 里的
-  `task`/`execution` 只读 Repository。B-backend-2 解除后（db 给出事务内读或带 expected-version 的 Touch）
-  才动写侧：`Create` 建首行 → `Touch` 改状态 → 同事务补 audit → `Write` 返回后 Publish → §5.4 拒投影发 Notification+Audit。
+- Interruption point: 八包全绿。transport 面已有 health / ws-ticket / /ws/v1/events（含真栈端到端用例），
+  其余 `/api/v1` 仍 501；写侧只完成 `task.Service.ApplyExecutionEvent`。
+  我把 progress 的 checkpoint 段写坏过一次（Python 里给列表切片赋了字符串 → 一字符一行），已修复并自检无残留。
+- First action after recovery: 重跑第 40 条那八个包确认仍绿，然后按 Next action 补 `task.Service` 的
+  `Create`/`Queue`（复用同事务路径：读 status+version → If-Match → `Check` → `Touch`），
+  每个动作一条真表用例；跑通后把 `/api/v1/tasks` 从 501 换成真 handler（薄层，零业务判断）。
