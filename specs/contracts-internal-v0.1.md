@@ -190,6 +190,25 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
 **为什么非要区分**：`go test -run <名字>` 在**一个都不匹配时照样输出 `ok`**——不加 `-v` 就会把"没跑到"
 读成"跑过了"。**这条判据自己就长在一个假绿坑上**，所以命令列从现在起一律带 `-v`。
 
+#### 判据表 A18（ADR-018 链头锚点；**行为级，禁止用"某目录 grep 到符号"当代理**）
+
+**这张表是纠我自己的错立起来的。** 我 11:17 用 `grep -rn "Advance(" core/cmd/` 零命中判成"T-64 ② 没接线"，
+12:07 全仓重跑证伪：`internal/approval/store_sqlite.go` 在 `d.Write(...)` **返回无错之后**才调 `ch.Checkpoint()`，
+`internal/audit/append.go` 再转 `Checkpoints.Advance(n, Certified())`。**接线本来就在，是我的判据看不见它**
+——同族错误今天第二次（`UseCheckpoints` 那次是单文件 grep 下全仓结论）。**锚点由谁推进是实现细节，判据只能钉可观察行为。**
+
+| ID | 断言 | 怎么测（行为，不是"有没有命中"） | 状态 / 归属 |
+|---|---|---|---|
+| A18-1 | 连续成功 append 跨过阈值（1000）必须出现**新的一行锚点**，且该行 `seq` 等于库内当时最后一行的 `seq` | 测试里连推过阈值 → 读 `<data-dir>/audit.head` 末行 → 与 `SELECT max(seq) FROM audit_entries` 比对 | 待建 / audit |
+| A18-2 | 事务**提交失败**不得留下任何锚点行（锚点绝不领先库内状态） | 强制提交阶段失败，断言锚点文件行数不变 | 待建 / audit |
+| A18-3 | **推进计数器只允许一条生产路径**，新增调用点即缺陷待说明 | `grep -rn "\.Checkpoint()\|Checkpoints.Advance(" --include=*.go core/ \| grep -v _test.go` 的结果集必须是**白名单**（当前：`approval` 提交后、`cmd/core/rejections.go`、`audit/append.go` 内部转发）；任何新增都要写清为什么不是双计 | 现存 / 主控本轮复核 |
+
+**为什么 A18-3 判"白名单"而不是判"有没有命中"**：计数器双计会把"每 1000 条"悄悄变成"每 500 条"——
+它**不会**造出领先库的 head（head 取自库内 `Certified()`），但**阈值语义就废了**，
+而阈值正是这个机制唯一的功能目的。巡检 11:59 已就此发过一条纠正，**别再造第二个调用点**。
+
+
+
 
 **为什么 U13-7 不能省**：U13-5 证明"库里存的是打码版"，C18 那个缺陷恰恰是
 **"库里对、发出去的那一份错"**——只测前者等于没测。两条合起来才封住
