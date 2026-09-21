@@ -327,8 +327,21 @@ Wave-2 之后没有重建窗口（回填要重算 `entry_hash` = 伪造链，T-2
 > **参与 `entry_hash` 的字节，必须与写进库的字节逐字节相同。**任何"哈希之后再改值"的路径都是缺陷。
 
 **修法三件，缺一不可**（都在既有边界内，**不新增抽象层**）：
-1. **db 导出唯一那一份脱敏实现**：现有 `Tx.scrubArgs` 提一个导出入口（建议
-   `db.Scrub(table string, cols []string, args []any) ([]any, error)`，内部就是它）。
+1. **db 导出唯一那一份脱敏实现，且**必须把命中记录一起交出来**（14:5x 二次定稿，REQ-A11）**：
+   ```go
+   func Scrub(table string, cols []string, args []any) ([]any, []RedactionHit, error)
+   ```
+   **为什么签名里必须有 hits**（这是 db 14:51 报的、我 14:57:40 读码证实）：现存的
+   `redact.go:194` 是 `return scrubArgsInto(newHits(), table, cols, args)` —— **一个现成的命中收集器被
+   当场丢弃**。audit 改成 Scrub→Seal→Insert 之后，密封前那次拿不到归因，而 `Tx.Append` 里那次二扫
+   **只会重新记上 key 命中（键驱动，键还在），pattern 命中永久丢失（值驱动，秘密已被换成 marker）**。
+   这些计数要进 `details_json` 并被 `entry_hash` 覆盖 ⇒ **"字节对了但归因静默缩水"**，
+   正是本条要防的那类"看起来正常"的失效。
+   **配套的第二件（同一次改完，别留半截）**：对 **`audit_entries`** 这张表，`Tx.Append` 内部的二次 scrub
+   **不得再累计 hits**（归因由密封前那次负责）。否则 key 命中会被记两遍 —— 同一个洞的相反方向。
+   实现任选（Append 内对该表传一个丢弃型收集器即可），**但必须有用例钉住两侧**：
+   ① 一次含密钥形状的写入 → `details_json` 里 pattern 与 key 两类命中都在；
+   ② 同一行的 key 命中**计数为 1 而不是 2**；③ `TestScrubIsByteStable` 那条幂等性质继续成立。
    **规则仍归 audit（§2.1），执行仍只有 db 这一份代码**——**不许出现第二个脱敏器**。
 2. **`audit.Chain` 的 `Append` 顺序改成 Scrub → Seal → Insert**。
    注入方式**沿用该文件已有的形状**（`Chain` 已经是 `Head func(...)` / `Now func()` / `Insert` 的注入体），
