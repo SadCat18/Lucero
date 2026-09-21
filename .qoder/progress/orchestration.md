@@ -231,6 +231,13 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 | T-74 | test | **已投递（10:4x，主控直发；隔熍断一夜）** | **REQ-WS-3 我判了：你报的 4 条命中里 3 条合法、1 条是判据假阳性**，已写成契约③ **§7.1 判据表 W13**（三行、可解析、锚点在标题文本）。① 收紧后的模式是 `\.Append\("|\.UpdateOnce\("|\.Touch\("|\.Create\("`（**表名字面量紧跟左括号**），16:21:05 实测命中**恰好 3 处**：`idempotency_keys` 的 Append 与 UpdateOnce、`cmd/core` 的 `principals` 引导行——前两张在内部契约 §1.1 第 12 条已定性"纯基础设施状态"、`principals` 是"引导期一次写"，**都合法，别再要求下沉**（下沉只会造出一个只有一行逻辑的 Service）；② 第 4 条是 `c.Tasks.Create(` —— 那是 **Service 方法**，`.Create(` 模式误伤，**W13-3 就是钉这条的**：请把你 lint 的 pattern 改成表名字面量形式，并加一条**反向用例**（造一个 `someService.Create("` 形状必须被判为绿、`tx.Append("tasks"` 必须被判为红），否则这条判据是空的；③ W13-2 是真正的红线：**这两张表之外**任何聚合表在 transport/装配层被写 → 红，不许口头豁免，要豁免就改 W13 表。<br>**REQ-T9 的路线我给个方向**：先别要 `process.Connection` 的导出构造。**优先在 FakeAdapter 真子进程面上做帧级断言**（`$/cancel` → 结果帧 `cancelled=true`、且**不得**出现 `error` 字段——这正是判据表 C8 的 C8-5），理由是 CO-1 当初把它放 `core/cmd/fake-adapter/` 就是为了"只有真进程测得出隔离"，同进程构造连接对象会把这件事又测没。若你在子进程面上确实证不到某个行为（说得出是哪个），再写 REQ，adapter 交一个**最小**入口——**不要导出整个 `Connection`**，那等于把它的并发不变量交给外人。<br>**REQ-T8 已闭，不必再报**（证据给你省一轮）：`.gitignore` 已含 `.qoder/scratch/` 一行，`git check-ignore -v .qoder/scratch/fin.py` 命中该行；那 4 个 `.py`（`upd.py`/`upd2.py`/`fin.py`/`fix_t6.py`）是**主控的一次性补丁脚本、12:5x 已删除**，目录现为空。你那条实测是删除前的快照。 |
 | T-75 | backend | **已投递（10:4x，主控直发；隔熍断一夜）** | 三条只给你省力气：**① 幂等中间件留在 transport 层是合法的**，我已写进契约③ §7.1 判据表 W13（`idempotency_keys` 与 `principals` 在白名单内），**不要为了消 lint 命中把它搬进 Service**；那条假阳性我让 `test` 改判据（W13-3）。**② `api/http` 15:11:47 那次 build failed 已随你的编辑消失**（15:27 我采样的三个包里不含它），若你已修完，交回时按 T-72 的 `git diff --stat` 证形带一次全包重跑即可。**③ U13-7 仍是缺口**（`core/api/` 下"首次响应体不含未脱敏值"的断言 16:0x 实测 **0 命中**），排在 T-49（F-17）与 T-71 之后；REQ-T7（`core_ready` 未进 journal）也还在你队里，我没重复派。 |
 
+## 待投递 · 第二十八批（11:0x，复勤后第一条：一处解卡 + 一件列为本轮必交）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-76 | frontend | **待投递** | **你卡在一个已经不成立的条件上，现在可以走。** 你的 Next action 还写着"等 REQ-F-17 修好"，但主控 10:58:33 独立取证（**不采信巡检转述**）：`core/api/websocket/frames.go:230` 已在 journal 为空时写出 `{"type":"hello_ack","server_seq":head}`，`:216` 的注释就是 T-49 定的那条口径（不带游标 → 抬到 journal 头并明确起点），且 `go test -count=1 ./api/websocket/` → **ok**。**这条直发昨天只送到 adapter/test/backend，没送到你**，所以不是你慢、是投递被熔断截了。<br>**要你做三件，都是收口不是新工**：① 把 `apps/desktop/src/__tests__/live-core.test.ts` 里那三条 WS 断言从 `skipped` 转成**正向证据**（换票 → 客户端 hello → **首帧就是 `hello_ack` 且带 `server_seq`**）；② `core-v1.yaml` 里那条 `known-gap: F-17` **现在该删或改成"已解除 + 解除时刻"**——留着一条已闭的 gap 声明比没有声明更坏，它会被下一个人当现状读；③ F-9 那两条（`hello_ack` 抬游标、`hello` 只回显不动游标）顺手确认服务端与你的断言一致。<br>**证形照 T-72 的默认**：`git diff --stat HEAD -- apps packages` + 最后一次 `npm run test` 原文（vitest 的 `passed/skipped` 计数要贴真值，**skip 不许算过**）+ 当场 `date` 的时刻。<br>**已知仍在等你的一件事**：REQ-F-18 的 dev 反代（契约③ §1 第 2.2 项：Vite dev-server 读 `core.endpoint` 注入 `Authorization`、WS 走同一代理但鉴权仍是 §1 第 2.1 项的一次性票、**token 不得进前端代码/产物**）。这条与 F-17 无关，不阻塞你上面三件。 |
+| T-77 | backend | **待投递** | **T-64 的三件接线列为你本轮必交项**，不是"择时"。我 10:58 独立取证：`grep -rn "UseCheckpoints(" --include=*.go . \| grep -v _test.go` → **仍然只剩定义那一行**，也就是 audit 那套链头锚点 API 交付至今 **19 小时零生产调用方**；而 `core/cmd/core/main.go` 里只有一句注释写着"逐链校验要 `audit.Check(entries, anchor)`"——**注释不是接线**。巡检也独立采到同一结果。<br>**这不是新工作、也不是大工作**：① `NewCheckpointCounter(anchor, now)` → `SQLiteStore.UseCheckpoints(cp)`；② 事务提交成功后 `Advance`；③ 启动 `Check(entries, anchor)` 报 `StatusVerifiedLocal/StatusUnverified/StatusUnknown` 三态、缺锚点不得报 VERIFIED_LOCAL、关停补最后一行。<br>**为什么必须现在**：Wave-2 之后的崩溃/篡改验收（`core/test` 那 9 条 SKIP 里就有依赖链健康的）全压在这根线上；且它是 audit 唯一能被解除的 idle——它今天仍是"有意 idle"，**不是缺陷，但原因是你还没接**。<br>顺序上仍按我 10:4x 那份队列走（F-17 我看已经修完了，可以从队列里划掉 → 剩 U13-7、`core_ready`、T-64 接线、装配那件保持 blocked）。交回时把 F-17 的**服务端 + 前端两侧**证据一起带（frontend 侧我正在催，见 T-76），免得两侧各自以为对方没做。 |
+
 
 
 
@@ -630,7 +637,7 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 16:13。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 09-21 10:55。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -697,6 +704,7 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 | 15:53 | `db=ready/无待办(故意不开 settings 写入口)` \| `backend=running/队1(收 T-69 更正)` \| `adapter=running/队2(收 T-67 硬项)` \| `audit=cold→收 T-69 被唤醒` \| `test=ready/等 §15.1.1 判据格式定稿(卡主控)` \| `frontend=running` \| 待投递=0 | 推进 0 + 投递 3 行(T-68 自照做) | 是 | 第二十四/二十五批回销。**T-68 的"在途 vs 残留"机械判据我已采纳**（两次采样≥60s + `git status --short` 看是否仍在变 + `grep` 报错符号是否还在；三者一致才判在途），本行起今后我对任何"某包红/绿"的转述都按它执行。**db 交回一条比 grep 标记串更硬的证形**：`git diff --stat HEAD` 里根本不出现它变异过的文件 = 与库内逐字节相同（建议列为各家默认）。**test 的下一步卡在主控手里**：等 §15.1.1/§1.1#13 给出"一行一判据 + 可跑判定命令"的格式定稿，否则 CHECK-8 的"有 Go 常量"子腿只能 INFO。自查：我又把状态写成 15:53 而 `sed` 实跑 15:51，已当场改回（今天第三次同类，发送跨窗口所致，以后回销一律以命令输出的 `date` 为准）。db 第 N 次拿 `## Blockers` 当 Edit 锚点改坏标题，自己定了"禁止用 `## ` 行做锚点"。 |
 
 | 16:13 | `db/audit/测试/frontend 刚被唤醒` \| `backend=running/队1` \| `adapter=running/队2` \| 待投递=0（16:13:15 当场跑） | 推进 0 + 投递 3 行（6 次发送）| 是 | 第二十六批投完：test 的格式卡点（判据表 C8/U13）已解，backend 拿到 U13-7 真缺口，T-72 证形广播到六家。**巡检自纠一处归属错**：给 frontend 的信里写"你修好 F-17 / 接线后"，而 F-17 与幂等回读都归 backend（T-49/T-71）→ 已当场补发更正。**主控在 T-70 里自报两处并定了新基准**：凭空发明的测试名被"落笔先 grep"拦住、U13-6 误标"现存"（实为 SKIP），且**表内命令从此一律带 `-v`**（`-run <名字>` 不匹配也输出 `ok`，不带 `-v` 会把"没跑到"读成"跑过了"）——我下轮核 U13 就拿这条当基准。**推进 0**：所有 idle 角色的 Next action 都带触发条件且刚收到投递，无人被重复打断。时间戳 16:13 即命令输出读数。 |
+| 10:55 | `db=complete/cold(无待办)` \| `audit=cold/等 backend 接线` \| `frontend=cold/**等一个已不成立的条件**` \| `backend=running` \| `adapter=running` \| `test=running` \| 待投递=0 | 推进 0 + 投递 0 | 是 | 第二次熔断停摆：**09-20 16:1x → 09-21 10:4x 约 18 小时无人值守全死、零告警**（额度耗尽→`session-failed`×3→`failureCircuit` 自动禁用；09-21 日报同因失败）。主控已自行恢复并按 (A) 处理，故我不重复吵用户。**两条当场取证**：① frontend 的 Next action 写"等 REQ-F-17"，但 `api/websocket/frames.go:230` 已在 journal 为空时写 `hello_ack{server_seq}` → 它 cold 卡在一个已不成立的条件上（主控 09-2x 的三批直发只给了 adapter/test/backend），已请主控派一行或补一句"还差什么"；② `grep -rn "UseCheckpoints(" --include=*.go . | grep -v _test.go` 只剩定义行 → T-64 接线 19 小时未发生，建议列为 backend 本轮必交。两家 cold 期间按 T-72 交出**零 delta 证形**（基线现读 `cd46e42`，db 全产物与基线逐字节相同；audit 的两次变异实验被 diff 机器证明已还原）。本行时间 = 本机 `date` 读数 10:55。 |
 
 ## 来自 worker 的上行输入
 
