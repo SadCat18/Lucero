@@ -81,7 +81,6 @@ WorkBuddy 桌面 5.5.6 / 内置 CLI 2.137.1 / sandbox 5.5.5）。`adapter_instan
 | `session/send` | C→A | §5 三态；`Idempotency-Key` 必填（高风险写） |
 | `session/stop` | C→A | 中止当前生成；不支持则 `CAPABILITY_UNAVAILABLE`，**不得返回"已停止"了事** |
 | `model/list` | C→A | 带 `parameter_schema_json` 与 `provider_raw_json` |
-| `model/select` | C→A | 对**已有会话**切模型；不支持必须显式报错（Phase 0：Qoder/Z Code 此项只能 UIA） |
 | `quota/read` | C→A | §7 额度契约 |
 | `approval/list` | C→A | 挂起审批；载荷必须结构化 |
 | `approval/respond` | C→A | 幂等；同一审批二次回应返回首次结果 |
@@ -119,7 +118,7 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
   或被对端静默忽略的指令，而 **UI 以为审批已经送达** —— 那就是 §12 的"把 UNKNOWN 显示成确定值"，P0 同型。
 
 **本文口径下的写方法集合**（只列 §4 方法表里真实存在的名字）：
-`session/send`（三态 `start_now`/`guide`/`queue` 全在内）、`session/stop`、`model/select`、
+`session/send`（三态 `start_now`/`guide`/`queue` 全在内）、`session/create`（CO-5，见 §4 表：`client_request_id` 强制正是因为它非幂等）、`session/stop`、`model/select`、
 **`approval/respond`**、`debug/*`（§9，仅 `adapter_key=fake`）。
 **读方法 / 非 C→A 调用**：`adapter/initialize`（握手，§2 豁免）、`adapter/health`、`session/list`、
 `session/read`、`model/list`、`quota/read`、`approval/list`、`session/locate`（v0.1 只留桩），
@@ -143,7 +142,7 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
 | 帧 | 载荷 | 含义 | 校验（实现在 `StreamFrame.Validate`；**13:0x 曾按裁定前口径写本表，现已与 ✅ 段对齐**） |
 |---|---|---|---|
 | `turn/claimed` | `{turn_ref, execution_id, accepted, queue_position?, provider_execution_id}` | **Adapter 接下了这条指令** | `execution_id` 为空 → `INVALID_PARAMS`；`provider_execution_id` 为空 → `INVALID_PARAMS`，理由原文："Recovery cannot query a run it cannot name" |
-| `turn/dispatched` | `{turn_ref, turn_id, execution_id, provider_execution_id?}` —— **前三者必填**；`provider_execution_id` 可空，但给了非空就必须等于 `claimed` 那个值 | **一个 turn 真的开始了** | 任一为空 → `INVALID_PARAMS`（原文分别："has no turn_id"、"has no execution_id"、"has no provider_execution_id (CO-8 makes it part of the evidence)"） |
+| `turn/dispatched` | `{turn_ref, turn_id, execution_id, provider_execution_id?}` —— **前三者必填**；`provider_execution_id` 可空，但给了非空就必须等于 `claimed` 那个值 | **一个 turn 真的开始了** | `turn_ref`/`turn_id`/`execution_id` **任一为空 → `INVALID_PARAMS`**；`provider_execution_id` **允许为空**（12:45 裁定②，采 CO-13），但给了非空就必须等于同一 `turn_ref` 在 `claimed` 里给过的那个值——**这条比对在 Core 侧 `TurnTracker.Dispatch` 做，不在 `StreamFrame.Validate`**（原校验里那句 "has no provider_execution_id (CO-8…)" 属于裁定前口径，已作废） |
 
 **四条语义，一条都不能丢**：
 1. **`claimed` 故意不带 `turn_id`** —— "接下了"不等于"开始了"；**唯一的开始证明是 `dispatched`**。
@@ -207,7 +206,7 @@ Adapter→Core 通知：
 3. Core 侧按 250–500 ms 或达到字符阈值批量 flush 进 `execution_output_chunks`（领域模型「流式输出」规则），
    **每个 delta 绝不写 event_journal**。
 4. Adapter 不写 DB、不发事件；`stream/delta` 不是 Durable Event，掉电即丢，靠 chunk 表兜。
-5. **`turn_ref`（CO-21 裁定，13:5x）—— 四条 Adapter→Core 通知都必须带它，缺任一帧即协议违规。**
+5. **`turn_ref`（CO-21 裁定，13:5x；12:45 由 §4.2 裁定① 扩到** ***全部*** **六条 Adapter→Core 通知）**：`stream/delta`/`stream/item`/`stream/state`/`turn/finished` 之外，`turn/claimed` 与 `turn/dispatched` **也一律带 `turn_ref`**，缺任一帧即协议违规。（本条原文只写"四条"，与 §4.2 裁定① 相反，14:4x 由巡检逐行读出、我复核后改正——**归属只有一种写法，不留例外清单**。）
    起因是我这边的两处不自洽，不是 adapter 实现问题：`000001` 迁移里
    `execution_output_chunks` 有 `UNIQUE(execution_id, sequence_no)`，而本节原来**只给 `sequence_no`**，
    全篇又没有 `correlation` 字段（13:4x `grep -n correlation` 在本文 **0 命中**）——

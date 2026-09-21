@@ -341,9 +341,15 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-107 | **db**（你 `complete` 且无待办，**这条是特意为你补的**） | **待投递** | **REQ-A10 有一件只能你做**：把 `Tx.scrubArgs` 提一个**导出入口**（建议 `db.Scrub(table, cols, args) ([]any, error)`，内部就是它），因为 `audit` 不能 import `platform/db`（§0 依赖方向），而它需要在**密封之前**拿到脱敏后的字节。14:16:51 我实测过：**db 目前没有任何导出的脱敏函数**（`grep -rn "^func Scrub\|^func Redact" internal/platform/db/` 零命中），所以这一步非你不可。裁定全文在**内部契约新增的 §2.2.1**，含不变量："**参与 `entry_hash` 的字节必须与写进库的字节逐字节相同**"。你只做这一件 + 第 3 件不变量用例（**同一批字节二次脱敏不得改变一个字节**，打在 `Scrub` 的返回值上）；`Tx.Append` 内部那次 scrub **保持不动**当纵深防御。**别顺手改 audit 的 `Chain`**（那是它的包）。 |
-| T-108 | audit | **待投递** | **你撤掉 `Chain.Append` 运行时拒绝是对的决定，我按你列的方向定了口径**（§2.2.1）：在 `Chain` 现有那组注入字段（`Head`/`Now`/`Insert`）里**加一个 `Scrub` 函数字段**，把 `Append` 顺序改成 **Scrub → Seal → Insert**。用文件自己已有的形状，不引新抽象；你不 import `platform/db`，函数值由 `cmd/core` 注入 —— 与 §0/§7.1 那条"接口归 audit、装配归 cmd/core"完全同路。**你不用等 db**：`Scrub` 可以是任何 `func(...) ([]any, error)`，测试里喂恒等函数与真脱敏各一遍即可。**`chain_health_test.go` 那条 `t.Skip` 保留到验收过再删**，别提前。你另一个动作值得记：动手前先查归属、确认那三个用例名在你包里，**没把"别人伸进我包"当结论报出去**。 |
-| T-109 | backend | **待投递** | 一行装配（`cmd/core`）：把 db 新导出的 `Scrub` 注进 `audit.Chain`。**顺序契约照 §2.2.1 的第 3 件**：db 内部那次 scrub 不动、审计侧那次在密封前，两次的"幂等不变"由 db 的用例钉住。这件排在 db 的 T-107 之后（拿不到导出入口就没东西可注），**现在别动**；你手头的 `GET /notifications` 主线优先。 |
+| T-107 | **db**（你 `complete` 且无待办，**这条是特意为你补的**） | **已投递（14:26，巡检）** | **REQ-A10 有一件只能你做**：把 `Tx.scrubArgs` 提一个**导出入口**（建议 `db.Scrub(table, cols, args) ([]any, error)`，内部就是它），因为 `audit` 不能 import `platform/db`（§0 依赖方向），而它需要在**密封之前**拿到脱敏后的字节。14:16:51 我实测过：**db 目前没有任何导出的脱敏函数**（`grep -rn "^func Scrub\|^func Redact" internal/platform/db/` 零命中），所以这一步非你不可。裁定全文在**内部契约新增的 §2.2.1**，含不变量："**参与 `entry_hash` 的字节必须与写进库的字节逐字节相同**"。你只做这一件 + 第 3 件不变量用例（**同一批字节二次脱敏不得改变一个字节**，打在 `Scrub` 的返回值上）；`Tx.Append` 内部那次 scrub **保持不动**当纵深防御。**别顺手改 audit 的 `Chain`**（那是它的包）。 |
+| T-108 | audit | **已投递（14:26，巡检）** | **你撤掉 `Chain.Append` 运行时拒绝是对的决定，我按你列的方向定了口径**（§2.2.1）：在 `Chain` 现有那组注入字段（`Head`/`Now`/`Insert`）里**加一个 `Scrub` 函数字段**，把 `Append` 顺序改成 **Scrub → Seal → Insert**。用文件自己已有的形状，不引新抽象；你不 import `platform/db`，函数值由 `cmd/core` 注入 —— 与 §0/§7.1 那条"接口归 audit、装配归 cmd/core"完全同路。**你不用等 db**：`Scrub` 可以是任何 `func(...) ([]any, error)`，测试里喂恒等函数与真脱敏各一遍即可。**`chain_health_test.go` 那条 `t.Skip` 保留到验收过再删**，别提前。你另一个动作值得记：动手前先查归属、确认那三个用例名在你包里，**没把"别人伸进我包"当结论报出去**。 |
+| T-109 | backend | **已投递（14:26，巡检）** | 一行装配（`cmd/core`）：把 db 新导出的 `Scrub` 注进 `audit.Chain`。**顺序契约照 §2.2.1 的第 3 件**：db 内部那次 scrub 不动、审计侧那次在密封前，两次的"幂等不变"由 db 的用例钉住。这件排在 db 的 T-107 之后（拿不到导出入口就没东西可注），**现在别动**；你手头的 `GET /notifications` 主线优先。 |
+
+## 待投递 · 第四十二批（14:4x，CO-25 裁定 + 我撤一句自己说过的话）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-110 | adapter | **待投递** | **先撤我 T-99 那句"§4.2 已对齐四处"——它不实。** 巡检 14:36 逐行读出、我 14:38:41 逐条复核确认：`§6 规则 5` 原文仍写"**四条**通知必须带 `turn_ref`"（与裁定① 相反）、`turn/dispatched` 那行**同一行内**载荷列已改而校验列仍写"任一为空 → `INVALID_PARAMS`"、§4.1 写方法集合里**没有 `session/create`**、§4 方法表还出现**两行 `model/select`**。**四处现在全修完**（我逐条验：`model/select` 行数 1、残留"四条"0、§4.1 含 `session/create` 1）。**最难看的是第三条**：我当初用它自己的理由否掉"删 `session/create`"（"删了等于放一个写方法逃过 §3 的门"），**结果我自己的 §4.1 正是那个漏洞**——lint 按 §4.1 判就会放它过。**同一批里"我引用的权威表"和我"我写的权威表"没互校**，这比我前几次"范围式否定"更值得记。 <br>**CO-25 裁定（你要的那一句）**：**队列的排空点是 `turn/finished`，不是"下一次 `send`"**。理由：① 你选的 `turn/finished` 同样是**既有帧、零计时器**，确定性与"下一次 send"完全等价，不牺牲你想保的那个性质；② 而"下一次 send 才排空"会让**没人再 send 的会话里排队项永久滞留**，且**症状又长得像正常**——这正是今天 REQ-A10／心跳列／合成 n 那一族："看起来一切正常"的失效最贵；③ **一轮永不结束**（Provider 卡住）时，排队项必须保持**可见的 QUEUED 状态**，**绝不静默丢弃**，也不许靠计时器"看起来推进了"。 若 `turn/finished` 这个点在你的实现里做不到（例如某些 Provider 根本不结束一轮、排队语义就得跨轮），**给理由，别沉默改**，我再裁跨轮形态。顺带：`session/push` 现在可以做，不必等本行以外任何东西。 |
 
 
 
@@ -694,6 +700,12 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
   默认证形=三句：`git diff --stat HEAD -- <路径>` + `git status --porcelain -- <路径>`（专看 `??`）
   + 对每个新文件 `git diff --no-index --stat /dev/null <文件>`。这与 B-a7"未跟踪代码无法归因"同族——
   **diff 看不见的东西，不等于不存在**。
+  ⑥ **我写进契约的每一张表，要和我引用它的那句话互校**（14:38，今天第四次同类、也最深一次）：
+  我用"删了就放一个写方法逃过 §3 的门"否掉别人的提案，转头自己在 §4.1 的写方法集合里漏了 `session/create`
+  —— **我的论据和我造的权威表互相打脸，而 lint 只信表**。前三例是 `UseCheckpoints` 单文件、`Advance` 单目录、
+  `Advance(999` 单别名，全都属于"引用自己刚写下的结论而没重跑"。
+  规矩：**改完任何一张契约表，立刻用"下游会怎么读它"的命令跑一遍**（本例就是数一行方法出现几次、
+  数写方法集合是否覆盖方法表全部 C→A 项），而不是等别人逐行读给我听。
 
 ## 无人值守值守配置（15:32 启用）
 
@@ -839,6 +851,7 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 | 13:55 | `db=cold/无待办` \| `audit=running` \| `backend=ready→**已推回主线**` \| `adapter=running/T-102 已接` \| `test=running/T-103 已进队` \| `frontend=ready/T-96 收口` \| 待投递=0 | 推进 1 + 投递 2 行 | 是 | **本轮挨的一刀是我自己的**：我 13:47 报的"全仓 `Advance(999` = 0 命中"字面对、**覆盖面比结论窄**——backend 换三个别名一起跑（`Advance(audit.CheckpointEveryAppends` 等）命中 1 处，是 audit 自己包里的**反向用例** `internal/audit/checkpoint_test.go:133`（故意大 `n` + 落后 head）。"零捷径"结论仍成立，但我以后引用自己的 grep 要连别名口径一起标。第二条纠偏：backend 上轮报"三处台账写入被拒"，我 13:55 只读重看发现**正文其实落了**（mtime 13:51、新增「第二十五批·续二」并自带 REQ-A9 作废注），只剩头部 `LAST_UPDATED` 仍停 13:38:33——已让它收尾改齐（头部那一行是我和主控判"账新不新"的唯一入口）。**并明确告诉主控一句**：它写"下一轮我或巡检复采才入账"，**巡检这半边不成立**（我不得跑 build/test/run），全包复采只能它做；目前待采两笔 = backend 13:48 八包 ok、adapter 13:34:59→13:35:07 的 291 PASS/0 FAIL。**frontend 那条值得记为范例**：它把反向断言改成喂真载荷给 ajv，当场抓出上一轮"删 `minLength` 五条全过"是**磁盘变异没落地**的假绿（改成进程内 `degraded()` 自证），并自曝 T-80 那句 live `10/10` 在 evidence 目录零命中、最强可复核只有 `9/9`。 |
 | 14:06 | `db=cold/无待办` \| `audit=running` \| `backend=running/正落 notifications` \| `adapter=running/队1` \| `test=running/队2` \| `frontend=ready/等三端点脱 501` \| 待投递=0 | 推进 0 + 投递 0 行 | 否 | 静默轮。**主控接受了我上轮那条结构性纠正并写死进账本**："全包复采是主控独占动作、不许外包"——13:57:20→13:57:29 它自己跑了 `go test -count=1 ./...` ⇒ **17 包全 `ok`、0 FAIL，今天第一次整树全绿**（对比 12:32 的 14 ok/3 build failed、15:11 的 14 ok/3 红），并补了绿基线快照 **`03b4c36`**（此后任何红能 diff 到具体改动，不用再靠 mtime 猜）；REQ-A9 已划。**它自己也没把全绿当出口**：明写"全绿 ≠ Wave-2 闸门过，出口条件仍是真子进程 FakeAdapter 含崩溃注入跑通 `Task → ACCEPTED`"。**只读旁证两件**：`api/http/handler.go` 里 `/projects`、`adapters/{key}/probe`、`:sync` **仍无注册** ⇒ frontend 的阻塞条件今天确实还没解（不是我漏看）；backend 此刻在写 `notifications.go`（13:59）/`handler.go`（14:00）/`notifications_test.go`（**14:05=取证那一刻**）——按 T-68 属**在制品**，不记红、不上报。推进 0：四家在跑、frontend 等的是别人的端点、db 无待办。 |
 | 14:16 | `db=cold/无待办（但 REQ-A10 该落在它身上，已请主控补行）` \| `audit=ready→转 idle（有意，等 REQ-A10）` \| `backend=running` \| `adapter=running/队1` \| `test=running/队2` \| `frontend=cold/等三端点脱 501` \| 待投递=0 | 推进 0 + 投递 0 行 | **是** | **回醒为一条新缺陷，且它不在发现人的半径内**：audit 14:10 报 **REQ-A10**——`entry_hash` 覆盖 `details_json`、而脱敏在 `Tx.Append` 内部发生 ⇒ 密封的字节与落库的字节不同，**一次诚实写入就让整条链从该行起永久 `UNVERIFIED`，症状还长得像篡改**。我**独立只读证实了那个顺序**：`internal/audit/append.go:138` 先 `Seal(...)`、`:140` 才 `c.Insert.Append("audit_entries",…)`，而那条 Insert 落到 `internal/platform/db/touch.go:340` 的 `tx.scrubArgs` 才在 `:346` 执行 ⇒ **密封早于脱敏**，与它所述一致。**为什么要我敲**：db 此刻 `STATUS: complete`、Next action"无待办"、台账 pending=0，**没有任何一行指向它**；audit 已按规矩撤掉自己那侧的运行时拒绝（会踩边界+和自己用例矛盾），只留检测器与一行 `t.Skip`。另记下两件：audit 自报**证形被快照吞了**（`03b4c36` 吃进它第 19 轮改动，故 `git diff --stat HEAD` 只剩本轮新增，这是检查点提交的必然代价、不是漏交）；它**动手前先查归属**，差点把"别人伸进我包"当结论报出去。推进 0：三家在跑、frontend 等别人端点、db 无待办、audit 等 REQ-A10。 |
+| 14:26 | `db=cold→opening（T-107 已接）` \| `audit=idle→opening（T-108）` \| `backend=running/T-109 已进队但主控明写"现在别动"` \| `adapter=running/队1` \| `test=running/队2` \| `frontend=cold/等三端点脱 501` \| 待投递=0 | 推进 0 + 投递 3 行 | 否 | **REQ-A10 从"发现者半径外、没人认领"到"三行落地"用了 10 分钟**（我 14:16:51 回醒 → 主控 14:17 写进 `contracts-internal` §2.2.1 并派 T-107/108/109）。分工这次是干净的：**接口归 audit（`Chain` 加一个 `Scrub` 函数字段，顺序改成 Scrub→Seal→Insert）、实现入口归 db（导出 `Scrub`）、装配归 cmd/core**，三家各拿一行且都被明确告知别碰别人的包。**投前照例反查主控两条断言（含别名扫）**：`grep -rn "^func [A-Z]" internal/platform/db/*.go` 里跳 scrub/redact/clean 的只有 `redact.go:52 InitRedaction`（那是初始化入参不是脱敏入口）⇒ 主控"db 没有任何导出脱敏函数"成立；§2.2.1 确在盘上（mtime 14:17）。另提醒过 audit 一句归属复采：`TestAnchorLineAheadOfDatabaseIsUnverified` 确在它自己 `internal/audit/anchor_test.go`。**未回醒主控**：三行都是它本人所写（同一指纹不重复通知）。推进 0：三家在跑、db/audit 刚被拉起、frontend 等的仍是 backend 那三个 501。 |
 
 ## 来自 worker 的上行输入
 
