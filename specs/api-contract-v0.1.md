@@ -60,7 +60,7 @@
 | 主题 | 规则 |
 |---|---|
 | 时间 | 一律 Unix 毫秒整数，不返回 RFC3339 字符串 |
-| 分页 | `?cursor=<opaque>&limit=50` → `{items, next_cursor}`；**不得**用 offset |
+| 分页 | `?cursor=<opaque>&limit=50` → `{items, next_cursor}`；**不得**用 offset。**REQ-F-19 裁定（11:3x）：`next_cursor` 为""（空串）是"没有下一页"的唯一合法表示**，`null` 与"字段省略"都**不许**成为第二种口径（同一件事两种写法 = 生成客户端要判两次）。判据依据实现：`api/http` 的分页出口先 `next := ""`、只有取满一页且非空时才 `encodeCursor(...)` 覆盖，而 `encodeCursor` 永不为空串（内容=时间戳+id），**所以"空"与"有值"不可能撞**。frontend 自认的一条也记在这里：它先前在 yaml 写"无更多数据时为 null 不是空串"，那是**它自己的投影而不是契约原文**，已撤——本轮它主动改回来是对的 |
 | WebSocket 帧 | **REQ-WS-1 裁定（12:5x，含"为什么不引 `gorilla/websocket`"）**：Core 服务端自带 431 行手写 framer（`core/api/websocket/{ws,frames}.go`），已实测覆盖三处真会出事的地方——三处都在 `internal/api/websocket` 的 **`(*framer).read`** 里：入站帧**无掩码即拒**、**分片帧即拒**并回 `close(1002)`、64 位长度分支在 `make([]byte, n)` **之前**就查 `maxIncoming`（不会被巨型长度声明撑爆内存）。因此客户端约定：① **入站消息必须单帧、≤125 字节有效载荷**（我们的入站只有 `{type:"resubscribe", from_seq}` 一类小 JSON，够用）；② 不协商任何扩展，服务端**不回** `Sec-WebSocket-Extensions`，故浏览器不会启用 permessage-deflate；③ 入站只允许 text/binary/close/ping/pong 五种 opcode，其余按协议错误关。**重开条件**（满足任一条再引依赖，且要新 ADR）：要发/收 >125 字节的入站消息、要二进制分片、要 permessage-deflate、要服务端主动大扇出压帧。理由：这是本地优先产品的**第一个直接依赖**，而换掉一套已测绿的帧实现属于"拿不回的东西"。 |
 | 幂等 | 所有**改变业务状态**的 POST 必须带 `Idempotency-Key`；命中已完成记录时**返回首次的响应**，不重放副作用（领域模型「Idempotency」）。**REQ-F-11 豁免（18:03 确认）**：凭证签发类端点必须排除在幂等缓存之外——目前唯一一条是 `POST /api/v1/ws-ticket`。理由与 frontend 的判断一致且更强：票是**单次使用 + 校验即作废**的，若被幂等缓存，命中缓存会返回同一张票或其"已作废"结论，等于让一次重放变成可预测行为。豁免不许靠约定，**必须有一条反向用例钉住**（同一请求两次 → 拿到两张不同的有效票）；将来新增豁免端点要显式列进本表，不能靠注释口头豁免 |
 | 乐观并发 | 聚合读响应带 `version`（ADR-017 的列）；变更请求带 `If-Match: <version>`，不符 → `409 version_conflict` |
@@ -101,6 +101,8 @@ GET  /api/v1/quota?adapter=              → 观测值 + observation_kind + conf
 GET  /api/v1/notifications?state=&cursor=; POST /api/v1/notifications/{id}:read|handle
 GET  /api/v1/search?q=&scope=messages,tasks   → FTS5；返回命中 + 片段 + 上下文 id
 GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、ping）
+                                           # ⚠ 这个 query 参数只在"客户端根本没发 hello"时才生效；
+                                           #   游标的唯一权威是 hello 帧的 from_seq —— 见 §5（REQ-F-20）
 ```
 
 规则：状态动作用 `:verb` 后缀（`tasks/{id}:accept`），**不引入 `/actions` 复数端点**；
@@ -128,6 +130,19 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 ## 5. WS 帧与游标（与契约① §2/§8 一致）
 
 - 连接后第一帧 `{type:"hello", from_seq}`；服务端先补发 `event_journal` 中 `seq > from_seq` 的事件，再切实时。
+- **REQ-F-20 裁定（11:3x）：游标的唯一权威是 hello 帧；`?from_seq=` 只在"根本没有 hello 到达"时才生效。**
+  实现是正确的、**误导的是本文原来那行 endpoint 写法**（我 11:32 逐处读码核过，两方转述都不准）：
+  `initialFrom(r)` 确实解析 `?from_seq=` 并区分"没带"与"带了个 0"；但 `serve` 里只要读到一帧合法 `hello`，
+  走的就是 `if h.FromSeq != nil && *h.FromSeq >= 0 { from, declared = ... } else { declared = false }` ——
+  **省略 `from_seq` 的 hello 会主动把 query 带来的游标作废**，因为"省略"在本协议里是明确声明
+  "我只要此后新事件"（与 §1 冻结的"缺省即全量重放 = 禁止"同源：**省略 ≠ 0，也 ≠ 沿用 URL 上的值**）。
+  `HelloTimeout` 超时不到 hello 的那条路才回落到 `?from_seq=`（或起点=头）。
+  **所以"只带 query、hello 不带游标 → 首帧 `hello_ack` 且不补发"是规定行为，不是缺陷**；
+  面板同时发两处所以一直表现正确，但**照 §3 那行字面接线的客户端会以为自己补到了历史**——
+  这才是 REQ-F-20 的真实危害，修的是文档。
+  **判据（两侧都要断，别只断一边）**：① 只给 query + hello 省略游标 → **不补发**、首帧 `hello_ack{server_seq}`；
+  ② 只给 query + 不发 hello（超时）→ **补发** `seq > query值`；③ hello 带游标与 query 不一致 → **以 hello 为准**。
+  违反任一即口径漂移。归 `core/test`（`test` 角色，按判据表格式落，见契约① §1.1 第 14 条：只用符号不用行号）。
 - journal 已裁剪到无法补发 → 第一帧改 `{type:"resync_required"}`，客户端必须回去走 REST 全量拉，
   **不得**用部分事件流假装状态完整。
 - 心跳 `{type:"ping", server_seq}`（故意无 `event_id`）；UI 用它区分"活着"与"卡住"。
