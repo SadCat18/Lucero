@@ -122,6 +122,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     进 journal 只会淹没事件）、`idempotency_keys`（纯基础设施状态，不是域事实）、
     `settings`（配置而非业务状态）、`blobs.archived_at`（冷热迁移，无 `blob_*` 登记事件类型）、
     `process_instances`（除 `process_started`/`process_exited`/`process_crashed`
+    **CO-38 裁定（13:5x）：`process_instances.heartbeat_at` 在 v0.1 显式作废、无人写也无人读**——三件事一起不成立：没有写入者（`internal/process` 的 Supervisor 只发 `Event{STARTED|EXITED|CRASHED}`，它自己在 `supervisor.go` 里就把这张表的归属标成未决）、没有读取者（全仓 `heartbeat_at` 的读方只有 `internal/execution/repository.go` 的 `ORDER BY heartbeat_at`，**那是 `executions` 的列**）、而 §8 要判的"是进程死了还是 Core 死了"**由别的机制承担**：`core.lock` 残留 + 新进程启动时的恢复扫描判"Core 死过",Supervisor 观察子进程退出/管道断判"Adapter 死了"——**两者都不需要这一列**。**这条真正要防的是撞名**：库里 heartbeat 类列一共有 **4 个**——`adapter_instances.last_heartbeat_at`(:98)、`executions.heartbeat_at`(:315，且有 `executions(status, heartbeat_at)` 索引)、`execution_leases.heartbeat_at`(:339 NOT NULL)、`process_instances.heartbeat_at`(:569)。**判"执行卡住"看 `executions`，判"租约过期"看 `execution_leases`，`process_instances` 那列今后谁要用都得先写 REQ 说清分工。**
     三个已由 `process` 聚合表达的外，不逐条进 journal）、
     **`principals`（REQ-A6② 裁定，12:3x 补）**：本机主体是**引导期一次写入、之后不可变**的身份行，
     不是聚合根，因此**没有 `Create` 路径不是缺口**。用 `tx.Append("principals", …)` 就是合法正解
