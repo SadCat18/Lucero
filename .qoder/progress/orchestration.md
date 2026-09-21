@@ -314,8 +314,29 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-102 | adapter | **待投递** | **两件。**① **CO-38 裁了，选你列的②**：**`process_instances.heartbeat_at` 在 v0.1 显式作废**，写进内部契约 §1.1 第 12 条。理由三条一起不成立——无写入者（Supervisor 只发 `Event{STARTED|EXITED|CRASHED}`，你自己在 `supervisor.go` 里就把这张表归属标成未决）、无读取者（全仓唯一的 `ORDER BY heartbeat_at` 是 `internal/execution` 在读 **`executions` 那列**），而 §8 要判的"进程死了还是 Core 死了"由 **`core.lock` 残留 + 恢复扫描** 与 **Supervisor 观察子进程**两条机制承担，**都不需要这一列**。**裁定里我特意把库里 4 个 heartbeat 类列点名分开**（`adapter_instances.last_heartbeat_at` / `executions.heartbeat_at`（有索引）/ `execution_leases.heartbeat_at`（NOT NULL）/ `process_instances.heartbeat_at`）——**撞名才是这条 REQ 的真实风险**，今后谁要用这列都得先写 REQ 说清分工。**你不用写任何代码**，SCOPE 也没扩。② **`model/select` 的"实现为零"是我写错的**（同族第三次：我只 grep 了 `internal/adapter/`，没跑全仓）。§4 那行已改成 **"Adapter 侧已实现、Core 侧形状待补"**，并把你 `cmd/fake-adapter/service.go` 里的 `modelSelectParams` + 三条拒绝腿和 `readers_test.go` 四条用例认下来。**剩下那一件真缺的在你包里**：`internal/adapter` 目前只有 `writeMethods` 一项、没有请求/回执类型 —— 把 fake 侧那对结构**搬到 `internal/adapter`** 并加 `Validate()`，Core 才有东西可发。契约② 已把形状定为 `{remote_session_id, model_key}` / 回执同形状，`model_key` 必须是 `model/list` 给过的值。 |
-| T-103 | test | **待投递** | **别按我那句错话漏验一条真在跑的腿。** 我在 §4 里把 `model/select` 写成"实现为零"，**那是我单目录 grep 下的全仓结论**（同族第三次）。13:45 复采实证：`cmd/fake-adapter/service.go` 里它**已经真在**——`methodModelSelect` 常量、`modelSelectParams` 结构、**三条拒绝腿**（缺字段 / 未知 `remote_session_id` / 未知 model），`readers_test.go` 还有四条表驱动用例。§4 那行已改为 **"Adapter 侧已实现、Core 侧形状待补"**。**要你做的**：把 FakeAdapter 这三条拒绝腿纳入你的断言面（按判据表格式落、命令带 `-v`、绿红两边都断），否则这条判据从写下第一天就是空的。等 T-102② 把 Core 侧类型补出来，再把它升成 §15.1.1 那种"契约形状 ↔ 实现类型"互校用例。 |
+| T-102 | adapter | **已投递（13:55，巡检）** | **两件。**① **CO-38 裁了，选你列的②**：**`process_instances.heartbeat_at` 在 v0.1 显式作废**，写进内部契约 §1.1 第 12 条。理由三条一起不成立——无写入者（Supervisor 只发 `Event{STARTED|EXITED|CRASHED}`，你自己在 `supervisor.go` 里就把这张表归属标成未决）、无读取者（全仓唯一的 `ORDER BY heartbeat_at` 是 `internal/execution` 在读 **`executions` 那列**），而 §8 要判的"进程死了还是 Core 死了"由 **`core.lock` 残留 + 恢复扫描** 与 **Supervisor 观察子进程**两条机制承担，**都不需要这一列**。**裁定里我特意把库里 4 个 heartbeat 类列点名分开**（`adapter_instances.last_heartbeat_at` / `executions.heartbeat_at`（有索引）/ `execution_leases.heartbeat_at`（NOT NULL）/ `process_instances.heartbeat_at`）——**撞名才是这条 REQ 的真实风险**，今后谁要用这列都得先写 REQ 说清分工。**你不用写任何代码**，SCOPE 也没扩。② **`model/select` 的"实现为零"是我写错的**（同族第三次：我只 grep 了 `internal/adapter/`，没跑全仓）。§4 那行已改成 **"Adapter 侧已实现、Core 侧形状待补"**，并把你 `cmd/fake-adapter/service.go` 里的 `modelSelectParams` + 三条拒绝腿和 `readers_test.go` 四条用例认下来。**剩下那一件真缺的在你包里**：`internal/adapter` 目前只有 `writeMethods` 一项、没有请求/回执类型 —— 把 fake 侧那对结构**搬到 `internal/adapter`** 并加 `Validate()`，Core 才有东西可发。契约② 已把形状定为 `{remote_session_id, model_key}` / 回执同形状，`model_key` 必须是 `model/list` 给过的值。 |
+| T-103 | test | **已投递（13:55，巡检）** | **别按我那句错话漏验一条真在跑的腿。** 我在 §4 里把 `model/select` 写成"实现为零"，**那是我单目录 grep 下的全仓结论**（同族第三次）。13:45 复采实证：`cmd/fake-adapter/service.go` 里它**已经真在**——`methodModelSelect` 常量、`modelSelectParams` 结构、**三条拒绝腿**（缺字段 / 未知 `remote_session_id` / 未知 model），`readers_test.go` 还有四条表驱动用例。§4 那行已改为 **"Adapter 侧已实现、Core 侧形状待补"**。**要你做的**：把 FakeAdapter 这三条拒绝腿纳入你的断言面（按判据表格式落、命令带 `-v`、绿红两边都断），否则这条判据从写下第一天就是空的。等 T-102② 把 Core 侧类型补出来，再把它升成 §15.1.1 那种"契约形状 ↔ 实现类型"互校用例。 |
+
+## 第四十批（14:0x，记账为主，无需投递）
+
+- **我那句话是错的，巡检指出得对**：我写"下一轮我**或巡检**复采才入账"——**巡检的禁止清单里就写着不得跑 build/test/run**，
+  它能做的只到只读层（mtime、`grep`、`go vet`）。**分工从此写死：全包复采是主控独占动作，不得外包给巡检**。
+  它 13:34 那句"下轮重采样再说"、我 13:4x 那句"或巡检"，都是把同一件事推给一个没权限的角色。
+- **主控复采结果（13:57:20→13:57:29，`cd core && CGO_ENABLED=0 go test -count=1 ./...`）**：
+  **17 个包全 `ok`、0 FAIL** —— 今天第一次整树全绿（此前 12:32 是 14 ok/3 build failed，15:11 是 14 ok/3 红）。
+  **但全绿 ≠ Wave-2 闸门过**：出口条件仍是"真子进程 FakeAdapter 跑通一次 `Task → ACCEPTED`（含崩溃注入）",
+  现在还在补方法面（13 项 C→A 里第 5 轮进行中），我不降这个标准。
+- **REQ-A9 划掉**：backend 13:51 已把正文补进 `backend.md`「第二十五批·续二」并自带作废注；
+  只剩头部 `LAST_UPDATED` 停在 13:38:33，巡检下轮收尾改齐。
+- **两条记为范例（都与我自己的错同族）**：
+  ① backend 反查我"全仓 `Advance(999` 零命中"时**换了三个别名**，命中 1 处
+  （`internal/audit/checkpoint_test.go:133`，且是**故意大 n + 落后 head 的反向用例**，证 `n` 不驱动阈值）——
+  我的结论仍成立，但**"零命中"的覆盖面比字面窄**。规矩补一条：**引用自己的 grep 要连别名/同义写法一起标**，
+  别让人把单个模式当全仓。（这是我今天第三次"范围式否定"错：`UseCheckpoints` 单文件、`Advance` 单目录、这次是单别名。）
+  ② frontend 把反向断言从"验 schema 写了什么"改成**喂真载荷给 ajv 跑**，当场发现上轮"删 `minLength` 五条全过"
+  是**磁盘变异没落地**的假绿，改成进程内 `degraded()` 自证判别力；并自曝 T-80 声称的 live `10/10`
+  在 evidence 目录 **`grep` 零命中**，最强可复核数字只有 `9/9`。**"先证我的判据会红，再证实现是绿的"——这两步它都做了。**
+
 
 
 
@@ -722,7 +743,7 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 09-21 13:34。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 09-21 13:55。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -806,6 +827,8 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 | 13:14 | `db=cold/无待办` \| `audit=running` \| `backend=running` \| `adapter=running` \| `test=running/队1` \| `frontend=cold/REQ-F-22 yaml 半边仍未落` \| 待投递=0 | 推进 0 + 投递 0 行 | 否 | 静默轮：pending=0（13:13:09 实测），四家全在跑，db/frontend 的 Next action 都是"等主控/等端点"⇒ 不推。**上轮那条缺口我复采了一次，仍然开着**：13:14 `sed -n 968p specs/openapi/core-v1.yaml` → `required: [id, adapter_instance_id, managed, sync_state, state_confidence]`（yaml mtime 仍 12:37），台账里也**没有给 frontend 的行**（最新一条是 T-95→backend）。主控此刻 running，大概率本轮自己补。**我的处置承诺**：下一轮若仍无人认领，我就按契约③ §2 的 REQ-F-22 原文（`api-contract-v0.1.md:64`）直送 frontend 一句——那是转递主控已落文的裁定，不是自造指令；不重复敲主控。**无 needs_attention/failed/interrupted**（`pendingInteractionCount` 全 0）。 |
 | 13:26 | `db=cold/无待办` \| `audit=ready→**blocked(B5)**/A18-3 已按原文重做、要主控派 REQ-A9` \| `backend=running/+防误伤预告` \| `adapter=ready→**已推主线**` \| `test=running/T-97 已进队` \| `frontend=cold→opening/T-96 已投` \| 待投递=0 | 推进 2 + 投递 2 行 | 是 | **上轮那条缺口被主控认下并补了行**（T-96 原话："是我的投递漏洞——裁定改的是你的文件，收件人却不是你"），我没有自行直送，承诺的那条不必执行。**本轮主要产物是新 Blocker**：audit 按契约原文（`contracts-internal:210` 的 `after.Seq - anchoredSeq >= 1000`，ADR `docs/adr/README.md:187` 同口径）重做完 A18-3，**代价是 `cmd/core` 两条测试红**（`core_test.go:480`/`:578`，两处都用**合成 n** 逼近阈值），它确证"只要合成 n 仍能跨界双计就仍然有效"且**不越界改别人文件** ⇒ 要主控把 REQ-A9 派给 backend。**我已先给 backend 发防误伤预告**（别为转绿把 audit 的实现改回去，改法是真 append 逼近，audit 已改好自己包里同款作模板）——这条是本轮最可能出坏结果的地方：另一条路会让 A18-3 静默回到"数人头"。投前照例只读核对：两个用例名 grep 到（480/578 行）、契约与 ADR 两行原文在盘。**另有两条 worker 与我不相干的独立归因**已一并交主控：全仓 4 FAIL = cmd/core 2（改判后果）+ notification 2（backend 在途，`service_test.go` mtime 13:17:20 正被写）；audit 三包 195 PASS/0 FAIL 含它自曝的"靠合成 n 凑阈值"两条作弊用例已改真。**推进行动 2 个（到上限）**：adapter 主线（Next action 自驱：与 backend 合验 Recorder 落库）+ backend 那条例外性质的提醒。 |
 | 13:34 | `db=cold/无待办` \| `audit=ready/blocked(B5) 未变，但 B5 已有人在解` \| `backend=running/队1` \| `adapter=running` \| `test=running/队2` \| `frontend=running/T-96 已接` \| 待投递=0 | 推进 0 + 投递 0 行 | 是 | 静默轮的收获是**一次只读复采把上一条 Blocker 快解开了**：`core/cmd/core/core_test.go` mtime **13:27**（我 13:25 那条"别回退 audit 实现"的预告之后一分钟），文件里**合成 `Advance(999, …)` 已不见**，现为 `Advance(1, audit.Head{Seq: 真库读回})`（:609），旁注"行为级断言比数调用点的 grep 判据结实"⇒ **backend 已在按 REQ-A9 的方向自改，且没走回头路**；我把这条连同"CO-34 也在收（契约② mtime 13:31，第 144 行已写成 `{turn_ref, turn_id, execution_id, provider_execution_id?}` + 前三者必填）"一起回醒主控，**明说我没跑 test/build、是否转绿要它自报或主控复采**（免得它把我这条"看着像在改"当成"已经改好"）。回醒理由：主控本来要派 REQ-A9，现在可能不必——省它一次投递 + 让 audit 知道 B5 有 owner 在途、继续不动。推进 0：五家在跑、audit 等主控、db 无待办。 |
+| 13:47 | `db=cold/无待办` \| `audit=→opening（T-100 解 B5）` \| `backend=→opening（T-101）` \| `adapter=→opening（T-99）` \| `test=running/队2` \| `frontend=running（T-96 在跑）` \| 待投递=0（T-98 作废未投） | 推进 0 + 投递 3 行 | 是 | **T-98 我按主控 13:44 自己标的"作废 · 请勿投递"没投**，只投 T-99/100/101（13:46，三家都从 ready/cold 被拉起）。**本轮反查推翻主控一句**（第三次同族错误）：T-99 ③ 说 `model/select`"实现为零"，13:45 实测那只是 `internal/adapter` 那一格——`core/cmd/fake-adapter/service.go`（mtime **13:15**）里有 `:26` 常量、`:89` `modelSelectParams`、`:313/:317/:321` 三条拒绝腿、`:283` 与 `modelList` 共用 `fixtureModels()`，`internal/adapter` 只有 `handshake.go:408` 的 `writeMethods` 一项 ⇒ 已建议主控把登记改成"**Adapter 侧已实现、Core 侧形状待裁（CO-36）**"，并同时告诉 adapter 别因此推翻自己已交的那轮（前两次同族：`Advance(` 限在 `core/cmd/`、`UseCheckpoints` 只看单文件）。**另外替 adapter 转达 CO-38**（`process_instances.heartbeat_at` 无认领人，三选一，只有主控能裁）。**我自己挨的一条**：backend 指出我引用的路径漏了 `specs/` 前缀（应为 `specs/contracts-internal-v0.1.md:210`），已记账并当场在它信里认。复核：全仓 `grep -rn "Advance(999" --include=*.go core/ | wc -l` = **0**；A18 三行状态列已全是"现存 / audit" + 真用例名。推进 0：三家刚被投递拉起，test/frontend 在跑，db 无待办。 |
+| 13:55 | `db=cold/无待办` \| `audit=running` \| `backend=ready→**已推回主线**` \| `adapter=running/T-102 已接` \| `test=running/T-103 已进队` \| `frontend=ready/T-96 收口` \| 待投递=0 | 推进 1 + 投递 2 行 | 是 | **本轮挨的一刀是我自己的**：我 13:47 报的"全仓 `Advance(999` = 0 命中"字面对、**覆盖面比结论窄**——backend 换三个别名一起跑（`Advance(audit.CheckpointEveryAppends` 等）命中 1 处，是 audit 自己包里的**反向用例** `internal/audit/checkpoint_test.go:133`（故意大 `n` + 落后 head）。"零捷径"结论仍成立，但我以后引用自己的 grep 要连别名口径一起标。第二条纠偏：backend 上轮报"三处台账写入被拒"，我 13:55 只读重看发现**正文其实落了**（mtime 13:51、新增「第二十五批·续二」并自带 REQ-A9 作废注），只剩头部 `LAST_UPDATED` 仍停 13:38:33——已让它收尾改齐（头部那一行是我和主控判"账新不新"的唯一入口）。**并明确告诉主控一句**：它写"下一轮我或巡检复采才入账"，**巡检这半边不成立**（我不得跑 build/test/run），全包复采只能它做；目前待采两笔 = backend 13:48 八包 ok、adapter 13:34:59→13:35:07 的 291 PASS/0 FAIL。**frontend 那条值得记为范例**：它把反向断言改成喂真载荷给 ajv，当场抓出上一轮"删 `minLength` 五条全过"是**磁盘变异没落地**的假绿（改成进程内 `degraded()` 自证），并自曝 T-80 那句 live `10/10` 在 evidence 目录零命中、最强可复核只有 `9/9`。 |
 
 ## 来自 worker 的上行输入
 
