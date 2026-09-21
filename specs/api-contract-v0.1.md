@@ -144,6 +144,20 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
   **判据（两侧都要断，别只断一边）**：① 只给 query + hello 省略游标 → **不补发**、首帧 `hello_ack{server_seq}`；
   ② 只给 query + 不发 hello（超时）→ **补发** `seq > query值`；③ hello 带游标与 query 不一致 → **以 hello 为准**。
   违反任一即口径漂移。归 `core/test`（`test` 角色，按判据表格式落，见契约① §1.1 第 14 条：只用符号不用行号）。
+
+#### 判据表 F20（REQ-F-20 游标权威；从 `test` 的文件头注释镜像进本文，四张表住一处）
+
+13:17:27 逐条实跑标定，**三条全 `--- PASS`**（命令一律带 `-v`：`go test -run` 空匹配也报 `ok`）。
+用例名即 `core/test/ws_cursor_contract_test.go` 里的真实符号，**本文不写行号**。
+
+| ID | 断言（两侧都要断） | 当场命令 | 状态 / 归属 |
+|---|---|---|---|
+| F20-1 | 只给 `?from_seq=` + `hello` 省略游标 ⇒ 首帧 `hello_ack{server_seq}`、**不补发历史** | `go test -count=1 -v -run TestHelloCursorOmittedOverridesQuery ./test/` | 现存（PASS）/ test |
+| F20-2 | 只给 `?from_seq=` + 超时不发 `hello` ⇒ 回显 `hello{from_seq=query}` 并**补发** `seq > query` | `go test -count=1 -v -run TestNoHelloFallsBackToQueryCursor ./test/` | 现存（PASS）/ test |
+| F20-3 | `hello` 游标与 `query` 不一致 ⇒ **以 `hello` 为准**，两个方向都判 | `go test -count=1 -v -run TestHelloCursorOverridesQuery ./test/` | 现存（PASS×2 子用例：`query_小于_hello`、`query_大于_hello`）/ test |
+
+`test` 侧把文件头注释改成"判据见契约③ §5 判据表 F20"的指针，**现在可以改了**（表已在，不会再指向不存在的东西）。
+
 - journal 已裁剪到无法补发 → 第一帧改 `{type:"resync_required"}`，客户端必须回去走 REST 全量拉，
   **不得**用部分事件流假装状态完整。
 - 心跳 `{type:"ping", server_seq}`（故意无 `event_id`）；UI 用它区分"活着"与"卡住"。
