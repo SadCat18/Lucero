@@ -278,9 +278,16 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-91 | audit | **待投递** | **A18-3 选你的①（seq 驱动）**，理由比我原来预备的更硬：**12:37:12 实测推进点已经有两条生产路径**（你包外的 `approval` 提交后 `ch.Checkpoint()`、`cmd/core/rejections.go:89` 的 `Advance(int(after.Seq-before.Seq), after)`），所以②"限定 `cmd/core` 为唯一推进者"**在事实层不成立**——要唯一就得删一条正在跑的路径，而那消费者不在你包里、也不该由你删。**选①之后白名单降级成记录、不再是闸门**：同一 `seq` 区间被推进两次天然 no-op，A18-3 的断言也随之变成"**推进幂等**"（对同一提交结果连调两次 → `audit.head` 行数不变），这条比"数人头"稳。改动量你估的是包内 ~10 行 + 3 用例，我接受。**ADR-018 与内部契约判据表 A18-3 都已按此改**。**另外你那条前提要修正**：你说"`UseCheckpoints` 零生产调用方"**字面今天已不成立**（`cmd/core/main.go:140` 确实在生产里调），你真正成立的是"**今天没人写 approvals，所以那条腿 dormant**"。结论一样，但**"谁在跑"说不准会把选路带走**——这次是我先差点被它带走。你顺手修掉的那个 `Check` 未配置锚点 → nil deref **panic**（现在 nil/空 Path/空链三形统一回 `UNVERIFIED, ErrNoAnchor` 并有常设用例）记为范例：**那是能崩掉整个 Core 的形状**。 |
-| T-92 | adapter | **待投递** | **T-83/T-86 那两问不用你答了，我裁了**（契约② §4.2 的 ⚠ 段已改成 ✅）：① **`turn_ref` 一律必带**，`claimed`/`dispatched` 只是**额外**带 `execution_id`；两者在场必须校验一致，不一致 = 丢弃 + Audit。**你的 `stream.go` 那句"carry no turn_ref"要改**，载荷注释与字段注释归一。理由：归属规则留例外清单的代价已经出现了——今天连你自己两处注释都对不上，`test` 只能两条腿各写一个 SKIP。② **`dispatched` 的 `provider_execution_id` 改为"可空，但不得与 `claimed` 的非空值冲突"——这条是代码要改**（现在空值直接 `INVALID_PARAMS`），且**校验落在 Core 侧 tracker**（"这条 turn 之前拿到过名字没有"），不是让 Adapter 自证。理由：强制非空会让"到 dispatched 才给不出名字"的真 Provider **发不出 `dispatched`**，那一轮就永远不显示 running——**把"缺一个字段"升级成"状态永久错误"，还撞 §12**。**CO-13 与 CO-8 在这条上确实冲突，我按 CO-13 裁**；不认同就给理由，别沉默改。 |
-| T-93 | test | **待投递** | **你那两个 SKIP(blocked) 现在能落成硬断言了**（不必再等 adapter）：① `claimed`/`dispatched` **必带 `turn_ref`**，且与 `execution_id` 同时在场时不一致 → Core **丢弃 + Audit**（两边都要断：一致放行、不一致被丢且留 Audit 记录）；② `dispatched` 的 `provider_execution_id` **允许空**（前提 claimed 给过非空）、**给了非空就必须等于 claimed 的值**——这条注意打在 **Core 侧 tracker** 上，不是打 Adapter 的帧生成（T-29"变异打在待验层"同源）。另：你的 `strip_comments` 杀掉的**假绿**（常量删了而注释还在、裸 `grep -qF` 报绿）记为范例，lint 连续第三轮 exit 0 我记账；你 12:25:31 报的"全仓 17 包 0 FAIL"我按 worker 自述对待，**下一轮我或巡检复采后才入账**。 |
+| T-91 | audit | **已投递（12:58，巡检）** | **A18-3 选你的①（seq 驱动）**，理由比我原来预备的更硬：**12:37:12 实测推进点已经有两条生产路径**（你包外的 `approval` 提交后 `ch.Checkpoint()`、`cmd/core/rejections.go:89` 的 `Advance(int(after.Seq-before.Seq), after)`），所以②"限定 `cmd/core` 为唯一推进者"**在事实层不成立**——要唯一就得删一条正在跑的路径，而那消费者不在你包里、也不该由你删。**选①之后白名单降级成记录、不再是闸门**：同一 `seq` 区间被推进两次天然 no-op，A18-3 的断言也随之变成"**推进幂等**"（对同一提交结果连调两次 → `audit.head` 行数不变），这条比"数人头"稳。改动量你估的是包内 ~10 行 + 3 用例，我接受。**ADR-018 与内部契约判据表 A18-3 都已按此改**。**另外你那条前提要修正**：你说"`UseCheckpoints` 零生产调用方"**字面今天已不成立**（`cmd/core/main.go:140` 确实在生产里调），你真正成立的是"**今天没人写 approvals，所以那条腿 dormant**"。结论一样，但**"谁在跑"说不准会把选路带走**——这次是我先差点被它带走。你顺手修掉的那个 `Check` 未配置锚点 → nil deref **panic**（现在 nil/空 Path/空链三形统一回 `UNVERIFIED, ErrNoAnchor` 并有常设用例）记为范例：**那是能崩掉整个 Core 的形状**。 |
+| T-92 | adapter | **已投递（12:58，巡检）** | **T-83/T-86 那两问不用你答了，我裁了**（契约② §4.2 的 ⚠ 段已改成 ✅）：① **`turn_ref` 一律必带**，`claimed`/`dispatched` 只是**额外**带 `execution_id`；两者在场必须校验一致，不一致 = 丢弃 + Audit。**你的 `stream.go` 那句"carry no turn_ref"要改**，载荷注释与字段注释归一。理由：归属规则留例外清单的代价已经出现了——今天连你自己两处注释都对不上，`test` 只能两条腿各写一个 SKIP。② **`dispatched` 的 `provider_execution_id` 改为"可空，但不得与 `claimed` 的非空值冲突"——这条是代码要改**（现在空值直接 `INVALID_PARAMS`），且**校验落在 Core 侧 tracker**（"这条 turn 之前拿到过名字没有"），不是让 Adapter 自证。理由：强制非空会让"到 dispatched 才给不出名字"的真 Provider **发不出 `dispatched`**，那一轮就永远不显示 running——**把"缺一个字段"升级成"状态永久错误"，还撞 §12**。**CO-13 与 CO-8 在这条上确实冲突，我按 CO-13 裁**；不认同就给理由，别沉默改。 |
+| T-93 | test | **已投递（12:58，巡检）** | **你那两个 SKIP(blocked) 现在能落成硬断言了**（不必再等 adapter）：① `claimed`/`dispatched` **必带 `turn_ref`**，且与 `execution_id` 同时在场时不一致 → Core **丢弃 + Audit**（两边都要断：一致放行、不一致被丢且留 Audit 记录）；② `dispatched` 的 `provider_execution_id` **允许空**（前提 claimed 给过非空）、**给了非空就必须等于 claimed 的值**——这条注意打在 **Core 侧 tracker** 上，不是打 Adapter 的帧生成（T-29"变异打在待验层"同源）。另：你的 `strip_comments` 杀掉的**假绿**（常量删了而注释还在、裸 `grep -qF` 报绿）记为范例，lint 连续第三轮 exit 0 我记账；你 12:25:31 报的"全仓 17 包 0 FAIL"我按 worker 自述对待，**下一轮我或巡检复采后才入账**。 |
+
+## 待投递 · 第三十五批（13:0x，REQ-F-22 续裁 + REQ-T10/T11 采纳）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-94 | test | **已投递（13:07，巡检）** | **REQ-T10：要，把表交来。** F20 那三行判据现在住在 `core/test/ws_cursor_contract_test.go` 的**文件头注释**里，而 `C8/U13/W13` 三张表都在契约里 —— **判据散在测试注释里迟早会漂**（T-29 那族问题的文档版）。你按 REQ-T10 说的把文本直接给我镜像进契约③ §5 即可，不用你再打一遍；**镜像之后你那边把文件头注释改成一行指针**（"判据见契约③ §5 判据表 F20"），避免两处真相。<br>**REQ-T11：采纳，而且这是我自己那条证形的漏洞**。`git diff --stat HEAD -- <路径>` **不列未跟踪文件**，你这个 `ws_cursor_contract_test.go` 就是这么差点漏交的 —— 与 B-a7 同族（我 09-20 才发现"未跟踪文件对 `git diff` 隐形"，却在两天后把这条写进了**默认证形**而没补上它的反面）。默认证形改成**三句**：`git diff --stat HEAD -- <路径>` + `git status --porcelain -- <路径>`（专看 `??`）+ 对每个新文件 `git diff --no-index --stat /dev/null <文件>` 给行数量级。<br>**Q3/Q4 不用再等我了**：12:45 我已把 §4.2 两问裁成 ✅（`turn_ref` 一律必带；`dispatched.provider_execution_id` 可空但不得与 `claimed` 冲突、校验在 `TurnTracker.Dispatch`），且 **adapter 12:48 就把代码腿改完了，比我写给 test 的那句还早** —— 所以你手里是**两条现存可断**，不是 blocked。 |
+| T-95 | backend | **已投递（13:07，巡检）** | **REQ-F-22 已裁（契约③ §2「同步游标」行续一段）**：`Session.sync_cursor` 与 `SyncResult.next_cursor` 在响应 schema 里 **`required: true` + 可空 + 字符串侧 `minLength: 1`** —— 键必须在、值只有"位置串"或 `null` 两种。你的三个 501 出口（`POST /projects`、`adapters/{key}/probe`、`sessions/{id}:sync`）**落地时必须满足这条**：无位置就显式回 `null`，**不许缺键**。别把同步游标和分页游标在 validator 里合并 —— 同名两套口径（分页 `""` 合法且唯一表示"没有下一页"；同步 `""` 非法），这是 REQ-F-21 的结论。<br>**说清现状**：你现在是**全链唯一真卡点** —— frontend 整条链、REQ-F-22、以及 test 的 U13-6 SKIP 都等你这三个 501 与 `:sync` 出口；audit 侧 T-64 ①③② 已按 seq 驱动改判、不再需要你为我的旧 grep 加东西。**不用回我这条**，按你 progress 里的队列走即可；只提醒一句：**别为了"让主控满意"把三个出口一次铺开**，一次一个、每个带自己的响应形状证据，比我看到 3 个 200 更有用。 |
 
 
 
@@ -619,11 +626,17 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 - **一次性产物只准待在 `D:\Project\Lucero\.scratch\<角色名>\`**（13:1x 因 backend 的 `rm -f /tmp/r*.json` 事故立）：
   本机 `/tmp` = `C:\Users\<用户>\AppData\Local\Temp`，是整机共享目录（实测顶层 3011 条），
   **任何角色不得对 `/tmp`/`%TEMP%` 做通配删除或"清理"**；删除只准删自己建的具体文件名。
-- **三条取证边界（全是我自己今天踩出来的，对主控与 worker 同等生效）**：
+- **五条取证边界（前四条全是我自己踩出来的，对主控与 worker 同等生效）**：
   ① **证明"没有"必须用全仓检索**（`grep -rn X --include=*.go .`）；单文件 grep 只能得出"不在这个文件里"
   ——15:33 我把"`UseCheckpoints` 不存在"发给了 backend，就是因为只 grep 了 `anchor.go`，实际它在 `approval/`。
   ② **契约/文档里只准用符号名引用，禁止行号**（内部契约 §1.1 第 14 条）。
   ③ **转述"某包现在红/绿"之前必须当场采样**，且区分"不存在"与"存在但零调用方"两种说法（T-68）。
+  ④ **判据只能钉可观察行为，不能钉"某目录里 grep 得到那个符号"** —— 我用这条误伤过两次（`UseCheckpoints`、`Advance`）。
+  "实现在哪儿"是实现细节，会因别人合法的接线点而变；判据要写成"推过阈值→锚点多一行""提交失败→不留行""同一区间推进两次→行数不变"。
+  ⑤ **证形必须能看见未跟踪文件**：`git diff --stat HEAD -- <路径>` **不列 `??`**（test 的 REQ-T11，已采纳）。
+  默认证形=三句：`git diff --stat HEAD -- <路径>` + `git status --porcelain -- <路径>`（专看 `??`）
+  + 对每个新文件 `git diff --no-index --stat /dev/null <文件>`。这与 B-a7"未跟踪代码无法归因"同族——
+  **diff 看不见的东西，不等于不存在**。
 
 ## 无人值守值守配置（15:32 启用）
 
@@ -681,7 +694,7 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 
 ## 巡检心跳
 
-状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 09-21 12:35。**
+状态指纹去重用：同指纹不再回醒主控。**主控最后通知时间 = 09-21 13:05。**
 
 > 时钟更正（致主控）：我在 16:48 那行写的时钟备注说“账本时间领先本机约 16 分钟”**判反了**。
 > 实况是**我的巡检回合时钟滞后**（本行：`date` = 17:13，而账本已写到 17:12）。以后本列时间取发送前的 `date`，
@@ -760,6 +773,8 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 | 12:23 | `db=cold/无待办` \| `audit=running/T-87 已接、在做 A18-1/A18-2` \| `backend=running/队2` \| `adapter=running/队2` \| `test=running` \| `frontend=cold/等 501（REQ-F-21 已裁但没送到它手上，见备注）` \| 待投递=0 | 推进 0 + 投递 0 行 | 否 | **一条要主控知道的错位（我没自行补，记在这里防丢）**：REQ-F-21 你 12:2x 已裁并写进 `specs/api-contract-v0.1.md:64`（结论是"同步游标与分页口径**语义相反**：**没有新条目必须回显当前位置、不许回空串**"——正好是 frontend 当时**没有**擅自收紧 `SyncResult` 的那个选择），但 12:23 实测**台账里没有对应「待投递」行**（pending=0、无 T-88），而 frontend 已 cold。我没推它：它真正卡的是 backend 两个端点脱 501，这条裁定不改变它的 Next action；**下一轮若仍没有行、且这条会左右它 yaml 措辞，我就按你 §64 原文直送并在此点名**。其余全是观察：audit 解冻后确实在跑（rev 23），backend/adapter/test 各带队列在推进中，无 needs_attention/failed/interrupted（`pendingInteractionCount` 全 0）。 |
 | 12:35 | `db=cold/无待办` \| `audit=ready→已投 T-90（它两件活已交，现等主控选 A18-3 ①/②）` \| `backend=running/队1+T-89` \| `adapter=running/队2` \| `test=ready/等 Q3、Q4、REQ-T10/T11` \| `frontend=cold→opening（T-89 给了 yaml 四条收口）` \| 待投递=0 | 推进 0 + 投递 2 行（3 次发送） | 是 | **优先序按主控 T-90 里那句改**：T-87（12:16 已投）→ **T-90**（12:34→audit）→ **T-89**（12:35→frontend、backend 各一封）。上一轮我留的那条"裁定落文但无待投行"**由主控自己补齐**（T-89），我没代送 §64。回醒正文里带了三件：① **audit 与主控对同一条腿的说法相反，我实测裁定中点**——`grep -rn "UseCheckpoints(" --include=*.go . \| grep -v _test.go` → `cmd/core/main.go:140` 生产里确实调了，所以 audit"零生产调用方"字面不成立；它真正对的是"今天没人写 approvals ⇒ 那条腿 dormant"，而 `cmd/core/rejections.go:75`（提交前后 `max(seq)` 之差）在跑 ⇒ **双计风险是真的，"谁在跑"得改口径**，否则主控选出路 ①/② 时被错前提带走；② **test 与 audit 同时 ready 各等主控几句话**（Q3/Q4 那两处 §4.2 口径 + REQ-T10/T11 + A18-3 择一），且 Q3/Q4 与 adapter 队里的 T-83/T-86 是同一条线，主控回一次三角色同解；③ 两条好消息（audit 当场修掉 `Check` 未配置锚点的 **nil panic** 并立常设用例；test 的 `strip_comments` 杀了一个"常量删了注释还在"的**假绿**，lint 连续第三轮 exit 0）。推进 0：三家在跑或刚收到主控新指令，db 无待办。 |
 | 12:43 | `db=cold/无待办` \| `audit=running/A18 收口后在做 ①② 那条线` \| `backend=running/队1` \| `adapter=running/队1` \| `test=ready/等 Q3、Q4、REQ-T10/T11` \| `frontend=ready/等三端点脱 501，新留 REQ-F-22` \| 待投递=0 | 推进 0 + 投递 0 行 | 否 | 静默轮：pending=0、三家在跑、两家 ready 但 Next action 全写明"等主控/等别人" ⇒ 按规矩不推。**本轮把 frontend 那句"三个端点仍 501"独立核了**：12:43 `grep -rn "501\|NotImplemented" --include=*.go cmd/core/ api/ \| grep -v _test.go` → 501 那一腿**不在 `cmd/core/`（那里零命中）而在 `api/http/handler.go:139` 与 `api/http/tasks.go:117/134`**，且 `handler.go:102`/`tasks.go:93` 写明**"`/api/v1/tasks` 只在三个依赖都注入时才挂，缺任何一个维持 501"** ⇒ 它报的"projects / probe / `:sync` 仍 501"与我方看到的实现结构一致，**不是它测量失误**（我第一次只 grep `cmd/core/` 就差点又下一句"零命中即没实现"的错结论，方向反了；已按 T-70/T-72 的口径改 grep 范围）。**REQ-F-22 本轮不回醒主控**：它不阻塞（frontend 自己说"等 sync 端点落地当场看一眼就定"），原文在 `frontend.md` 里，主控当轮 running 且 12:35 那条四问还没回完；**下一轮若台账里仍无人认领，我就并进当轮回醒**。 |
+| 12:58 | `db=cold/无待办` \| `audit=running/T-91 销账（A18-3 择①）` \| `backend=running/队0` \| `adapter=running/T-92 已投` \| `test=cold→opening（T-93）` \| `frontend=ready/等三端点脱 501 + REQ-F-22 待裁` \| 待投递=0 | 推进 0 + 投递 3 行 | 是 | 第三十三批 3 行全投（T-91→audit 12:54、T-92→adapter 12:54、T-93→test 12:55），**投前逐条核过主控的断言**：`cmd/core/rejections.go:89` 确为 `Advance(int(after.Seq-before.Seq), after)`；A18-3 已重写成"推进必须幂等"（`contracts-internal:204`，mtime 12:44）、ADR-018 同步（`docs/adr/README.md:190`，12:45）；契约② §4.2 的 ⚠ 计数已归 0、✅ 裁定块在 `adapter-protocol-v0.1.md:155`（12:38）。**新实测一件对 test 直接有用的**：裁定② 的**代码腿 adapter 早在 12:48 就改完了**（`internal/adapter/stream.go` 的 `MethodTurnDispatch` 只校 `turn_id`+`execution_id`，非空冲突校验移到 `TurnTracker.Dispatch`）⇒ 主控给 test 的"不必再等 adapter"比它自己写的还保守，两条都是现存可断而非 blocked；我同时提醒它 adapter 仍 running，取绿前按 T-68 分清在制品与残留。**兑现上轮承诺：REQ-F-22 已并入 12:55 回醒**（`sync_cursor` 在响应里是否 `required`，frontend 因 `:sync` 仍 501 无法实测而拒绝擅自加），连同 REQ-T10/T11、CO-5 签名一起点名。推进 0：五家在跑或刚接主控指令，db 无待办。 |
+| 13:07 | `db=cold/无待办` \| `audit=running/队1` \| `backend=running/T-95 已投` \| `adapter=running/队2` \| `test=running/T-94 已投` \| `frontend=cold/等 501 + REQ-F-22 yaml 半边无主人` \| 待投递=0 | 推进 0 + 投递 2 行 | 是 | 第三十四批两行投完（T-94→test、T-95→backend，13:04）。**本轮抓到的是一条"裁定找不到收件人"**：主控 13:02 在契约③ §2 续裁 REQ-F-22（两个游标都要 `required: true` + 可空 + `minLength: 1`），13:04 我逐处比了 yaml——**`SyncResult` 那半边 frontend 早就收了（`core-v1.yaml:1015` 有 `next_cursor` 在 required 里），`Session` 那半边没收（`:968` 的 required 列表里没有 `sync_cursor`）**；而这条改的是 frontend 的文件、T-95 只发给 backend、台账里也没有给 frontend 的行 ⇒ 已回醒主控请它补一行或授权我转递（frontend 现 cold，Next action 是"等三个端点脱 501"，按纪律我没推它）。**另一条防漂**：`grep -c "F20" specs/api-contract-v0.1.md` = 0，§5 那张表还不存在，而 T-94 要 test 之后把文件头注释改成"见 §5 判据表 F20" ⇒ 顺序必须是"test 交文本→主控镜像→test 再改指针"，这句我写进了 test 那封正文。**投前照例核过**：`core/test/ws_cursor_contract_test.go` 在（mtime 12:00）、§4.2 ✅ 裁定与 `TurnTracker.Dispatch` 那两处 12:5x 已核。 |
 
 ## 来自 worker 的上行输入
 
