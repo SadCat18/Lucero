@@ -86,10 +86,45 @@ WorkBuddy 桌面 5.5.6 / 内置 CLI 2.137.1 / sandbox 5.5.5）。`adapter_instan
 | `approval/respond` | C→A | 幂等；同一审批二次回应返回首次结果 |
 | `session/create` | C→A | **REQ-T8 / CO-5 回写（13:3x，从 `internal/adapter/send.go` 的 `CreateSessionParams` / `CreateSessionResult` 直接读，不是转述）**：请求 `{client_request_id（必填）, project_id?, title?, base_sha?}`；回执 `{remote_session_id（必填）, created, provider_raw?}`。`client_request_id` 由 Core 生成 UUIDv7 且强制，因为**这一调用天然非幂等，没有它重试会建出两个远端会话**；`created: false` **不是失败**，是幂等命中、返回首次那条；`base_sha` 可空由 CO-14 允许（对不齐 commit 的 Provider 分支留空）。回执缺 `remote_session_id` → `INVALID_PARAMS`（原文："CO-5 has no third shape"） |
 | `model/select` | C→A | **CO-36 定形（13:5x，两半分开记）**：**请求 `{remote_session_id, model_key}`，回执同形状**（`model_key` 必须是 `model/list` 给过的值）。<br>**⚠ 我上一版把这条写成"实现为零"是错的，而且是同族第三次**：我只 grep 了 `core/internal/adapter/`，没 grep 全仓——**Adapter 侧其实已经真在跑**：`core/cmd/fake-adapter/service.go` 的 `methodModelSelect` 常量、`modelSelectParams` 结构（注释自说"§4 那行没给形状，本处补上"）、以及三条拒绝腿（缺字段 / 未知 `remote_session_id` / 未知 model），`readers_test.go` 还有四条表驱动用例。**准确说法是"Adapter 侧已实现、Core 侧形状待补"**（`internal/adapter` 里确实只有 `handshake.go` 的 `writeMethods` 一项，没有请求/回执类型）。<br>**@test：这条现在有可断言面**，别按我那句错话漏验 FakeAdapter 那三条拒绝腿；Core 侧一旦补出类型，就把它升成契约② §15.1.1 那种"码↔形状"互校用例。 |
+
+#### 判据表 MS（`model/select` 真子进程 + Core 类型互校；从 `core/test/adapter_contract_test.go` 镜像进本文，15:2x）
+
+**状态列是主控 15:18:51→15:19:38 逐条实跑标定的**，不是抄 test 的自述：
+`TestFakeAdapterModelSelectLegs` **默认 `SKIP`**（live 门控 `LUCERO_TEST_FAKE_ADAPTER=1`），
+**带上门控后 `--- PASS`，子用例 MS-1a/1b/2/3/4 全 PASS**；`TestModelSelectShapeMatchesContract`（MS-6）**常跑即 PASS**。
+**注意 `-run` 是前缀匹配**：`-run TestFakeAdapterModelSelect` 会命中 `...Legs` 并只报 `ok`，
+**不带 `-v` 就看不见那行 `SKIP`** —— 这正是 test 自己那条"计数命令假绿"规矩的现场版。
+
+| ID | 断言 | 当场命令 | 状态 |
+|---|---|---|---|
+| MS-1 | 缺 `remote_session_id` 或缺 `model_key` ⇒ `INVALID_PARAMS` | `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestFakeAdapterModelSelectLegs ./test/` | 现存（门控内 PASS：MS-1a/1b） |
+| MS-2 | 引用不存在的 `remote_session_id` ⇒ `SESSION_NOT_FOUND` | 同上 | 现存（MS-2 PASS） |
+| MS-3 | `model_key` 不在 `model/list` 的 offer 里 ⇒ `CAPABILITY_UNAVAILABLE`（**不支持必须显式说，不许静默换模型**） | 同上 | 现存（MS-3 PASS） |
+| MS-4 | 正例：会话取自 `session/create`、模型取自 `model/list` ⇒ 无 error 且回执同形状；**两个取值都当场问对端要，不写死 fixture 常量** | 同上 | 现存（MS-4 PASS） |
+| MS-5 | 三个拒绝码两两不同（§4.1"两处 `model/select` 的门不要混"） | 同上 | 现存（同批子用例） |
+| MS-6 | **Core 侧类型 ↔ 本节定形互校**：字段恰为 `{remote_session_id, model_key}`，json tag 不许漂 | `go test -count=1 -v -run TestModelSelectShapeMatchesContract ./test/` | 现存（无门控，直接 PASS） |
 | `session/locate` | C→A | **v0.1 只留桩**：Phase 0 §5 结论是五家 deep-link 到会话粒度全部未实测，
   只有 OpenCode `/tui/select-session` 有程序化证据。返回 `CAPABILITY_UNAVAILABLE` 即为正确实现 |
 | `stream/*` | A→C | 通知流，§6 |
 | `debug/*` | C→A | §9，FakeAdapter 专属 |
+
+### 4.0 `session/push` —— **v0.1 明确不做（CO-40 裁定，15:2x）**
+
+**先撤我说过的一句错话**：T-110 里我写"`session/push` 现在可以做，不必等本行以外任何东西"——
+**盘上没有这个东西**：`grep` 全仓 `specs/` 与 `docs/` 对 `session/push` **0 命中**，§4 方法表也没有它的行。
+**adapter 比我先拒绝了我**：`cmd/fake-adapter/main_test.go` 现在就断言 `session/push` 必须返回 `INTERNAL`，
+理由原文是"**§4 还没有这一行、CO-25 还欠它一个 `turn_ref` 故事，现在接就是代码跑到契约前面**"。
+它没有照我那句话动工，这个纪律是对的。
+
+**裁定：撤销，不补四样。** 三个理由：① **没有消费者**——`§10` 的验收清单、Wave-2/3 的出口条件都不需要它；
+② **它是 A→C 自发通知**，而裁定① 刚把归属收成"全部通知一律带 `turn_ref`"的无例外规则 ——
+**Core 从未发出过 request，就没有 Core 签发的票号可回显**，这是一个真实死结而不是措辞问题；
+③ 为一条不存在的需求去重开刚定稿的归属模型，代价是**把刚刚收干净的东西再松开一次**。
+
+**重开条件（将来谁要它，先答完这四样再动代码）**：
+方向（A→C 通知 ⇒ 归属规则怎么办）、载荷形状、**自发流的 `turn_ref` 从哪来**、
+以及它与 §5 三态队列 + `turn/finished` 排空点（CO-25）的关系。
+答不完就写代码 = 再一次"代码有、契约没有"，本条就是为拦那件事存在的。
 
 方法名固定为 `域/动作`（小写、斜杠分隔）。Adapter 内部方法名与其原生协议**无关**——
 Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射表写进 Adapter 的
