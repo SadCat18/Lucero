@@ -313,6 +313,38 @@ func InitRedaction(denyKeys, patterns []string, marker string) error   // 编译
 - 边界外文本（Provider 返回的自由文本里可能自带密钥）只能靠 `Patterns` 兜，属已知上限
   ——`ponytail: pattern-only for free text, entropy detection if false negatives bite`。
 
+### 2.2.1 REQ-A10 裁定：`entry_hash` 必须由"最终落库的那串字节"算出（14:2x，P0 类）
+
+**缺陷（audit 14:10 报，巡检只读证实同一顺序，我 14:16:51 复核）**：密封发生在脱敏**之前**。
+`audit/append.go` 里 `Chain.Append` 先 `Seal(e, lastHash)` 再调 `Insert`（即 `Tx.Append("audit_entries", …)`），
+而脱敏在 db 内部的 `Tx.scrubArgs` 里跑。于是：哈希算的是 `{"note":"token=ghp_AAAA…"}`，
+落库存的是 `{"note":"token=[REDACTED]"}` —— **这一行的哈希从此重算不出来**，
+`VerifyChain` 从那行起往后永久 `UNVERIFIED`。方向是 fail-closed（不会误报"通过"），
+但后果不可接受：**一次完全诚实的写入就能永久致盲审计面板，而且症状长得像篡改**；
+Wave-2 之后没有重建窗口（回填要重算 `entry_hash` = 伪造链，T-28② 已判死）。
+
+**不变量（今后写在契约里，不再靠实现顺序碰运气）**：
+> **参与 `entry_hash` 的字节，必须与写进库的字节逐字节相同。**任何"哈希之后再改值"的路径都是缺陷。
+
+**修法三件，缺一不可**（都在既有边界内，**不新增抽象层**）：
+1. **db 导出唯一那一份脱敏实现**：现有 `Tx.scrubArgs` 提一个导出入口（建议
+   `db.Scrub(table string, cols []string, args []any) ([]any, error)`，内部就是它）。
+   **规则仍归 audit（§2.1），执行仍只有 db 这一份代码**——**不许出现第二个脱敏器**。
+2. **`audit.Chain` 的 `Append` 顺序改成 Scrub → Seal → Insert**。
+   注入方式**沿用该文件已有的形状**（`Chain` 已经是 `Head func(...)` / `Now func()` / `Insert` 的注入体），
+   加一个 `Scrub` 函数字段即可；**`internal/audit` 不 import `platform/db`**（§0 依赖方向不变），
+   函数值由 `cmd/core` 装配时注入 —— 与"接口归 audit、装配归 cmd/core"同一条路。
+3. **db 内部 `Tx.Append` 那次 scrub 保持不动**（纵深防御），但必须加一条**常驻不变量用例**：
+   **同一批字节二次脱敏后不得改变一个字节**。这条是 ①② 的粘合剂 —— 没有它，
+   "两处各自脱敏一次"迟早又漂回同一个缺陷，只是这次变成静默。
+
+**被否掉的方案（记下来免得有人再试）**：`Chain.Append` 在运行时拒绝未脱敏输入（audit 自己先写了、随即自撤）——
+它把 audit 变成第二个执行点（踩 §2.1 的分工），并与 audit 自己的 `TestStoreRedactsSecretsBeforeTheyLand`
+直接矛盾；那个用例断言的正是"落库前已脱敏"，运行时拒绝等于把责任推给调用方。
+
+**验收下限（归 `test`/audit）**：写一行含密钥形状的 audit 记录 → 之后 `VerifyChain(整条链, head)` **必须仍然通过**；
+以及第 3 条的"二次脱敏不变"用例。audit 已在 `chain_health_test.go` 留一条 `t.Skip` 等这件事落地后删。
+
 ### 2.3 接线位置
 
 `cmd/core` 启动顺序（Config → 单实例锁 → Vault → SQLite → Migration → Event Journal → Recovery →
