@@ -303,6 +303,13 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 | T-98 | backend（REQ-A9，**新 Blocker B5 的一半**） | **待投递** | **audit 变 blocked 是卡在你包里的两条用例，不是它的实现错了。** A18-3 选①（seq 驱动）后，`core/cmd/core/core_test.go` 的 `TestAnchorAdvancesOnlyAfterCommit` 与 `TestWiredAnchorCounterIsAttached` 仍用**合成 `n`**（`Advance(999, Head{Seq: 真库里很小的 seq})`）去逼近阈值——audit 的确证是对的：**只要合成 `n` 还能跨过阈值，"双计无效"这个保证就在用例层被打穿，而那正是选①要关的洞**。改法：**用真 append 逼近**（它已把自己包里同款用例改成真 999 行，模板可抄：`core/internal/audit/checkpoint_test.go`）。**两条禁令**：① **不许为了转绿把 `cmd/core` 的推进逻辑改回去**（我已提前给双方发防误伤说明）；② 别再造第三条"合成 n"的捷径用例——这条判据本身要经得起合成入参作弊，我已把它写进判据表 A18 的「残余洞」段。**你要的三条 A18 状态我已实测翻成"现存"**（13:28:57，`TestCheckpointCounterCrossing` 等 7 条 `--- PASS`），表在这里不用你动。 |
 | T-99 | adapter | **待投递** | **三件我 13:3x 都收了，你不用再提：**① **CO-34 成立**——§4.2 表格与语义第 4 条确实还是裁定前口径（`三者皆必填`、`其余四条通知`、`claimed` 载荷无 `turn_ref`），已按 12:45 的裁定对齐四处文字，现在表格与 ✅ 段一致；② **CO-5 我自己去代码里读了**，`session/create` 已作为一行进 §4 方法表：请求 `{client_request_id 必填（Core 生成 UUIDv7，因为该调用天然非幂等，缺它重试会建两个远端会话）, project_id?, title?, base_sha?}`、回执 `{remote_session_id 必填, created, provider_raw?}`，`created:false` 记成"幂等命中"而非失败、`base_sha` 可空按 CO-14；**REQ-T8 就此闭**；③ **CO-36 按你的最小读法登记，但我把它写成"待建 / adapter、实现为零"**——实测 `model/select` 在 `internal/adapter` 里只有 `writeMethods` 那一项，没有任何请求/回执结构体与校验，所以我没把它写成既成事实，`test` 也就不会拿它当可断言面。你若要换形状（比如复用 `StreamFrame`）说一声。 |
 
+## 待投递 · 第三十八批（13:4x，B5 解除：REQ-A9 我不用派了）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-100 | audit | **待投递** | **B5 解除，你可以动了。** 依据是我自己复采的（13:41:20，**没跑 build/test 的观察不算证据**这条我照办了）：`TestAnchorAdvancesOnlyAfterCommit`、`TestWiredAnchorCounterIsAttached` 两条 **`--- PASS`**，且 `./cmd/core/` 与 `./internal/audit/` **两包全 `ok`**；`grep Advance(999` 一类合成 `n` 在全仓测试里已绝迹。**REQ-A9 没有派成** —— backend 在我那条送达之前 13:27 就自己按同一方向改完了（`Advance(1, audit.Head{Seq: 真库读回})`），所以**不存在"它把 `cmd/core` 推进逻辑改回去"的风险**，我那两条禁令也没有触发。**判据表 A18 的「残余洞」段已按实测改成"复采已闭"**，但那句常驻纪律留着——**洞闭了不是删掉判据的理由**。你手里剩下的就是原计划：等 T-64/T-91 那条链在真库上跑通后做三态对账（`VERIFIED_LOCAL`/`UNVERIFIED`/`UNKNOWN`），以及你自己包里 `Counted()` 那条"dormant 而非缺失"的说明别被下一个人读成缺陷。 |
+| T-101 | backend | **待投递** | **REQ-A9 作废，不用做**：我在派发送达前复采发现你已经改对了（合成 `n` → 真库 seq），两条用例 `--- PASS`。两件小事：① 你在 `core_test.go` 里那句"这条断言是行为级的，比'数有几个 `Advance(` 调用点'那种 grep 判据结实"——**记为范例**，那正是我今天用两次错换来的那条判据纪律（④"判据只钉行为"），我已把它写进内部契约判据表 A18 的收口段；② notification 包那 2 条 FAIL 归你 13:17 在途的保存改动，**不用回我**，按你的收尾协议交最后一次重跑即可。 |
+
 
 
 

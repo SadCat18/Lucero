@@ -203,7 +203,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
 | A18-2 | 事务**提交失败**不得留下任何锚点行（锚点绝不领先库内状态） | 强制提交阶段失败，断言锚点文件行数不变 | 现存 / audit（`TestAnchorCommitRejectsWithoutWriting`；另 `TestAnchorLineAheadOfDatabaseIsUnverified`、`TestCheckWithoutAnchorIsUnverifiedNotVerified` 钉住「锚点领先或缺失不许报 VERIFIED_LOCAL」）|
 | A18-3 | **推进必须幂等：同一 `seq` 区间被推进两次，锚点不得多写一行**（12:4x 改判：从"人守白名单"换成"结构上双计无效"） | 对同一提交结果连调两次推进入口，断言 `audit.head` 行数不变、第二次不产生新行 | 现存 / audit（选①已实现：`TestCheckpointCounterIgnoresEmptyWork`、`TestChainCheckpointsOnlyWhatItAppended`）|
 
-**⚠ 残余洞（13:2x 记，未闭）**：幂等只在推进入口这一层成立；测试若绕过它、直接给计数器喂合成 `n`（`Advance(999, Head{Seq: 库里很小的 seq})`）仍能伪造「跨过阈值」，于是「双计无效」这个保证在**用例层**又被打穿。`core/cmd/core` 有两条这样的用例（`TestAnchorAdvancesOnlyAfterCommit`、`TestWiredAnchorCounterIsAttached`），已派 backend 改成用真 append 逼近阈值（账本 REQ-A9）。**判据的写法本身要经得起「合成入参」作弊。**
+**✅ 残余洞（13:2x 记 → 13:41:20 复采已闭）**：幂等只在**推进入口**这一层成立；测试若绕过它、直接给计数器喂合成 `n`（`Advance(999, Head{Seq: 库里很小的 seq})`）仍能伪造「跨过阈值」，于是「双计无效」这个保证在**用例层**又被打穿。backend 在我那条派发送达之前**就自己按同一方向改完了**：`cmd/core/core_test.go` 已无合成 n，改成 `core.checkpoints.Advance(1, audit.Head{Seq: 从真库读回的 seq})`；13:41:20 我复采 `TestAnchorAdvancesOnlyAfterCommit`、`TestWiredAnchorCounterIsAttached` 两条 `--- PASS`，且 `./cmd/core/` 与 `./internal/audit/` 两包全 `ok`。**「判据要经得起合成入参作弊」这句留在这里当中常驻纪律**——洞闭了不是删掉它的理由。
 
 **A18-3 为什么改成"结构幂等"而不是"白名单"**：12:37:12 实测**推进路径已有两条独立生产点**
 （`internal/approval/store_sqlite.go` 的 `ch.Checkpoint()` 在提交成功后；`cmd/core/rejections.go` 的
