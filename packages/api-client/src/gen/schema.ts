@@ -772,8 +772,8 @@ export interface components {
          */
         ErrorCode: "protocol_not_initialized" | "protocol_version_mismatch" | "capability_unavailable" | "write_entry_none" | "delivery_mode_unsupported" | "local_data_unavailable" | "session_not_found" | "auth_required" | "rate_limited" | "dangerous_flag_refused" | "cancelled" | "timeout" | "provider_error" | "internal" | "version_conflict" | "unauthorized" | "origin_not_allowed" | "method_not_allowed" | "not_implemented";
         CursorPage: {
-            /** @description 无更多数据时为 null，不是空字符串 */
-            next_cursor: string | null;
+            /** @description T-80 / REQ-F-19 裁定：空串是"没有下一页"的唯一合法表示。分页出口只在取满一页且非空时才写 encodeCursor（其结果永不为空串），所以"空"与"有值"不可能撞。null 与"字段整个省略"都不许成为第二种表示 —— 同一件事两种写法会让生成客户端判两次。 */
+            next_cursor: string;
         };
         /** @enum {string} */
         ProjectStatus: "ACTIVE" | "ARCHIVED" | "UNAVAILABLE" | "UNKNOWN";
@@ -921,7 +921,11 @@ export interface components {
             managed: boolean;
             /** @description UNKNOWN 不得折成 Offline/Failed */
             sync_state: components["schemas"]["SyncState"];
-            sync_cursor?: string | null;
+            /**
+             * @description T-96 正式口径：两侧对称 —— required + 可空 + 字符串侧 minLength 1。
+             *     缺键（省略）与空串都是非法的第三种“没有”；null 只表示库里 NULL=从未同步。REQ-F-22 关闭。
+             */
+            sync_cursor: string | null;
             remote_revision?: string | null;
             state_confidence: components["schemas"]["Confidence"];
             provider_status_raw?: components["schemas"]["JsonMap"];
@@ -952,8 +956,17 @@ export interface components {
             managed: boolean;
             project_id?: string | null;
         };
+        /** @description 契约③ §2「同步游标」行（REQ-F-21 裁定，T-89）：**语义与 §2 的分页游标相反，不许照抄分页口径**。 */
         SyncResult: {
             sync_state: components["schemas"]["SyncState"];
+            /**
+             * @description 四条口径：① 没有新条目时**回显当前位置**（入参或库里已存值），回空串即非法；
+             *     ② "不知道 / 不可同步"由 sync_state + state_confidence 表达，游标不许兼职当那个信号（§12 同一条线）；
+             *     ③ null 只有一个含义 = 库里为 NULL = 从未同步 → 下次从头拉；
+             *     ④ 合法值只有"非空字符串"与"null"两种，"省略 / null / 空串"三种"没有"并存就是要收掉的形状
+             *       （所以本字段 required + minLength 1 + 可 null）。
+             *     照抄分页的"空串唯一"会造出一个"从头开始"的假信号，那正是 §5 明令禁止的缺省即全量重放。
+             */
             next_cursor: string | null;
             added_messages?: number;
             state_confidence?: components["schemas"]["Confidence"];

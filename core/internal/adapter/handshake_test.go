@@ -168,17 +168,20 @@ func TestCallGate(t *testing.T) {
 		{"read-only adapter answers reads", readOnly, "session/list", 0},
 		{"read-only adapter refuses send", readOnly, "session/send", ErrWriteEntryNone},
 		{"read-only adapter refuses stop", readOnly, "session/stop", ErrWriteEntryNone},
-		// CO-9 (2026-09-19): the write set is session/send, session/stop,
-		// session/create and model/select. approval/respond and approval/cancel are
-		// NOT gated by write_entry - approvals travel on the permission channel.
+		// §4.1's write set (Q1 ruling, 2026-09-20): session/send, session/stop,
+		// model/select, approval/respond and debug/*. approval/respond is in it because
+		// answering an approval authorises an external action - Permission Engine's
+		// gate over *asking* cannot stand in for write_entry's gate over *doing*.
+		// The old rows for approval/* being exempt cited "§12.11", a clause that does
+		// not exist anywhere in specs/, and approval/cancel is not a method at all.
 		{"read-only adapter refuses session create", readOnly, "session/create", ErrWriteEntryNone},
-		{"approval respond is gated by permission, not write_entry", readOnly, "approval/respond", 0},
-		{"approval cancel is gated by permission, not write_entry", readOnly, "approval/cancel", 0},
+		{"read-only adapter refuses model select", readOnly, "model/select", ErrWriteEntryNone},
+		{"read-only adapter refuses approval respond", readOnly, "approval/respond", ErrWriteEntryNone},
 		{"read-only adapter still answers approval list", readOnly, "approval/list", 0},
 		{"read-only adapter still answers quota read", readOnly, "quota/read", 0},
 		{"read-only adapter refuses debug", readOnly, "debug/crash", ErrWriteEntryNone},
 		{"UIA-declared send is the one write §3 allows", uiaWrite, "session/send", 0},
-		// §12 clause 11 (2026-09-19): a read-only Adapter may reach a write only via an
+		// §3 + §4.1: a read-only Adapter may reach a write only via an
 		// explicitly declared UI_AUTOMATION capability that is itself write-capable.
 		{"UIA level without write_capable is not a write entry", uiaInk, "session/send", ErrWriteEntryNone},
 		{"writable adapter answers send", writable, "session/send", 0},
@@ -359,4 +362,49 @@ func asError(err error, target **Error) bool {
 		*target = e
 	}
 	return ok
+}
+
+// TestWriteMethodSetIsSectionFourOnes closes the gap §4.1 had to record: the gate's own
+// list, checked against the method names §4 actually defines. A name that is not in §4
+// is only allowed here with an open REQ against it, because "code has it, contract does
+// not" is how an ungated write (or a phantom clause) survives a review.
+func TestWriteMethodSetIsContractWrites(t *testing.T) {
+	// §4.1's set, verbatim: session/send, session/stop, model/select, approval/respond,
+	// plus debug/* which isDebugName covers separately.
+	defined := map[string]bool{
+		"session/send": true, "session/stop": true, "model/select": true,
+		"approval/respond": true, "session/list": true, "session/read": true,
+		"model/list": true, "quota/read": true, "approval/list": true,
+		"session/locate": true, "adapter/initialize": true, "adapter/health": true,
+	}
+	// Not in §4 yet: REQ-T8 asks for the row (CO-5 defined the shape, never written back).
+	pending := map[string]bool{"session/create": true}
+
+	for method := range writeMethods {
+		if defined[method] {
+			continue
+		}
+		if !pending[method] {
+			t.Errorf("writeMethods names %q, which is neither a §4 method nor an open REQ", method)
+		}
+	}
+	for method := range pending {
+		if !writeMethods[method] {
+			t.Errorf("%s is still pending §4 (REQ-T8) but left the write set: §3 would let it through", method)
+		}
+	}
+	for _, want := range []string{"session/send", "session/stop", "model/select", "approval/respond"} {
+		if !writeMethods[want] {
+			t.Errorf("§4.1 lists %s as a write, writeMethods does not gate it", want)
+		}
+	}
+	// Reads must stay readable for a write_entry:false Adapter, or §3 becomes a kill switch.
+	for _, read := range []string{"session/list", "session/read", "model/list", "quota/read", "approval/list"} {
+		if writeMethods[read] {
+			t.Errorf("%s is a read in §4/§4.1 but sits in the write set", read)
+		}
+	}
+	if len(writeMethods) != 5 {
+		t.Errorf("writeMethods holds %d names, want 4 §4.1 writes + session/create (REQ-T8)", len(writeMethods))
+	}
 }

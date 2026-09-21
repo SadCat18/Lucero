@@ -119,8 +119,14 @@ func TestDecidePriorityChain(t *testing.T) {
 			grant(ScopeGlobal, "", "filesystem.*", 0, now+1, 0, Allow)}}, want: AllowTemporary},
 		{name: "a DENY grant denies", src: fakeSource{grants: []Grant{
 			grant(ScopeTask, "t-1", "filesystem.write", 0, now+1, 0, Deny)}}, want: Deny},
-		{name: "grant without expiry stays live", src: fakeSource{grants: []Grant{
-			grant(ScopeTask, "t-1", "filesystem.write", 0, 0, 0, Allow)}}, want: AllowTemporary},
+		// A grant row with NULL expires_at is not a temporary grant, so it buys
+		// nothing and the verdict falls through to the risk default. Reading NULL
+		// as "never expires" would be a permanent ALLOW that outlives the task —
+		// approval.grantWindow refuses to write such a row, and Decide refuses to
+		// honour one that got there another way.
+		{name: "grant without expiry authorises nothing", src: fakeSource{grants: []Grant{
+			grant(ScopeTask, "t-1", "filesystem.write", 0, 0, 0, Allow)}},
+			want: RequireApproval, wantReason: ReasonDefaultHighRisk},
 
 		// rung 8: default
 		{name: "no rules and no grants falls to the risk default", src: fakeSource{},
@@ -303,10 +309,18 @@ func TestGrantActiveBoundary(t *testing.T) {
 	if revoked.Active(130) {
 		t.Error("revoked grant reported active")
 	}
+	// A grant with no end is not a temporary grant, so it authorises nothing —
+	// not even inside the window the other fields describe. This is the read-side
+	// half of approval.grantWindow: the write gate refuses to mint such a row,
+	// and if one appears anyway (hand-inserted, legacy, another writer) the
+	// enforcement point still refuses it.
 	noExpiry := g
 	noExpiry.ExpiresAt = 0
-	if !noExpiry.Active(1 << 40) {
-		t.Error("grant with NULL expires_at should not expire")
+	if noExpiry.Active(150) {
+		t.Error("grant with NULL expires_at authorised a request inside its stated window")
+	}
+	if noExpiry.Active(1 << 40) {
+		t.Error("grant with NULL expires_at reported active at a far-future time")
 	}
 }
 

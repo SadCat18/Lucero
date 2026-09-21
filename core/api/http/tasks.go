@@ -29,6 +29,8 @@ type TaskService interface {
 	Pause(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
 	// Resume 的目标态由 handler 传进来：§5.1 有两条合法出边，选哪条是请求里的信息，不是这里该猜的。
 	Resume(ctx context.Context, tx *db.Tx, id string, to task.State, cmd task.Command) (task.Result, error)
+	Cancel(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
+	Accept(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
 }
 
 type TaskLister interface {
@@ -123,8 +125,12 @@ func registerTaskRoutes(mux *http.ServeMux, c Config) {
 			pauseTask(w, r, c, id)
 		case "resume":
 			resumeTask(w, r, c, id)
+		case "cancel":
+			cancelTask(w, r, c, id)
+		case "accept":
+			acceptTask(w, r, c, id)
 		default:
-			// cancel/accept 还没接，以及任何没听过的 verb：明确 501，不假成功。
+			// 没听过的 verb（以及 §3 里还没排到 :transfer 一类）：明确 501，不假成功。
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"该状态动作尚未实现", true)
 		}
@@ -186,7 +192,7 @@ func createTask(w http.ResponseWriter, r *http.Request, c Config) {
 		}
 		// 封存的是"当时那份响应"：任务后来被 queue 掉了，重放仍回 CREATED/v1，
 		// 因为契约③ §2 要的是首次响应，不是当前状态（当前状态请 GET）。
-		sealed, err = sealIdempotency(tx, key, viewOf(created))
+		sealed, err = sealIdempotency(r.Context(), tx, key, viewOf(created))
 		return err
 	})
 	switch {
@@ -301,28 +307,55 @@ func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	})
 }
 
-// pauseBody 是 :pause 的请求体。§3 没定义它，所以这里只认一个可选的 reason，
-// 不给它加"必填"这种查不到条款的要求（见 progress C21）。
-type pauseBody struct {
-	Reason string `json:"reason"`
-}
-
-func pauseTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
-	var body pauseBody
+// readReasonBody 读 :pause / :cancel 那一类"只有一个可选 reason 字段"的请求体。
+// reason 允许缺省/空串：§3 没给这两个动作定义 body，"条款查不到即作废"，我不替契约发明必填要求。
+// 返回 ok=false 时已经写好 400，调用方直接 return。
+func readReasonBody(w http.ResponseWriter, r *http.Request) (string, bool) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "validation_failed", "读请求体失败", true)
-		return
+		return "", false
+	}
+	var body struct {
+		Reason string `json:"reason"`
 	}
 	if strings.TrimSpace(string(raw)) != "" {
 		if err := json.Unmarshal(raw, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_failed", "请求体不是合法 JSON: "+err.Error(), false)
-			return
+			return "", false
 		}
 	}
-	taskAction(w, r, c, id, task.Command{Reason: body.Reason},
+	return body.Reason, true
+}
+
+func pauseTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	reason, ok := readReasonBody(w, r)
+	if !ok {
+		return
+	}
+	taskAction(w, r, c, id, task.Command{Reason: reason},
 		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
 			return c.Tasks.Pause(ctx, tx, id, cmd)
+		})
+}
+
+func cancelTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	reason, ok := readReasonBody(w, r)
+	if !ok {
+		return
+	}
+	taskAction(w, r, c, id, task.Command{Reason: reason},
+		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+			return c.Tasks.Cancel(ctx, tx, id, cmd)
+		})
+}
+
+// acceptTask 没有请求体：验收人是 `X-Lucero-Principal` 那个写主体，不是 body 里自报的字段
+// （契约③ §1.4）。§5.4 之外它也是第一个"动作的语义全在起始态+主体"上、不需要任何参数的面。
+func acceptTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	taskAction(w, r, c, id, task.Command{},
+		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+			return c.Tasks.Accept(ctx, tx, id, cmd)
 		})
 }
 
@@ -409,10 +442,15 @@ func claimIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation,
 	return "", nil
 }
 
-// sealIdempotency 把首次响应封进 idempotency_keys，返回封进去的那份 body。
+// sealIdempotency 把首次响应封进 idempotency_keys，返回**封存后从库里读回来的那一份**。
 // guard 用 state != 'COMPLETED'：这是"只封存第一次"的强制点，不靠调用方自觉。
 // 0 行 = 这一格已经被别人封了，本次就不该由我来宣称首次响应 → 按重放处理（事务回滚，副作用不留）。
-func sealIdempotency(tx *db.Tx, key string, v taskView) (string, error) {
+//
+// 为什么非要回读而不是 return string(body)：内部契约 §1.1 第 13 条的"响应体口径"（C18 裁定 ②）。
+// body 是我自己 json.Marshal 的，落库的是 Tx.scrubArgs 处理后的另一份；没被脱敏命中时只差键序，
+// 一旦被命中就是**真实内容分叉** —— 首次响应把未打码的值发到线上、库里存打码版，正好绕开 §2.2 要守的线。
+// 回读之后：首次与重放逐字节相等，且 wire 与存储按构造一致，脱敏规则以后怎么改都不会漏。
+func sealIdempotency(ctx context.Context, tx *db.Tx, key string, v taskView) (string, error) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		return "", err
@@ -426,7 +464,12 @@ func sealIdempotency(tx *db.Tx, key string, v taskView) (string, error) {
 	if n != 1 {
 		return "", errReplay
 	}
-	return string(body), nil
+	var stored string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT response_json FROM idempotency_keys WHERE key = ?`, key).Scan(&stored); err != nil {
+		return "", err
+	}
+	return stored, nil
 }
 
 func hashOf(b []byte) string {
@@ -434,6 +477,9 @@ func hashOf(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// encodeCursor 只服务**分页**游标：REQ-F-19 定下 `next_cursor == ""` 是"没有下一页"的唯一合法值。
+// REQ-F-21/22 的**同步**游标口径与它相反（空串非法，只有非空串或 null），所以 `:sync` 落地时
+// 另写一个编码函数，不许复用这两个函数、也不许在 validator 里把同名两套合并成一套。
 func encodeCursor(createdAt int64, id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d|%s", createdAt, id)))
 }

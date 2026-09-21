@@ -169,7 +169,7 @@ func (s *SQLiteStore) MarkResolved(ctx context.Context, current Approval, res Re
 		if err != nil {
 			return err
 		}
-		if fresh.State != PENDING {
+		if fresh.Resolved() {
 			return nil
 		}
 		resolutionJSON, err := json.Marshal(map[string]any{
@@ -216,14 +216,22 @@ func (s *SQLiteStore) MarkResolved(ctx context.Context, current Approval, res Re
 }
 
 // insertGrant writes the temporary_grants row an ALLOW_TEMPORARY decision
-// promises, plus the grant_issued event §7 expects. scope_type, scope_id and
-// expires_at are all required by validateGrantRequest: a grant with no lifetime
-// is not temporary and would be a silent permanent privilege.
+// promises, plus the grant_issued event §7 expects.
+//
+// The gate below is not a second copy of the Service's check — it is the SAME
+// function (grantWindow), called at the only place that can actually mint a
+// privilege. temporary_grants.expires_at is nullable and nullMs turns a 0 into
+// NULL, so without this the store would happily write a grant that never ends.
+// Returning an error here rolls the whole transaction back: no state change, no
+// event, no audit row, which is why an invalid grant cannot half-land.
 //
 // temporary_grants is an aggregate since 000003 (AggGrant), so this goes through
 // Create rather than Append: Append now refuses aggregate rows on purpose, which
 // is what stops a grant being written without a version and an event.
 func (s *SQLiteStore) insertGrant(tx *db.Tx, g permission.Grant, at int64, corr, caus string) error {
+	if err := grantWindow(g.StartsAt, g.ExpiresAt); err != nil {
+		return err
+	}
 	evID, err := s.newID()
 	if err != nil {
 		return err
@@ -252,6 +260,11 @@ func grantPayload(g permission.Grant) map[string]any {
 
 // ExpirePending converges pending approvals whose deadline has passed. Each row
 // is a normal Touch: one version, one approval_expired event, one audit row.
+//
+// `expires_at <= ?` here is the SQL spelling of Approval.DeadlinePassed, which
+// is the truth the read paths use. A set query has to compare columns, so the
+// rule cannot be called here — TestSweepAgreesWithDeadlineBoundary is what keeps
+// the two spellings from drifting apart at the boundary millisecond.
 func (s *SQLiteStore) ExpirePending(ctx context.Context, at int64) error {
 	return s.write(ctx, func(tx *db.Tx, ch *audit.Chain) error {
 		rows, err := tx.QueryContext(ctx,
@@ -279,7 +292,10 @@ func (s *SQLiteStore) ExpirePending(ctx context.Context, at int64) error {
 			if err != nil {
 				return err
 			}
-			if fresh.State != PENDING {
+			// The SQL above narrows the set; this is the decision, made with the
+			// same predicate the read paths use. If the two spellings ever drift,
+			// the row that is not actually past its deadline stays PENDING.
+			if fresh.Resolved() || !fresh.DeadlinePassed(at) {
 				continue
 			}
 			evID, corr, caus, err := s.eventIDs("", "")

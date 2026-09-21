@@ -18,7 +18,9 @@ import (
 // idempotency_keys - and a write entry point with no consumer is the same
 // speculative feature T-28③ refused for policy_rules. When the panel grows an
 // emergency-stop button, that whitelist extension goes through a REQ to the
-// orchestrator; until then nothing may write this row from product code.
+// orchestrator. Verified repo-wide, all file types (not one file, not one dir):
+// the only INSERT INTO settings anywhere is this package's own test fixture, and
+// no migration seeds the row - so a fresh database always reads "not stopped".
 //
 // A missing row means NOT stopped. "Cannot read the switch" is not "stop": the
 // asymmetry is intentional, because failing this direction on an absent row

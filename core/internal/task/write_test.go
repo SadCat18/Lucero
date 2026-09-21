@@ -382,6 +382,94 @@ func TestPauseThenResumeWritesBothEvents(t *testing.T) {
 	}
 }
 
+// TestCancelThenAcceptCoverTheTwoEndStates 覆盖 §5.1 的两个终态闸门：
+// Cancel 从 RUNNING 落到 CANCELLED（带 reason），终态之后任何再动都被矩阵拒；
+// Accept 只认 WAITING_ACCEPTANCE，且 accepted_by 取写主体。
+func TestCancelAndAcceptReachTerminalStates(t *testing.T) {
+	d, ctx := openWriteDB(t)
+	svc := task.NewService(nil)
+	newTaskIn(t, d, ctx, "t-can", task.Running)
+
+	var res task.Result
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		var err error
+		res, err = svc.Cancel(ctx, tx, "t-can", task.Command{
+			EventID: "ev-can", PrincipalID: "local-user", Reason: "用户改主意了", WantVersion: 1})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if res.To != task.Cancelled || res.Version != 2 || !res.Advanced {
+		t.Errorf("Cancel 结果不对: %+v", res)
+	}
+	if got := payloadOf(t, d, task.EventCancelled, "t-can"); !strings.Contains(got, `"reason":"用户改主意了"`) {
+		t.Errorf("task_cancelled 没带 reason: %s", got)
+	}
+	// CANCELLED 是终态：再取消 / 再验收 / 再暂停都该被拒，且一行不写。
+	for name, act := range map[string]func() error{
+		"再 Cancel": func() error {
+			return d.Write(ctx, func(tx *db.Tx) error {
+				_, e := svc.Cancel(ctx, tx, "t-can", task.Command{EventID: "x1", PrincipalID: "local-user"})
+				return e
+			})
+		},
+		"再 Accept": func() error {
+			return d.Write(ctx, func(tx *db.Tx) error {
+				_, e := svc.Accept(ctx, tx, "t-can", task.Command{EventID: "x2", PrincipalID: "local-user"})
+				return e
+			})
+		},
+		"再 Pause": func() error {
+			return d.Write(ctx, func(tx *db.Tx) error {
+				_, e := svc.Pause(ctx, tx, "t-can", task.Command{EventID: "x3", PrincipalID: "local-user"})
+				return e
+			})
+		},
+	} {
+		if err := act(); !errors.Is(err, task.ErrIllegalTransition) {
+			t.Errorf("%s：终态之后应被矩阵拒，实际 %v", name, err)
+		}
+	}
+	if n := eventsOf(t, d, "t-can"); n != 2 {
+		t.Errorf("终态后的三次被拒写了 %d 行事件（应为 created+cancelled 两行）", n)
+	}
+
+	// Accept 只从 WAITING_ACCEPTANCE 走。
+	newTaskIn(t, d, ctx, "t-acc", task.WaitingAcceptance)
+	var acc task.Result
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		var err error
+		acc, err = svc.Accept(ctx, tx, "t-acc", task.Command{EventID: "ev-acc", PrincipalID: "local-user", WantVersion: 1})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if acc.To != task.Accepted || acc.Version != 2 {
+		t.Errorf("Accept 结果不对: %+v", acc)
+	}
+	if got := payloadOf(t, d, task.EventAccepted, "t-acc"); !strings.Contains(got, `"accepted_by":"local-user"`) {
+		t.Errorf("task_accepted.accepted_by 应是写主体: %s", got)
+	}
+	// 缺主体的 Accept 必须在动作层就失败（accepted_by 不能空着进终态）。
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, e := svc.Accept(ctx, tx, "t-can", task.Command{EventID: "ev-no-principal"})
+		return e
+	}); !errors.Is(err, task.ErrInvalidTask) {
+		t.Errorf("缺 principal 的 Accept 应报 ErrInvalidTask，实际 %v", err)
+	}
+	// 非 WAITING_ACCEPTANCE 想直接验收：矩阵与白名单都会拒。
+	newTaskIn(t, d, ctx, "t-bad", task.Queued)
+	if err := d.Write(ctx, func(tx *db.Tx) error {
+		_, e := svc.Accept(ctx, tx, "t-bad", task.Command{EventID: "ev-early", PrincipalID: "local-user"})
+		return e
+	}); !errors.Is(err, task.ErrIllegalTransition) {
+		t.Errorf("QUEUED 直接验收应被拒，实际 %v", err)
+	}
+	if n := eventsOf(t, d, "t-bad"); n != 1 {
+		t.Errorf("被拒的验收写了 %d 行事件", n)
+	}
+}
+
 // TestResumeRefusesStatesThatWereNeverSuspended 是 resumedFrom 白名单的唯一证据。
 // 前提要先证住：§5.1 确实给 INTERRUPTED 开了到 RUNNING 的边 —— 所以光靠矩阵拦不住，
 // 不设白名单的话一次崩溃恢复会被写成 task_resumed{from:"INTERRUPTED"}，而 §6 的 from 只有 PAUSED/BLOCKED。

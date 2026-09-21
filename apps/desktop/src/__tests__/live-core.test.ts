@@ -36,6 +36,21 @@ async function firstFrame(url: string, ms = 2500): Promise<WsFrame | null> {
   });
 }
 
+/** 收多帧；helloBody 决定客户端按 F-16 报哪个游标。firstFrame 只收首帧、且固定发裸 hello */
+async function collectFrames(helloBody: Record<string, unknown> | null, ms = 900): Promise<WsFrame[]> {
+  const { ticket } = await core().wsTicket();
+  return new Promise((resolve) => {
+    const got: WsFrame[] = [];
+    const ws = new WebSocket(`${wsBase}/ws/v1/events?ticket=${ticket}`);
+    const finish = () => { try { ws.close(); } catch { /* 已关 */ } resolve(got); };
+    const timer = setTimeout(finish, ms);
+    ws.onopen = () => { if (helloBody) ws.send(JSON.stringify(helloBody)); };
+    ws.onmessage = (e) => { got.push(JSON.parse(String(e.data)) as WsFrame); };
+    ws.onclose = () => { clearTimeout(timer); finish(); };
+    ws.onerror = () => { clearTimeout(timer); finish(); };
+  });
+}
+
 describe.skipIf(!live)('真 Core 联调 · REST 面', () => {
   it('health 200；state 在 T-30 词表内且无 DEGRADED；migration_version 是整数', async () => {
     const h = await core().health();
@@ -68,6 +83,15 @@ describe.skipIf(!live)('真 Core 联调 · REST 面', () => {
     expect((await bad.json()).error.code).toBe('origin_not_allowed');
   });
 
+  it('T-80/REQ-F-19：分页出口的 next_cursor 只有"空串"一种空表示', async () => {
+    // 我生成类型已收紧成 string（非 null），这条负责在真响应上验它，别让我写了不查。
+    // 只用已实现的列表端点：/projects 与 /sessions 在 09-21 仍 501，拿它们写断言会假红。
+    const page = await core().listTasks({ limit: 5 });
+    expect(Array.isArray(page.items)).toBe(true);
+    expect(typeof page.next_cursor).toBe('string');
+    expect(page.next_cursor).toBe('');          // 未取满一页 → 空串，不是 null、也不是省略
+  });
+
   it('§2.1 反向用例：同一请求两次 → 两张不同的有效票（幂等豁免成立）', async () => {
     const a = await core().wsTicket();
     const b = await core().wsTicket();
@@ -78,7 +102,7 @@ describe.skipIf(!live)('真 Core 联调 · REST 面', () => {
   });
 });
 
-describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面（等 REQ-F-17）', () => {
+describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面', () => {
   it('换票 → 客户端 hello → 首帧 hello_ack 且带 server_seq', async () => {
     const { ticket } = await core().wsTicket();
     const f = await firstFrame(`${wsBase}/ws/v1/events?ticket=${ticket}`);
@@ -87,6 +111,24 @@ describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面（等 REQ-F-17）'
     expect(typeof (f as { server_seq?: number }).server_seq).toBe('number');
   });
 
+  it('F-9：不带游标→hello_ack 抬到 journal 头；hello 带游标→回显 hello 且只补发其后事件', async () => {
+    const bare = await collectFrames({ type: 'hello' });
+    expect(bare[0]?.type).toBe('hello_ack');
+    expect(typeof (bare[0] as { server_seq?: number }).server_seq).toBe('number');
+
+    await core().createTask({ title: 'live f9 a' });
+    await core().createTask({ title: 'live f9 b' });
+    const withCursor = await collectFrames({ type: 'hello', from_seq: 1 });
+    expect(withCursor[0]?.type).toBe('hello');
+    expect((withCursor[0] as { from_seq?: number }).from_seq).toBe(1);
+    const replayed = withCursor.filter((f) => f.type === 'event')
+      .map((f) => (f as { data?: { seq?: number } }).data!.seq!);
+    expect(replayed.length).toBeGreaterThan(0);
+    expect(replayed.every((seq) => seq > 1)).toBe(true);   // 禁止「缺省即全量重放」
+
+    const past = await collectFrames({ type: 'hello', from_seq: 999999 });
+    expect(past.filter((f) => f.type === 'event')).toHaveLength(0);
+  }, 20_000);
   it('票单次使用：第二次拿同一张票必须被拒（close 1008，不升级）', async () => {
     const { ticket } = await core().wsTicket();
     const good = await firstFrame(`${wsBase}/ws/v1/events?ticket=${ticket}`);

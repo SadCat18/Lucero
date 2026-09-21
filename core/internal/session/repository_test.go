@@ -147,6 +147,46 @@ func TestGetDoesNotCoerceUnknown(t *testing.T) {
 	}
 }
 
+// TestSyncCursorKeepsNullApartFromAPosition 钉 REQ-F-21 第 ③④ 条：
+// 同步域里 NULL = "从未同步 → 下次从头拉"，与分页的"没有下一页"**语义相反**，
+// 所以它不能被折成空串再让出口去猜。库里万一存了空串（新裁定下这是非法值），
+// 也读成"无位置"而不是造出第三种状态 —— 合法值只有"非空字符串"与"null"两种。
+func TestSyncCursorKeepsNullApartFromAPosition(t *testing.T) {
+	db := openSchema(t)
+	seed(t, db)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	nover, err := repo.Get(ctx, "sess-codex") // 夹具没写 sync_cursor，就是 NULL
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nover.SyncCursor != nil {
+		t.Errorf("NULL 游标被读成了 %q，应该是 nil", *nover.SyncCursor)
+	}
+
+	pos, err := repo.Get(ctx, "sess-qoder") // 夹具里 sync_cursor = '20'
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pos.SyncCursor == nil || *pos.SyncCursor != "20" {
+		t.Fatalf("非空游标读丢了: %+v", pos.SyncCursor)
+	}
+
+	if _, err := db.Exec(`INSERT INTO sessions (id, adapter_instance_id, sync_state, sync_cursor,
+		state_confidence, created_at, updated_at)
+		VALUES ('sess-empt', 'ad-codex', 'SYNCED', '', 'HIGH', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := repo.Get(ctx, "sess-empt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.SyncCursor != nil {
+		t.Errorf("空串游标被当成一个位置返回了（%q）；REQ-F-21 只承认非空串与 null 两种值", *empty.SyncCursor)
+	}
+}
+
 func TestListMessagesOrdersBySequenceThenTime(t *testing.T) {
 	db := openSchema(t)
 	seed(t, db)

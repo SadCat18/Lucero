@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +21,15 @@ import (
 )
 
 const testToken = "handler-token"
+
+// redactMarker 与 secretShape 是本包测试自带的最小脱敏规则：权威是 `audit.Rules()`，
+// 但业务包（含其测试）不 import 别的规则包拿配置（C14 的教训：audit 在途改动会把我的包带红）。
+// 这条 pattern 与 `audit.Rules().Patterns` 里 `"sk-[A-Za-z0-9_-]{16,}"` 同形，够 §2.2 的断言用。
+const (
+	redactMarker = "[REDACTED]"
+	secretShape  = `sk-[A-Za-z0-9_-]{16,}`
+	testSecret   = "sk-abcdefghijklmnop0123456789"
+)
 
 // taskJSON 是响应体的读侧镜像（handler 侧的类型不外露，测试只按 JSON 形状断言）。
 type taskJSON struct {
@@ -44,7 +52,7 @@ func newTaskHarness(t *testing.T) (*httptest.Server, *db.DB) {
 	if err := d.Migrate(filepath.Join("..", "..", "migrations")); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InitRedaction([]string{"token"}, nil, "[REDACTED]"); err != nil {
+	if err := db.InitRedaction([]string{"token"}, []string{secretShape}, redactMarker); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range [][2]string{{"system", "SYSTEM"}, {"local-user", "USER"}} {
@@ -168,11 +176,19 @@ func TestCreateThenQueueThenReplay(t *testing.T) {
 	if status, out = call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-1", body); status != http.StatusCreated {
 		t.Fatalf("重放应 201（返回首次响应），实际 %d: %s", status, out)
 	}
-	// 逐字段比，不比字节：`response_json` 入库要过 db 的脱敏，脱敏把 JSON 解成 map 再编码回来，
-	// 键序因此变成字典序（实测首次 `{"id":…,"title":…}` vs 重放 `{"created_at":…,"id":…}`，内容一致）。
-	// 语义上"同一个响应"由字段值决定，键序不是响应语义的一部分；这条差异本身记进 progress 待主控定口径。
-	if first, replay := mustParseMap(t, firstOut), mustParseMap(t, out); !reflect.DeepEqual(first, replay) {
-		t.Errorf("重放返回的不是首次响应：\n  首次 = %v\n  重放 = %v", first, replay)
+	// 内部契约 §1.1 第 13 条"响应体口径"（C18 裁定 ②）：首次与重放**逐字节相等**，
+	// 并且那一份必须**就是库里存的 response_json** —— 不接受"允许键序不同"的特例断言。
+	// 这两条一起挡住一类真 bug：返回自己 Marshal 的那份而落库的是 scrub 后的另一份，
+	// 平时只差键序，一旦脱敏命中就是"未打码的值发到线上、库里存打码版"。
+	if out != firstOut {
+		t.Errorf("重放没有逐字节返回首次响应：\n  首次 = %s\n  重放 = %s", firstOut, out)
+	}
+	var stored string
+	if err := d.Read.QueryRow(`SELECT response_json FROM idempotency_keys WHERE key='k-1'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != firstOut || stored != out {
+		t.Errorf("wire 与存储不是同一份：\n  库里 = %s\n  首次 = %s\n  重放 = %s", stored, firstOut, out)
 	}
 	if n := countRows(t, d, "tasks"); n != 1 {
 		t.Errorf("重放产生了第 %d 条任务（§40 要避免的高风险动作重复执行）", n)
@@ -384,6 +400,87 @@ func TestPauseResumeRoundTripOverHTTP(t *testing.T) {
 	}
 }
 
+// TestIdempotentFirstResponseIsRedacted 补 U13-7 点出的那半句缺口：
+// 原来我只证到"首次与重放一致"，而 §1.1 第 13 条响应体口径的风险点是"**库里对、发出去的那份错**"。
+// 所以三处必须同时成立、且都不含明文：① 首次 201 body；② 重放 body；③ 库里的 response_json。
+// 顺带证第四处 —— 写进 `tasks.title` 的那一列也不留明文（否则打码只发生在响应层，库还是漏的）。
+func TestIdempotentFirstResponseIsRedacted(t *testing.T) {
+	srv, d := newTaskHarness(t)
+	body := `{"title":"标题里贴了密钥 ` + testSecret + `","priority":"NORMAL"}`
+
+	status, first := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-secret", body)
+	if status != http.StatusCreated {
+		t.Fatalf("建任务应 201，实际 %d: %s", status, first)
+	}
+	if strings.Contains(first, testSecret) {
+		t.Errorf("§2.2 被绕开：首次 201 body 把未脱敏的密钥形状值发出去了: %s", first)
+	}
+	if !strings.Contains(first, redactMarker) {
+		t.Errorf("首次 body 里没有打码标记，说明这条 pattern 根本没生效（用例就成了空断言）: %s", first)
+	}
+
+	status, replay := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-secret", body)
+	if status != http.StatusCreated || replay != first {
+		t.Errorf("重放与首次不是同一份: %d\n  首次=%s\n  重放=%s", status, first, replay)
+	}
+	if strings.Contains(replay, testSecret) {
+		t.Errorf("重放把明文发出去了: %s", replay)
+	}
+
+	var stored string
+	if err := d.Read.QueryRow(`SELECT response_json FROM idempotency_keys WHERE key='k-secret'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != first || stored != replay {
+		t.Errorf("wire 与存储分叉（C18 那一格）：\n  库里 = %s\n  首次 = %s\n  重放 = %s", stored, first, replay)
+	}
+	var rowTitle string
+	if err := d.Read.QueryRow(`SELECT title FROM tasks`).Scan(&rowTitle); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rowTitle, testSecret) {
+		t.Errorf("明文密钥进了 tasks.title —— 打码不能只在响应层做: %s", rowTitle)
+	}
+}
+
+// TestCancelOverHTTPReachesTerminal 是 :cancel 的端到端一条（`task_cancelled` 已在 db 注册表里，
+// 所以这条今天就是硬断言，不像 pause/resume 要等 REQ-DB-3）：
+// CREATED→QUEUED→CANCELLED 三个版本三行事件，终态之后再动一律 409。
+func TestCancelOverHTTPReachesTerminal(t *testing.T) {
+	srv, d := newTaskHarness(t)
+	_, out := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-can", `{"title":"取消我"}`)
+	var created taskJSON
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatal(err)
+	}
+	vr := "/api/v1/tasks/" + created.ID
+	if status, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", ""); status != http.StatusOK {
+		t.Fatalf("queue 应 200，实际 %d: %s", status, out2)
+	}
+	if status, out2 := call(t, srv, http.MethodPost, vr+":cancel", "local-user", "", `{"reason":"不做了"}`); status != http.StatusOK {
+		t.Fatalf("cancel 应 200，实际 %d: %s", status, out2)
+	} else if m := mustParseMap(t, out2); m["status"] != "CANCELLED" || m["version"] != float64(3) {
+		t.Errorf("cancel 响应不对: %v", m)
+	}
+	// 终态之后：:accept 与 :cancel 都是 409 illegal_transition（不是 501、不是 500）。
+	for _, verb := range []string{":accept", ":cancel"} {
+		status, out2 := call(t, srv, http.MethodPost, vr+verb, "local-user", "", `{}`)
+		if status != http.StatusConflict {
+			t.Errorf("%s 在终态后应 409，实际 %d: %s", verb, status, out2)
+			continue
+		}
+		if c := codeOf(t, out2); c != "illegal_transition" {
+			t.Errorf("%s 错误码应为 illegal_transition，实际 %q", verb, c)
+		}
+	}
+	if n := countRows(t, d, "tasks"); n != 1 {
+		t.Errorf("多了任务：%d", n)
+	}
+	if n := countRows(t, d, "event_journal"); n != 3 {
+		t.Errorf("一个版本一行事件，应为 3 行，实际 %d", n)
+	}
+}
+
 // 校验分支必须在写库之前挡住，并给出可控的错误码（不能把 SQL 约束文本透出去）。
 func TestTaskInputValidation(t *testing.T) {
 	srv, d := newTaskHarness(t)
@@ -405,7 +502,7 @@ func TestTaskInputValidation(t *testing.T) {
 			http.StatusNotFound, "not_found"},
 		{"queue 的 If-Match 不是数字", http.MethodPost, "/api/v1/tasks/x:queue", "local-user", "", "",
 			http.StatusBadRequest, "validation_failed"},
-		{"还没接的动作保持 501", http.MethodPost, "/api/v1/tasks/any:cancel", "local-user", "", "",
+		{"还没接的动作保持 501", http.MethodPost, "/api/v1/tasks/any:transfer", "local-user", "", "",
 			http.StatusNotImplemented, "not_implemented"},
 		{"status 不在状态集合", http.MethodGet, "/api/v1/tasks?status=NOPE", "", "", "",
 			http.StatusBadRequest, "validation_failed"},

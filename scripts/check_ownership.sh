@@ -64,6 +64,7 @@ scan_go() {
 API_SPEC="specs/api-contract-v0.1.md"
 declare -A OWNER
 OWNER_ROWS=0
+ROOT_ROW_SEEN=0   # §7 里 "`core/`（根目录本身）" 那一行有没有解析到；它只登记、不作归属（CO-36②）
 # §7 尚未覆盖、但摘要表/现实需要的路径（补齐后请从这张表里删）：
 #   core/internal/message   ← orchestration 摘要表第 2 行（backend），§7 漏列
 #   docs/adapters/phase0    ← survey 的报告目录，§7 的 docs/** 行自己写了"角色自己的报告除外"却没列行
@@ -114,6 +115,15 @@ load_owner_table() {
       fi
       # base 只在它是多级目录时才认（`dirname specs/` 得到 "."，用它拼会造出 ./docs/ 这种键）
       [[ -z "$base" ]] && { base="$(dirname -- "${p%/}")"; [[ "$base" == */* ]] || base=""; }
+      # §7 里 "`core/`（根目录本身）"那一行**不许当兜底归属用**（主控 13:22 裁定）。
+      # 它的本意是"core/ 根下只许 go.mod/go.sum，新增任何根级文件都算越界"；可一旦把它注册进表，
+      # 任何没被更具体规则命中的 core/** 路径都会最长前缀命中 `core/` ⇒ 判给 orchestrator，
+      # 报告于是写"越界方 = 主控"，真越界方永远查不到。落 UNOWNED 才是对的：
+      # 显式行（core/go.mod、core/go.sum）仍归 orchestrator，靠的是它们自己那行。
+      if [[ "$p" == "core/" || "$p" == "./core/" ]]; then
+        ROOT_ROW_SEEN=1
+        continue
+      fi
       OWNER["$p"]="$role"; OWNER_ROWS=$((OWNER_ROWS+1))
     done < <(printf '%s' "$c1" | tr -d '\r' | grep -oE '`[^`]+`' | tr -d '`')
   done < <(sed -n '/^## 7\./,$p' "$API_SPEC")
@@ -143,10 +153,32 @@ owner_of() {
   printf '%s' "${bo:-UNOWNED}"
 }
 
+# strip_comments：把 file:line:text 流里**行内注释那一段**切掉（保留 file:line: 前缀）。
+# 主控 09-21 裁定：判"某个字面量在不在代码里"**只看字符串字面量，不看注释**
+# （`approval/cancel` 那条"它不存在"的注释因此天然豁免，不需要谁去改措辞）。
+# 不做这一步会有假绿：常量删了、注释里还写着 `"PROTOCOL_NOT_INITIALIZED"`，grep 照样命中。
+# 按字符扫：引号/反引号里面的 // 不算注释起点，行内 // 之后整段丢掉。
+# 已知边界：跨行 raw string 里若单独出现 //，那一行会被截 —— core/ 下实测没有这种形状。
+strip_comments() {
+  awk '{
+    txt=$0; pre=""
+    if (match($0, /^[^:]+:[0-9]+:/)) { pre=substr($0,1,RLENGTH); txt=substr($0,RLENGTH+1) }
+    out=""; q=""
+    for (i=1; i<=length(txt); i++) {
+      c=substr(txt,i,1)
+      if (q != "") { out=out c; if (c==q) q=""; continue }
+      if (c=="\"" || c=="\047" || c=="`") { q=c; out=out c; continue }
+      if (c=="/" && substr(txt,i+1,1)=="/") break
+      out=out c
+    }
+    print pre out
+  }'
+}
+
 # --- check 1: approvals SQL stays in internal/approval ----------------------
 APPROVALS_RE='(from|update|insert[[:space:]]+into|join)[[:space:]]+approvals\b'
 check_1() {
-  hdr "1/8 approvals 表 SQL 只准出现在 internal/approval（契约① §3.1）"
+  hdr "1/9 approvals 表 SQL 只准出现在 internal/approval（契约① §3.1）"
   local hits n
   hits="$(scan_go "$APPROVALS_RE" core || true)"
   n=$([[ -n "$hits" ]] && printf '%s\n' "$hits" | wc -l | tr -d ' ' || echo 0)
@@ -161,6 +193,11 @@ check_1() {
   done <<< "$hits"
   tailor
 }
+
+# W13 的写调用模式（契约③ §7.1 判据表原文）：**只匹配"以字面量表名为首参"的调用**。
+# 这一条把 Service 方法整个排除掉——Service 调用不传表名字面量，所以不算"往表里写"。
+# T-74 之前用的是放宽版 .Append( / .Create( / .Exec(，REQ-WS-3 的第 4 条命中就是它造出的假阳性。
+W13_RE='\.Append\("|\.UpdateOnce\("|\.Touch\("|\.Create\("'
 
 # --- check 2: no cross-package table SQL ------------------------------------
 # 表 → 归属包。TABLE_MAP 是唯一数据源：既能查也能按表名遍历（T-24 要求扫描绑在表名上，
@@ -207,7 +244,7 @@ owner_of_table() { printf '%s\n' "$TABLE_MAP" | awk -F'|' -v t="$1" '$1==t{print
 # kind: write=生产代码里的写、fixture=_test.go 里的写、read=只读引用。
 # 单独成函数只为了 --selftest 能拿合成件验它，而不是信它"应该能抓到"。
 cross_package_refs() {
-  local root="$1" tbl want excl hits line f
+  local root="$1" tbl want excl hits line f wmeth wtbl
   while IFS='|' read -r tbl want; do
     [[ -z "$tbl" ]] && continue
     # 机制表（event_journal/audit_entries/…）也扫：读走 INFO、写才报红。
@@ -216,19 +253,42 @@ cross_package_refs() {
     for w in $want; do excl="$excl|^${root}${w}/"; done   # 归属包自己引用自己的表 = 正常
     hits="$(grep -rniE "\b${tbl}\b" "$root" --include='*.go' 2>/dev/null \
              | grep -vE "$excl" \
-             | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' || true)"
+             | strip_comments \
+             | grep -vE ':[0-9]+:[[:space:]]*$' || true)"
     [[ -z "$hits" ]] && continue
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       f="${line%%:*}"
       case "$f" in *_test.go) printf 'fixture|%s|%s|%s\n' "$f" "$tbl" "$want"; continue ;; esac
-      if printf '%s' "$line" | grep -qiE 'UPDATE|INSERT[[:space:]]+INTO|DELETE[[:space:]]+FROM|\.Append\(|\.Create\(|\.Exec\('; then
+      if printf '%s' "$line" | grep -qE "$W13_RE"; then
+        # 写调用只在"表名字面量紧跟左括号"时才算（§7.1 W13-3）。放宽到 .Create( 会把
+        # c.Tasks.Create( 这类 Service 方法判成写表——那正是 REQ-WS-3 里我说清的第 4 条假阳性。
+        wmeth="$(printf '%s' "$line" | grep -oE '\.(Append|UpdateOnce|Touch|Create)\(' | head -1 | tr -d '.(')"
+        wtbl="$(printf '%s' "$line" | grep -oE '\.(Append|UpdateOnce|Touch|Create)\("[a-z_]+' | head -1 | sed -E 's/.*\("//')"
+        # §7.1 W13-1 已裁定这两张表在 transport/装配层写是合法的、不再要求下沉：走同一份
+        # W13_ALLOW，不在这里另立口头豁免。白名单之外的表仍报 write，闭集那一红由 check_w13 负责。
+        if [[ -n "$wtbl" && "$(w13_classify "$f" "$wtbl" "$wmeth")" == "allow" ]]; then
+          printf 'w13-allow|%s|%s|%s\n' "$f" "$wtbl" "$want"
+        else
+          printf 'write|%s|%s|%s\n' "$f" "$tbl" "$want"
+        fi
+      elif printf '%s' "$line" | grep -qiE '(^|[^[:alnum:]_])UPDATE[[:space:]]|INSERT[[:space:]]+INTO|DELETE[[:space:]]+FROM'; then
+        # 真 SQL 写语句：关键字后面必须跟空白。写成 UPDATE|INSERT|DELETE 不带边界的话，
+        # Go 的 UpdateOnce( / DeleteRow( 会被大小写无关地吞进来——16:2x 那条假红就是这么来的。
         printf 'write|%s|%s|%s\n' "$f" "$tbl" "$want"
       elif printf '%s' "$line" | grep -qE "[\"'\`]${tbl}[\"'\`]"; then
-        # 只认"整个字符串字面量就是表名"——那才是 `const t = "tasks"` + tx.Append(t, …) 这种
-        # 变量传表名的源头。放宽到"字符串里含表名"会被 prose 与 CLI flag 名淹掉
-        # （"stream frames must be notifications"、--dangerously-bypass-approvals-and-sandbox）。
-        printf 'literal|%s|%s|%s\n' "$f" "$tbl" "$want"
+        # 整个字符串字面量等于表名，还要看它的**语法角色**：
+        # Go 结构体 tag（`json:"sessions"`）里的引号是字段序列化名，不是"表名以变量传入"的源头。
+        # 今天第二条同源假阳性就在这里：fake-adapter 新写的 struct tag 被 literal 腿判了红。
+        tagre="\`[a-zA-Z_]+:\"${tbl}\""
+        if printf '%s' "$line" | grep -qE "$tagre"; then
+          printf 'tag|%s|%s|%s\n' "$f" "$tbl" "$want"
+        else
+          # 只认"整个字符串字面量就是表名"——那才是 `const t = "tasks"` + tx.Append(t, …) 这种
+          # 变量传表名的源头。放宽到"字符串里含表名"会被 prose 与 CLI flag 名淹掉
+          # （"stream frames must be notifications"、--dangerously-bypass-approvals-and-sandbox）。
+          printf 'literal|%s|%s|%s\n' "$f" "$tbl" "$want"
+        fi
       else
         printf 'read|%s|%s|%s\n' "$f" "$tbl" "$want"
       fi
@@ -237,23 +297,27 @@ cross_package_refs() {
 }
 
 check_2() {
-  hdr "2/8 跨包表引用（T-24：按表名查，不看函数名写法）"
+  hdr "2/9 跨包表引用（T-24：按表名查，不看函数名写法）"
   local all kind f tbl want
   all="$(cross_package_refs core/)"
-  local n=0 reads=0 fx=0 lits=0 readfiles='' fxf='' litfiles='' litwhat=''
+  local n=0 reads=0 fx=0 lits=0 w13=0 tags=0 readfiles='' fxf='' litfiles='' litwhat='' tagfiles=''
   while IFS='|' read -r kind f tbl want snippet; do
     [[ -z "$kind" ]] && continue
     case "$kind" in
-      write)   n=$((n+1)); bad "$f 在归属包（$want）之外引用表 $tbl，且这一行是写语句/写调用（打开该文件核对；扫描按表名不按函数名）" ;;
+      write)   n=$((n+1)); bad "$f 在归属包（$want）之外引用表 $tbl，且这一行是写语句/写调用（写调用按 §7.1 W13 判：只认「字面量表名作首参」，Service 方法不算；打开该文件核对）" ;;
       fixture) fx=$((fx+1)); fxf="$fxf $f" ;;
       literal) lits=$((lits+1)); litfiles="$litfiles $f"; litwhat="$litwhat $tbl@$f" ;;
       read)    reads=$((reads+1)); readfiles="$readfiles $f" ;;
+      tag)     tags=$((tags+1)); tagfiles="$tagfiles $f" ;;
+      w13-allow) w13=$((w13+1)) ;;
     esac
   done <<< "$all"
+  (( w13 > 0 )) && info "$w13 处写在 transport/装配层但落在 §7.1 W13-1 白名单内（idempotency_keys/principals，不发事件不推版本），已裁定合法、不再要求下沉；闭集那一腿见 2b/8"
   (( fx > 0 )) && info "$fx 处跨包写在 _test.go 里（造外键父行，按 §1.3 允许，不判红）：$(printf '%s\n' $fxf | sort -u | tr '\n' ' ')"
   (( lits > 0 )) && bad "$lits 处：整个表名字符串出现在非归属包里（变量传表名的典型形状，需人工判是不是绕过了归属）：$(printf '%s
 ' $litwhat | sort -u | tr '
 ' ' ')"
+  (( tags > 0 )) && info "另有 $tags 处表名只出现在 Go 结构体 tag 里（序列化名，不是表引用）：$(printf '%s\n' $tagfiles | sort -u | tr '\n' ' ')"
   (( reads > 0 )) && info "另有 $reads 处只读引用（§1.3/§4 允许跨模块读与 JOIN，不判越界）：$(printf '%s\n' $readfiles | sort -u | tr '\n' ' ')"
   (( n == 0 && reads == 0 && fx == 0 )) && info "没有任何包在自己的目录之外提到别人的表名"
   local ex
@@ -268,10 +332,102 @@ check_2() {
   tailor
 }
 
+# --- check 2b: 写路径归属（契约③ §7.1 判据表 W13）---------------------------
+# 判据本体住在 §7.1，这里只解析它，别处不再抄一份：
+#   W13-1 transport/装配层允许写的表只有 idempotency_keys（Append/UpdateOnce）与 principals（Append）；
+#   W13-2 那 3 处之外，core/api/** 或 core/cmd/core/** 写任何聚合表即越界；
+#   W13-3 模式不得把 Service 方法当写表 —— 反向用例在 --selftest 里（没那条这就是空判据）。
+# CO-36（主控 13:22 纠我）：W13 的"业务表全集"原来是我手抄的 13 张聚合表 —— 那是**新的假绿来源**：
+# 迁移里新增第 34 张表时，它不在我清单上就会掉进 not-a-table 只报 INFO。
+# 现在运行时从 core/migrations/*.sql 解析表全集，权威在文件里、脚本内不留副本（同 §7 的做法）。
+# 解析出的集合只用来判"这是不是一张真表"；允许在 transport/装配层写的仍只有 W13_ALLOW 那几处。
+biz_tables() {
+  grep -rhoiE 'CREATE TABLE( IF NOT EXISTS)?[[:space:]]+`?[a-z_]+`?' core/migrations/*.sql 2>/dev/null \
+    | sed -E 's/.*[`( ]([a-z_]+)`?$/\1/' | sort -u
+}
+MIG_TABLES="$(biz_tables)"
+MIG_N="$(printf '%s\n' "$MIG_TABLES" | grep -c .)"
+
+W13_ALLOW='idempotency_keys:Append
+idempotency_keys:UpdateOnce
+principals:Append'
+
+# w13_hits <root...>：按 §7.1 的模式取命中（_test.go 造 fixture 允许，不算越界）。
+# 单独成函数只为了让 selftest 和真检查跑的是同一个表达式，而不是各测各的。
+w13_hits() {
+  { grep -rn --include='*.go' -E "$W13_RE" "$@" 2>/dev/null || true; } | grep -v '_test\.go:' || true
+}
+
+# w13_classify <file> <table> <method> → allow | table-red | out-of-scope | not-a-table | parse-broken
+# W13-1 = 白名单（闭集，精确到「表+方法」）；W13-2 = 白名单之外、迁移里存在的任何表在此红。
+w13_classify() {
+  local f="$1" tbl="$2" meth="$3"
+  printf '%s\n' "$W13_ALLOW" | grep -qxF "$tbl:$meth" && { printf 'allow'; return; }
+  case "$f" in core/api/*|core/cmd/core/*) : ;; *) printf 'out-of-scope'; return ;; esac
+  [[ -n "$MIG_TABLES" ]] || { printf 'parse-broken'; return; }
+  printf '%s\n' "$MIG_TABLES" | grep -qxF "$tbl" && { printf 'table-red'; return; }
+  printf 'not-a-table'
+}
+
+check_w13() {
+  hdr "2b/9 transport/装配层写路径（契约③ §7.1 W13；CO-36 后拆成 W13-1 闭集白名单 + W13-2 一行一表）"
+  local d
+  for d in core/api core/cmd; do
+    [[ -d "$d" ]] || { bad "§7.1 W13 扫描面缺 $d —— 这一腿会伪装成全绿，拒绝出结论"; return; }
+  done
+  local nfiles hits line f meth tbl key verdict
+  nfiles="$(find core/api core/cmd/core -name '*.go' -not -name '*_test.go' 2>/dev/null | wc -l | tr -d ' ')"
+  hits="$(w13_hits core/api core/cmd)"
+  # 扫描面非空（CO-36 的核心教训）：目录在、里面却几乎没生产代码，这条腿同样是空的。
+  (( nfiles >= 3 )) || { bad "W13 扫描面只有 $nfiles 个生产 .go（core/api + core/cmd/core）—— 空集上的「全绿」不是绿"; return; }
+  # 解析面非空同理：迁移里读不出 >=30 张表，说明 biz_tables 的锚点坏了，W13-2 会整批漏判。
+  (( MIG_N >= 30 )) || { bad "core/migrations 只解析出 $MIG_N 张表（期望 >=30）—— 表全集解析坏了，W13-2 判不了"; return; }
+  report "  判据面：$MIG_N 张迁移表逐个扫 × transport/装配层 $nfiles 个生产 .go；白名单 3 处（W13-1 是闭集）"
+  local n=0 allowed=0 tred=0 out=0 note=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    n=$((n+1))
+    f="${line%%:*}"
+    meth="$(printf '%s' "$line" | grep -oE '\.(Append|UpdateOnce|Touch|Create)\(' | head -1 | tr -d '.(')"
+    tbl="$(printf '%s' "$line" | grep -oE '\.(Append|UpdateOnce|Touch|Create)\("[a-z_]+' | head -1 | sed -E 's/.*\("//')"
+    key="$tbl:$meth"
+    if [[ -z "$tbl" || -z "$meth" ]]; then
+      bad "W13 命中却解析不出表名/方法（模式与解析脱节，会漏判）: $line"
+      continue
+    fi
+    verdict="$(w13_classify "$f" "$tbl" "$meth")"
+    case "$verdict" in
+      allow)          allowed=$((allowed+1)); report "  [ok W13-1 白名单] $f  ${meth}(\"$tbl\")" ;;
+      table-red)      tred=$((tred+1));   bad "W13-2 越界：$f 用 ${meth}(\"$tbl\") 写迁移里的表 —— 表写只能发生在归属包内，transport/装配层只做参数校验与投递（要豁免请改 §7.1 并说明理由，不许口头豁免）" ;;
+      out-of-scope)   out=$((out+1));   info "W13-2 声明范围外命中：$f 写 ${tbl}（${meth}）。§7.1 只声明 core/api/** 与 core/cmd/core/**，这里不判红；要扩范围请改判据表" ;;
+      not-a-table)    note=$((note+1)); info "模式命中但 \"$tbl\" 不是迁移里的任何表名（$f ${meth}）—— 按 W13-3 判为绿（多半是 Service 方法的字符串首参）" ;;
+      parse-broken)   bad "W13 判不了 $tbl：迁移表全集解析为空（查 biz_tables 的锚点）" ;;
+    esac
+  done <<< "$hits"
+  # W13-2 一行一表：每张迁移表在红区里的命中数都摊开给人看（CO-36：整批扫过才可读）。
+  # 0 命中不等于"通过"，它等于"今天没人这么写"——所以这组数字必须和上面那行「判据面」一起读：
+  # 面非空 + 逐表都扫过，0 才是有内容的 0。
+  local t cnt
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    case "$t" in idempotency_keys|principals) continue ;; esac   # 这两张走 W13-1 白名单
+    cnt="$(printf '%s\n' "$hits" | grep -cE "\.(Append|UpdateOnce|Touch|Create)\(\"${t}\"" || true)"
+    if (( cnt > 0 )); then
+      bad "W13-2 表 $t：transport/装配层有 $cnt 处字面量写调用（逐条已在上面列出）"
+    else
+      report "  [W13-2] $t: 0"
+    fi
+  done <<< "$MIG_TABLES"
+  info "命中 $n 处（扫描面 $nfiles 个生产 .go）：白名单 $allowed / 表越界 $tred / 范围外 $out / 非表名 $note"
+  (( n == 0 )) && info "transport/装配层一处「字面量表名作首参」的写调用都没有 —— 这不是白名单生效，是还没人写（别当通过）"
+  (( allowed == 0 && n > 0 )) && info "W13-1 白名单一条没命中，它那一腿暂无证据（现状列里记的 idempotency_keys/principals 那几处不见了或被移走）"
+  tailor
+}
+
 # --- check 3: dirty paths vs ownership matrix -------------------------------
 FROZEN='core/migrations/000001_core_schema.sql'
 check_3() {
-  hdr "3/8 变更文件 vs 角色所有权矩阵（契约③ §7；基线 $BASELINE）"
+  hdr "3/9 变更文件 vs 角色所有权矩阵（契约③ §7；基线 $BASELINE）"
   if ! git rev-parse --verify -q "$BASELINE" >/dev/null; then bad "基线 $BASELINE 不存在"; return; fi
   # WORK = 未提交的（只能是 worker 干的，worker 无 git 写权限）；
   # COMMITTED = 基线之后已提交且当前工作树不再改的（只能是主控落的盘，不计越界）。
@@ -322,7 +478,7 @@ orphan_modules() {
 
 # --- check 4: go.mod / go.sum 只允许主控变 ----------------------------------
 check_4() {
-  hdr "4/8 core/go.mod 只准主控变；go.sum 按 T-11 放宽后的判据"
+  hdr "4/9 core/go.mod 只准主控变；go.sum 按 T-11 放宽后的判据"
   # T-11 裁定（17:12 投递，出处 commit 2530517）：go.sum 单独增长**不算**越界——
   # go.mod 一字未动就说明没人跑 go get，那 15 行全是 modernc.org/sqlite 的传递依赖，
   # 由 go build/test 解析依赖图时自动写入，属预期。硬判据只有两条：
@@ -354,7 +510,7 @@ check_4() {
 
 # --- check 5: evidence / scratch must not be tracked ------------------------
 check_5() {
-  hdr "5/8 .qoder/evidence/ 与 .scratch/ 不得进入 git 索引"
+  hdr "5/9 .qoder/evidence/ 与 .scratch/ 不得进入 git 索引"
   local tracked
   tracked="$(git ls-files | grep -E '^(\.qoder/evidence/|\.scratch/)' || true)"
   if [[ -n "$tracked" ]]; then
@@ -372,7 +528,7 @@ check_5() {
 # --- check 6: dependency direction (ADR-004 / 契约 §0) ----------------------
 CORE_IMPORT='github\.com/SadCat18/lucero/core/internal'
 check_6() {
-  hdr "6/8 依赖方向（eventjournal 不 import 业务包；platform/db 只允许 eventjournal；audit 不 import platform/db）"
+  hdr "6/9 依赖方向（eventjournal 不 import 业务包；platform/db 只允许 eventjournal；audit 不 import platform/db）"
   local hits line p imp
 
   hits="$(scan_go "import|\"$CORE_IMPORT" core/internal/eventjournal | grep -E "\"$CORE_IMPORT" || true)"
@@ -405,7 +561,7 @@ SPEC3='specs/api-contract-v0.1.md'
 SPEC1='specs/events/event-contract-v0.1.md'
 YAML='specs/openapi/core-v1.yaml'
 check_7() {
-  hdr "7/8 /api/v1 面变更的三处同步（契约③ §6.3：yaml + 契约③ + 契约① 事件目录）"
+  hdr "7/9 /api/v1 面变更的三处同步（契约③ §6.3：yaml + 契约③ + 契约① 事件目录）"
   # 第一腿（现在就能判）：契约③ §4 提到的事件类型必须已在契约① §6 登记。
   local ev n=0 miss=0
   while read -r ev; do
@@ -444,8 +600,15 @@ check_7() {
 #     两者都**不要求**常量 —— 给它们造没人发的常量才是问题。
 SPEC2='specs/adapter-protocol/adapter-protocol-v0.1.md'
 PROTO_GO='core/internal/adapter/protocol.go'
+# c85_err_hits <码名> <root>：码名字符串落在 error 帧构造形状上的行（判据表 C8-5 静态半边）。
+# 单独成函数是为了 --selftest 能拿合成件验它 —— 一条只能报"没命中"的 leg 是永真式。
+c85_err_hits() {
+  grep -rn --include='*.go' "\"$1\"" "$2" 2>/dev/null | strip_comments \
+    | grep -v '_test\.go' | grep -E 'errReply|Error\{|NewErrorReply|ErrorCode' || true
+}
+
 check_8() {
-  hdr "8/8 错误码一致（§15.1 ↔ §15.2 映射 ↔ §15.1.1 生产方/数字表 ↔ protocol.go）"
+  hdr "8/9 错误码一致（§15.1 ↔ §15.2 映射 ↔ §15.1.1 生产方/数字表 ↔ protocol.go）"
   [[ -f "$SPEC2" ]] || { bad "找不到 $SPEC2"; return; }
   local c1 c2 only1 only2 rows n1 n2
   c1="$(sed -n '/^### 15\.1/,/^#### 15\.1\.1/p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$2); print $2}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
@@ -479,12 +642,13 @@ check_8() {
         # （词汇由协议包统一持有、由 process 触发），按生产方包搜会判出一条根本不存在的错。
         dir=core/internal/adapter
         [[ -d "$dir" ]] || { bad "$nm 声明生产方 $pkg，但目录不存在"; continue; }
-        real=no; grep -qrF "\"$nm\"" "$dir" --include='*.go' && real=yes
-        # 「有 Go 常量」这一列目前**不可机读**：契约没给判定命令，而"名字出现在文件里"与
-        # "存在 ErrX ErrorCode 常量"是两件事（DANGEROUS_FLAG_REFUSED / EXECUTION_STATE_UNKNOWN
-        # 只作为数字表的字符串出现，并没有常量）。所以只报 INFO，等 §15.1.1 附判据后再升红。
+        real=no; grep -rnF "\"$nm\"" "$dir" --include='*.go' 2>/dev/null | strip_comments | grep -qF "\"$nm\"" && real=yes
+        # ↑ 必须过 strip_comments：常量删了而注释里还留着这个名字时，裸 grep 会给出假绿。
+        # C8-3（判据表定稿）：正向 —— 生产方 Core:* 且表标『有 Go 常量』的行，
+        # core/internal/adapter 里必须搜到该码名（常量表就是 protocol.go 的 map 字面量），判红。
+        # 反向（表标 ✗ 却出现字符串）只报 INFO：字符串可能只是数字表的一行，契约未定义那种情形。
         [[ "$hasc" == "✓" && "$real" == "no" ]] && \
-          info "  待判据：$nm 表说有常量，$dir 里搜不到该字符串"
+          bad "C8-3：$nm 生产方 $pkg 且标『有 Go 常量』，但 core/internal/adapter 里搜不到 \"$nm\""
         [[ "$hasc" == "✗" && "$real" == "yes" ]] && \
           info "  待判据：$nm 表说没常量，$dir 里出现该字符串（是常量还是数字表？契约未给判定命令）"
         # 数字与 protocol.go 的逐项相等**不在这里判**：§15.1.1 自己写明那张表的来源就是
@@ -522,13 +686,62 @@ check_8() {
         grep -rn -- "$num" core/internal core/cmd --include='*.go' 2>/dev/null \
           | grep -v '_test\.go' | grep -v 'internal/adapter/protocol' | grep -q . \
           && bad "$nm（$num）是结果帧专用码，却有别处生产代码引用该号造 error 回复（§15.3 规则 5）"
+        # C8-5 的另一半（判据表当场命令的后一条）：`"CANCELLED"` 这个码名不得出现在
+        # FakeAdapter 构造 error 帧的位置。按码名搜要带形状判据 —— 它同时是 Task/Execution
+        # 的状态字符串，只有落在 error 构造那一侧才算违反。帧级那一半（$/cancel 的回执必须
+        # 是结果帧、线上没有 error 键）在 core/test/adapter_contract_test.go 的
+        # TestCancelReplyIsResultFrame 里对真子进程实测，本 lint 不重复实现。
+        if [[ "$nm" == "CANCELLED" && -d core/cmd/fake-adapter ]]; then
+          local total hits5
+          total="$(grep -rn --include='*.go' "\"$nm\"" core/cmd/fake-adapter/ 2>/dev/null | grep -vc '_test\.go' || true)"
+          hits5="$(c85_err_hits "$nm" core/cmd/fake-adapter/)"
+          if [[ -n "$hits5" ]]; then
+            while IFS= read -r line; do bad "C8-5：${line%%:*} 在构造 error 帧的位置上出现 \"$nm\"：${line#*:}"; done <<< "$hits5"
+          elif (( total > 0 )); then
+            info "C8-5 静态半边：core/cmd/fake-adapter/ 里 \"$nm\" 有 $total 处引用，都不在 error 帧构造形状上"
+          else
+            info "C8-5 静态半边：core/cmd/fake-adapter/ 的生产代码里没出现过 \"$nm\" —— 这项暂无证据，不是通过"
+          fi
+        fi
         ;;
     esac
   done <<< "$rows"
   tailor
 }
+# --- check 9: 事件目录接线探针（CO-35）---------------------------------------
+# 主控 13:22 明确：这行**不是**"test 去实现的契约项"，是"backend 接线时漏没漏"的归属探针。
+# 所以命中 0 的时候报 [SCOPE 之外] 请派归，而不是报缺陷 —— "没派过接线"和"接线接坏了"是两回事。
+#
+# 两处收紧，都写在这儿免得被人当成我擅自改判据：
+# ① 主控给的命令是 `grep -rn <事件名> core/ specs/`，但只在 specs/ 命中 = 文档登记过、代码里没人发，
+#    那同样不等于接上了 ⇒ 分开计数，**以 core/ 为准**。
+# ② 名字本身今天也还不在契约里（13:2x 实测，全仓去掉 .git/node_modules）：
+#      grep -rniI delivery_unacknowledged specs/ docs/  ⇒ 0 命中
+#      grep -rn   "规则 6"                specs/ docs/  ⇒ 0 命中
+#    事件名与那两点判据只存在于派发文本（T-50 / T-98③）里。所以我**不引用"§6 规则 6"当出处**，
+#    只引用派发；等主控把名字回写进事件目录 §6，这条的期望值才算有了契约锚点（REQ-T13）。
+check_9() {
+  hdr "9/9 事件目录接线探针（CO-35；0 命中报「SCOPE 之外」不报缺陷）"
+  local ev code doc n dn
+  ev="delivery_unacknowledged"
+  code="$(grep -rn -- "$ev" core/ --include='*.go' 2>/dev/null || true)"
+  doc="$(grep -rnI -- "$ev" specs/ docs/ 2>/dev/null || true)"
+  n=$([[ -n "$code" ]] && printf '%s\n' "$code" | wc -l | tr -d ' ' || echo 0)
+  dn=$([[ -n "$doc" ]] && printf '%s\n' "$doc" | wc -l | tr -d ' ' || echo 0)
+  if (( n == 0 )); then
+    report "  [SCOPE 之外] core/ 扫到 0 行，这条判据不成立，请派归（发出方与消费方都没有；specs+docs $dn 行）"
+    (( dn == 0 )) && info "  而且事件名本身还没回写进契约（REQ-T13）：$ev 在 specs/ docs/ 里 0 命中 ⇒ 这条探针现在只能对派发文本负责"
+    return
+  fi
+  report "  core/ 命中 $n 行 ⇒ 按派发文本（T-50/T-98③）给的两点复核：①WS 断连时 payload 要带全三个游标字段 ②notification 的 dedup_key 必须带 seq 范围、不许固定值"
+  local line
+  while IFS= read -r line; do printf '    %s\n' "$line"; done <<< "$code"
+  info "  这两点今天只报命中位置、不判红：期望值还没有契约锚点（等 REQ-T13 把名字与规则回写进事件目录 §6）"
+  tailor
+}
+
 # --- selftest: the scanners must be able to fail ----------------------------
-run_all() { check_1; check_2; check_3; check_4; check_5; check_6; check_7; check_8; }
+run_all() { check_1; check_2; check_w13; check_3; check_4; check_5; check_6; check_7; check_8; check_9; }
 
 selftest() {
   hdr "SELFTEST（证明上面几条不是永真式）"
@@ -562,6 +775,12 @@ selftest() {
     [[ "$(owner_of "${probe%%|*}")" == "${probe##*|}" ]] ||       { report "  [SELFTEST FAIL] §7 解析后的归属判错：${probe%%|*} -> $(owner_of "${probe%%|*}")，期望 ${probe##*|}"; fails=$((fails+1)); }
   done
   [[ "$(owner_of packages/toolchain/package.json)" == "UNOWNED" ]] ||     { report "  [SELFTEST FAIL] 无归属路径没被判成 UNOWNED（§7 缺行的检测失效了）"; fails=$((fails+1)); }
+  # CO-36②：§7 的 "`core/`（根目录本身）" 那一行**不许**变成兜底归属。
+  # 三条断言各管一个失效方向：键根本没注册、根下新文件落 UNOWNED、显式行仍然归 orchestrator。
+  [[ -z "${OWNER[core/]+x}" ]] || { report "  [SELFTEST FAIL] `core/` 又被注册成归属键了 —— 根行当兜底会让所有未映射路径都判给主控"; fails=$((fails+1)); }
+  [[ "$(owner_of core/zz.go)" == "UNOWNED" ]] || { report "  [SELFTEST FAIL] core/ 根下的新文件被判成「${OWNER[core/]:-?}」而不是 UNOWNED（CO-36② 的误判会复发）"; fails=$((fails+1)); }
+  [[ "$(owner_of core/go.mod)" == "orchestrator" ]] || { report "  [SELFTEST FAIL] core/go.mod 不再归 orchestrator —— 收紧根行时把显式行也一起弄丢了"; fails=$((fails+1)); }
+  (( ROOT_ROW_SEEN == 1 )) || info "  [INFO] §7 里没有 `core/` 根目录那一行了；这一腿暂时没东西可验（不是通过）"
   # 前置检查：脚本按自身位置推仓库根，换 cwd 不影响，所以只能把它拷进一个没有 core/internal
   # 的空仓库里验"扫描面为空必须 exit 2"，而不是在临时目录里调它（那样测的是同一份真仓库）。
   local bare; bare="$(mktemp -d -p "$SCRATCH")"
@@ -586,6 +805,17 @@ func f() { _ = tblName }
 
 const q = `UPDATE quota_accounts SET label = ?`
 ' > "$fx2/task/w.go"
+  # 结构体 tag 里的表名是**序列化名**，不是变量传表名的源头（今天实测的假阳性形状）。
+  printf 'package task
+
+type row struct {
+	QA []string `json:"quota_accounts"`
+}
+' > "$fx2/task/tag.go"
+  # 注释里的表名不算代码（主控 09-21：只看字符串字面量）。两侧都要断：
+  # 纯注释必须被剥掉，行内注释后面的**真代码**不许被一起剥掉。
+  printf 'package task\n\n// const t = "quota_accounts" 只是注释，不是写表也不是变量传表名\n'          > "$fx2/task/comment.go"
+  printf 'package task\n\nfunc f() { _, _ = tx.Append("quota_accounts", m) // quota_accounts 注释\n}\n' > "$fx2/task/trailing.go"
   printf 'package quota
 
 const q = `SELECT id FROM quota_accounts`
@@ -595,9 +825,54 @@ const q = `SELECT id FROM quota_accounts`
 ' "$out" | grep -qE '^write\|.*task/w\.go\|quota_accounts\|' ||     { report "  [SELFTEST FAIL] 按表名扫描抓不到 task 包写 quota_accounts"; fails=$((fails+1)); }
   printf '%s
 ' "$out" | grep -qE '^literal\|.*task/dyn\.go\|quota_accounts\|' ||     { report "  [SELFTEST FAIL] 表名以字符串形式存在（变量传参的源头）没被单列出来"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^tag\|.*task/tag\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 结构体 tag 里的表名没被单列成 tag —— literal 腿会把序列化名判成写表（今天实测的第二条假阳性）"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE 'comment\.go' && \
+    { report "  [SELFTEST FAIL] 只在注释里出现的表名被当成了代码（strip_comments 没生效 ⇒ 假红与假绿都会来）"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^write\|.*task/trailing\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 行内注释之后的真写调用被一起剥掉了（剥过头 ⇒ 漏报比误报更坏）"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^literal\|.*task/tag\.go\|' && \
+    { report "  [SELFTEST FAIL] tag 那一腿没生效：tag.go 仍被判成 literal"; fails=$((fails+1)); }
   printf '%s
 ' "$out" | grep -qE 'quota/own\.go' &&     { report "  [SELFTEST FAIL] 归属包自己引用自己的表被判进来了（判据过严）"; fails=$((fails+1)); }
   rm -rf "$(dirname "$fx2")"
+  # §7.1 W13-3 反向用例：模式必须放过 Service 方法、必须抓住「字面量表名作首参」。
+  # 只断红的那半边仍是空判据 —— 绿/红两边都要有断言，所以 classify 也各测一条。
+  local w3; w3="$(mktemp -d -p "$SCRATCH")"
+  mkdir -p "$w3/api"
+  printf 'package http\n\nfunc (c *counter) do() {\n\t_, _ = c.Tasks.Create(ctx, in)\n\t_, _ = c.Sessions.Touch(ctx, id)\n}\n' > "$w3/api/service.go"
+  printf 'package http\n\nfunc (h *handler) write() {\n\t_, _ = tx.Append("tasks", map[string]any{})\n}\n'              > "$w3/api/agg.go"
+  local wn; wn="$(w13_hits "$w3" | wc -l | tr -d ' ')"
+  (( wn == 1 )) || { report "  [SELFTEST FAIL] W13 模式命中 $wn 处，期望 1 —— Service 调用（不传表名字面量）又被当成写表，REQ-WS-3 第 4 条假阳性会复活"; fails=$((fails+1)); }
+  # CO-36 的 W13-3 另一半（反向断言本身也要被反向验一次）：整棵树只有 Service 形状时命中必须是 **0**。
+  # 只有"混合目录里命中 1 处"那半边证明不了什么 —— 模式若还残留 .Create( 这种宽形状，
+  # 那 1 处命中会把它一起糊过去。0 这一侧单独造一棵树才测得到。
+  local w3o wz; w3o="$(mktemp -d -p "$SCRATCH")"
+  printf 'package http\n\nfunc (c *counter) f() {\n\t_, _ = c.Tasks.Create(ctx, in)\n\t_, _ = c.Sessions.Touch(ctx, id)\n\t_, _ = q.UpdateOnce(ctx, id)\n}\n' > "$w3o/service_only.go"
+  wz="$(w13_hits "$w3o" | wc -l | tr -d ' ')"
+  (( wz == 0 )) || { report "  [SELFTEST FAIL] 纯 Service 形状的树里 W13 命中 $wz 处，期望 0 —— W13-3 的反向断言没成立"; fails=$((fails+1)); }
+  rm -rf "$w3o"
+  [[ "$(w13_classify core/api/http/x.go tasks Append)" == "table-red" ]] ||                 { report "  [SELFTEST FAIL] W13-2：transport 层写业务表没判红"; fails=$((fails+1)); }
+  [[ "$(w13_classify core/api/http/x.go idempotency_keys UpdateOnce)" == "allow" ]] ||          { report "  [SELFTEST FAIL] W13-1 白名单里声明过的写法被判红了"; fails=$((fails+1)); }
+  [[ "$(w13_classify core/api/http/x.go principals UpdateOnce)" != "allow" ]] ||                { report "  [SELFTEST FAIL] 白名单是「表+方法」级的（principals 只准 Append），方法级收紧没生效"; fails=$((fails+1)); }
+  [[ "$(w13_classify core/api/http/x.go quota_accounts Touch)" == "table-red" ]] ||             { report "  [SELFTEST FAIL] 聚合表走 Touch 没算越界（表全集没进判据）"; fails=$((fails+1)); }
+  [[ "$(w13_classify core/api/http/x.go schema_migrations Append)" == "table-red" ]] ||         { report "  [SELFTEST FAIL] 白名单外的迁移表写调用没判红（W13-2 的「一行一表」没生效）"; fails=$((fails+1)); }
+  # CO-36 的解析活性：表全集必须从迁移里解析出来，且必须含主控点名的那两张。
+  # 少了这两条，"每表 0 命中"就可能只是解析器什么都没读到 —— 那正是 CO-36 说的那种假绿。
+  (( MIG_N >= 30 )) || { report "  [SELFTEST FAIL] 只解析出 $MIG_N 张迁移表（期望 >=30），biz_tables 的锚点坏了"; fails=$((fails+1)); }
+  printf '%s\n' "$MIG_TABLES" | grep -qxF messages || { report "  [SELFTEST FAIL] 表全集里没有 messages —— CO-36 点名的假绿会复发"; fails=$((fails+1)); }
+  printf '%s\n' "$MIG_TABLES" | grep -qxF handoffs || { report "  [SELFTEST FAIL] 表全集里没有 handoffs —— 同上"; fails=$((fails+1)); }
+  [[ "$(w13_classify core/api/http/x.go notATable Create)" == "not-a-table" ]] ||               { report "  [SELFTEST FAIL] Service 方法的字符串首参被判成写表（W13-3 要求这里是绿）"; fails=$((fails+1)); }
+  [[ "$(w13_classify core/cmd/fake-adapter/main.go tasks Append)" == "out-of-scope" ]] ||       { report "  [SELFTEST FAIL] §7.1 声明范围（core/api/**、core/cmd/core/**）之外的命中被判红了"; fails=$((fails+1)); }
+  rm -rf "$w3"
+  # C8-5 静态半边能不能咬人：error 构造形状里的 "CANCELLED" 必须命中，状态侧必须不命中。
+  local c5 c5h; c5="$(mktemp -d -p "$SCRATCH")"
+  printf 'package fake\n\nfunc (f *fake) g(req *adapter.Frame) error {\n\treturn f.reply(errReply(req, &adapter.Error{Code: -32010, Message: "CANCELLED"}))\n}\n' > "$c5/bad.go"
+  printf 'package fake\n\nvar s = "CANCELLED" // Execution 的状态，不是错误码\n'                                                     > "$c5/ok.go"
+  c5h="$(c85_err_hits CANCELLED "$c5")"
+  [[ "$c5h" == *bad.go* ]] || { report "  [SELFTEST FAIL] C8-5 静态半边抓不到 error 帧构造里的 \"CANCELLED\"（永真式）"; fails=$((fails+1)); }
+  [[ "$c5h" != *ok.go* ]] || { report "  [SELFTEST FAIL] C8-5 静态半边把状态字符串误判成错误帧（假阳性）"; fails=$((fails+1)); }
+  rm -rf "$c5"
   # §6.3 那一腿：yaml 少一条前缀必须报出来（真 yaml 归 frontend，这里用合成件）
   local before=$VIOL
   api_prefix_diff "/api/v1/a

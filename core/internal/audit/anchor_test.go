@@ -169,6 +169,30 @@ func TestAnchorCommitRejectsWithoutWriting(t *testing.T) {
 	}
 }
 
+// cmd/core passes whatever anchor it configured, which on a fresh install may be
+// nil or a zero Anchor. That has to read as "cannot certify", and it must not
+// take the process down.
+func TestCheckWithoutAnchorConfigured(t *testing.T) {
+	chain := buildChain(3)
+	for name, a := range map[string]*Anchor{
+		"nil anchor":       nil,
+		"unset path":       {},
+		"empty path value": {Path: ""},
+	} {
+		status, err := Check(chain, a)
+		if err == nil || !errors.Is(err, ErrNoAnchor) {
+			t.Errorf("%s: err = %v, want ErrNoAnchor", name, err)
+		}
+		if status != StatusUnverified {
+			t.Errorf("%s: status = %s, want UNVERIFIED", name, status)
+		}
+	}
+	// An empty chain still needs no anchor to be judged.
+	if status, err := Check(nil, nil); err != nil || status != StatusUnknown {
+		t.Errorf("empty chain with no anchor: %s %v, want UNKNOWN", status, err)
+	}
+}
+
 func TestAnchorMalformedLineFailsClosed(t *testing.T) {
 	for name, body := range map[string]string{
 		"two fields":      "1\tabcdef\n",

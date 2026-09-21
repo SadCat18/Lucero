@@ -58,11 +58,13 @@ func TestDecodeStream(t *testing.T) {
 		{name: "state without status", method: MethodStreamState, params: `{"turn_ref":"t-1","sequence_no":1,"confidence":"HIGH"}`, wantErr: "normalized_status"},
 		{name: "state without confidence", method: MethodStreamState, params: `{"turn_ref":"t-1","sequence_no":1,"normalized_status":"RUNNING"}`, wantErr: "confidence"},
 		{name: "finished without result_code", method: MethodTurnFinished, params: `{"turn_ref":"t-1","sequence_no":1}`, wantErr: "result_code"},
-		// §6.7: a frame that cannot be attributed is a protocol violation, and it is
+		// §6 规则 5: a frame that cannot be attributed is a protocol violation, and it is
 		// the four output notifications that pay for it. turn/claimed and
 		// turn/dispatched attribute themselves by execution_id (CO-8), so requiring a
 		// second key there would reject frames the contract itself defines.
 		{name: "delta without turn_ref", method: MethodStreamDelta, params: `{"sequence_no":1,"channel":"ASSISTANT","text":"x"}`, wantErr: "turn_ref"},
+		{name: "state without turn_ref", method: MethodStreamState, params: `{"sequence_no":1,"normalized_status":"RUNNING","confidence":"HIGH"}`, wantErr: "turn_ref"},
+		{name: "item without turn_ref", method: MethodStreamItem, params: `{"sequence_no":1,"tool":"bash"}`, wantErr: "turn_ref"},
 		{name: "finished without turn_ref", method: MethodTurnFinished, params: `{"sequence_no":1,"result_code":"OK"}`, wantErr: "turn_ref"},
 	}
 	for _, c := range cases {
@@ -92,7 +94,7 @@ func TestDecodeStream(t *testing.T) {
 	}
 }
 
-// TestProviderPayloadsStayRaw pins §6.4: provider_raw and usage cross the wire
+// TestProviderPayloadsStayRaw pins CO-8: provider_raw and usage cross the wire
 // untouched, because Core may not interpret what only the Provider defines.
 func TestProviderPayloadsStayRaw(t *testing.T) {
 	const raw = `{"tok":123,"nested":{"a":[1,2]}}`
@@ -202,7 +204,42 @@ func TestStreamRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTurnTracker walks the §6.3/§6.4 script table: a turn needs both
+// TestNewStreamRefusesUnattributedFrame is the producer's half of §4.2 裁定 ①: the
+// Adapter side is checked with the same predicate the consumer decodes with, so a fake
+// (or a real Adapter written against these helpers) cannot emit a frame that Core will
+// only find out is unattributable after it lands. Each row is otherwise legal, so the
+// refusal can only come from the missing ticket.
+func TestNewStreamRefusesUnattributedFrame(t *testing.T) {
+	legal := []*StreamFrame{
+		{Method: MethodStreamDelta, SequenceNo: 1, Channel: ChannelAssistant, Text: "a"},
+		{Method: MethodStreamItem, SequenceNo: 2, Item: json.RawMessage(`{"tool":"bash"}`)},
+		{Method: MethodStreamState, SequenceNo: 3, NormalizedState: "RUNNING", Confidence: ConfidenceHigh},
+		{Method: MethodTurnClaimed, SequenceNo: 4, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "pe1"},
+		{Method: MethodTurnDispatch, SequenceNo: 5, TurnID: "t1", ExecutionID: "e1"},
+		{Method: MethodTurnFinished, SequenceNo: 6, ResultCode: "OK"},
+	}
+	for _, want := range legal {
+		if CarriesTurnRef(want.Method) {
+			if _, err := NewStream("r", want); err == nil {
+				t.Errorf("%s without a turn_ref was framed anyway (§4.2 裁定 ①)", want.Method)
+			} else if !strings.Contains(err.Error(), "turn_ref") {
+				t.Errorf("%s: err = %v, want it to name the missing turn_ref", want.Method, err)
+			}
+		}
+		s := *want
+		s.TurnRef = "t-1"
+		f, err := NewStream("r", &s)
+		if err != nil {
+			t.Errorf("%s with a turn_ref: %v", want.Method, err)
+			continue
+		}
+		if _, err := DecodeStream(f); err != nil {
+			t.Errorf("%s: our own frame did not decode: %v", want.Method, err)
+		}
+	}
+}
+
+// TestTurnTracker walks the CO-8/CO-8 script table: a turn needs both
 // turn/claimed and turn/dispatched to count as evidence, only turn/finished closes
 // it, and an unclosed turn across a restart goes UNKNOWN - never a definite result.
 //
@@ -282,8 +319,23 @@ func TestTurnTracker(t *testing.T) {
 			wantState: "", wantErrs: []ErrorCode{ErrInvalidParams},
 		},
 		{
-			name:      "dispatch missing any of the three ids",
+			// This row used to demand all three ids on turn/dispatched. CO-13 and
+			// §4.2 语义 4 say the Provider handle belongs on turn/claimed (the window
+			// Recovery queries), so an empty one on dispatched is legal and must not
+			// read as "never ran" - which is what this row now pins, together with the
+			// next two rows that still refuse a missing turn_id or execution_id.
+			name:      "dispatch needs no provider handle",
 			ops:       []string{"claim:1/e1/pe1", "dispatch:t1/e1/"},
+			wantState: TurnRunning, wantErrs: []ErrorCode{0, 0},
+		},
+		{
+			name:      "dispatch missing turn_id",
+			ops:       []string{"claim:1/e1/pe1", "dispatch:/e1/pe1"},
+			wantState: TurnClaimed, wantErrs: []ErrorCode{0, ErrInvalidParams},
+		},
+		{
+			name:      "dispatch missing execution_id",
+			ops:       []string{"claim:1/e1/pe1", "dispatch:t1//pe1"},
 			wantState: TurnClaimed, wantErrs: []ErrorCode{0, ErrInvalidParams},
 		},
 		{
@@ -378,7 +430,7 @@ func cut3(s string) (string, string, string, bool) {
 	return a, b, c, ok
 }
 
-// TestTurnTrackerKeepsEvidence pins that the §6.4 evidence survives the frames that
+// TestTurnTrackerKeepsEvidence pins that the CO-8 evidence survives the frames that
 // produced it: Recovery needs the execution id and the provider handle to ask
 // "did this run, and can we reconnect" (§8) instead of guessing.
 func TestTurnTrackerKeepsEvidence(t *testing.T) {
@@ -387,17 +439,17 @@ func TestTurnTrackerKeepsEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if tr.TurnID() != "" || tr.State() != TurnClaimed {
-		t.Errorf("after claim: turnID=%q state=%q, want no turn_id until turn/dispatched (§6.4)",
+		t.Errorf("after claim: turnID=%q state=%q, want no turn_id until turn/dispatched (CO-8)",
 			tr.TurnID(), tr.State())
 	}
 	if tr.ProviderExecutionID() != "pre-7" {
-		t.Errorf("Provider handle = %q, want pre-7: §6.4 puts provider_execution_id on turn/claimed too, "+
+		t.Errorf("Provider handle = %q, want pre-7: CO-8 puts provider_execution_id on turn/claimed too, "+
 			"that is what Recovery queries in the claimed-but-not-dispatched window", tr.ProviderExecutionID())
 	}
-	if err := tr.Dispatch("turn-7", "exec-7", "provider-42"); err != nil {
+	if err := tr.Dispatch("turn-7", "exec-7", "pre-7"); err != nil {
 		t.Fatal(err)
 	}
-	if tr.State() != TurnRunning || tr.ProviderExecutionID() != "provider-42" || tr.ExecutionID() != "exec-7" {
+	if tr.State() != TurnRunning || tr.ProviderExecutionID() != "pre-7" || tr.ExecutionID() != "exec-7" {
 		t.Errorf("after dispatch: state=%q providerExec=%q exec=%q",
 			tr.State(), tr.ProviderExecutionID(), tr.ExecutionID())
 	}
@@ -411,7 +463,7 @@ func TestTurnTrackerKeepsEvidence(t *testing.T) {
 		t.Errorf("after finish: result=%q state=%q", tr.Result(), tr.State())
 	}
 	// Recovery keeps the Provider handle even after the turn goes UNKNOWN, which is
-	// the whole point of §6.4 keeping execution_id on these signals.
+	// the whole point of CO-8 keeping execution_id on these signals.
 	var lost TurnTracker
 	if err := lost.Claim(true, "e9", "provider-9"); err != nil {
 		t.Fatal(err)
@@ -469,7 +521,7 @@ func TestTurnTrackerRestartReports(t *testing.T) {
 	}
 }
 
-// TestDecodeStreamEvidence covers §6.4's two signals at the wire level, since a
+// TestDecodeStreamEvidence covers CO-8's two signals at the wire level, since a
 // missing execution_id there is what leaves Core unable to reconstruct a turn.
 func TestDecodeStreamEvidence(t *testing.T) {
 	cases := []struct {
@@ -484,12 +536,20 @@ func TestDecodeStreamEvidence(t *testing.T) {
 		{"claimed without provider handle", MethodTurnClaimed, `{"turn_ref":"t-1","sequence_no":1,"accepted":true,"execution_id":"e1"}`, "provider_execution_id"},
 		{"dispatch nominal", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, ""},
 		{"dispatch without execution_id", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","provider_execution_id":"pe1"}`, "execution_id"},
-		{"dispatch without provider handle", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","execution_id":"e1"}`, "provider_execution_id"},
+		// §4.2 裁定 ② (2026-09-21): only turn/claimed must name the Provider handle,
+		// because claimed-未-dispatched is the window Recovery queries. An empty
+		// handle on dispatched means "ran, and this Provider has no name for it",
+		// never "never ran" - so the frame stays legal.
+		{"dispatch without provider handle", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","execution_id":"e1"}`, ""},
 		{"dispatch without turn_id", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_id"},
-				// §6.7 is six frames, not four: the CO-8 pair owes a turn_ref like every other
-		// notification, even though CO-8 already gives it an execution_id to attribute itself by.
+		// §4.2 裁定 ①收成一条无例外: the ticket is mandatory on all six, so the pair is
+		// now the frame that carries *both* identities. execution_id stopped being a
+		// second way to attribute a frame, which is why these two rows reversed.
 		{"claimed without turn_ref", MethodTurnClaimed, `{"sequence_no":1,"accepted":true,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_ref"},
 		{"dispatch without turn_ref", MethodTurnDispatch, `{"sequence_no":2,"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, "turn_ref"},
+		// A-7 决议 ①：CO-8 漏了 sequence_no，§6 规则 2 没漏 —— 六条全都要有。
+		{"claimed without sequence_no", MethodTurnClaimed, `{"turn_ref":"t-1","accepted":true,"execution_id":"e1","provider_execution_id":"pe1"}`, "CO-6"},
+		{"dispatch without sequence_no", MethodTurnDispatch, `{"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, "CO-6"},
 	}
 	for _, c := range cases {
 		f := notifyFrame(t, c.method, c.params)
@@ -546,7 +606,7 @@ func TestCursor(t *testing.T) {
 	}
 }
 
-// TestCursorResetOnRestart is the §6.2 + §8 interaction that bites in production:
+// TestCursorResetOnRestart is the §6 规则 2 + §8 interaction that bites in production:
 // a restarted Adapter numbers from 1 again, and without Reset the whole new
 // stream would be dropped as duplicates.
 func TestCursorResetOnRestart(t *testing.T) {
@@ -571,5 +631,65 @@ func TestCursorResetOnRestart(t *testing.T) {
 	}
 	if c.Accept(4) {
 		t.Error("Accept(4) after Reset(4) = forwarded, want the already-delivered frame dropped")
+	}
+}
+
+// TestTurnTrackerEmptyHandleIsNotNeverRan pins CO-13 against §4.2 语义 3: a Provider
+// that started a turn but has no handle for it must still read as running, because the
+// alternative reading sends Recovery to conclude the run never happened and start a
+// second one.
+func TestTurnTrackerEmptyHandleIsNotNeverRan(t *testing.T) {
+	var tr TurnTracker
+	if err := tr.Claim(true, "e7", "pe7"); err != nil {
+		t.Fatal(err)
+	}
+	// The claim must carry the handle: that is the only window where Recovery can
+	// still ask the Provider what happened.
+	if err := tr.Claim(true, "e8", ""); err == nil {
+		t.Error("a claim with no provider handle was accepted, so Recovery could not name the run")
+	}
+	if err := tr.Dispatch("t7", "e7", ""); err != nil {
+		t.Fatalf("dispatch with an empty handle: %v", err)
+	}
+	if tr.State() != TurnRunning {
+		t.Errorf("state = %q, want RUNNING: an empty handle is not evidence that nothing ran", tr.State())
+	}
+	if tr.ProviderExecutionID() != "pe7" {
+		t.Errorf("Provider handle = %q, want claimed's pe7: a dispatch with no name must not erase "+
+			"the one Recovery was already given (§4.2 裁定 ②)", tr.ProviderExecutionID())
+	}
+	if err := tr.Finish("OK"); err != nil {
+		t.Errorf("a turn that ran without a handle could not close: %v", err)
+	}
+}
+
+// TestTurnTrackerConflictingHandleIsTwoTruths covers the other half of §4.2 裁定 ②:
+// a dispatch may stay silent about the Provider handle, but a name that differs from
+// the one claimed gave is two answers to the one question Recovery asks ("what do I
+// query at the Provider?"). Picking either would be a guess, so the turn goes UNKNOWN.
+func TestTurnTrackerConflictingHandleIsTwoTruths(t *testing.T) {
+	var tr TurnTracker
+	if err := tr.Claim(true, "e5", "pe5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Dispatch("t5", "e5", "other-run"); err == nil {
+		t.Fatal("a dispatch that contradicts claimed was accepted; the tracker now has two provider handles")
+	}
+	if tr.State() != TurnUnknown {
+		t.Errorf("state = %q, want UNKNOWN after contradictory evidence", tr.State())
+	}
+	if tr.ProviderExecutionID() != "pe5" {
+		t.Errorf("Provider handle = %q, want the claimed one preserved for Recovery", tr.ProviderExecutionID())
+	}
+	// Agreement, on the other hand, is the boring path and must not be policed away.
+	var agree TurnTracker
+	if err := agree.Claim(true, "e6", "pe6"); err != nil {
+		t.Fatal(err)
+	}
+	if err := agree.Dispatch("t6", "e6", "pe6"); err != nil {
+		t.Errorf("a dispatch repeating claimed's handle: %v", err)
+	}
+	if agree.State() != TurnRunning {
+		t.Errorf("state = %q, want RUNNING", agree.State())
 	}
 }

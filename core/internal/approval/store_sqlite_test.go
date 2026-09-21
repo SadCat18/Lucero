@@ -593,3 +593,183 @@ func TestStoreGetMissing(t *testing.T) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// REQ-A8: "a temporary grant must have a bounded lifetime" is ONE rule
+// (grantWindow) consulted at both layers, not two implementations of it. This
+// drives each window down the Service leg and straight through the store's write
+// gate, and requires the same verdict and the same row count both times. A
+// hand-written copy of the rule on either side shows up here as one row
+// disagreeing — which is exactly the drift the two layers used to invite.
+func TestGrantWindowVerdictsMatchAcrossLayers(t *testing.T) {
+	ctx := context.Background()
+	for _, w := range []struct {
+		name                string
+		startsAt, expiresAt int64
+		wantErr             bool
+	}{
+		{"one hour", itNow, itNow + itHour, false},
+		{"exactly at the cap", itNow, itNow + MaxGrantDuration, false},
+		{"one ms over the cap", itNow, itNow + MaxGrantDuration + 1, true},
+		{"no end at all", itNow, 0, true},
+		{"ends the moment it starts", itNow, itNow, true},
+		{"ends before it starts", itNow, itNow - 1, true},
+	} {
+		wantRows := 1
+		if w.wantErr {
+			wantRows = 0
+		}
+		t.Run(w.name, func(t *testing.T) {
+			// Service leg: the duration the user actually clicks.
+			sd := openMigrated(t)
+			seed(t, sd)
+			svcClock := func() int64 { return w.startsAt }
+			svc := NewService(NewSQLiteStore(sd, svcClock), svcClock)
+			svcA, err := svc.Request(ctx, draft())
+			if err != nil {
+				t.Fatalf("service Request: %v", err)
+			}
+			svcErr := svc.Resolve(ctx, svcA.ID, Resolution{State: APPROVED, By: "local-user",
+				Temporary: &GrantRequest{ScopeType: permission.ScopeTask, ScopeID: itTask,
+					Duration: w.expiresAt - w.startsAt}})
+			if rows := countRows(t, sd, `SELECT count(*) FROM temporary_grants`); rows != wantRows {
+				t.Errorf("service leg wrote %d grant rows, want %d", rows, wantRows)
+			}
+
+			// Store leg: the same absolute window handed to the write gate with no
+			// Service anywhere in sight.
+			td := openMigrated(t)
+			seed(t, td)
+			raw := NewSQLiteStore(td, func() int64 { return itNow })
+			rawA, err := NewService(raw, func() int64 { return itNow }).Request(ctx, draft())
+			if err != nil {
+				t.Fatalf("store leg Request: %v", err)
+			}
+			_, storeErr := raw.MarkResolved(ctx, rawA, Resolution{State: APPROVED, By: "local-user"},
+				permission.Grant{ID: newID(t), PrincipalID: "local-user",
+					ScopeType: permission.ScopeTask, ScopeID: itTask,
+					Action: "filesystem.write", Effect: permission.Allow,
+					StartsAt: w.startsAt, ExpiresAt: w.expiresAt}, itNow)
+			if rows := countRows(t, td, `SELECT count(*) FROM temporary_grants`); rows != wantRows {
+				t.Errorf("store leg wrote %d grant rows, want %d", rows, wantRows)
+			}
+
+			if (svcErr != nil) != w.wantErr {
+				t.Errorf("service leg: err = %v, wantErr = %v", svcErr, w.wantErr)
+			}
+			if (storeErr != nil) != w.wantErr {
+				t.Errorf("store leg: err = %v, wantErr = %v", storeErr, w.wantErr)
+			}
+			if !w.wantErr {
+				// The contract's own words: the row carries an expiry, not a NULL.
+				if n := countRows(t, td, `SELECT count(*) FROM temporary_grants WHERE expires_at IS NOT NULL`); n != 1 {
+					t.Errorf("accepted grant has no expires_at (%d rows with one), want 1", n)
+				}
+			}
+		})
+	}
+}
+
+// The P0 shape REQ-A8 was really about: a grant with no end must never reach the
+// table, even when a caller bypasses the Service and hands the store a Grant it
+// built itself. The rejection is the whole transaction failing, not a skipped
+// insert — the approval stays PENDING and nothing else landed.
+func TestStoreRefusesToMintAPermanentGrant(t *testing.T) {
+	ctx := context.Background()
+	d := openMigrated(t)
+	seed(t, d)
+	clock := func() int64 { return itNow }
+	st := NewSQLiteStore(d, clock)
+	a, err := NewService(st, clock).Request(ctx, draft())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkResolved(ctx, a, Resolution{State: APPROVED, By: "local-user"},
+		permission.Grant{ID: "grant-eternal", PrincipalID: "local-user",
+			ScopeType: permission.ScopeTask, ScopeID: itTask, Action: "filesystem.write",
+			Effect: permission.Allow, StartsAt: itNow}, itNow); err == nil {
+		t.Fatal("the store wrote a grant with no expires_at")
+	} else if !strings.Contains(err.Error(), "must end after it starts") {
+		t.Errorf("err = %v, want grantWindow's own message", err)
+	}
+	if got := strRows(t, d, `SELECT state FROM approvals WHERE id=?`, a.ID)[0]; got != PENDING {
+		t.Errorf("approvals.state = %s after the refused write, want %s", got, PENDING)
+	}
+	if n := countRows(t, d, `SELECT count(*) FROM temporary_grants`); n != 0 {
+		t.Errorf("%d grant rows from a refused write", n)
+	}
+	for _, ev := range []string{eventjournal.ApprovalResolved, eventjournal.GrantIssued} {
+		if n := countRows(t, d, `SELECT count(*) FROM event_journal WHERE event_type=?`, ev); n != 0 {
+			t.Errorf("%s: %d events from a refused write, want 0", ev, n)
+		}
+	}
+	// Only the approval_requested audit row survives: a refused write may not
+	// leave a trail that claims the decision happened.
+	entries := readAudit(t, d)
+	if len(entries) != 1 {
+		t.Errorf("%d audit entries, want the 1 from Request", len(entries))
+	}
+	head, err := audit.Checkpoint(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.VerifyChain(entries, head); err != nil {
+		t.Errorf("chain broke across the refused write: %v", err)
+	}
+}
+
+// Approval.DeadlinePassed is the Go spelling of "out of time" and ExpirePending's
+// `expires_at <= ?` is the SQL spelling of it. The sweep re-decides each row with
+// the Go predicate, so a </<= change on one side alone cannot leave the two
+// layers disagreeing about the boundary millisecond — this case is red if they do.
+func TestSweepAgreesWithDeadlineBoundary(t *testing.T) {
+	ctx := context.Background()
+	deadline := itNow + itHour
+	for _, tc := range []struct {
+		name      string
+		at        int64
+		wantLive  bool
+		wantEvent int
+	}{
+		{"one ms before the deadline", deadline - 1, true, 0},
+		{"exactly at the deadline", deadline, false, 1},
+		{"one ms after", deadline + 1, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openMigrated(t)
+			seed(t, d)
+			createClock := func() int64 { return itNow }
+			dd := draft()
+			dd.ExpiresAt = deadline
+			a, err := NewService(NewSQLiteStore(d, createClock), createClock).Request(ctx, dd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := NewSQLiteStore(d, createClock).Get(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fresh.Live(tc.at); got != tc.wantLive {
+				t.Errorf("Live(%d) = %v, want %v", tc.at, got, tc.wantLive)
+			}
+			if got := fresh.DeadlinePassed(tc.at); got == tc.wantLive {
+				t.Errorf("DeadlinePassed(%d) = %v, which contradicts Live", tc.at, got)
+			}
+
+			sweepClock := func() int64 { return tc.at }
+			if err := NewService(NewSQLiteStore(d, sweepClock), sweepClock).SweepExpired(ctx); err != nil {
+				t.Fatalf("SweepExpired: %v", err)
+			}
+			if n := countRows(t, d, `SELECT count(*) FROM event_journal WHERE event_type=?`,
+				eventjournal.ApprovalExpired); n != tc.wantEvent {
+				t.Errorf("%d approval_expired events, want %d", n, tc.wantEvent)
+			}
+			want := PENDING
+			if tc.wantEvent == 1 {
+				want = EXPIRED
+			}
+			if got := strRows(t, d, `SELECT state FROM approvals WHERE id=?`, a.ID)[0]; got != want {
+				t.Errorf("after the sweep approvals.state = %s, want %s", got, want)
+			}
+		})
+	}
+}

@@ -128,8 +128,15 @@ func scanSession(row scanner) (Session, error) {
 		&lastMsg, &lastSyn, &s.CreatedAt, &s.UpdatedAt, &arch, &s.Version); err != nil {
 		return Session{}, err
 	}
-	s.ProjectID, s.RemoteSessionID, s.Title, s.SyncCursor, s.RemoteRevision =
-		proj.String, remote.String, title.String, cursor.String, rev.String
+	s.ProjectID, s.RemoteSessionID, s.Title, s.RemoteRevision =
+		proj.String, remote.String, title.String, rev.String
+	// 游标单独赋值：NULL 与非空是两个语义，不能像其它列那样用 .String 折成空串（REQ-F-21 ④）。
+	if cursor.Valid && cursor.String != "" {
+		v := cursor.String
+		s.SyncCursor = &v
+	} else {
+		s.SyncCursor = nil
+	}
 	s.Managed, s.LastMessageAt, s.LastSyncedAt, s.Archived =
 		managed == 1, lastMsg.Int64, lastSyn.Int64, arch.Valid
 	return s, nil

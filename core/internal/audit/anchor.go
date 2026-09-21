@@ -103,15 +103,31 @@ func (a *Anchor) latest() (int64, string, error) { return a.last(1 << 62) }
 // keeping the count in the database would cost a write per audit row.
 const CheckpointEveryAppends = 1000
 
-// CheckpointCounter is the in-process "every 1000 successful appends" rule.
-// Advance must only be called after the writing transaction has COMMITTED: a
-// checkpoint that leads the rows turns a crash into a false tampering alarm,
-// which is worse than no checkpoint at all.
+// CheckpointCounter is ADR-018's "every 1000 successful appends" rule, measured
+// as a gap in the durable chain rather than as a tally of calls. Advance must
+// only be called after the writing transaction has COMMITTED: a checkpoint that
+// leads the rows turns a crash into a false tampering alarm, which is worse than
+// no checkpoint at all.
 type CheckpointCounter struct {
 	mu     sync.Mutex
-	count  int
 	anchor *Anchor
 	now    func() int64
+
+	// lastSeq is the newest chain head seen; anchoredSeq the newest one written to
+	// the file. The threshold is the gap between them, so neither *which* leg
+	// reports a commit nor how many times it reports it can move it: the second
+	// sight of the same seq range finds a gap of zero. That is A18-3's
+	// "推进必须幂等", and it replaces the "only one advancer allowed" whitelist
+	// this judgement grew out of — two production legs already report commits, so
+	// uniqueness was never going to hold.
+	//
+	// Both start from what the file already claims, so a Core that restarts
+	// mid-threshold does not spend its first commit re-anchoring a range the
+	// previous process anchored.
+	lastSeq     int64
+	lastHash    string
+	anchoredSeq int64
+	seeded      bool
 }
 
 func NewCheckpointCounter(anchor *Anchor, now func() int64) *CheckpointCounter {
@@ -121,31 +137,50 @@ func NewCheckpointCounter(anchor *Anchor, now func() int64) *CheckpointCounter {
 	return &CheckpointCounter{anchor: anchor, now: now}
 }
 
-// Advance adds n committed appends and writes one checkpoint line when the
-// running total crosses a multiple of CheckpointEveryAppends. n stays small in
-// practice (one audit row per approval write), so a single call crosses at most
-// one boundary; crossing more than one would need an intermediate hash nobody
-// has, so it is not attempted.
+// Advance accounts for the chain having grown to head and writes one checkpoint
+// line once it has grown CheckpointEveryAppends past the last anchored head.
+//
+// n — the caller's own count of rows it appended — is advisory and deliberately
+// not what the threshold counts: it is the number two legs can disagree about,
+// while the seq they report is the same fact. A writer that never reports at all
+// is still covered, because the next Advance's gap includes its rows.
 func (c *CheckpointCounter) Advance(n int, head Head) error {
-	if n <= 0 || head.Seq == 0 || head.Hash == "" {
+	if head.Seq == 0 || head.Hash == "" {
 		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	before, after := c.count, c.count+n
-	c.count = after
-	if after/CheckpointEveryAppends == before/CheckpointEveryAppends {
+	if !c.seeded {
+		c.seeded = true
+		if seq, _, err := c.anchor.latest(); err == nil {
+			c.anchoredSeq, c.lastSeq = seq, seq
+		}
+	}
+	if head.Seq > c.lastSeq {
+		// seq and hash only ever move together, so the pair written below is one
+		// real row rather than a newest seq glued to an older head's hash — an
+		// unpaired line would read back as tampering on a chain that is intact.
+		c.lastSeq, c.lastHash = head.Seq, head.Hash
+	}
+	if c.lastSeq-c.anchoredSeq < CheckpointEveryAppends {
 		return nil
 	}
-	return c.anchor.Commit(head.Seq, head.Hash, c.now())
+	if err := c.anchor.Commit(c.lastSeq, c.lastHash, c.now()); err != nil {
+		return err
+	}
+	c.anchoredSeq = c.lastSeq
+	return nil
 }
 
-// Counted reports the running total, for tests and for a shutdown hook that
-// wants to know whether anything is owed.
+// Counted reports how many committed appends the anchor does not cover yet, for
+// tests and for a shutdown hook that wants to know whether anything is owed.
 func (c *CheckpointCounter) Counted() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.count
+	if c.lastSeq <= c.anchoredSeq {
+		return 0
+	}
+	return int(c.lastSeq - c.anchoredSeq)
 }
 
 func (a *Anchor) last(atMostSeq int64) (int64, string, error) {
@@ -212,6 +247,12 @@ var ErrChainBehindAnchor = errors.New("audit: fewer rows than the last checkpoin
 func Check(entries []Entry, anchor *Anchor) (ChainStatus, error) {
 	if len(entries) == 0 {
 		return StatusUnknown, nil
+	}
+	// No anchor configured is "cannot certify", never "certified". cmd/core hands
+	// us a possibly-unset *Anchor on a fresh install, so this guard is what keeps
+	// the status endpoint from taking down Core with a nil dereference.
+	if anchor == nil || anchor.Path == "" {
+		return StatusUnverified, ErrNoAnchor
 	}
 	if err := VerifyChain(entries, Head{}); err != nil {
 		return StatusUnverified, err

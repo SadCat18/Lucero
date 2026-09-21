@@ -6,21 +6,22 @@ import (
 	"strconv"
 )
 
-// CarriesTurnRef is §6.7.s scope, stated once so the producer, the consumer and every
-// Adapter in the tree agree on it: the ticket belongs to the four notifications §6.s
-// table defines, namely stream/delta, stream/item, stream/state and turn/finished.
-// turn/claimed and turn/dispatched are absent because CO-8 defines them with an
-// execution_id to attribute themselves by and no ticket at all.
+// CarriesTurnRef is the attribution rule stated once, so the producer, the consumer
+// and every Adapter in the tree agree on it. §4.2 裁定 ① (2026-09-21 12:45) collapsed
+// it to one shape with no exception: every Adapter→Core notification carries the
+// ticket, and turn/claimed + turn/dispatched carry an execution_id *in addition*.
+// (§6 规则 5's table still words this as "四条"; the ruling supersedes it - CO-34.)
 func CarriesTurnRef(method string) bool {
 	switch method {
-	case MethodStreamDelta, MethodStreamItem, MethodStreamState, MethodTurnFinished:
+	case MethodStreamDelta, MethodStreamItem, MethodStreamState,
+		MethodTurnFinished, MethodTurnClaimed, MethodTurnDispatch:
 		return true
 	}
 	return false
 }
 
 // Stream notification methods (contract §6). Only MethodTurnFinished is
-// mandatory: §6.1 exists because Phase 0 measured Qoder's 真流式 as UNSUPPORTED,
+// mandatory: §6 规则 1 exists because Phase 0 measured Qoder's 真流式 as UNSUPPORTED,
 // so the protocol must tolerate a Provider that only speaks in turns.
 const (
 	MethodStreamDelta  = "stream/delta"
@@ -41,16 +42,18 @@ const (
 
 var streamChannels = []string{ChannelAssistant, ChannelThought, ChannelTool, ChannelStatus}
 
-// StreamFrame is one decoded stream notification. Every §6.1 notification carries
+// StreamFrame is one decoded stream notification. Every §6 规则 2 notification carries
 // SequenceNo; together with TurnRef it is the idempotency key (§6 rule 2), and
 // TurnRef is what makes a frame attributable when one connection carries several
-// executions at once (§6.7).
+// executions at once (§6 规则 5).
 type StreamFrame struct {
 	Method     string `json:"-"`
 	SequenceNo int64  `json:"sequence_no"`
 	// TurnRef is Core's own correlation string - the JSON-RPC id of the request that
 	// started the turn - echoed back verbatim. The Adapter neither generates nor
-	// interprets it, and no Core-side identity travels outward in a frame (§6.7).
+	// interprets it, and no Core-side identity travels outward in a frame (§6 规则 5).
+	// §4.2 裁定 ① makes it mandatory on all six notifications, including the evidence
+	// pair, so there is exactly one way to attribute a frame.
 	TurnRef string `json:"turn_ref"`
 
 	Channel         string          `json:"channel,omitempty"`
@@ -60,23 +63,24 @@ type StreamFrame struct {
 	Confidence      string          `json:"confidence,omitempty"`
 	ResultCode      string          `json:"result_code,omitempty"`
 
-	// The §6.4 evidence pair. turn/claimed says the Adapter took the job,
+	// The CO-8 evidence pair. turn/claimed says the Adapter took the job,
 	// turn/dispatched says a turn actually started; without the second one Core may
 	// not show "running".
 	Accepted            bool   `json:"accepted,omitempty"`
 	QueuePosition       *int64 `json:"queue_position,omitempty"`
 	TurnID              string `json:"turn_id,omitempty"`
 	ProviderExecutionID string `json:"provider_execution_id,omitempty"`
-	// ExecutionID rides only on turn/claimed and turn/dispatched, because CO-8 names
-	// it there. §6.7 keeps it off the other four notifications: it is a Core-side
-	// identity, and a frame that travels to a Provider must not carry one. Every
-	// frame - including these two, which §6.7 also requires - carries turn_ref, so
-	// once Core resolves the ticket this field is attribution belt-and-braces, and
-	// CO-24 asks 主控 whether it is still needed at all.
+	// ExecutionID rides on turn/claimed and turn/dispatched only, because CO-8 names it
+	// there. It is now a cross-checkable redundancy rather than a second source of
+	// attribution: §4.2 裁定 ① puts a turn_ref on these two frames as well, and Core
+	// drops a frame whose two identities disagree. It stays the single place the
+	// identity crosses the boundary, so §4's session/send has to hand it over first -
+	// that missing param is CO-24. The other four carry none, because a Provider log
+	// must never contain one of Core's ids.
 	ExecutionID string `json:"execution_id,omitempty"`
 
 	// Usage and the provider payloads stay raw: their shape belongs to the
-	// Provider, and §6.4 forbids Core from interpreting them.
+	// Provider, and CO-8 forbids Core from interpreting them.
 	Usage       json.RawMessage `json:"usage,omitempty"`
 	ProviderRaw json.RawMessage `json:"provider_raw,omitempty"`
 
@@ -100,7 +104,7 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 		return nil, fmt.Errorf("%s payload: %w", f.Method, err)
 	}
 	// CO-6 (2026-09-19): every notification carries sequence_no, so the resume cursor
-	// works even for a Provider that only speaks at turn granularity. §6.7 pairs it
+	// works even for a Provider that only speaks at turn granularity. §6 规则 5 pairs it
 	// with turn_ref: the idempotency key and the resume cursor are per turn, not per
 	// connection, because one connection can carry several executions at once.
 	if s.SequenceNo <= 0 {
@@ -108,14 +112,13 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 			Message: fmt.Sprintf("%s sequence_no %d: CO-6 requires a positive one on every stream notification",
 				f.Method, s.SequenceNo)}
 	}
-	// §6.7: turn_ref is mandatory on the four output notifications, and on those
-	// four only - turn/claimed and turn/dispatched attribute themselves by the
-	// execution_id CO-8 gives them, and carry no ticket. A frame that cannot be
-	// attributed is a protocol violation rather than a droppable one: guessing
-	// "the only turn in flight" is the accident the rule exists to prevent.
+	// §6 规则 5 + §4.2 裁定 ①: turn_ref is mandatory on every Adapter→Core notification,
+	// the evidence pair included. A frame that cannot be attributed is a protocol
+	// violation, not a droppable one: guessing "the only turn in flight" is the
+	// accident the rule exists to prevent.
 	if s.TurnRef == "" && CarriesTurnRef(f.Method) {
 		return nil, &Error{Code: ErrInvalidParams,
-			Message: fmt.Sprintf("%s has no turn_ref (§6.7 makes it mandatory on every notification)", f.Method)}
+			Message: fmt.Sprintf("%s has no turn_ref (§4.2 裁定 ① makes it mandatory on all six notifications)", f.Method)}
 	}
 	switch f.Method {
 	case MethodStreamDelta:
@@ -143,8 +146,9 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 		// the only proof of a start is turn/dispatched. provider_execution_id belongs
 		// on claimed precisely because Core may die in the claimed-but-not-dispatched
 		// window: Recovery queries the Provider by it before judging the turn UNKNOWN.
-		// These two frames are where execution_id may appear at all: §6.7 keeps the
-		// Core-side identity off the other four, whose attribution is turn_ref alone.
+		// execution_id is the frame's second identity (§4.2 裁定 ①): the ticket stays
+		// the way it is attributed, and this one is what Recovery and the audit trail
+		// read - Core cross-checks the two and drops the frame if they disagree.
 		if s.ExecutionID == "" {
 			return nil, &Error{Code: ErrInvalidParams, Message: "turn/claimed has no execution_id (CO-8)"}
 		}
@@ -153,18 +157,18 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 				Message: "turn/claimed has no provider_execution_id; Recovery cannot query a run it cannot name (CO-8)"}
 		}
 	case MethodTurnDispatch:
-		// CO-8's second signal is the only proof a turn started. What is mandatory is
-		// the frame plus the two ids Core has to correlate on; provider_execution_id
-		// may be empty (CO-13), which must never be read back as "never ran".
+		// CO-8's second signal is the only proof a turn started. §4.2 裁定 ② makes
+		// provider_execution_id optional here (CO-13: some Providers have no name at
+		// dispatch time, and forcing one would leave the turn un-renderable as
+		// running), so the mandatory payload is the frame plus the two ids Core
+		// correlates on. "Empty" is never read back as "never ran"; the check that a
+		// non-empty one contradicts claimed's lives in TurnTracker.Dispatch, because
+		// only the Core side knows what it was already told.
 		if s.TurnID == "" {
 			return nil, &Error{Code: ErrInvalidParams, Message: "turn/dispatched has no turn_id (CO-8)"}
 		}
 		if s.ExecutionID == "" {
 			return nil, &Error{Code: ErrInvalidParams, Message: "turn/dispatched has no execution_id (CO-8)"}
-		}
-		if s.ProviderExecutionID == "" {
-			return nil, &Error{Code: ErrInvalidParams,
-				Message: "turn/dispatched has no provider_execution_id (§6.4 makes it part of the evidence)"}
 		}
 	case MethodTurnFinished:
 		if s.ResultCode == "" {
@@ -188,7 +192,7 @@ func NewStream(requestID string, s *StreamFrame) (*Frame, error) {
 	// predicate, so the two sides cannot disagree about which frames owe a ticket.
 	if s.TurnRef == "" && CarriesTurnRef(s.Method) {
 		return nil, &Error{Code: ErrInvalidParams,
-			Message: fmt.Sprintf("%s: §6.7 requires a turn_ref on its four notifications", s.Method)}
+			Message: fmt.Sprintf("%s: §4.2 裁定 ① requires a turn_ref on every notification", s.Method)}
 	}
 	var params any = s
 	if s.Method == MethodStreamItem {
@@ -209,8 +213,8 @@ func NewStream(requestID string, s *StreamFrame) (*Frame, error) {
 	return &Frame{JSONRPC: JSONRPCVersion, Method: s.Method, Params: raw, RequestID: requestID}, nil
 }
 
-// Turn states (§6.3 and CO-8). Neither CLAIMED nor RUNNING is a terminal verdict,
-// and UNKNOWN is not a failure: §6.3 forbids reading "no turn/finished signal" as
+// Turn states (CO-8). Neither CLAIMED nor RUNNING is a terminal verdict,
+// and UNKNOWN is not a failure: CO-8 forbids reading "no turn/finished signal" as
 // SUCCEEDED or FAILED, while CO-8 makes the pair turn/claimed + turn/dispatched the
 // only evidence a turn exists - missing either one counts as no evidence at all.
 const (
@@ -220,21 +224,22 @@ const (
 	TurnUnknown = "UNKNOWN"
 )
 
-// TurnTracker holds one in-flight turn's §6.4 evidence. Core keeps one per
-// Execution, keyed like the §6.1 cursor (execution_id).
+// TurnTracker holds one in-flight turn's CO-8 evidence. Core keeps one per
+// Execution, keyed like the §6 规则 2 cursor (execution_id).
 //
 // The methods return an error whenever the evidence is unsound and leave the state
 // UNKNOWN in that case, so a caller that ignores the error still cannot render a
 // definite status. A late turn/finished cannot rewrite UNKNOWN by itself: the frame
 // proves the Adapter said something, not what happened while it was dead, so
 // Recovery decides with lease/heartbeat/provider_execution_id evidence and calls
-// Recover (event contract §5.5, §9.4 "不得把 UNKNOWN 猜测成确定状态").
+// Recover (event contract §5.5 and §9 "不得把 UNKNOWN 猜测成确定状态").
 type TurnTracker struct {
 	state       string
 	turnID      string
 	executionID string
-	// providerExecutionID is the Provider's own handle, from turn/dispatched: the
-	// key Recovery uses to reconnect instead of starting a second run (§8).
+	// providerExecutionID is the Provider's own handle, mandatory on turn/claimed and
+	// repeatable on turn/dispatched: the key Recovery uses to reconnect instead of
+	// starting a second run (§8).
 	providerExecutionID string
 	result              string
 }
@@ -243,22 +248,23 @@ type TurnTracker struct {
 // was ever claimed.
 func (t *TurnTracker) State() string { return t.state }
 
-// TurnID stays empty until turn/dispatched: §6.4 keeps turn_id off turn/claimed,
+// TurnID stays empty until turn/dispatched: CO-8 keeps turn_id off turn/claimed,
 // so a turn id is proof a turn started and nothing less.
 func (t *TurnTracker) TurnID() string { return t.turnID }
 
 // ExecutionID is the Core-side execution id the evidence pair is keyed by (CO-8).
 func (t *TurnTracker) ExecutionID() string { return t.executionID }
 
-// ProviderExecutionID is the Provider's handle, set by turn/dispatched; Recovery
-// uses it to reconnect instead of starting a second run (§8).
+// ProviderExecutionID is the Provider's handle, set by turn/claimed and only ever
+// overwritten by a dispatch that repeats it; Recovery uses it to reconnect instead
+// of starting a second run (§8).
 func (t *TurnTracker) ProviderExecutionID() string { return t.providerExecutionID }
 
 // Result is the result_code that closed the turn, empty until then.
 func (t *TurnTracker) Result() string { return t.result }
 
 // Claim records turn/claimed. accepted=false is a refusal: no turn opens, which is
-// still an answer rather than the silence §6.3 treats as unevidenced. Both ids stay
+// still an answer rather than the silence CO-8 treats as unevidenced. Both ids stay
 // on the tracker even then, because that is how Recovery looks the run up (CO-8).
 func (t *TurnTracker) Claim(accepted bool, executionID, providerExecutionID string) error {
 	if executionID == "" || providerExecutionID == "" {
@@ -281,13 +287,12 @@ func (t *TurnTracker) Claim(accepted bool, executionID, providerExecutionID stri
 // Dispatch records turn/dispatched, the only signal that may put a turn in RUNNING
 // (§7.1: 没有 turn/dispatched 就不得显示「运行中」).
 func (t *TurnTracker) Dispatch(turnID, executionID, providerExecutionID string) error {
-	if turnID == "" || executionID == "" || providerExecutionID == "" {
+	if turnID == "" || executionID == "" {
 		return &Error{Code: ErrInvalidParams,
-			Message: fmt.Sprintf("turn/dispatched needs turn_id, execution_id and provider_execution_id, got %q / %q / %q (CO-8)",
-				turnID, executionID, providerExecutionID)}
+			Message: fmt.Sprintf("turn/dispatched needs turn_id and execution_id, got %q / %q (CO-8)", turnID, executionID)}
 	}
 	if t.state != TurnClaimed {
-		// A dispatch with no claim, or a second dispatch, has no counterpart: §6.4
+		// A dispatch with no claim, or a second dispatch, has no counterpart: CO-8
 		// calls that no evidence, so the turn goes UNKNOWN rather than RUNNING.
 		from := t.state
 		t.state, t.executionID, t.providerExecutionID = TurnUnknown, executionID, providerExecutionID
@@ -302,12 +307,26 @@ func (t *TurnTracker) Dispatch(turnID, executionID, providerExecutionID string) 
 			Message: fmt.Sprintf("turn/dispatched names execution %q but the claimed turn is %q (CO-8)",
 				executionID, t.executionID)}
 	}
-	t.state, t.turnID, t.providerExecutionID = TurnRunning, turnID, providerExecutionID
+	if providerExecutionID != "" && providerExecutionID != t.providerExecutionID {
+		// §4.2 裁定 ②: a dispatch may arrive without a name, but a name that differs
+		// from the one claimed gave is two truths about the same turn, and Recovery
+		// reconnects by exactly that string. UNKNOWN beats picking one.
+		t.state = TurnUnknown
+		return &Error{Code: ErrInternal,
+			Message: fmt.Sprintf("turn/dispatched names provider %q but turn/claimed named %q for the same turn (§4.2 裁定 ②)",
+				providerExecutionID, t.providerExecutionID)}
+	}
+	// An empty handle keeps the claimed one: dropping it would make a turn Core has
+	// already named unqueryable for Recovery, which is the opposite of CO-8.
+	t.state, t.turnID = TurnRunning, turnID
+	if providerExecutionID != "" {
+		t.providerExecutionID = providerExecutionID
+	}
 	return nil
 }
 
 // Finish closes the turn on turn/finished, the only signal §6 makes mandatory - but
-// §6.4 still requires the dispatch evidence behind it.
+// CO-8 still requires the dispatch evidence behind it.
 func (t *TurnTracker) Finish(result string) error {
 	if result == "" {
 		return &Error{Code: ErrInvalidParams, Message: "turn/finished with no result_code (§6)"}
@@ -321,17 +340,17 @@ func (t *TurnTracker) Finish(result string) error {
 		// incomplete and this is no evidence of what happened.
 		t.state = TurnUnknown
 		return &Error{Code: ErrInternal,
-			Message: fmt.Sprintf("turn/finished(%q) without turn/dispatched: §6.4 leaves it UNKNOWN", result)}
+			Message: fmt.Sprintf("turn/finished(%q) without turn/dispatched: CO-8 leaves it UNKNOWN", result)}
 	case TurnUnknown:
 		return &Error{Code: ErrInternal,
-			Message: fmt.Sprintf("turn %q is UNKNOWN; turn/finished(%q) alone is not evidence to make it definite (§6.3)",
+			Message: fmt.Sprintf("turn %q is UNKNOWN; turn/finished(%q) alone is not evidence to make it definite (CO-8)",
 				t.turnID, result)}
 	}
 	if t.result == result {
-		return nil // the same signal twice is §6.2's duplicate, not a contradiction
+		return nil // the same signal twice is §6 规则 2's duplicate, not a contradiction
 	}
 	return &Error{Code: ErrInternal,
-		Message: fmt.Sprintf("turn %q already closed as %q, now claims %q (§6.3)", t.turnID, t.result, result)}
+		Message: fmt.Sprintf("turn %q already closed as %q, now claims %q (CO-8)", t.turnID, t.result, result)}
 }
 
 // ProcessRestarted marks a turn that never closed as UNKNOWN. It reports true when
@@ -358,10 +377,10 @@ func (t *TurnTracker) Recover(result string) error {
 	return nil
 }
 
-// Cursor applies §6.2 to one Adapter process run: sequence_no increases
+// Cursor applies §6 规则 2 to one Adapter process run: sequence_no increases
 // monotonically, a frame at or below the cursor is dropped idempotently, and a
 // jump records the first unseen number so the caller can request since_seq after a
-// reconnect. §6.7 makes the key (turn_ref, sequence_no) rather than sequence_no
+// reconnect. §6 规则 5 makes the key (turn_ref, sequence_no) rather than sequence_no
 // alone, so one connection carrying two executions keeps one cursor each.
 type Cursor struct {
 	last int64
@@ -376,7 +395,7 @@ func (c *Cursor) Last() int64 { return c.last }
 func (c *Cursor) SinceSeq() int64 { return c.hole }
 
 // Reset moves the cursor to a known sequence_no. Two callers need it: the
-// reconnect backfill (§6.2), and every process (re)start - a fresh Adapter instance
+// reconnect backfill (§6 规则 2), and every process (re)start - a fresh Adapter instance
 // numbers from 1 again, so a stale cursor would drop its whole stream as
 // duplicates. internal/process must call Reset when it restarts an Adapter.
 func (c *Cursor) Reset(at int64) { c.last, c.hole = at, 0 }
@@ -384,11 +403,11 @@ func (c *Cursor) Reset(at int64) { c.last, c.hole = at, 0 }
 // Accept reports whether the frame should be forwarded upstream. The first frame
 // sets the baseline wherever it lands: a gap before it is not a loss, since nothing
 // was subscribed to miss. A zero sequence_no cannot happen through DecodeStream
-// (§6.1), so it only reaches here from a caller bug, and forwarding beats silently
+// (§6 规则 2), so it only reaches here from a caller bug, and forwarding beats silently
 // truncating a stream.
 //
 // ponytail: "at or below last is a duplicate" assumes in-order emission, which is
-// what §6.2 promises. If a real Adapter delivers out of order, keep the last N
+// what §6 规则 2 promises. If a real Adapter delivers out of order, keep the last N
 // sequence numbers instead of one watermark.
 func (c *Cursor) Accept(seq int64) bool {
 	if seq == 0 {

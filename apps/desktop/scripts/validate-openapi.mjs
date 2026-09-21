@@ -175,8 +175,9 @@ const wf = api['x-websocket-frames'];
 wf && ['hello', 'hello_ack', 'event', 'resync_required', 'ping'].every((f) => wf.frames[f])
   ? ok('WS 帧 hello/hello_ack/event/resync_required/ping 齐备') : bad('WS 帧不全（F-9 要求 hello_ack）');
 String(wf?.handshake).includes('ticket') ? ok('WS 握手要求一次性短票') : bad('WS 握手未记 ticket（§2.1）');
-String(wf?.['cursor-default']).includes('禁止') && String(wf?.['cursor-default']).includes('全量重放')
-  ? ok('from_seq 缺省语义钉死（F-9）') : bad('cursor-default 未写（F-9）');
+String(wf?.['cursor-default']).includes('不回灌') && String(wf?.['cursor-authority']).includes('全量重放')
+  ? ok('缺省语义已钉死（F-9 + REQ-F-20：省略≠0、禁缺省全量重放）')
+  : bad('缺省/回灌口径断言不匹配新措辞（检查 cursor-default 与 cursor-authority）');
 S.WsFrame.oneOf.some((x) => x.properties?.type?.enum?.[0] === 'hello_ack')
   ? ok('WsFrame 含 hello_ack') : bad('WsFrame 未含 hello_ack');
 // F-16 / F-17
@@ -196,6 +197,46 @@ String(S.Health.properties.migration_version.type).includes('integer')
 String(S.WsHelloAck.required) === 'type,server_seq' ? ok('WsHelloAck 必带 server_seq')
   : bad('WsHelloAck 缺 server_seq');
 
+// T-80 两条裁定的落地检查（REQ-F-19 / REQ-F-20）
+const nc = S.CursorPage.properties.next_cursor;
+nc.type === 'string' && !Array.isArray(nc.type)
+  ? ok('CursorPage.next_cursor 收紧为空串唯一合法（null/省略都不允许）')
+  : bad(`CursorPage.next_cursor 仍可空（${JSON.stringify(nc.type)}）—— 违反 T-80/REQ-F-19`);
+// T-96：两侧对称 —— Session.sync_cursor 也必须 required（上一轮我只收了 minLength，是漏的）
+const sessReq = S.Session.required ?? [];
+sessReq.includes('sync_cursor')
+  ? ok('T-96 Session.sync_cursor 在 required 里（不许拿"省略"当第三种"没有"）')
+  : bad('T-96 Session.sync_cursor 可省略 → 与 SyncResult 不对称');
+String(S.Session.properties.sync_cursor.type).includes('null') && S.Session.properties.sync_cursor.minLength === 1
+  ? ok('T-96 同侧形状 = 可空 + minLength 1（与分页口径相反）')
+  : bad('T-96 Session.sync_cursor 形状不是"非空串 | null"');
+// REQ-F-21（T-89）：同步游标与分页游标语义相反，四条口径各自钉住
+const syncCur = S.SyncResult.properties.next_cursor;
+const pageCur = S.CursorPage.properties.next_cursor;
+S.SyncResult.required?.includes('next_cursor')
+  ? ok('④-a SyncResult.next_cursor 必填（不许拿"省略"当第三种"没有"）')
+  : bad('④-a SyncResult.next_cursor 可省略 → 又回到三种"没有"并存');
+String(syncCur.type).includes('null')
+  ? ok('③ 允许 null（唯一含义=库里 NULL=从未同步）')
+  : bad('③ 同步游标被抄成分页口径（非空 string）—— REQ-F-21 明确禁止');
+syncCur.minLength === 1
+  ? ok('④-b minLength:1 判空串非法（不会发出"从头开始"的假信号）')
+  : bad('④-b 缺 minLength:1 → 空串仍合法 = §5 禁止的缺省全量重放入口');
+String(S.SyncResult.description).includes('相反')
+  ? ok('② schema 里写明"与分页相反"，防后来者误抄')
+  : bad('② 没写依据，下一个人还会来抄分页口径');
+JSON.stringify(pageCur) !== JSON.stringify(syncCur) && pageCur.minLength === undefined
+  ? ok('两个游标形状确实不同（分页=空串唯一 / 同步=非空串|null）')
+  : bad('两个游标同形了 —— 正是要收掉的形状');
+String(S.Session.properties.sync_cursor.minLength) === '1'
+  ? ok('Session.sync_cursor 同域同口径（排除空串）')
+  : bad('Session.sync_cursor 没跟着收口');
+String(wf?.['cursor-authority']).includes('省略') && String(wf?.order).includes('唯一权威')
+  ? ok('§5 的游标权威口径已投影（hello 帧优先，query 仅超时回落）')
+  : bad('缺 cursor-authority / order 的 REQ-F-20 口径');
+Array.isArray(wf?.criteria) || String(wf?.criteria).match(/[①②③]/)
+  ? ok('§5 三条判据随 yaml 一起落地（防后来者只断一边）')
+  : bad('未投影 §5 判据 ①②③');
 // 契约① §6/§7
 const miss = CHAIN_EVENTS.filter((e) => !S.EventType.enum.includes(e));
 miss.length ? bad('EventType 目录漏链事件：' + miss.join(', '))

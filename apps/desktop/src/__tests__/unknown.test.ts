@@ -21,7 +21,9 @@ const task = (over: Partial<Schemas['Task']> = {}): Schemas['Task'] => ({
 });
 const session = (over: Partial<Schemas['Session']> = {}): Schemas['Session'] => ({
   id: 's1', adapter_instance_id: 'a1', managed: true, sync_state: 'SYNCED',
-  state_confidence: 'HIGH', ...over,
+  state_confidence: 'HIGH',
+  sync_cursor: '20',          // T-96 起为必填（"省略"不再是合法的第三种"没有"）
+  ...over,
 });
 const observation = (over: Partial<Schemas['QuotaObservation']> = {}): Schemas['QuotaObservation'] => ({
   quota_key: 'weekly', quota_type: 'PERCENT', observation_kind: 'OBSERVED',

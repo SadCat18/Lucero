@@ -58,14 +58,25 @@ type Approval struct {
 
 // Resolved reports whether the decision is already made. A resolved approval is
 // terminal — there is no legal transition out of it — which is what makes
-// Resolve idempotent rather than merely re-runnable.
+// Resolve idempotent rather than merely re-runnable. It is the only expression
+// of "already decided" in this package: the store's CAS guards call it instead
+// of re-writing the comparison, so the two layers cannot drift apart.
 func (a Approval) Resolved() bool { return a.State != PENDING }
+
+// DeadlinePassed is the single statement of "this approval's time is up".
+// SweepExpired's SQL has to compare columns and cannot call this, so
+// TestSweepAgreesWithDeadlineBoundary pins the two to the same millisecond —
+// a `<`/`<=` change on either side alone makes that case red. An ExpiresAt of 0
+// means the row carries no deadline at all.
+func (a Approval) DeadlinePassed(at int64) bool {
+	return a.ExpiresAt != 0 && at >= a.ExpiresAt
+}
 
 // Live reports whether the approval can still be acted on at now. Expiry is
 // checked here as well as by SweepExpired so a missed sweep cannot leave a
 // pending approval usable.
 func (a Approval) Live(now int64) bool {
-	return a.State == PENDING && (a.ExpiresAt == 0 || now < a.ExpiresAt)
+	return !a.Resolved() && !a.DeadlinePassed(now)
 }
 
 // Draft is the input to Request. PrincipalID is the actor whose action needs
@@ -265,12 +276,33 @@ func (s *Service) grantFor(a Approval, res Resolution) (permission.Grant, error)
 		return permission.Grant{}, err
 	}
 	at := s.now()
-	return permission.Grant{
+	g := permission.Grant{
 		ID: id, PrincipalID: principal,
 		ScopeType: res.Temporary.ScopeType, ScopeID: res.Temporary.ScopeID,
 		Action: a.Action, Effect: permission.Allow,
 		StartsAt: at, ExpiresAt: at + res.Temporary.Duration,
-	}, nil
+	}
+	if err := grantWindow(g.StartsAt, g.ExpiresAt); err != nil {
+		return permission.Grant{}, err
+	}
+	return g, nil
+}
+
+// grantWindow is the single statement of internal contract §3's "temporary means
+// it ends". Both the Service (before it promises anything to the user) and the
+// store (before it writes the row) call THIS function, so neither layer can
+// drift into its own idea of a valid lifetime. The write-side call is the one
+// that matters: temporary_grants.expires_at is nullable and a 0 there used to
+// read as "never expires", so a grant reaching the store with no end would have
+// become a permanent privilege that no sweep ever reclaims.
+func grantWindow(startsAt, expiresAt int64) error {
+	switch {
+	case expiresAt <= startsAt:
+		return fmt.Errorf("approval: a temporary grant must end after it starts: starts_at %d, expires_at %d", startsAt, expiresAt)
+	case expiresAt-startsAt > MaxGrantDuration:
+		return fmt.Errorf("approval: grant window %dms exceeds the %dms cap", expiresAt-startsAt, MaxGrantDuration)
+	}
+	return nil
 }
 
 func validateResolution(res Resolution) error {
@@ -288,6 +320,10 @@ func validateResolution(res Resolution) error {
 	return nil
 }
 
+// validateGrantRequest checks the half of the rule that only the request shape
+// can express — which scopes may hold a grant, and whether it names its scope.
+// The lifetime half deliberately is NOT here: grantWindow owns it, and it is
+// checked on the absolute window so the store can check the same thing.
 func validateGrantRequest(g GrantRequest) error {
 	switch g.ScopeType {
 	case permission.ScopeGlobal, permission.ScopeTrustDomain, permission.ScopeProject,
@@ -301,12 +337,6 @@ func validateGrantRequest(g GrantRequest) error {
 	}
 	if g.ScopeType != permission.ScopeGlobal && g.ScopeID == "" {
 		return fmt.Errorf("approval: grant scope %s needs a scope_id", g.ScopeType)
-	}
-	if g.Duration <= 0 {
-		return fmt.Errorf("approval: grant Duration must be positive milliseconds, got %d", g.Duration)
-	}
-	if g.Duration > MaxGrantDuration {
-		return fmt.Errorf("approval: grant Duration %dms exceeds the %dms cap", g.Duration, MaxGrantDuration)
 	}
 	return nil
 }
@@ -348,7 +378,7 @@ func (s *Service) BlockingState(ctx context.Context, executionID string) (string
 		newest  *Approval
 	)
 	for i, a := range list {
-		if a.State == PENDING {
+		if !a.Resolved() {
 			if !a.Live(s.now()) {
 				continue // expired but not yet swept: not blocking, and not approved
 			}

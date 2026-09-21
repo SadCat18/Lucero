@@ -94,15 +94,19 @@ type Session struct {
 	Title             string
 	Managed           bool
 	SyncState         SyncState
-	SyncCursor        string
-	RemoteRevision    string
-	StateConfidence   Confidence
-	LastMessageAt     int64
-	LastSyncedAt      int64
-	CreatedAt         int64
-	UpdatedAt         int64
-	Archived          bool
-	Version           int64 // ADR-017：乐观并发与"我看到的不是你现在的"
+	// SyncCursor 用指针是 REQ-F-21 第 ④ 条要求的，不是风格：`sessions.sync_cursor` 可 NULL 且无默认，
+	// 而 NULL 的含义是"从未同步过 → 下次从头拉"，与"一个空串"在同步域里是**两件相反的事**。
+	// 折成 string 就分不开了（NULL 会变成 ""），出口要么被迫发空串（§5 禁止的缺省即全量重放），
+	// 要么靠猜。nil = 库里为 NULL；非 nil 一定指向一个非空字符串。
+	SyncCursor      *string
+	RemoteRevision  string
+	StateConfidence Confidence
+	LastMessageAt   int64
+	LastSyncedAt    int64
+	CreatedAt       int64
+	UpdatedAt       int64
+	Archived        bool
+	Version         int64 // ADR-017：乐观并发与"我看到的不是你现在的"
 }
 
 type Message struct {

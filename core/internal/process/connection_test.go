@@ -97,6 +97,28 @@ func (p *pipePeer) answerOne(t *testing.T, result any) *adapter.Frame {
 	return req
 }
 
+// openTurn starts a turn the only way production does: CallTurn, whose request id
+// becomes the ticket every frame of that turn must echo (§6 规则 5, extended to the
+// evidence pair by §4.2 裁定 ①). It returns that ticket. Tests could write execByRef
+// directly, but then they would be pinning the map instead of the rule, so they do
+// not.
+func openTurn(t *testing.T, c *Connection, p *pipePeer, execID string) string {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.CallTurn(context.Background(), execID, "session/send", adapter.SendParams{
+			RemoteSessionID: "rsn-1", Text: "open", Delivery: adapter.DeliveryStartNow,
+			ExecutionID: execID, IdempotencyKey: "open-" + execID})
+		done <- err
+	}()
+	req := p.read(t)
+	p.replyTo(t, req, adapter.SendResult{Accepted: true, TurnID: "turn-" + execID})
+	if err := <-done; err != nil {
+		t.Fatalf("CallTurn(%s): %v", execID, err)
+	}
+	return req.ID
+}
+
 func (p *pipePeer) send(s *adapter.StreamFrame) error {
 	f, err := adapter.NewStream("note", s)
 	if err != nil {
@@ -195,7 +217,7 @@ func expectFrame(t *testing.T, ch chan *adapter.Frame) *adapter.Frame {
 func TestConnectionStreamBeforeInitializeIsRefused(t *testing.T) {
 	c, p := pipeConnection(t)
 	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodStreamDelta, SequenceNo: 5,
-		Channel: adapter.ChannelAssistant, Text: "early"}); err != nil {
+		TurnRef: "r-early", Channel: adapter.ChannelAssistant, Text: "early"}); err != nil {
 		t.Fatalf("peer send: %v", err)
 	}
 	select {
@@ -315,19 +337,20 @@ func TestConnectionDeadlineSendsCancel(t *testing.T) {
 	}
 }
 
-// TestConnectionDeathMarksTurnUnknown is the §6.3 half of §8: the process going away
+// TestConnectionDeathMarksTurnUnknown is the CO-8 half of §8: the process going away
 // is not evidence about the turn, so an unclosed turn becomes UNKNOWN and an in-flight
 // call comes back instead of hanging.
 func TestConnectionDeathMarksTurnUnknown(t *testing.T) {
 	c, p := established(t)
 	// Drive the turn through the pump itself, the same way production does, so the
 	// test does not write tracker state from a second goroutine.
+	ref := openTurn(t, c, p, "exec-1")
 	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnClaimed, SequenceNo: 1,
-		Accepted: true, ExecutionID: "exec-1", ProviderExecutionID: "prov-1"}); err != nil {
+		TurnRef: ref, Accepted: true, ExecutionID: "exec-1", ProviderExecutionID: "prov-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnDispatch, SequenceNo: 2,
-		ExecutionID: "exec-1", TurnID: "turn-1", ProviderExecutionID: "prov-1"}); err != nil {
+		TurnRef: ref, ExecutionID: "exec-1", TurnID: "turn-1", ProviderExecutionID: "prov-1"}); err != nil {
 		t.Fatal(err)
 	}
 	tr := c.Turn("exec-1")
@@ -358,10 +381,10 @@ func TestConnectionDeathMarksTurnUnknown(t *testing.T) {
 		t.Fatal("the call hung after the process died; §8 requires it to come back")
 	}
 	if got := tr.State(); got != adapter.TurnUnknown {
-		t.Errorf("turn state after death = %q, want UNKNOWN (§6.3, not FAILED)", got)
+		t.Errorf("turn state after death = %q, want UNKNOWN (CO-8, not FAILED)", got)
 	}
 	if got := tr.ProviderExecutionID(); got != "prov-1" {
-		t.Errorf("provider handle = %q, want it kept for Recovery to query by (§6.3)", got)
+		t.Errorf("provider handle = %q, want it kept for Recovery to query by (CO-8)", got)
 	}
 	// A second kill must be a no-op rather than a panic on a closed channel.
 	c.kill(errors.New("again"))
@@ -399,12 +422,23 @@ func TestConnectionDedupsAndTracksTurn(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
+	// §6 规则 5's whole point in one stream: two executions on one connection where the
+	// second one's numbers are lower than the first one's watermark. A pump that
+	// deduplicated on sequence_no alone would drop e2's frames as "stale", and that is
+	// exactly how two executions end up written into one chunk row.
+	// Both tickets come from a real turn-opening call: since §4.2 裁定 ① the pair is
+	// attributed by ticket too, so a claimed frame naming a ticket Core never issued is
+	// a stranger and gets dropped, which would defeat the point of this stream.
+	r1 := openTurn(t, c, p, "e1")
+	r2 := openTurn(t, c, p, "e2")
 	stream := []*adapter.StreamFrame{
-		{Method: adapter.MethodTurnClaimed, SequenceNo: 1, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "p1"},
-		{Method: adapter.MethodTurnClaimed, SequenceNo: 1, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "p1"}, // replay
-		{Method: adapter.MethodTurnDispatch, SequenceNo: 2, ExecutionID: "e1", TurnID: "t1", ProviderExecutionID: "p1"},
-		{Method: adapter.MethodStreamDelta, SequenceNo: 2, Channel: adapter.ChannelAssistant, Text: "late"}, // stale seq
-		{Method: adapter.MethodTurnFinished, SequenceNo: 3, ExecutionID: "e1", ResultCode: "OK"},
+		{Method: adapter.MethodTurnClaimed, SequenceNo: 5, TurnRef: r1, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "p1"},
+		{Method: adapter.MethodTurnClaimed, SequenceNo: 5, TurnRef: r1, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "p1"}, // replay of (r1,5)
+		{Method: adapter.MethodTurnDispatch, SequenceNo: 6, TurnRef: r1, ExecutionID: "e1", TurnID: "t1", ProviderExecutionID: "p1"},
+		{Method: adapter.MethodTurnClaimed, SequenceNo: 1, TurnRef: r2, Accepted: true, ExecutionID: "e2", ProviderExecutionID: "p2"},
+		{Method: adapter.MethodStreamDelta, SequenceNo: 2, TurnRef: r2, Channel: adapter.ChannelAssistant, Text: "e2 speaks"},
+		{Method: adapter.MethodStreamDelta, SequenceNo: 2, TurnRef: r2, Channel: adapter.ChannelAssistant, Text: "again"}, // replay of (r2,2)
+		{Method: adapter.MethodTurnFinished, SequenceNo: 7, TurnRef: r1, ResultCode: "OK"},
 	}
 	go func() {
 		for _, s := range stream {
@@ -417,7 +451,7 @@ func TestConnectionDedupsAndTracksTurn(t *testing.T) {
 
 	var got []string
 	deadline := time.After(3 * time.Second)
-	for len(got) < 3 { // five frames in, three distinct ones out
+	for len(got) < 5 { // nine frames in, five distinct ones out
 		select {
 		case ev := <-c.Inbound():
 			if ev.Err != nil {
@@ -425,24 +459,283 @@ func TestConnectionDedupsAndTracksTurn(t *testing.T) {
 			}
 			got = append(got, ev.Frame.Method)
 		case <-deadline:
-			t.Fatalf("only forwarded %v of the three distinct frames", got)
+			t.Fatalf("only forwarded %v of the five distinct frames", got)
 		}
 	}
 	if want := []string{adapter.MethodTurnClaimed, adapter.MethodTurnDispatch,
-		adapter.MethodTurnFinished}; strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("forwarded %v, want %v (§6.2 drops the replays)", got, want)
+		adapter.MethodTurnClaimed, adapter.MethodStreamDelta, adapter.MethodTurnFinished}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("forwarded %v, want %v (§6 规则 5 drops the two replays and keeps the second turn)", got, want)
 	}
-	if c.LastSeq() != 3 {
-		t.Errorf("LastSeq = %d, want 3", c.LastSeq())
+	if c.LastSeq() != 7 {
+		t.Errorf("LastSeq = %d, want the connection watermark at 7", c.LastSeq())
 	}
 	if c.MissingSeq() != 0 {
-		t.Errorf("MissingSeq = %d, want 0 for a contiguous stream", c.MissingSeq())
+		t.Errorf("MissingSeq = %d, want 0: another turn's lower numbers are not a hole in this one", c.MissingSeq())
+	}
+	if got, want := c.SinceSeq(r1), int64(7); got != want {
+		t.Errorf("SinceSeq(r1) = %d, want %d: each turn keeps its own resume number", got, want)
+	}
+	if got, want := c.SinceSeq(r2), int64(2); got != want {
+		t.Errorf("SinceSeq(r2) = %d, want %d", got, want)
 	}
 	tr := c.Turn("e1")
 	if tr.State() != adapter.TurnClosed || tr.Result() != "OK" {
 		t.Errorf("turn after the stream = %s/%q, want CLOSED/OK", tr.State(), tr.Result())
 	}
+	// e2 was claimed but never dispatched, so §7.1 forbids reading it as running.
+	if tr2 := c.Turn("e2"); tr2.State() != adapter.TurnClaimed {
+		t.Errorf("e2 = %q, want CLAIMED", tr2.State())
+	}
 	drain(c)
+}
+
+// TestConnectionDropsUnboundTurnRef is the other half of §6 规则 5: a frame whose ticket
+// this connection never bound is dropped and reported, and specifically must not be
+// handed to "the one turn currently in flight". Forwarding it with the frame attached
+// would let a caller write another execution's output into its chunk row.
+func TestConnectionDropsUnboundTurnRef(t *testing.T) {
+	c, p := pipeConnection(t)
+	go p.answerOne(t, handshakeResult())
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// One turn is genuinely in flight, which is what a guessing pump would pick.
+	live := openTurn(t, c, p, "e-live")
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnClaimed, SequenceNo: 1,
+		TurnRef: live, Accepted: true, ExecutionID: "e-live", ProviderExecutionID: "p1"}); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	// The stranger names a real execution_id. Since §4.2 裁定 ① that is no route in:
+	// the ticket decides attribution and the id is only cross-checked, so this frame
+	// must still be dropped rather than laundered into e-live's turn.
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnClaimed, SequenceNo: 2,
+		TurnRef: "never-bound", Accepted: true, ExecutionID: "e-live", ProviderExecutionID: "px"}); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodStreamDelta, SequenceNo: 3,
+		TurnRef: "never-bound", Channel: adapter.ChannelAssistant, Text: "orphan"}); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	// The live turn's own frame goes through first, so the next two events are drops.
+	if ev := <-c.Inbound(); ev.Frame == nil || ev.Frame.Method != adapter.MethodTurnClaimed {
+		t.Fatalf("first inbound = %+#v, want the live turn forwarded", ev)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case ev := <-c.Inbound():
+			if ev.Frame != nil {
+				t.Fatalf("unattributable frame %d was forwarded as %+#v, want it dropped", i+1, ev.Frame)
+			}
+			if ev.Err == nil || !strings.Contains(ev.Err.Error(), "never-bound") {
+				t.Fatalf("drop %d was not reported properly: %v", i+1, ev.Err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("the pump neither forwarded the frame nor reported drop %d", i+1)
+		}
+	}
+	// The live turn is untouched by the stranger's frames: not its state, and not the
+	// handle Recovery would query it by.
+	if tr := c.Turn("e-live"); tr.State() != adapter.TurnClaimed || tr.ProviderExecutionID() != "p1" {
+		t.Errorf("e-live = %q/%q, want CLAIMED/p1: a dropped frame must not have moved it",
+			tr.State(), tr.ProviderExecutionID())
+	}
+	if got := c.SinceSeq("never-bound"); got != 0 {
+		t.Errorf("SinceSeq for the unbound ticket = %d: a dropped frame must not have advanced a watermark", got)
+	}
+}
+
+// TestConnectionDropsContradictoryIdentity is §4.2 裁定 ①'s cross-check: once the pair
+// carries a ticket too, a frame that names an execution the ticket was never bound to
+// has two truths in it, and neither may win by default. Forwarding it is how one
+// execution's evidence ends up closing another's turn.
+func TestConnectionDropsContradictoryIdentity(t *testing.T) {
+	c, p := pipeConnection(t)
+	go p.answerOne(t, handshakeResult())
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	live := openTurn(t, c, p, "e-live")
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnClaimed, SequenceNo: 1,
+		TurnRef: live, Accepted: true, ExecutionID: "e-live", ProviderExecutionID: "p1"}); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	if ev := <-c.Inbound(); ev.Err != nil || ev.Frame == nil {
+		t.Fatalf("the consistent claim came back as %+#v", ev)
+	}
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnDispatch, SequenceNo: 2,
+		TurnRef: live, ExecutionID: "e-other", TurnID: "t-x", ProviderExecutionID: "p1"}); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	select {
+	case ev := <-c.Inbound():
+		if ev.Frame != nil {
+			t.Fatalf("the contradictory dispatch was forwarded as %+#v", ev.Frame)
+		}
+		if ev.Err == nil || !strings.Contains(ev.Err.Error(), "e-other") {
+			t.Fatalf("contradiction not reported: %v", ev.Err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pump neither forwarded the frame nor reported the drop")
+	}
+	// The turn stays CLAIMED: a dispatch that crossed identities must not have started
+	// it, and the watermark must not have moved either.
+	if tr := c.Turn("e-live"); tr.State() != adapter.TurnClaimed {
+		t.Errorf("e-live = %q, want CLAIMED", tr.State())
+	}
+	if got := c.SinceSeq(live); got != 1 {
+		t.Errorf("SinceSeq(live) = %d, want 1: the dropped dispatch must not have advanced the cursor", got)
+	}
+}
+
+// TestInboundNeverCarriesTheTicket is C20: turn_ref is internal/process's own
+// bookkeeping, so a consumer gets the attribution already resolved and never the
+// ticket it was resolved from. Were it otherwise, chunk flush would end up routing by
+// a number that means nothing outside this connection.
+func TestInboundNeverCarriesTheTicket(t *testing.T) {
+	c, p := pipeConnection(t)
+	go p.answerOne(t, handshakeResult())
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	ticket := openTurn(t, c, p, "e1")
+	for _, s := range []*adapter.StreamFrame{
+		{Method: adapter.MethodTurnClaimed, SequenceNo: 1, TurnRef: ticket,
+			Accepted: true, ExecutionID: "e1", ProviderExecutionID: "p1"},
+		{Method: adapter.MethodStreamDelta, SequenceNo: 2, TurnRef: ticket,
+			Channel: adapter.ChannelAssistant, Text: "hello"},
+	} {
+		if err := p.send(s); err != nil {
+			t.Fatalf("peer send %s: %v", s.Method, err)
+		}
+	}
+	// The pair names its execution, so it is forwarded with the ticket stripped too:
+	// one rule for every consumer, not one for the frames that happen to carry an id.
+	for _, want := range []struct {
+		method string
+		seq    int64
+	}{{adapter.MethodTurnClaimed, 1}, {adapter.MethodStreamDelta, 2}} {
+		ev := <-c.Inbound()
+		if ev.Err != nil {
+			t.Fatalf("%s reported %v", want.method, ev.Err)
+		}
+		if ev.Frame == nil {
+			t.Fatalf("%s came through as a drop", want.method)
+		}
+		if ev.ExecutionID != "e1" {
+			t.Errorf("%s: ExecutionID = %q, want the ticket resolved to e1", want.method, ev.ExecutionID)
+		}
+		if ev.Frame.TurnRef != "" {
+			t.Errorf("%s: Frame.TurnRef = %q, want it stopped at this boundary (C20)", want.method, ev.Frame.TurnRef)
+		}
+		if ev.Frame.SequenceNo != want.seq {
+			t.Errorf("%s: SequenceNo = %d, want %d", want.method, ev.Frame.SequenceNo, want.seq)
+		}
+	}
+	if got := c.SinceSeq(ticket); got != 2 {
+		t.Errorf("SinceSeq(ticket) = %d, want 2: the pump still tracks the ticket internally", got)
+	}
+}
+
+// TestConnectionChainClosesBeforeItOpens is §6.3's chain seen from the only place that
+// is allowed to know which Execution a frame belongs to: the pump's consumer view. The
+// guide lands on the running turn, session/stop closes it, and exec-2's claim must
+// arrive after exec-1's close - all asserted through resolved execution_ids, with no
+// hand-written sequence numbers and no ticket ever reaching the consumer (§6 规则 5 决议 ②).
+func TestConnectionChainClosesBeforeItOpens(t *testing.T) {
+	exe := buildFakeAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever,
+		Launch: func() (*exec.Cmd, error) { return exec.CommandContext(ctx, exe), nil }}
+	conn, err := sup.Connect(ctx, "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	send := func(id, execID, delivery string) adapter.SendResult {
+		t.Helper()
+		reply, err := conn.CallTurn(ctx, execID, "session/send", adapter.SendParams{
+			RemoteSessionID: "rsn-1", Text: id, Delivery: delivery,
+			ExecutionID: execID, IdempotencyKey: "k-" + id})
+		if err != nil {
+			t.Fatalf("session/send %s: %v", id, err)
+		}
+		var res adapter.SendResult
+		if err := json.Unmarshal(reply.Result, &res); err != nil {
+			t.Fatalf("send %s reply: %v", id, err)
+		}
+		return res
+	}
+	drain := func(want int) []Inbound {
+		var got []Inbound
+		for len(got) < want {
+			select {
+			case ev := <-conn.Inbound():
+				if ev.Err != nil {
+					t.Fatalf("the pump reported a violation: %v", ev.Err)
+				}
+				got = append(got, ev)
+			case <-time.After(10 * time.Second):
+				t.Fatalf("only %d of %d notifications arrived", len(got), want)
+			}
+		}
+		return got
+	}
+
+	first := send("s1", "exec-1", adapter.DeliveryStartNow)
+	drain(5) // claimed, dispatched, state, delta, item
+	steer := send("s2", "exec-1", adapter.DeliveryGuide)
+	if steer.TurnID != first.TurnID {
+		t.Errorf("guide opened %q over the running %q (§5)", steer.TurnID, first.TurnID)
+	}
+	drain(1)
+	if tr := conn.Turn("exec-1"); tr.State() != adapter.TurnRunning {
+		t.Fatalf("exec-1 = %s before the stop, want RUNNING", tr.State())
+	}
+
+	if _, err := conn.Call(ctx, "session/stop",
+		map[string]string{"remote_session_id": "rsn-1"}); err != nil {
+		t.Fatalf("session/stop: %v", err)
+	}
+	// Two frames close the turn: the state and the mandatory signal.
+	closing := drain(2)
+	for _, ev := range closing {
+		if ev.ExecutionID != "exec-1" {
+			t.Errorf("closing frame for %q, want exec-1", ev.ExecutionID)
+		}
+	}
+	if got := closing[len(closing)-1].Frame; got == nil || got.Method != adapter.MethodTurnFinished {
+		t.Errorf("last closing frame = %+#v, want turn/finished", got)
+	}
+	tr1 := conn.Turn("exec-1")
+	if tr1.State() != adapter.TurnClosed || tr1.Result() != "CANCELLED" {
+		t.Errorf("exec-1 = %s/%q, want CLOSED/CANCELLED from session/stop", tr1.State(), tr1.Result())
+	}
+
+	send("s3", "exec-2", adapter.DeliveryStartNow)
+	// exec-1 was already closed when this call went out, so the chain holds by state
+	// rather than by counting frames: nothing arriving now may reopen it.
+	if tr1.State() != adapter.TurnClosed {
+		t.Errorf("exec-1 = %s while exec-2 was starting, want it still CLOSED (§6.3)", tr1.State())
+	}
+	for _, ev := range drain(5) {
+		if ev.ExecutionID != "exec-2" {
+			t.Errorf("frame after the close resolved to %q, want exec-2", ev.ExecutionID)
+		}
+		if ev.Frame != nil && ev.Frame.TurnRef != "" {
+			t.Errorf("consumer saw the ticket %q past the boundary (§6 规则 5 决议 ②)", ev.Frame.TurnRef)
+		}
+	}
+	if tr2 := conn.Turn("exec-2"); tr2.State() != adapter.TurnRunning {
+		t.Errorf("exec-2 = %q after its pair, want RUNNING", tr2.State())
+	}
+	if tr1.State() != adapter.TurnClosed {
+		t.Errorf("exec-1 reopened as %s: one close must be final (§6.3)", tr1.State())
+	}
 }
 
 // drain makes sure no extra frame slipped through the dedup.
@@ -506,12 +799,15 @@ func TestConnectionAgainstRealFakeAdapter(t *testing.T) {
 
 	// An unimplemented method must come back as an explicit refusal over a real pipe,
 	// not as a timeout.
-	unbuilt, err := conn.Call(ctx, "session/list", struct{}{})
+	// session/push is the §6.6 method this build has not grown (no §4 row yet, CO-25 open);
+	// session/list is
+	// served now, so it can no longer stand in for "not implemented".
+	unbuilt, err := conn.Call(ctx, "session/push", struct{}{})
 	if err != nil {
-		t.Fatalf("Call(session/list): %v", err)
+		t.Fatalf("Call(model/select): %v", err)
 	}
 	if unbuilt.Error == nil || unbuilt.Error.Code != adapter.ErrInternal {
-		t.Errorf("session/list = %+v, want INTERNAL_ERROR until FakeAdapter implements it", unbuilt)
+		t.Errorf("session/push = %+v, want INTERNAL_ERROR until FakeAdapter implements it", unbuilt)
 	}
 	if conn.LastSeq() != 0 {
 		t.Errorf("cursor moved before any stream frame: %d", conn.LastSeq())
@@ -567,7 +863,9 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 
 	send := func(id, execID string) adapter.SendResult {
 		t.Helper()
-		reply, err := conn.Call(ctx, "session/send", adapter.SendParams{
+		// CallTurn is what binds this requests id as the turn_ref §6 规则 5 attributes the
+		// following frames by - the point of the second half of the acceptance item.
+		reply, err := conn.CallTurn(ctx, execID, "session/send", adapter.SendParams{
 			RemoteSessionID: "s-1", Text: "hello " + id, Delivery: adapter.DeliveryStartNow,
 			ExecutionID: execID, IdempotencyKey: "k-" + id})
 		if err != nil {
@@ -593,8 +891,10 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 	if got := nextNotice(t, conn); got.Method != adapter.MethodTurnDispatch {
 		t.Fatalf("second notification = %s, want turn/dispatched", got.Method)
 	}
-	if got := nextNotice(t, conn); got.Method != adapter.MethodStreamDelta {
-		t.Fatalf("third notification = %s, want stream/delta", got.Method)
+	for _, want := range []string{adapter.MethodStreamState, adapter.MethodStreamDelta, adapter.MethodStreamItem} {
+		if got := nextNotice(t, conn); got.Method != want {
+			t.Fatalf("notification = %s, want %s (a turn emits the normal path §10 ① asks for)", got.Method, want)
+		}
 	}
 	tr1 := conn.Turn("exec-1")
 	if tr1.State() != adapter.TurnRunning {
@@ -605,27 +905,37 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 			tr1.TurnID(), tr1.ProviderExecutionID(), first.TurnID, first.ProviderExecutionID)
 	}
 
-	// The second send closes the first turn, which is turn/finished arriving on
-	// exec-1's key while exec-2 opens its own pair.
+	// A second start_now interrupts the turn in flight (§5), so exec-1's own
+	// turn/finished arrives *after* exec-2 opened: two executions, one connection, and
+	// each frame landing on the tracker its ticket names. That is §6 规则 5's acceptance
+	// item, asserted where it actually bites.
 	send("2", "exec-2")
-	closed := false
-	for i := 0; i < 4; i++ {
+	sawFinish := ""
+	// The second send puts seven notifications out before its reply: its own five
+	// (claimed, dispatched, state, delta, item) and the preempted turn's tail plus its
+	// turn/finished. Reading fewer than seven would miss the close and look like a
+	// missing mandatory signal.
+	for i := 0; i < 7; i++ {
 		s := nextNotice(t, conn)
-		switch {
-		case s.Method == adapter.MethodTurnFinished && s.ExecutionID == "exec-1":
-			closed = true
-		case s.Method == adapter.MethodTurnFinished:
-			t.Errorf("turn/finished named %q, want exec-1", s.ExecutionID)
+		if s.Method == adapter.MethodTurnFinished {
+			// C20 inverts what this line used to demand: the consumer-facing view must
+			// carry the resolved Execution and never the ticket, and the ticket itself
+			// is pinned on the wire (TestFakeAdapterDeliversThreeStates) and at the
+			// boundary (TestInboundNeverCarriesTheTicket).
+			if s.TurnRef != "" {
+				t.Errorf("turn/finished leaked the ticket %q past the pump boundary", s.TurnRef)
+			}
+			sawFinish = s.ResultCode
 		}
 	}
-	if !closed {
-		t.Error("exec-1 never received its turn/finished (§6.1: it is the mandatory signal)")
+	if sawFinish == "" {
+		t.Error("exec-1 never received its turn/finished (§6 规则 1: it is the mandatory signal)")
 	}
-	if tr1.State() != adapter.TurnClosed || tr1.Result() != "OK" {
-		t.Errorf("exec-1 = %s/%q, want CLOSED/OK", tr1.State(), tr1.Result())
+	if tr1.State() != adapter.TurnClosed || tr1.Result() != "INTERRUPTED" {
+		t.Errorf("exec-1 = %s/%q, want CLOSED/INTERRUPTED: it was preempted, not completed", tr1.State(), tr1.Result())
 	}
 	if tr2 := conn.Turn("exec-2"); tr2.State() != adapter.TurnRunning {
-		t.Errorf("exec-2 = %q, want RUNNING", tr2.State())
+		t.Errorf("exec-2 = %q, want RUNNING: the interrupted turn must not drag the new one down", tr2.State())
 	}
 	if seq, miss := conn.LastSeq(), conn.MissingSeq(); seq <= 0 || miss != 0 {
 		t.Errorf("cursor = last %d, missing %d: the real stream arrived contiguous, so no hole may be recorded",
@@ -633,7 +943,7 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 	}
 }
 
-// nextNotice waits for one notification that survived §6.2's dedup. It waits rather
+// nextNotice waits for one notification that survived §6 规则 2's dedup. It waits rather
 // than polling because a pump that stops forwarding is the failure under test, and a
 // test that sleeps through it reports nothing.
 func nextNotice(t *testing.T, conn *Connection) *adapter.StreamFrame {

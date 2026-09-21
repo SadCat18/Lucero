@@ -62,7 +62,8 @@ type Rule struct {
 	Priority        int
 }
 
-// Grant is one temporary_grants row. Zero ExpiresAt/RevokedAt means SQL NULL.
+// Grant is one temporary_grants row. Zero ExpiresAt/RevokedAt means SQL NULL;
+// Active decides what a NULL expires_at authorises (nothing).
 type Grant struct {
 	ID              string
 	PrincipalID     string
@@ -79,11 +80,17 @@ type Grant struct {
 // Active reports whether the grant is usable at now (Unix ms). Expiry is
 // enforced here, not only by SweepExpired, so a missed sweep can never leave a
 // privilege alive.
+//
+// A grant with no expires_at is refused rather than treated as permanent:
+// temporary_grants.expires_at is nullable in the schema, and reading NULL as
+// "never expires" would hand whoever wrote that row an ALLOW that outlives the
+// task it was granted for — the exact privilege this rung is not allowed to
+// create. approval.grantWindow is the write-side spelling of the same rule.
 func (g Grant) Active(now int64) bool {
 	if g.RevokedAt != 0 || g.StartsAt > now {
 		return false
 	}
-	return g.ExpiresAt == 0 || now < g.ExpiresAt
+	return g.ExpiresAt != 0 && now < g.ExpiresAt
 }
 
 // Source is the persistence port. Implementations return only enabled rows.

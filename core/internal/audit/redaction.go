@@ -96,6 +96,64 @@ var patterns = sync.OnceValue(func() []*regexp.Regexp {
 	return out
 })
 
+// denyKeys is Rules().DenyKeys canonicalized once, for ScrubRisk.
+var denyKeys = sync.OnceValue(func() map[string]bool {
+	set := make(map[string]bool)
+	for _, k := range Rules().DenyKeys {
+		set[CanonicalKey(k)] = true
+	}
+	return set
+})
+
+// ScrubRisk reports whether the enforcement point would rewrite anything inside
+// raw, judged from the same rule set that wiring hands it. It is a detector, not
+// a second redactor: it never returns scrubbed text, because the only value that
+// may be stored is the one the enforcement point produces.
+//
+// Chain needs the answer to be "no" for every row it writes: entry_hash covers
+// details_json, and the enforcement point rewrites that column on the way in, so
+// a value it replaces makes the stored bytes differ from what was sealed and the
+// chain then reads an honest row as tampered. Tests assert this for the shapes
+// this package emits (see TestAuditRowsThisPackageWritesAreNotScrubTargets);
+// Append does not reject on it, because refusing a row is enforcement, and
+// enforcement belongs to db.
+func ScrubRisk(raw string) (bool, error) {
+	res := patterns()
+	if res == nil {
+		return false, fmt.Errorf("audit: redaction rules do not compile, so nothing can be judged safe to store")
+	}
+	for _, re := range res {
+		if re.MatchString(raw) {
+			return true, nil
+		}
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		// Not JSON: the enforcement point walks JSON values, and canonicalJSON has
+		// already rejected malformed details before this runs.
+		return false, nil
+	}
+	return denyKeyPresent(v), nil
+}
+
+func denyKeyPresent(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			if denyKeys()[CanonicalKey(k)] || denyKeyPresent(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if denyKeyPresent(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CanonicalKey normalizes a JSON key name for DenyKeys lookup. Exported so the
 // enforcement point matches the rule set's documented semantics instead of
 // inventing its own.

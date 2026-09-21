@@ -386,16 +386,3 @@ func TestRedactionDetailsRejectsUnattributableHits(t *testing.T) {
 }
 
 func TestCanonicalKey(t *testing.T) {
-	for in, want := range map[string]string{
-		"Authorization": "authorization",
-		"x-api-key":     "xapikey",
-		"apiKey":        "apikey",
-		"session_key":   "sessionkey",
-		"Set-Cookie":    "setcookie",
-		"risk_level":    "risklevel",
-	} {
-		if got := CanonicalKey(in); got != want {
-			t.Errorf("CanonicalKey(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

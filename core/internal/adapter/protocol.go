@@ -103,7 +103,7 @@ var domainCodes = map[ErrorCode]string{
 	ErrInternal:                "INTERNAL",
 	ErrAdapterUnresponsive:     "ADAPTER_UNRESPONSIVE",
 	-32015:                     "EXECUTION_STATE_UNKNOWN", // §7 crash semantics: refuse to advance an UNKNOWN execution
-	-32016:                     "READ_ONLY",               // object-level read-only (§12.11), unlike §3's Adapter-level
+	-32016:                     "READ_ONLY",               // object-level read-only (§4.1 contrast with §3): the Adapter may write, this object cannot
 }
 
 var protocolCodeNames = map[ErrorCode]string{

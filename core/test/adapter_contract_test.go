@@ -400,12 +400,16 @@ type fakeProc struct {
 	nextID     int
 	caps       []adapter.Capability
 	writeEntry bool
+	// frames 由一个常驻读取器喂：对端在一次调用前后会发通知帧（§6 的 stream/*、§4.2 的取证两帧），
+	// 谁读、读了几帧必须是确定的，否则"按 id 配对响应"就没法做（见 request）。
+	frames  chan []byte
+	skipped int // 配对响应时路过的通知帧条数：超时的报错里要能看见它，否则分不清"沉默"与"在发通知"
 }
 
-func startFakeAdapter(t *testing.T) (*fakeProc, error) {
-	if os.Getenv("LUCERO_TEST_FAKE_ADAPTER") != "1" {
-		return nil, fmt.Errorf("未开启（设 LUCERO_TEST_FAKE_ADAPTER=1 才会 build+启动子进程）")
-	}
+// buildFakeAdapterExe 把 FakeAdapter build 到临时目录。抽成函数是因为有两个被测面要用它：
+// 我这条 ndjson 直连的 harness，以及 turn_attribution_test.go 里经 process.Supervisor 起的那条。
+func buildFakeAdapterExe(t *testing.T) (string, error) {
+	t.Helper()
 	goBin := os.Getenv("LUCERO_GO")
 	if goBin == "" {
 		goBin = "go"
@@ -415,7 +419,24 @@ func startFakeAdapter(t *testing.T) (*fakeProc, error) {
 	build.Dir = moduleRoot()
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("build 失败: %v\n%s", err, out)
+		return "", fmt.Errorf("build 失败: %v\n%s", err, out)
+	}
+	return exe, nil
+}
+
+// fakeAdapterEnabled 是"要不要为子进程面 build + 起真进程"的开关。默认关：
+// 每次 `go test ./test/...` 都付一次 build 的钱不值，但**交付前必须开着跑一遍**（判据表里写明）。
+func fakeAdapterEnabled() (bool, string) {
+	return os.Getenv("LUCERO_TEST_FAKE_ADAPTER") == "1", "设 LUCERO_TEST_FAKE_ADAPTER=1 才会 build+启动子进程"
+}
+
+func startFakeAdapter(t *testing.T) (*fakeProc, error) {
+	if ok, why := fakeAdapterEnabled(); !ok {
+		return nil, fmt.Errorf("未开启（%s）", why)
+	}
+	exe, err := buildFakeAdapterExe(t)
+	if err != nil {
+		return nil, err
 	}
 	cmd := exec.Command(exe)
 	in, err := cmd.StdinPipe()
@@ -431,7 +452,22 @@ func startFakeAdapter(t *testing.T) (*fakeProc, error) {
 		return nil, err
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = in.Close() })
-	return &fakeProc{t: t, cmd: cmd, in: in, out: bufio.NewReader(outPipe)}, nil
+	p := &fakeProc{t: t, cmd: cmd, in: in, out: bufio.NewReader(outPipe), frames: make(chan []byte, 64)}
+	// 常驻读取器：通知帧与响应帧混在一条流里，必须由一个人按顺序收，再让各条判据按 id 取自己的那一帧。
+	// 每次判据现开一个 goroutine 读会在超时后把迟到那一帧丢掉 —— 那正是"没读到"被当成"没有"的形状。
+	go func() {
+		defer close(p.frames)
+		for {
+			line, err := p.out.ReadBytes('\n')
+			if len(line) > 0 {
+				p.frames <- line
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return p, nil
 }
 
 func moduleRoot() string {
@@ -448,46 +484,89 @@ func moduleRoot() string {
 	}
 }
 
-// request 发一帧并读回它的响应；超时算失败（Adapter 不回话 = Core 会挂到 deadline）。
-func (f *fakeProc) request(method string, params any) (*adapter.Frame, error) {
+// nextFrameID 分配一帧的 id：JSON-RPC id 与 request_id 同源，别让人对不上号。
+func (f *fakeProc) nextFrameID() (string, string) {
 	f.nextID++
-	raw, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": fmt.Sprintf("t%d", f.nextID),
-		"request_id": fmt.Sprintf("019e0000-0000-7000-8000-%012d", f.nextID),
-		"method":     method, "params": params,
-	})
+	return fmt.Sprintf("t%d", f.nextID),
+		fmt.Sprintf("019e0000-0000-7000-8000-%012d", f.nextID)
+}
+
+// request 发一帧并读回**属于它自己的**那一帧响应；超时算失败（Adapter 不回话 = Core 会挂到 deadline）。
+// 必须按 id 配对：真 Adapter 在一次调用前后会发通知帧（§6 的 stream/*、§4.2 的取证两帧），
+// 而通知帧没有 error 字段 —— 把"下一帧"当响应会把通知读成"它成功了"，那是假绿不是实测。
+// 收到的通知帧不丢，攒在 notes 里给取证那一腿用。
+func (f *fakeProc) request(method string, params any) (*adapter.Frame, error) {
+	id, reqID := f.nextFrameID()
+	if err := f.write(map[string]any{
+		"jsonrpc": "2.0", "id": id, "request_id": reqID,
+		"method": method, "params": params,
+	}); err != nil {
+		return nil, err
+	}
+	for {
+		fr, err := f.readFrame(method)
+		if err != nil {
+			return nil, err
+		}
+		if fr.ID == id {
+			return fr, nil
+		}
+		f.skipped++ // 通知帧（或别的调用的回话）：跳过，但条数留在超时信息里
+	}
+}
+
+// readFrame 取一帧并解析（原始字段的判据请直接用 recv）。
+func (f *fakeProc) readFrame(what string) (*adapter.Frame, error) {
+	raw, err := f.recv(what)
 	if err != nil {
 		return nil, err
 	}
+	fr := &adapter.Frame{}
+	if err := json.Unmarshal(raw, fr); err != nil {
+		return nil, fmt.Errorf("帧解不开: %w (%s)", err, raw)
+	}
+	return fr, nil
+}
+
+// callAsync 发一帧请求但不读回执，返回它的 JSON-RPC id。
+// 这是"有一 call 在飞"的唯一形状，C8-5 的 $/cancel 必须先有它才有对象可取消。
+func (f *fakeProc) callAsync(method string, params any) (string, error) {
+	id, reqID := f.nextFrameID()
+	if err := f.write(map[string]any{
+		"jsonrpc": "2.0", "id": id, "request_id": reqID,
+		"method": method, "params": params,
+	}); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// write 发一帧原始 JSON，不等待回话。
+func (f *fakeProc) write(payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
 	if _, err := f.in.Write(append(raw, '\n')); err != nil {
-		return nil, fmt.Errorf("写入失败（进程可能已退出）: %w", err)
+		return fmt.Errorf("写入失败（进程可能已退出）: %w", err)
 	}
 	if fl, ok := f.in.(interface{ Flush() error }); ok {
 		_ = fl.Flush() // 有缓冲时不 flush 会让对端一直等
 	}
-	type result struct {
-		f   *adapter.Frame
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		line, err := f.out.ReadBytes('\n')
-		if err != nil {
-			ch <- result{nil, fmt.Errorf("读不到响应帧: %w", err)}
-			return
-		}
-		fr := &adapter.Frame{}
-		if err := json.Unmarshal(line, fr); err != nil {
-			ch <- result{nil, fmt.Errorf("响应帧解不开: %w (%s)", err, line)}
-			return
-		}
-		ch <- result{fr, nil}
-	}()
+	return nil
+}
+
+// recv 从常驻读取器取一帧**原始字节**（不先过 Go 结构体）——C8-5 要判的是线上有没有 error 这个键，
+// 而 Frame.Error 带 omitempty，从结构体反推不出"线上有没有"。
+func (f *fakeProc) recv(what string) ([]byte, error) {
 	select {
-	case r := <-ch:
-		return r.f, r.err
+	case raw, ok := <-f.frames:
+		if !ok {
+			return nil, fmt.Errorf("对端已经没有话可读了（%s）", what)
+		}
+		return raw, nil
 	case <-time.After(5 * time.Second):
-		return nil, fmt.Errorf("%s 5s 内没有响应帧（Adapter 沉默 = Core 会挂到 deadline）", method)
+		return nil, fmt.Errorf("%s 5s 内没有可读的帧（Adapter 沉默 = Core 会挂到 deadline）", what)
 	}
 }
 
@@ -523,7 +602,12 @@ func (f *fakeProc) call(method string) error {
 }
 
 func (f *fakeProc) delivery(method, mode string) error {
-	res, err := f.request(method, map[string]any{"delivery": mode, "text": "contract probe"})
+	res, err := f.request(method, map[string]any{
+		// 参数必须一次给全，否则对端在 §4 的参数校验里就先拒了，
+		// 我拿到的错误码与"这一态支不支持"毫无关系 —— 判据要打在待验那一层上。
+		"remote_session_id": "fake-session-1", "text": "contract probe",
+		"delivery": mode, "idempotency_key": "ik-" + mode,
+	})
 	if err != nil {
 		return err
 	}
@@ -587,6 +671,151 @@ func TestFakeAdapterSubprocess(t *testing.T) {
 	}
 }
 
+// TestCancelReplyIsResultFrame 判据表 C8-5（契约② §15.3 规则 5）：取消的回执走**结果帧**，
+// `CANCELLED` 不得作为 JSON-RPC error 出现在线上。
+// 断言打在 FakeAdapter 真子进程的原始帧字节上（T-74④：不要导出的 process.Connection，
+// 同进程构造连接对象会把"只有真进程测得出隔离"这件事又测没）。error 这个键在不在只看线上，
+// 不看 Go 结构体——Frame.Error 带 omitempty，从结构体反推不出原文有没有这个键（T-29）。
+func TestCancelReplyIsResultFrame(t *testing.T) {
+	f, err := startFakeAdapter(t)
+	if err != nil {
+		t.Skipf("blocked: %v", err)
+	}
+	if e := f.initialize(hello()); e != nil {
+		t.Skipf("FakeAdapter 握手不通，C8-5 的帧级断言跑不到；实测原文：%v", e)
+	}
+	// §10 的 deadline 场景：debug/hang 停止回话，只读 $/cancel。
+	hangID, err := f.callAsync("debug/hang", map[string]any{})
+	if err != nil {
+		t.Fatalf("发出 debug/hang: %v", err)
+	}
+	cancel, err := adapter.NewCancel("t-cancel", hangID)
+	if err != nil {
+		t.Fatalf("构造 $/cancel: %v", err)
+	}
+	if cancel.ID != "" {
+		t.Fatalf("$/cancel 必须是通知（带 id 就是在等回执，§1 不给它回执）：%+v", cancel)
+	}
+	if err := f.write(cancel); err != nil {
+		t.Fatalf("发出 $/cancel: %v", err)
+	}
+	// 被取消的那一 call 收到回执；$/cancel 本身必须没有回执——有回执就会先读到它。
+	raw, err := f.recv("$/cancel 之后 debug/hang 的回执")
+	if err != nil {
+		t.Fatalf("取消后拿不到回执: %v", err)
+	}
+	// 判定抽成纯函数：同一段代码既判真子进程回来的帧，也判下面的反例。
+	// 只有正例没有反例，这条判据就是空的（和 T-74③ 给 W13-3 钉反向用例是同一个道理）。
+	for _, msg := range cancelAckFaults(raw, hangID) {
+		t.Errorf("%s（原文：%s）", msg, raw)
+	}
+	// 反例 1：把取消回成 error 帧的实现，必须被同一段判据抓住。
+	red := []byte(`{"jsonrpc":"2.0","id":"` + hangID +
+		`","error":{"code":-32010,"message":"cancelled","data":{"code":"CANCELLED"}}}`)
+	redFaults := cancelAckFaults(red, hangID)
+	if len(redFaults) == 0 {
+		t.Error("C8-5 的判据是空的：error 形态的取消回执没被判红")
+	}
+	// 反例 2：合规形状必须判得出绿，否则这条判据只是"永远响"。
+	green := []byte(`{"jsonrpc":"2.0","id":"` + hangID + `","result":{"cancelled":true}}`)
+	greenFaults := cancelAckFaults(green, hangID)
+	if len(greenFaults) != 0 {
+		t.Errorf("C8-5 判据过严：合规的结果帧回执被判成违反：%v", greenFaults)
+	}
+	// 两条反例的实测值打出来，报告里就能看见判据两边都活着（不是"期望 0/非 0"的空话）。
+	t.Logf("反向用例：error 形态 %d 条违反 %v；合规形态 %d 条违反", len(redFaults), redFaults, len(greenFaults))
+}
+
+// cancelAckFaults 判 $/cancel 的回执帧（契约② §15.3 规则 5、判据表 C8-5）：必须是回显
+// 被取消那一 call 的 id 的**结果帧**、result.cancelled=true，且线上不得出现 error 键或
+// "CANCELLED" 码名。只看原始字节，不看 adapter.Frame —— Frame.Error 带 omitempty，
+// 从结构体反推不出"线上有没有这个键"。
+func cancelAckFaults(raw []byte, targetID string) []string {
+	var faults []string
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return []string{fmt.Sprintf("回执帧不是合法 JSON: %v", err)}
+	}
+	if _, ok := keys["error"]; ok {
+		faults = append(faults, "C8-5 违反：取消回执带 error 键 —— CANCELLED 上了 JSON-RPC 的错误面")
+	}
+	res, ok := keys["result"]
+	if !ok {
+		faults = append(faults, "C8-5 违反：取消回执没有 result 键（§15.3 规则 5 要求它是结果帧）")
+	} else {
+		var body struct {
+			Cancelled *bool `json:"cancelled"`
+		}
+		if err := json.Unmarshal(res, &body); err != nil {
+			faults = append(faults, fmt.Sprintf("result 解不开: %v", err))
+		} else if body.Cancelled == nil || !*body.Cancelled {
+			faults = append(faults, fmt.Sprintf("result.cancelled=%v，期望 true（取消不许沉默）", body.Cancelled))
+		}
+	}
+	if got := string(keys["id"]); got != `"`+targetID+`"` {
+		faults = append(faults, fmt.Sprintf("回执 id 回显 %s，期望 %q（回执要给被取消的那一 call）", got, targetID))
+	}
+	if strings.Contains(string(raw), `"CANCELLED"`) {
+		faults = append(faults, `线上原文出现 "CANCELLED" 码名（它只是聚合状态，不属于错误面）`)
+	}
+	return faults
+}
+
+// TestFakeAdapterDeliveryModesOnTheWire 件一（T-98）：BUG-T6 已闭（`session/send` 实现了、
+// handshake.go 的 delivery 门也补了），所以三态投递这条判据**必须有真子进程面**——
+// 进程内桩是"没人发的词汇"，它绿了不算数。
+// 一行一态逐个判，**不许整案 Skip**：某一行今天没有对家，那一行单独记 待建 并点名缺什么。
+func TestFakeAdapterDeliveryModesOnTheWire(t *testing.T) {
+	f, err := startFakeAdapter(t)
+	if err != nil {
+		t.Skipf("blocked: %v（这一条要真子进程，旗标 LUCERO_TEST_FAKE_ADAPTER=1）", err)
+	}
+	if e := f.initialize(hello()); e != nil {
+		t.Skipf("FakeAdapter 握手不通，投递三态在线上判不了；实测原文：%v", e)
+	}
+	declared := map[string]bool{}
+	for _, c := range f.caps {
+		if c.Name == "session.send" {
+			for _, m := range c.DeliveryModes {
+				declared[m] = true
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("握手成功却没声明任何 delivery 模式 —— §3 要求逐项显式声明，这本身就是缺陷")
+	}
+	// §5 的三态 + 一个编出来的态：编出来那个是"未声明"的对照，钉的是"没声明必须显式拒"。
+	for _, mode := range []string{"start_now", "guide", "queue", "steering"} {
+		t.Run(mode, func(t *testing.T) {
+			err := f.delivery("session/send", mode)
+			code := codeOf(err)
+			if declared[mode] {
+				// 声明支持却被按"不支持"拒 = 声明与实现两张嘴；别的错误码（会话不存在等）不算这条。
+				if code == adapter.ErrDeliveryModeUnsupported {
+					t.Errorf("%s 在握手声明里，线上却被拒 DELIVERY_MODE_UNSUPPORTED —— §5 禁止声明与裁决不一致: %v", mode, err)
+				}
+				t.Logf("声明含 %s ⇒ 未被按模式拒绝（code=%s）", mode, code)
+				return
+			}
+			if code != adapter.ErrDeliveryModeUnsupported {
+				t.Errorf("%s 未声明却得到 code=%s（err=%v），期望显式 DELIVERY_MODE_UNSUPPORTED —— §5 严禁静默降级成 queue", mode, code, err)
+			} else {
+				t.Logf("未声明 %s ⇒ 显式拒绝，没有静默降级", mode)
+			}
+		})
+	}
+	// write_entry:false 那一面（TestWriteEntryNoneRefusesWrites 的子进程对应行）：
+	// FakeAdapter 今天恒声明 write_entry=true，所以这一行只能 待建 —— 单独 Skip 这一行，
+	// 不把上面三态的实测一起吞掉。等 §10 给 fake 一个只读声明的开关（CO-23）即改硬。
+	t.Run("write_entry_false 面", func(t *testing.T) {
+		if !f.writeEntry {
+			t.Fatal("握手声明了 write_entry=false，那这条就不该再是 待建 —— 去把写方法逐个打成 WRITE_ENTRY_NONE 并断言")
+		}
+		t.Skip("待建：FakeAdapter 恒声明 write_entry=true，线上没有只读那一面（§10 未给开关，CO-23）")
+	})
+}
+
+// INTERNAL 且不崩、不装懂。断言全打在 Degrade()/Symbol() 自己的返回值上（T-29）。
 // TestUnknownErrorCodeDegradesToInternal T-45⑤：Core 收到 §15.1 之外的码时必须降级为
 // INTERNAL 且不崩、不装懂。断言全打在 Degrade()/Symbol() 自己的返回值上（T-29）。
 func TestUnknownErrorCodeDegradesToInternal(t *testing.T) {

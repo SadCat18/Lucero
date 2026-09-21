@@ -96,9 +96,98 @@ func TestNotifyWritesOneRowAndOneEvent(t *testing.T) {
 	if typ := countRows(t, d, `SELECT count(*) FROM event_journal WHERE event_type = 'notification_created'`); typ != 1 {
 		t.Errorf("事件类型应为 §6 登记的 notification_created，实际 %d", typ)
 	}
-	list, err := notification.NewRepository(d.Read).ListByState(ctx, notification.StateUnread, 10)
+	list, _, err := notification.NewRepository(d.Read).ListByState(ctx,
+		notification.ListFilter{State: notification.StateUnread, Limit: 10})
 	if err != nil || len(list) != 1 || list[0].ID != "n-1" {
 		t.Errorf("ListByState(UNREAD) = %v %v", list, err)
+	}
+}
+
+// seedInbox 直接摆出八行通知（含一行 READ 的，用来证明 state 谓词还在）：
+// 三档 priority、两个相同 created_at（逼出 id 这一条 tie-break 腿）。
+func seedInbox(t *testing.T, d *db.DB) {
+	t.Helper()
+	f := [][4]string{
+		{"a1", "CRITICAL", "100", "UNREAD"},
+		{"a2", "CRITICAL", "300", "UNREAD"},
+		{"b1", "HIGH", "200", "UNREAD"},
+		{"c1", "MEDIUM", "500", "UNREAD"},
+		{"c2", "MEDIUM", "500", "UNREAD"},
+		{"d1", "LOW", "900", "UNREAD"},
+		{"d2", "LOW", "100", "UNREAD"},
+		{"e1", "CRITICAL", "999", "READ"},
+	}
+	for _, row := range f {
+		if _, err := d.Read.Exec(`INSERT INTO notifications
+			(id, notification_type, priority, state, title, created_at, version)
+			VALUES (?, 'PROJECTION_REJECTED', ?, ?, 't', ?, 1)`,
+			row[0], row[1], row[3], row[2]); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestListByStatePagesWithKeysetCursor 钉契约③ §2 的"翻页只用 keyset、不许 offset"：
+// 翻三页拼起来的序列必须等于手写的全量序（不重、不漏、不串 state），
+// 并且每页带回来的位置能直接当下一页的入参 —— 这就是 handler 将来要编进 next_cursor 的东西。
+// 期望序是**手抄的第二份**（CRITICAL>HIGH>MEDIUM>LOW，同档 created_at 倒序，同刻 id 正序），
+// 与 repository 里那句 SQL CASE 各自独立，任何一边漂了这条就红。
+func TestListByStatePagesWithKeysetCursor(t *testing.T) {
+	ctx := context.Background()
+	d := openDB(t)
+	seedInbox(t, d)
+	repo := notification.NewRepository(d.Read)
+
+	want := []string{"a2", "a1", "b1", "c1", "c2", "d1", "d2"}
+	var (
+		got   []string
+		after *notification.ListPosition
+		pages int
+	)
+	for pages < 5 {
+		rows, last, err := repo.ListByState(ctx, notification.ListFilter{
+			State: notification.StateUnread, After: after, Limit: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 0 {
+			t.Fatalf("第 %d 次调用回了空页 —— 短页就该收，说明翻页规则不对", pages+1)
+		}
+		pages++
+		for _, n := range rows {
+			got = append(got, n.ID)
+		}
+		if len(rows) < 3 {
+			break // 短页 = 到底（handler 在这种位置回 next_cursor ""）
+		}
+		pos := last
+		after = &pos
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("三页拼起来不等于全量序:\n 实际 %v\n 期望 %v", got, want)
+	}
+	if pages != 3 {
+		t.Errorf("应是三页（3+3+1），实际 %d 页", pages)
+	}
+	// 位置里的 Rank 由 SQL 算出：第一页末行是 b1（HIGH → 档 1）。
+	// 断言它是因为 handler 只会把这一串三元组编码进 next_cursor，Rank 错了下一页就跳档。
+	_, firstPageLast, err := repo.ListByState(ctx, notification.ListFilter{
+		State: notification.StateUnread, Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPageLast != (notification.ListPosition{Rank: 1, CreatedAt: 200, ID: "b1"}) {
+		t.Errorf("第一页末行位置不对: %+v", firstPageLast)
+	}
+	// 越界游标（比最后一行还靠后）必须是空页，而不是回绕到第一页。
+	rows, _, err := repo.ListByState(ctx, notification.ListFilter{
+		State: notification.StateUnread,
+		After: &notification.ListPosition{Rank: 3, CreatedAt: 100, ID: "d2"}, Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("末行之后的游标应回空页，实际 %d 行", len(rows))
 	}
 }
 

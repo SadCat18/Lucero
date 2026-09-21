@@ -40,7 +40,7 @@ type fakeProcess struct {
 	// frames carries everything the child says, read by one goroutine so two
 	// concurrent Read calls on one Reader can never interleave inside its buffer.
 	frames chan read
-	// seen is every frame as it arrived, responses included. §6.4's ordering claim
+	// seen is every frame as it arrived, responses included. CO-8's ordering claim
 	// ("claimed before dispatched before the reply") has to be asserted on a log that
 	// skipped nothing: a helper that reads past frames to find what it wants turns
 	// "the first frame was X" into "X arrived eventually".
@@ -167,7 +167,7 @@ func initialize(t *testing.T, p *fakeProcess) {
 
 // trace labels every frame in arrival order, responses included, and runs each
 // notification through the decoder Core uses: a frame the fake is happy with and
-// DecodeStream rejects is not evidence (§6.4).
+// DecodeStream rejects is not evidence (CO-8).
 func (p *fakeProcess) trace(t *testing.T) []string {
 	t.Helper()
 	var out []string
@@ -180,7 +180,11 @@ func (p *fakeProcess) trace(t *testing.T) []string {
 		if err != nil {
 			t.Fatalf("Core could not decode our own %s notification: %v", f.Method, err)
 		}
-		out = append(out, fmt.Sprintf("%s/%d", s.Method, s.SequenceNo))
+		label := fmt.Sprintf("%s/%d", s.Method, s.SequenceNo)
+		if s.TurnRef != "" { // §6 规则 5: the ticket is part of what the order proves
+			label += "@" + s.TurnRef
+		}
+		out = append(out, label)
 	}
 	return out
 }
@@ -283,9 +287,15 @@ func TestFakeAdapterHealth(t *testing.T) {
 		t.Errorf("our own health reply is illegal: %v", err)
 	}
 
-	unbuilt := call(t, p, "3", "session/list", struct{}{})
+	// session/push is the §6.6 method this build has not grown: it has no §4 row yet and
+	// CO-25 still owes it a turn_ref story, so wiring it now would be code ahead of the
+	// contract. (Every §4 C->A name is served as of REQ-T8's close, which
+	// TestFakeAdapterServesEveryContractMethod now enforces instead of this sentence.)
+	// The assertion
+	// used to sit on session/list, which §10 now requires and this build serves.
+	unbuilt := call(t, p, "3", "session/push", struct{}{})
 	if unbuilt.Error == nil || unbuilt.Error.Code != adapter.ErrInternal {
-		t.Errorf("session/list = %+v, want INTERNAL_ERROR until this build implements it", unbuilt)
+		t.Errorf("session/push = %+v, want INTERNAL_ERROR until this build implements it", unbuilt)
 	}
 }
 

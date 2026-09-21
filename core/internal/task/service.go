@@ -14,14 +14,17 @@ import (
 var ErrVersionConflict = errors.New("task: version conflict")
 
 // RejectionReport 是 §5.4 要求的那两条记录（Notification + Audit）的全部输入。
-// 两个 id 都由调用方预生成：重试必须复用同一个，否则会发第二条通知（§8 幂等）。
+// 三个 id 都由调用方预生成：重试必须复用同一个，否则会发第二条通知（§8 幂等）；
+// AuditID 单独存在是因为 audit_entries.audit_id 有自己的 UNIQUE 命名空间，不能拿事件 id 顶。
 type RejectionReport struct {
 	Rejection
 	TaskID         string
 	NotificationID string
 	EventID        string
+	AuditID        string
 	PrincipalID    string
 	CorrelationID  string
+	CausationID    string
 }
 
 // RejectionReporter 由 cmd/core 绑到 internal/notification 的 Service 与 audit 的哈希链上。
@@ -46,6 +49,7 @@ type Command struct {
 	Reason       string // 人给的理由（:pause 用）。CancelledPayload 走 ErrorCode，那是执行侧带来的错误码，两者不同源。
 	Notification string // 被拒时那条 Notification 的预生成 id
 	RejEvent     string // 被拒时 notification_created 的事件 id
+	RejAudit     string // 被拒时那条 audit_entries 的 audit_id（§5.4 的第二条记录）
 
 	WantVersion int64 // <=0 = 不设 If-Match（Core 内部驱动：Scheduler / Recovery / Adapter 回调）
 }
@@ -90,7 +94,8 @@ func (s *Service) ApplyExecutionEvent(ctx context.Context, tx *db.Tx, taskID, ed
 		}
 		if err := s.rejections.Report(ctx, tx, RejectionReport{
 			Rejection: rej, TaskID: taskID, NotificationID: cmd.Notification,
-			EventID: cmd.RejEvent, PrincipalID: cmd.PrincipalID, CorrelationID: cmd.CorrelationID,
+			EventID: cmd.RejEvent, AuditID: cmd.RejAudit,
+			PrincipalID: cmd.PrincipalID, CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID,
 		}); err != nil {
 			return res, fmt.Errorf("task: §5.4 的两条记录没写出去: %w", err)
 		}
@@ -314,6 +319,32 @@ func (s *Service) Resume(ctx context.Context, tx *db.Tx, id string, to State, cm
 		return EventResumed, ResumedPayload{From: t.Status}
 	})
 }
+
+// Cancel 把任务落到终态 CANCELLED。起始态不设白名单：§5.1 里几乎每个非终态都有这条边，
+// 能不能走由矩阵判 —— 尤其别从 ACCEPTED/CANCELLED 这两个终态回退（矩阵里没有出边，会被拒）。
+// reason 与 FailedPayload/CancelledPayload 里那个来自执行侧的 ErrorCode 不同源：
+// 这里是**人**给的理由（:cancel 的请求体），执行侧驱动的取消走 ApplyExecutionEvent 那条路。
+func (s *Service) Cancel(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
+	return s.advance(ctx, tx, id, cmd, Cancelled, nil, func(t Task) (string, any) {
+		return EventCancelled, CancelledPayload{Reason: cmd.Reason}
+	})
+}
+
+// Accept 是 WAITING_ACCEPTANCE→ACCEPTED：验收是终态闸门，accepted_by 必须是**做这次写操作的那个主体**，
+// 不接受请求体自报（契约③ §1.4：写操作只认 local-user，system/adapter 由 Core 内部产生）。
+func (s *Service) Accept(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
+	if cmd.PrincipalID == "" {
+		return Result{}, fmt.Errorf("%w: task_accepted 需要 accepted_by（写主体，不是请求体字段）", ErrInvalidTask)
+	}
+	return s.advance(ctx, tx, id, cmd, Accepted, onlyWaitingAcceptance, func(t Task) (string, any) {
+		return EventAccepted, AcceptedPayload{AcceptedBy: cmd.PrincipalID}
+	})
+}
+
+// onlyWaitingAcceptance 钉住验收动作的起始态。矩阵本身也只给这一条边
+// （WAITING_ACCEPTANCE 才有到 ACCEPTED 的出边），所以这是一道**语义**守卫而不是补矩阵的漏：
+// 万一以后矩阵放宽，这里不会让"从 RUNNING 直接验收"悄悄变成合法。
+var onlyWaitingAcceptance = map[State]bool{WaitingAcceptance: true}
 
 func setDefault(p *string, v string) {
 	if *p == "" {

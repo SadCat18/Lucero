@@ -27,8 +27,14 @@ func TestCheckpointNotWrittenOnRollbackAfterAppend(t *testing.T) {
 	st := NewSQLiteStore(d, clock)
 	cp := audit.NewCheckpointCounter(anchor, clock)
 	st.UseCheckpoints(cp)
-	if err := cp.Advance(audit.CheckpointEveryAppends-1, audit.Head{Seq: 1, Hash: "primed"}); err != nil {
-		t.Fatal(err)
+	// Prime with real committed appends. Faking the tally with Advance(n) is the
+	// shape A18-3 removed: the threshold is a gap in the durable seq, so an
+	// invented n over a chain that never grew cannot — and must not — get close
+	// to the boundary.
+	appendRows(t, st, audit.CheckpointEveryAppends-1)
+	if got := cp.Counted(); got != audit.CheckpointEveryAppends-1 {
+		t.Fatalf("counted %d after priming, want %d rows the anchor does not cover yet",
+			got, audit.CheckpointEveryAppends-1)
 	}
 
 	boom := errors.New("boom")
@@ -43,8 +49,9 @@ func TestCheckpointNotWrittenOnRollbackAfterAppend(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("write returned %v, want the injected failure", err)
 	}
-	if n := countRows(t, d, `SELECT count(*) FROM audit_entries`); n != 0 {
-		t.Errorf("the rolled-back audit row reached the table: %d rows", n)
+	if n := countRows(t, d, `SELECT count(*) FROM audit_entries`); n != audit.CheckpointEveryAppends-1 {
+		t.Errorf("the rolled-back audit row reached the table: %d rows, want the %d primed ones",
+			n, audit.CheckpointEveryAppends-1)
 	}
 	if got := cp.Counted(); got != audit.CheckpointEveryAppends-1 {
 		t.Errorf("counter moved on a rolled-back write: %d", got)
@@ -66,11 +73,7 @@ func TestCheckpointNotWrittenOnRollbackAfterAppend(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("%d checkpoint lines after a committed append, want 1", len(lines))
 	}
-	var seq int64
-	var hash string
-	if err := d.Read.QueryRow(`SELECT seq, entry_hash FROM audit_entries`).Scan(&seq, &hash); err != nil {
-		t.Fatal(err)
-	}
+	seq, hash := lastAuditRow(t, d)
 	if lines[0] != strconv.FormatInt(seq, 10)+"	"+hash+"	"+strconv.FormatInt(itNow, 10) {
 		t.Errorf("checkpoint %q does not describe the row in the database (%d %s)", lines[0], seq, hash)
 	}
@@ -94,10 +97,8 @@ func TestCheckpointWrittenOnlyAfterCommit(t *testing.T) {
 	st.UseCheckpoints(cp)
 	svc := NewService(st, clock)
 
-	// Sit one append below the boundary, with a deliberately old head.
-	if err := cp.Advance(audit.CheckpointEveryAppends-1, audit.Head{Seq: 1, Hash: "primed"}); err != nil {
-		t.Fatal(err)
-	}
+	// Sit one append below the boundary with real committed rows.
+	appendRows(t, st, audit.CheckpointEveryAppends-1)
 	if lines := readAnchorFile(t, anchor); len(lines) != 0 {
 		t.Fatalf("%d checkpoint lines before the boundary: %v", len(lines), lines)
 	}
@@ -120,8 +121,8 @@ func TestCheckpointWrittenOnlyAfterCommit(t *testing.T) {
 	if got := strings.Split(lines[0], "\t"); len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Errorf("checkpoint = %q, want the newest stored row %v — the anchor must never lead or lag the database", got, want)
 	}
-	if got := cp.Counted(); got != audit.CheckpointEveryAppends {
-		t.Errorf("counted %d, want %d", got, audit.CheckpointEveryAppends)
+	if got := cp.Counted(); got != 0 {
+		t.Errorf("counted %d after the anchor caught up with the chain, want 0 owed", got)
 	}
 
 	// Same row twice: the insert fails and the transaction rolls back. Nothing

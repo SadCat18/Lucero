@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestOnlyStdlibImports pins contract §6.4 for this package: the protocol layer
+// TestOnlyStdlibImports pins contract §6 rule 4 for this package: the protocol layer
 // writes no DB row and emits no event, so "stream/delta never reaches
 // event_journal" holds structurally instead of depending on someone remembering.
 // It also keeps §0's dependency direction honest in this direction: an Adapter
@@ -48,13 +48,13 @@ func TestOnlyStdlibImports(t *testing.T) {
 			}
 			// Stdlib, but not this package's business: no DB handle and no process
 			// spawn may appear here (contract §0 puts spawning in internal/process,
-			// §6.4 puts persistence outside the Adapter entirely).
+			// §6 规则 4 puts persistence outside the Adapter entirely).
 			if denied[path] {
 				found = append(found, e.Name()+": "+path+" (denied stdlib import)")
 			}
 		}
 	}
 	if len(found) > 0 {
-		t.Errorf("non-stdlib imports in internal/adapter, want none (§6.4/§0):\n%s", strings.Join(found, "\n"))
+		t.Errorf("non-stdlib imports in internal/adapter, want none (§6 规则 4 + §0):\n%s", strings.Join(found, "\n"))
 	}
 }

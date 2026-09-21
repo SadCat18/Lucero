@@ -85,19 +85,27 @@ func TestFakeAdapterDeliversThreeStates(t *testing.T) {
 	if next.TurnID == now.TurnID {
 		t.Error("the send after the queue reused the closed turn")
 	}
-	// The whole exchange, in arrival order, responses included: §6.4's pair has to be
+	// The whole exchange, in arrival order, responses included: CO-8's pair has to be
 	// claimed-then-dispatched-then-answered, and a log that only lists the
 	// notifications cannot tell that apart from three frames that arrived after the
-	// reply. sequence_no is pinned in each label, so §6.2's monotonic rule is here too.
+	// reply. sequence_no is pinned in each label, so §6 规则 2's monotonic rule is here too.
 	want := strings.Join([]string{
 		"reply#init",
-		"turn/claimed/1", "turn/dispatched/2", "stream/delta/3", "reply#1",
-		"stream/delta/4", "reply#2", // the guide's, on the same turn
+		// A turn now opens with the whole normal path §10 ① asks for, and every frame
+		// of it - the CO-8 pair included - names the same ticket.
+		"turn/claimed/1@1", "turn/dispatched/2@1", "stream/state/3@1", "stream/delta/4@1", "stream/item/5@1",
+		"reply#1",
+		"stream/delta/6@1", "reply#2", // the guide's, on the same turn and ticket
 		"reply#3", // queued: a position, and no turn on the stream yet
 		"reply#4", // idempotent hit: nothing at all on the stream
-		"turn/finished/5",
-		"turn/claimed/6", "turn/dispatched/7", "stream/delta/8", "turn/finished/9", // the drained queue
-		"turn/claimed/10", "turn/dispatched/11", "stream/delta/12", "reply#5",
+		// the send after them interrupts the running turn: B opens on ticket 5, and A
+		// is still talking afterwards - its tail and its turn/finished carry ticket 1.
+		"turn/claimed/7@5", "turn/dispatched/8@5", "stream/state/9@5", "stream/delta/10@5", "stream/item/11@5",
+		"stream/delta/12@1", "turn/finished/13@1",
+		// then the queued send runs, on its own ticket, with its own evidence pair.
+		"turn/claimed/14@3", "turn/dispatched/15@3", "stream/state/16@3", "stream/delta/17@3", "stream/item/18@3",
+		"turn/finished/19@3",
+		"reply#5",
 	}, " ")
 	if got := strings.Join(p.trace(t), " "); got != want {
 		t.Errorf("wire order = %s\n       want %s", got, want)
@@ -303,5 +311,42 @@ func TestFakeAdapterHangWaitsForCancel(t *testing.T) {
 	// The session has to keep serving afterwards.
 	if r := call(t, p, "h2", adapter.MethodHealth, struct{}{}); r.Error != nil {
 		t.Errorf("adapter/health after the cancel: %s, want the process still serving", r.Error)
+	}
+}
+
+// TestFakeAdapterGuideOnQuietSessionIsQ10 pins the 2026-09-21 ruling: steering a
+// session that has no turn running is not a failure. accepted stays true, the reply
+// carries a turn_id, and the reason field is what tells Core it became a new turn -
+// without that sentence a queued interruption reads exactly like the guide it asked
+// for, which is §5's other half of the mis-delivery accident.
+func TestFakeAdapterGuideOnQuietSessionIsQ10(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	reply := call(t, p, "g1", "session/send", adapter.SendParams{
+		RemoteSessionID: "s-1", Text: "steer me", Delivery: adapter.DeliveryGuide,
+		ExecutionID: "exec-g", IdempotencyKey: "kg"})
+	if reply.Error != nil {
+		t.Fatalf("guide with nothing running: %s, want Q10 acceptance", reply.Error)
+	}
+	var res adapter.SendResult
+	if err := json.Unmarshal(reply.Result, &res); err != nil {
+		t.Fatalf("guide reply: %v", err)
+	}
+	if err := res.Validate(adapter.DeliveryGuide); err != nil {
+		t.Errorf("the guide reply breaks CO-7: %v", err)
+	}
+	if !res.Accepted || res.TurnID == "" {
+		t.Errorf("guide = %+v, want accepted with a turn_id", res)
+	}
+	if !strings.Contains(res.Reason, "guide") {
+		t.Errorf("reason = %q, want it to say the guide opened a turn (Q10)", res.Reason)
+	}
+	// The pair is real evidence, not just a word in the reply.
+	want := []string{"reply#init",
+		"turn/claimed/1@g1", "turn/dispatched/2@g1", "stream/state/3@g1",
+		"stream/delta/4@g1", "stream/item/5@g1", "reply#g1"}
+	if got := strings.Join(p.trace(t), " "); got != strings.Join(want, " ") {
+		t.Errorf("wire order = %s\n       want %s", got, strings.Join(want, " "))
 	}
 }

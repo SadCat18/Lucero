@@ -387,18 +387,27 @@ func (h *Handshake) Delivery(method, mode string) error {
 	return nil
 }
 
-// writeMethods are the methods §12.11 (ruled 2026-09-19, list restated in the
-// ruling) declares writes, so write_entry:false must refuse them (§3).
-// approval/respond and approval/cancel are deliberately NOT here: approvals travel
-// on the permission channel and are gated by Permission Engine, not by write_entry.
-// model/select is listed by §12.11 but its refusal is really the capability gate
-// (CAPABILITY_UNAVAILABLE when session-level UIA can't reach the model selector);
-// it stays in this set because an Adapter that declares it must mean it.
+// writeMethods is §4.1's write set, so write_entry:false must refuse each of them (§3).
+//
+// approval/respond is in here per §4.1's Q1 ruling, which reverses the reason this list
+// used to give for leaving it out: answering an approval authorises an external action,
+// and Permission Engine's gate ("should Core ask at all") cannot stand in for
+// write_entry's ("can this Adapter do anything"). debug/* is covered by isDebugName.
+//
+// session/create became a §4 row at REQ-T8's close (13:39, written from this package's
+// CreateSessionParams/CreateSessionResult). It is gated because creating a remote
+// session is the least reversible thing an Adapter can be asked to do. Note §4.1's own
+// write-set sentence still omits the name - CO-34 续 - so gating it cannot be derived
+// from that list and must not be dropped just because someone re-reads §4.1 verbatim.
+//
+// model/select stays listed per §4.1's last paragraph: its refusal is really the
+// capability gate, but an Adapter that declares write_entry=false must still mean it.
 var writeMethods = map[string]bool{
-	"session/send":   true,
-	"session/stop":   true,
-	"session/create": true,
-	"model/select":   true,
+	"session/send":     true,
+	"session/stop":     true,
+	"session/create":   true, // §4, REQ-T8 closed
+	"model/select":     true,
+	"approval/respond": true, // §4.1, Q1
 }
 
 func isWriteMethod(method string) bool {

@@ -45,11 +45,11 @@ type SendParams struct {
 	// ExecutionID is Core's own id for the run this send starts. CO-8 keys the
 	// turn/claimed + turn/dispatched evidence pair by it, and an Adapter can only
 	// echo what it was given - §4's session/send params list has no such field,
-	// which is CO-24. §6.7 is why this stays the one place the identity crosses:
-	// the other four notifications attribute themselves by turn_ref instead, because
-	// execution_id is ours and a Provider must not end up logging it.
+	// which is CO-24. Attribution still runs by turn_ref on every frame (§4.2 裁定 ①),
+	// so this is the one place the identity crosses: execution_id is ours, and a
+	// Provider must not end up logging it on the other four notifications.
 	// Left optional so an empty value keeps the honest outcome: no evidence frames,
-	// and §6.3 leaves the Execution UNKNOWN rather than let Core infer a start from
+	// and CO-8 leaves the Execution UNKNOWN rather than let Core infer a start from
 	// the send reply alone.
 	ExecutionID   string `json:"execution_id,omitempty"`
 	Delivery      string `json:"delivery"`

@@ -27,7 +27,9 @@ import (
 
 	httpapi "github.com/SadCat18/lucero/core/api/http"
 	wsapi "github.com/SadCat18/lucero/core/api/websocket"
+	"github.com/SadCat18/lucero/core/internal/approval"
 	"github.com/SadCat18/lucero/core/internal/audit"
+	"github.com/SadCat18/lucero/core/internal/notification"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
@@ -49,6 +51,17 @@ type Core struct {
 	db       *db.DB
 	token    string
 	endpoint string // host:port
+	anchor   *audit.Anchor
+	// checkpoints 是 ADR-018 的"每 1000 次成功 append 补一行锚点"计数器；anchor 是它写的地方。
+	checkpoints *audit.CheckpointCounter
+	// approvals 是 approval 的 SQLite store。T-64① 要求锚点计数器挂到它身上 ——
+	// 它自己的 write() 已经是"事务内建 tx 绑定 Chain、提交成功后 ch.Checkpoint()"的形状，
+	// 所以这里只是把计数器接上，不另造第二套交账时机。
+	approvals *approval.SQLiteStore
+	// reporter/tasks/store 是 §5.4 与"提交后才交账"这条时序的落点（见 rejections.go）。
+	reporter *rejectionReporter
+	tasks    *task.Service
+	store    auditedStore
 	ln       net.Listener
 	tickets  *httpapi.Tickets
 
@@ -117,6 +130,19 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 		core.close()
 		return nil, fmt.Errorf("迁移: %w", err)
 	}
+	// ADR-018 的链头锚点（T-64①）：路径与库同在 --data-dir 下，格式由 audit 包独占，
+	// cmd/core 只负责"什么时候提交"。这里必须在迁移之后 —— 锚点读的是 audit_entries 的链头。
+	core.anchor = &audit.Anchor{Path: filepath.Join(cfg.DataDir, "audit.head")}
+	// T-64①：锚点计数器 + 挂到 approval store 上。clock 与 audit/approval 两边同一份（Unix 毫秒）。
+	nowMillis := func() int64 { return time.Now().UnixMilli() }
+	core.checkpoints = audit.NewCheckpointCounter(core.anchor, nowMillis)
+	core.approvals = approval.NewSQLiteStore(d, nowMillis)
+	core.approvals.UseCheckpoints(core.checkpoints)
+	// §5.4 的两条记录在这里接线（拖了五轮的那颗雷）：不注入 reporter 的话，
+	// 任何一次被拒投影都会直接失败整个请求（task.Service 对 nil reporter 是硬报错，不许静默吞）。
+	core.reporter = &rejectionReporter{notes: notification.NewService(), now: nowMillis}
+	core.tasks = task.NewService(core.reporter)
+	core.store = auditedStore{d: d, checkpoints: core.checkpoints}
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -148,6 +174,7 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 		core.close()
 		return nil, err
 	}
+	core.reportAuditChain(ctx)
 	return core, nil
 }
 
@@ -184,7 +211,7 @@ func (c *Core) handler() http.Handler {
 			return v
 		},
 		Tickets: c.tickets,
-		Tasks:   task.NewService(nil), TaskList: task.NewRepository(c.db.Read), Store: c.db,
+		Tasks:   c.tasks, TaskList: task.NewRepository(c.db.Read), Store: c.store,
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{
@@ -219,6 +246,32 @@ func (c *Core) serve(ctx context.Context) error {
 	}
 }
 
+// flushAuditAnchor 在关停时把链头补成一条锚点（T-64③）。
+// 用 Anchor.Commit 而不是 CheckpointCounter.Advance：Advance 只在跨过 CheckpointEveryAppends
+// 整数倍时才落，表达不了"欠一行就补一行"；Commit 是 audit 导出的写入口，
+// 行的格式因此只有一处真相（在 cmd/core 手搓 seq\thash\tms 就是第二处）。
+// 三种情况不动文件：一行审计都没有（没什么可认证）、锚点已经认证到这一行、以及库读不出来。
+func (c *Core) flushAuditAnchor() error {
+	if c.anchor == nil || c.db == nil {
+		return nil
+	}
+	seq, hash, err := audit.HeadQuery(c.db.Read)(context.Background())
+	if err != nil {
+		return fmt.Errorf("读审计链头: %w", err)
+	}
+	if seq == 0 {
+		return nil
+	}
+	head, err := c.anchor.Expected(seq)
+	switch {
+	case err == nil && head.Seq == seq:
+		return nil // 已经认证到这一行，重复 Commit 会被 seq 递增检查拒掉
+	case err != nil && !errors.Is(err, audit.ErrNoAnchor):
+		return fmt.Errorf("读锚点: %w", err)
+	}
+	return c.anchor.Commit(seq, hash, time.Now().UnixMilli())
+}
+
 func (c *Core) writeEndpointFile() error {
 	b, err := json.Marshal(endpointFile{HostPort: c.endpoint, Token: c.token, Version: Version})
 	if err != nil {
@@ -240,7 +293,33 @@ type endpointFile struct {
 	Version  string `json:"version"`
 }
 
+// reportAuditChain 在启动阶段把 ADR-018 的三态喊出来（T-64③）。
+// 三态来自 `audit.Check(整条链, 锚点)` 的真重算，不是"看起来没事就当通过"：
+// 缺锚点、读不出来、链落后于锚点都落回 UNVERIFIED/UNKNOWN。
+// 唯一允许的乐观措辞是 VERIFIED_LOCAL 那一档，而且必须连着它的上限一起说 ——
+// 锚点之后的行不在锚点覆盖范围内（Check 自己的注释也是这么写的）。
+// 措辞红线：任何一档都不许出现"防篡改/已签名/signed/tamper"；这里只打日志，不塞进 /health
+// （那个端点的键集被用例钉着，链状态字段要连着口径一起加，第 55 条）。
+func (c *Core) reportAuditChain(ctx context.Context) {
+	status, err := c.auditChainStatus(ctx)
+	if err != nil {
+		log.Printf("audit 链: UNVERIFIED（校验没能跑成: %v）—— 这不等于校验通过", err)
+		return
+	}
+	if status == audit.StatusVerifiedLocal {
+		log.Printf("audit 链: %s —— 逐链重算并撞到锚点；锚点之后的行不在锚点覆盖内", status)
+		return
+	}
+	log.Printf("audit 链: %s", status)
+}
+
 func (c *Core) close() {
+	// 关库之前补最后一次锚点（T-64③）：db 一关就读不到链头了。
+	// 失败要喊出来但不改退出码 —— 干净关停因为锚点写不下去而变成非零退出，
+	// 会让"Core 停下来了"这件事实被误报。
+	if err := c.flushAuditAnchor(); err != nil {
+		log.Printf("core: 审计锚点没收尾: %v", err)
+	}
 	if c.lock != nil {
 		c.lock.release()
 	}

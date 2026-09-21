@@ -1,17 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SadCat18/lucero/core/internal/audit"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/task"
 )
 
 // migrations 用仓库里 db 角色那三份真 .sql，不复制 DDL、不改文件。
@@ -183,4 +189,445 @@ func getJSON(t *testing.T, url, token string, out any) error {
 
 func isStatus(err error, code string) bool {
 	return err != nil && strings.Contains(err.Error(), code)
+}
+
+// appendAuditThroughStore 与上面那条的区别只有一处：走 **交付用的 `core.store.Write`**，
+// 所以 `auditedStore` 那半（提交成功后按链头差交账）会被真触发。一笔事务里连写 n 行，
+// 是因为阈值现在数的是 seq 差（audit 的 A18-3 改判），一行一笔会让断言变成"翻 n 次页"。
+func appendAuditThroughStore(c *Core, count int) error {
+	return c.store.Write(context.Background(), func(tx *db.Tx) error {
+		ch := &audit.Chain{
+			Head:   audit.HeadQuery(tx),
+			Insert: tx,
+			Now:    func() int64 { return time.Now().UnixMilli() },
+		}
+		for i := 0; i < count; i++ {
+			auditRowNo++
+			if _, err := ch.Append(context.Background(), audit.Entry{
+				AuditID: fmt.Sprintf("aud-%d", auditRowNo), PrincipalID: "system",
+				Action: "task.pause", ResourceType: "task", ResourceID: "t-anchor",
+				Outcome: "SUCCESS",
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// auditHeadRow 读库里的链头，用来把断言钉在"真那一行"上而不是我传进去的数上。
+func auditHeadRow(t *testing.T, c *Core) (int64, string) {
+	t.Helper()
+	var seq int64
+	var hash string
+	if err := c.db.Read.QueryRow(`SELECT seq, entry_hash FROM audit_entries ORDER BY seq DESC LIMIT 1`).
+		Scan(&seq, &hash); err != nil {
+		t.Fatal(err)
+	}
+	return seq, hash
+}
+
+// appendAuditRows 用 audit 的公开写入口（Chain + 事务内的 HeadQuery）造 n 行真审计记录。
+// 不自己拼 INSERT：链哈希是 audit 的地盘，手搓一份就是第二处真相。
+func appendAuditRows(t *testing.T, c *Core, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		auditRowNo++
+		rowID := auditRowNo
+		if err := c.db.Write(context.Background(), func(tx *db.Tx) error {
+			ch := &audit.Chain{
+				Head:   audit.HeadQuery(tx),
+				Insert: tx,
+				Now:    func() int64 { return time.Now().UnixMilli() },
+			}
+			_, err := ch.Append(context.Background(), audit.Entry{
+				// audit_id 上有 UNIQUE：编号必须跨多次调用单调，不能用"这批的第几个"。
+				AuditID: fmt.Sprintf("aud-%d", rowID), PrincipalID: "system",
+				Action: "task.pause", ResourceType: "task", ResourceID: "t-anchor",
+				Outcome: "SUCCESS",
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("造审计第 %d 行: %v", rowID, err)
+		}
+	}
+}
+
+var auditRowNo int
+
+func anchorLines(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TestShutdownFlushesAuditAnchor 是 ADR-018 / T-64③ 的四条：
+// 空链不凭空造锚点；补的锚点内容必须等于库里那一行的 (seq, entry_hash)；
+// 认证到同一行再收尾是 no-op（不重复、不报错）；追加之后补第二行且**不覆盖第一行**（append-only）。
+// 最后一条证的是 close() 里真的挂了收尾 —— 关库之后就读不到链头了。
+func TestShutdownFlushesAuditAnchor(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 中途 t.Fatalf 也不能把 core.lock 攥在手里不放 —— 那会让 t.TempDir() 的清理报一句
+	// "file being used by another process"，把真问题埋在最下面。
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			core.close()
+		}
+	})
+	path := filepath.Join(core.cfg.DataDir, "audit.head")
+
+	if err := core.flushAuditAnchor(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("一行审计都没有时不该造锚点文件（没检查过 ≠ 已认证到 0），实际 stat err=%v", err)
+	}
+
+	appendAuditRows(t, core, 2)
+	var wantSeq int64
+	var wantHash string
+	if err := core.db.Read.QueryRow(`SELECT seq, entry_hash FROM audit_entries ORDER BY seq DESC LIMIT 1`).
+		Scan(&wantSeq, &wantHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.flushAuditAnchor(); err != nil {
+		t.Fatal(err)
+	}
+	lines := anchorLines(t, path)
+	if len(lines) != 1 {
+		t.Fatalf("第一次收尾应有一行锚点，实际 %d 行: %q", len(lines), lines)
+	}
+	fields := strings.Split(lines[0], "\t")
+	if len(fields) != 3 || fields[0] != strconv.FormatInt(wantSeq, 10) || fields[1] != wantHash {
+		t.Errorf("锚点不是库里那一行的 (seq, entry_hash): %q vs seq=%d hash=%s", fields, wantSeq, wantHash)
+	}
+
+	if err := core.flushAuditAnchor(); err != nil {
+		t.Fatalf("重复收尾必须安静地什么都不做: %v", err)
+	}
+	if got := len(anchorLines(t, path)); got != 1 {
+		t.Errorf("重复收尾写了第 %d 行", got)
+	}
+
+	appendAuditRows(t, core, 1)
+	if err := core.flushAuditAnchor(); err != nil {
+		t.Fatal(err)
+	}
+	lines = anchorLines(t, path)
+	if len(lines) != 2 {
+		t.Fatalf("追加之后应有两行锚点，实际 %d", len(lines))
+	}
+	if lines[0] != fields[0]+"\t"+fields[1]+"\t"+fields[2] {
+		t.Errorf("append-only 被破坏，第一行被改写了: %q", lines[0])
+	}
+
+	// close() 里挂的那一次：留一行没认证的，只调 close()，不手动 flush。
+	appendAuditRows(t, core, 1)
+	closed = true
+	core.close()
+	if got := len(anchorLines(t, path)); got != 3 {
+		t.Errorf("close() 没有补锚点，行数 %d（期望 3）", got)
+	}
+}
+
+// TestBootReportsChainStatusHonestly 钉 ADR-018 与 T-64③ 的两面：
+// 该乐观时才乐观（逐链真重算 + 撞到锚点 = VERIFIED_LOCAL，且必须连"锚点之后不在覆盖内"一起说），
+// 该闭嘴时闭嘴（没行 / 没锚点 / 链落后于锚点）—— 这三种里任何一种冒出 VERIFIED_LOCAL 都是虚报。
+// 第四档是删掉一行模拟篡改：锚点领先于库内，正是 Check 自己定义的 ErrChainBehindAnchor。
+func TestBootReportsChainStatusHonestly(t *testing.T) {
+	cases := []struct {
+		name     string
+		rows     int
+		anchored bool
+		truncate bool // 锚点写好之后再删掉最后一行：库里比锚点少
+		want     string
+	}{
+		{"一行审计都没有 → UNKNOWN", 0, false, false, "UNKNOWN"},
+		{"有行但没锚点 → UNVERIFIED", 2, false, false, "UNVERIFIED"},
+		{"逐链重算并撞到锚点 → VERIFIED_LOCAL", 1, true, false, string(audit.StatusVerifiedLocal)},
+		{"锚点领先于库里（删过行）→ UNVERIFIED", 3, true, true, "UNVERIFIED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			core, err := boot(context.Background(), testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer core.close()
+			if tc.rows > 0 {
+				appendAuditRows(t, core, tc.rows)
+			}
+			if tc.anchored {
+				if err := core.flushAuditAnchor(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.truncate {
+				if _, err := core.db.Read.Exec(`DELETE FROM audit_entries WHERE seq = (SELECT max(seq) FROM audit_entries)`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var buf bytes.Buffer
+			out := log.Writer()
+			t.Cleanup(func() { log.SetOutput(out) })
+			log.SetOutput(&buf)
+			core.reportAuditChain(context.Background())
+			log.SetOutput(out)
+
+			got := buf.String()
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("状态里应含 %s，实际 %q", tc.want, got)
+			}
+			// 没挣到 VERIFIED_LOCAL 的档里，连那个词都不许出现：一句"不得报 X"和一条 X
+			// 在 grep / UI 抓日志时长得一样，所以否认句里也不写。
+			if tc.want != string(audit.StatusVerifiedLocal) && strings.Contains(got, string(audit.StatusVerifiedLocal)) {
+				t.Errorf("虚报了校验通过（缺锚点/没校验过/链落后都不许）: %q", got)
+			}
+			if tc.want == string(audit.StatusVerifiedLocal) && !strings.Contains(got, "不在锚点覆盖内") {
+				t.Errorf("VERIFIED_LOCAL 必须连着它的上限一起说: %q", got)
+			}
+			low := strings.ToLower(got)
+			for _, claim := range []string{"tamper", "signed", "防篡改", "已签名", "已校验"} {
+				if strings.Contains(low, strings.ToLower(claim)) {
+					t.Errorf("出现了 ADR-018 禁止的措辞 %q: %q", claim, got)
+				}
+			}
+		})
+	}
+}
+
+// TestAuditEntryColumnsMatchSchema 是我在 cmd/core 读 audit_entries 的唯一护栏：
+// 列清单来自 000001 迁移（共享的 schema 真相），但表一旦加列/改名，我的 Scan 就会静默少读一列 ——
+// 少读一列的后果是 VerifyChain 重算不出同一个 entry_hash（fail closed，不会误报通过），
+// 但那等于链校验从此永远说"不"，谁都不会读日志去追根因。所以让它在测试里就响。
+func TestAuditEntryColumnsMatchSchema(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+
+	rows, err := core.db.Read.Query(`SELECT name FROM pragma_table_info('audit_entries') ORDER BY cid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != strings.Join(auditEntryColumns, ",") {
+		t.Fatalf("audit_entries 的列与我读的清单不一致（改表时要同步 cmd/core/auditchain.go）：\n  库里 = %v\n  读的 = %v", got, auditEntryColumns)
+	}
+}
+
+// makeTaskRow 用真 Service 建一条 Task（CREATED、版本 1、一行 task_created），走的是交付用的写入口。
+func makeTaskRow(t *testing.T, c *Core, id string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := c.store.Write(ctx, func(tx *db.Tx) error {
+		_, err := c.tasks.Create(ctx, tx, task.NewTask{
+			ID: id, Title: "§5.4 走一遍", Priority: "NORMAL", EventID: "evc-" + id, PrincipalID: "system",
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// driveRejection 走一遍真生产路径：task.Service.ApplyExecutionEvent → 投影被拒 →
+// reporter 在同一个事务里写 Notification + Audit（§5.4 的两条记录）。
+func driveRejection(t *testing.T, c *Core, taskID, nonce string) error {
+	t.Helper()
+	ctx := context.Background()
+	return c.store.Write(ctx, func(tx *db.Tx) error {
+		_, err := c.tasks.ApplyExecutionEvent(ctx, tx, taskID, task.EdgeApprovalResolved, false, false, task.Command{
+			EventID: "ev-" + nonce, PrincipalID: "system", CorrelationID: "cor-" + nonce,
+			Notification: "ntf-" + nonce, RejEvent: "ncev-" + nonce, RejAudit: "aud-" + nonce,
+		})
+		return err
+	})
+}
+
+// TestAnchorAdvancesOnlyAfterCommit 是 T-79 判据的两半：
+// ① 计数器只在**事务提交成功之后**前进 —— 回滚的那笔一行都不该算（提交前推进会让锚点领先库内状态，
+//
+//	崩溃后一次普通回滚会被读成"篡改"，误报比不报更糟）；
+//
+// ② 连续 append 跨过 `CheckpointEveryAppends` 时锚点必须多出新一行，内容就是刚提交那一行的 (seq, entry_hash)。
+// 阈值不做成旋钮（ADR-018 明令），而 audit 已把"跨阈值"从**调用次数**改成 **seq 差**（A18-3 的幂等改判），
+// 所以 ② 只能用真行把链推到边界前一格再跨过去 —— 那 1000 行是这笔用例的代价，不是可以糊过去的常数。
+func TestAnchorAdvancesOnlyAfterCommit(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	ctx := context.Background()
+
+	makeTaskRow(t, core, "t-rej")
+	if err := driveRejection(t, core, "t-rej", "a"); err != nil {
+		t.Fatalf("被拒投影本身该提交成功（§5.4 只是记账）: %v", err)
+	}
+	if n := core.checkpoints.Counted(); n != 1 {
+		t.Fatalf("提交成功后计数器应是 1，实际 %d", n)
+	}
+	if _, err := os.Stat(core.anchor.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("才 1 行就写锚点？阈值是 %d", audit.CheckpointEveryAppends)
+	}
+	// 被拒的 Task 不该动：一次拒绝改的是 audit/notification，不是 Task 版本。
+	var status string
+	var version int64
+	if err := core.db.Read.QueryRow(`SELECT status, version FROM tasks WHERE id='t-rej'`).Scan(&status, &version); err != nil {
+		t.Fatal(err)
+	}
+	if status != "CREATED" || version != 1 {
+		t.Errorf("§5.4 的拒绝对 Task 该是零新增版本零事件，实际 %s v%d", status, version)
+	}
+
+	// 回滚那一笔：reporter 已经在事务里写了 Notification + Audit，整笔被外层错误带回滚 → 不该计数。
+	before := core.checkpoints.Counted()
+	err = core.store.Write(ctx, func(tx *db.Tx) error {
+		if _, e := core.tasks.ApplyExecutionEvent(ctx, tx, "t-rej", task.EdgeApprovalResolved, false, false, task.Command{
+			EventID: "ev-rb", PrincipalID: "system",
+			Notification: "ntf-rb", RejEvent: "ncev-rb", RejAudit: "aud-rb",
+		}); e != nil {
+			return e
+		}
+		return errors.New("外层故意回滚")
+	})
+	if err == nil {
+		t.Fatal("这笔写本该失败")
+	}
+	if n := core.checkpoints.Counted(); n != before {
+		t.Errorf("回滚的那笔也被计数了：%d → %d", before, n)
+	}
+	// 回滚后那些 id 必须仍是"没用过"的：拿同一批 id 重来一次要能成功（幂等重试的前提）。
+	if err := driveRejectionRollbackIds(t, core); err != nil {
+		t.Errorf("被回滚的 id 没腾出来：%v", err)
+	}
+
+	// 跨阈值这一格现在数的是 **seq 差**（audit 按 A18-3 改判，`n` 退化成建议值），
+	// 所以用真行把它推过去，而不是拿调用次数糊：先推到边界前一格，再补最后一行。
+	owed := audit.CheckpointEveryAppends - core.checkpoints.Counted()
+	if err := appendAuditThroughStore(core, owed-1); err != nil {
+		t.Fatal(err)
+	}
+	if n := core.checkpoints.Counted(); n != audit.CheckpointEveryAppends-1 {
+		t.Fatalf("推到边界前一格之后 Counted() = %d，应为 %d", n, audit.CheckpointEveryAppends-1)
+	}
+	if _, err := os.Stat(core.anchor.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("差 1 就跨过阈值，这时候还不该有锚点")
+	}
+	if err := appendAuditThroughStore(core, 1); err != nil {
+		t.Fatal(err)
+	}
+	lines := anchorLines(t, core.anchor.Path)
+	if len(lines) != 1 {
+		t.Fatalf("跨过阈值后应有一行锚点，实际 %d 行: %q", len(lines), lines)
+	}
+	wantSeq, wantHash := auditHeadRow(t, core)
+	if !strings.HasPrefix(lines[0], strconv.FormatInt(wantSeq, 10)+"\t"+wantHash+"\t") {
+		t.Errorf("锚点不是刚提交那一行的 (seq, entry_hash)：\n  锚点 = %q\n  库里 = %d %s", lines[0], wantSeq, wantHash)
+	}
+	if n := core.checkpoints.Counted(); n != 0 {
+		t.Errorf("那一行锚点没把这一段覆盖掉，还欠 %d", n)
+	}
+}
+
+// driveRejectionRollbackIds 用刚才那笔被回滚事务里的同一批 id 再记一次：
+// 成功就说明回滚真的把行拿掉了（重试复用同一个 id 是 §8 幂等的要求）。
+func driveRejectionRollbackIds(t *testing.T, c *Core) error {
+	t.Helper()
+	ctx := context.Background()
+	return c.store.Write(ctx, func(tx *db.Tx) error {
+		_, err := c.tasks.ApplyExecutionEvent(ctx, tx, "t-rej", task.EdgeApprovalResolved, false, false, task.Command{
+			EventID: "ev-rb2", PrincipalID: "system",
+			Notification: "ntf-rb", RejEvent: "ncev-rb", RejAudit: "aud-rb",
+		})
+		return err
+	})
+}
+
+// TestWiredAnchorCounterIsAttached 钉 T-64① 里我能证的那一半：计数器建出来了、锚点路径在数据目录下、
+// **并且我这条腿的交账真的喂进了它** —— 走 `auditedStore` 的那笔让 `Counted()` 追上真链头，
+// 绕过它的那笔不让。阈值落盘那一半在 TestAnchorAdvancesOnlyAfterCommit，两半各证各的。
+// "counter 挂进了 approval store" 仍然证不了（`SQLiteStore.cp` 未导出，唯一外部效果要写满 1000 条审批）
+// —— 已提 REQ-A-4 请 approval 导一个只读确认口。
+// 最后那对 Advance/Counted 断言把 A18-3 争的点变成了行为级的：audit 改成按 seq 差计账之后，
+// 同一个链头报两次不改账 —— "两条腿双计"在这个口径下结构上不成立，不必再靠"只有一个调用点"来保证。
+func TestWiredAnchorCounterIsAttached(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	if core.checkpoints == nil || core.approvals == nil {
+		t.Fatal("① 没接：counter 或 approval store 是 nil")
+	}
+	if core.anchor.Path != filepath.Join(core.cfg.DataDir, "audit.head") {
+		t.Error("counter 指向的锚点不在数据目录下")
+	}
+	// "counter 挂进了 store"证不了：SQLiteStore.cp 是未导出字段，唯一可观察效果是
+	// 跨过一次 CheckpointEveryAppends 才落一行锚点 —— 那要写 1000 条审批、或经 approval.Service
+	// 造真审批，都是别人的竖线。已提 REQ-A-4 请 approval 导一个只读确认口。
+	// 能直接证的是我建的那一段：counter → 锚点文件。
+	appendAuditRows(t, core, 1)
+	if n := core.checkpoints.Counted(); n != 0 {
+		t.Errorf("绕过 auditedStore 的一笔被算进我的交账了：%d —— 交账该挂在\"我这笔提交之后\"，不是\"库里多了行\"", n)
+	}
+	// 走我的腿一笔：audit 改成按 seq 差计数之后，交账的效果就是 Counted() 追上真链头。
+	if err := appendAuditThroughStore(core, 1); err != nil {
+		t.Fatal(err)
+	}
+	seq, hash := auditHeadRow(t, core)
+	if n := core.checkpoints.Counted(); n != int(seq) {
+		t.Errorf("交账后 Counted() = %d，应等于链头 seq %d", n, seq)
+	}
+	// A18-3 争的"两条腿双计"在这个口径下不成立：同一个 head 再报一次不改账。
+	// 这条断言是行为级的，比"数有几个 Advance( 调用点"那种 grep 判据结实，所以留在这里。
+	if err := core.checkpoints.Advance(1, audit.Head{Seq: seq, Hash: hash}); err != nil {
+		t.Fatal(err)
+	}
+	if n := core.checkpoints.Counted(); n != int(seq) {
+		t.Errorf("重复报同一段被当成了新增：%d → %d", seq, n)
+	}
+	if _, err := os.Stat(core.anchor.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Error("没跨阈值就写了锚点文件")
+	}
+}
+
+// TestAnchorPathFollowsTheDataDir 钉住 T-37 的那一条约定：cmd/core 只做一件事 —— 把 --data-dir
+// 交给锚点。换数据目录就必须换锚点位置，否则删掉数据目录还会留下孤儿检查点。
+func TestAnchorPathFollowsTheDataDir(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DataDir = filepath.Join(cfg.DataDir, "深一层", "data")
+	core, err := boot(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	if core.anchor == nil || core.anchor.Path != filepath.Join(cfg.DataDir, "audit.head") {
+		t.Fatalf("锚点没跟着 --data-dir 走: %+v", core.anchor)
+	}
 }

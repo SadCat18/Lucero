@@ -49,7 +49,7 @@ func main() {
 	}
 }
 
-// fake is one process run: the handshake, the §6.2 sequence numbers, the §5 turn
+// fake is one process run: the handshake, the §6 规则 2 sequence numbers, the §5 turn
 // state and whatever debug/* has armed. Everything the protocol remembers lives
 // here, so nothing is hidden in package globals a second test could trip over.
 type fake struct {
@@ -58,7 +58,7 @@ type fake struct {
 	logs io.Writer
 	hs   *adapter.Handshake // nil until initialize succeeds: that is §2's gate
 
-	seq  int64 // §6.2 sequence_no, monotonic for the life of the process
+	seq  int64 // §6 规则 2 sequence_no, monotonic for the life of the process
 	open *turn // the turn a guide can steer into, nil when none
 	// queued holds §5 queue sends waiting for the open turn to close.
 	queued     []*turn
@@ -66,14 +66,18 @@ type fake struct {
 	sent       map[string]adapter.SendResult // §4 Idempotency-Key -> first answer
 	fail       *injection                    // armed debug/fail
 	quotaBlind bool                          // armed debug/unknown_quota
+	// db is the fake's whole world: sessions, their logs and the approvals a turn
+	// raises. service.go explains why it is compiled in rather than read from disk.
+	db *store
 }
 
-// turn is one CO-8 evidence pair. ref is §6.7's turn_ref: the JSON-RPC id Core
+// turn is one CO-8 evidence pair. ref is §6 规则 5's turn_ref: the JSON-RPC id Core
 // put on the send that started this turn, echoed back verbatim on every frame the
 // turn produces. executionID is the Core-side id the pair names (CO-8), and the
-// per-turn seq is why §6.7 can call the cursors independent - see reportable.
+// per-turn seq is why §6 规则 5 can call the cursors independent - see reportable.
 type turn struct {
 	ref         string
+	sessionID   string
 	executionID string
 	turnID      string
 	providerID  string
@@ -90,7 +94,7 @@ type injection struct {
 // frame, so a caller can keep stdout and stderr apart the way Core's supervisor does.
 func run(in io.Reader, out io.Writer, logs io.Writer) error {
 	f := &fake{r: adapter.NewReader(in), w: adapter.NewWriter(out), logs: logs,
-		sent: map[string]adapter.SendResult{}}
+		sent: map[string]adapter.SendResult{}, db: newStore(nowMillis())}
 	fmt.Fprintf(logs, "fake-adapter up, pid=%d\n", os.Getpid())
 	// Check the self-declaration up front, against the same validator Core uses.
 	// Doing it per reply instead (as this file used to) turned a second
@@ -166,6 +170,24 @@ func (f *fake) serve(req *adapter.Frame) error {
 		return f.quotaRead(req)
 	case methodSessionSend:
 		return f.sessionSend(req)
+	case methodSessionList:
+		return f.sessionList(req)
+	case methodSessionRead:
+		return f.sessionRead(req)
+	case methodSessionStop:
+		return f.sessionStop(req)
+	case methodSessionLocate:
+		return f.sessionLocate(req)
+	case methodModelList:
+		return f.modelList(req)
+	case methodModelSelect:
+		return f.modelSelect(req)
+	case methodSessionCreate:
+		return f.sessionCreate(req)
+	case methodApprovalList:
+		return f.approvalList(req)
+	case methodApprovalUpdate:
+		return f.approvalRespond(req)
 	default:
 		// Anything this build does not implement is refused with INTERNAL rather than
 		// a contract refusal, so "not built yet" can never be mistaken for a
@@ -349,13 +371,14 @@ func started(t *turn) adapter.SendResult {
 // startTurn opens the new turn with CO-8's pair and interrupts the one in flight, in
 // that order: a start_now preempts (§5), and the preempted run still owes output
 // after the new one has started. That is what makes two executions share a
-// connection for real instead of in a comment, which §6.7's FakeAdapter acceptance
+// connection for real instead of in a comment, which §6 规则 5's FakeAdapter acceptance
 // asks for. Without an execution_id from Core there is nothing for CO-8's pair to
-// name, so no evidence frames go out - and §6.3 leaves that Execution UNKNOWN, which
+// name, so no evidence frames go out - and CO-8 leaves that Execution UNKNOWN, which
 // is the honest outcome rather than the fake inventing an id.
 func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
 	prev := f.open
-	t := &turn{ref: ref, executionID: p.ExecutionID, turnID: adapter.NewRequestID().String()}
+	t := &turn{ref: ref, sessionID: p.RemoteSessionID, executionID: p.ExecutionID,
+		turnID: adapter.NewRequestID().String()}
 	t.providerID = "fake-" + t.turnID
 	f.open = t
 	if err := f.evidence(t, p.Text); err != nil {
@@ -388,7 +411,18 @@ func (f *fake) evidence(t *turn, text string) error {
 		TurnID: t.turnID, ProviderExecutionID: t.providerID}); err != nil {
 		return err
 	}
-	return f.delta(t, text)
+	// §10 ① now requires every notification type this double can emit to reach the wire
+	// at least once (§6 规则 1 still only makes turn/finished mandatory), so a turn
+	// opens with claimed, dispatched, state, delta, item.
+	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodStreamState,
+		NormalizedState: "RUNNING", Confidence: adapter.ConfidenceHigh}); err != nil {
+		return err
+	}
+	if err := f.delta(t, text); err != nil {
+		return err
+	}
+	return f.notice(t, &adapter.StreamFrame{Method: adapter.MethodStreamItem,
+		Item: json.RawMessage(`{"kind":"tool_call","name":"fake.read","state":"READY"}`)})
 }
 
 func (f *fake) delta(t *turn, text string) error {
@@ -415,15 +449,21 @@ func (f *fake) drainQueue() error {
 	return nil
 }
 
-// finish is §6.1's one mandatory signal. It names the turn by turn_ref only:
-// execution_id stays off the four output notifications (§6.7).
+// finish is §6 规则 1's one mandatory signal. It names the turn by turn_ref only:
+// execution_id stays off the four output notifications (§6 规则 5, §4.2 裁定 ①).
 func (f *fake) finish(t *turn, code string) error {
 	return f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnFinished, ResultCode: code})
 }
 
 func (f *fake) notice(t *turn, s *adapter.StreamFrame) error {
 	f.seq++
-	s.SequenceNo, s.TurnRef = f.seq, t.ref
+	s.SequenceNo = f.seq
+	// §4.2 裁定 ① makes the ticket mandatory on all six notifications, so this is one
+	// rule with no exception branch: the predicate is the same one Core decodes with,
+	// which is what keeps a producer bug from hiding behind a permissive consumer.
+	if adapter.CarriesTurnRef(s.Method) {
+		s.TurnRef = t.ref
+	}
 	fr, err := adapter.NewStream(adapter.NewRequestID().String(), s)
 	if err != nil {
 		return err

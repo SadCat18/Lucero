@@ -257,11 +257,29 @@ func TestRedactionCountersAreSealedBeforeHash(t *testing.T) {
 //
 // db + audit 同批改完后，本用例改成硬断言：Kind 为空的 hits 必须让 RedactionDetails 报错。
 func TestRedactionKindIsMandatory(t *testing.T) {
-	// 11:5x 复核 T-27：② 已落（db.RedactionHit 带 Kind HitKind，redact.go:87/97-101）、
-	// ③ 已落（approval 的 mapper 改成 audit.HitKind(h.Kind) 直传，不再 CutPrefix "key:"）。
-	// 只剩 ①：RedactionDetails 仍然不校验空 Kind（redaction.go:127 直接 Marshal）——
-	// 忘了填 Kind 的调用会把无标签命中写进 details_json，而这一列参与 entry_hash，事后改不动。
-	// 断言口径（T-29：打在待验层的直接产物上，即 RedactionDetails 自己的返回值）：
-	//   if _, err := audit.RedactionDetails([]audit.RedactionHit{{Column: "payload_json", Match: "token"}}); err == nil { 红 }
-	t.Skip("blocked(REQ-T3c 给 audit): RedactionDetails 不校验空 Kind；②③ 已随 T-27 落地并复核")
+	for _, tc := range []struct {
+		desc string
+		hit  audit.RedactionHit
+		ok   bool
+	}{
+		{"空 Kind 必须被拒", audit.RedactionHit{Column: "payload_json", Match: "token", Count: 1}, false},
+		{"自造 Kind 必须被拒", audit.RedactionHit{Column: "payload_json", Kind: "apikey", Match: "token", Count: 1}, false},
+		{"有 Kind 无 Match 必须被拒（那行会点不出名）", audit.RedactionHit{Column: "payload_json", Kind: audit.HitKey, Count: 1}, false},
+		{"key + Match 合法", audit.RedactionHit{Column: "payload_json", Kind: audit.HitKey, Match: "token", Count: 2}, true},
+		{"pattern + Match 合法", audit.RedactionHit{Column: "details_json", Kind: audit.HitPattern, Match: "ghp_", Count: 1}, true},
+	} {
+		_, err := audit.RedactionDetails([]audit.RedactionHit{tc.hit})
+		if gotOK := err == nil; gotOK != tc.ok {
+			t.Errorf("%s: RedactionDetails ok=%v，期望 ok=%v（err=%v）", tc.desc, gotOK, tc.ok, err)
+		}
+	}
+	// 命中之后仍不许把原值写进 details_json（§2.2：只有计数与名字）。
+	withSecret, err := audit.RedactionDetails([]audit.RedactionHit{
+		{Column: "payload_json", Kind: audit.HitKey, Match: "token", Count: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(withSecret, "ghp_") || strings.Contains(withSecret, "Bearer ") {
+		t.Errorf("details_json 里出现了疑似原值: %s", withSecret)
+	}
 }

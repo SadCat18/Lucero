@@ -44,6 +44,96 @@ func helperLauncher(mode string) Launcher {
 	}
 }
 
+// stubRecorder is the shape backend will inject in cmd/core, reduced to remembering:
+// the point of T-55's interface is that this package cannot reach a DB, so a test can
+// only assert what was handed over, never what row it became.
+type stubRecorder struct {
+	started, exits, crashes []Event
+	// rows stands for the row handle cmd/core owns: this package only ever sees the
+	// string come back, then go out again untouched.
+	rows int
+}
+
+func (r *stubRecorder) RecordStart(ev Event) { r.started = append(r.started, ev) }
+
+func (r *stubRecorder) RecordExit(ev Event) { r.exits = append(r.exits, ev) }
+
+func (r *stubRecorder) RecordCrash(ev Event) { r.crashes = append(r.crashes, ev) }
+
+func TestRecorderSeesCleanExitOnce(t *testing.T) {
+	rec := new(stubRecorder)
+	s := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("clean"), Rec: rec,
+		Now: func() time.Time { return time.UnixMilli(1700000000000) }}
+	if err := s.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rec.started) != 1 || rec.started[0].PID <= 0 {
+		t.Errorf("RecordStart calls = %d, want one with a real pid", len(rec.started))
+	}
+	if len(rec.exits) != 1 || rec.exits[0].ExitCode != 0 {
+		t.Errorf("RecordExit calls = %+v, want one clean exit", rec.exits)
+	}
+	if len(rec.crashes) != 0 {
+		t.Errorf("RecordCrash fired for a clean exit: %+v", rec.crashes)
+	}
+	if got := rec.exits[0].Timestamp; got != 1700000000000 {
+		t.Errorf("timestamp = %d, want Now()'s Unix ms (§14 stores ms)", got)
+	}
+}
+
+func TestRecorderSeparatesCrashFromExit(t *testing.T) {
+	rec := new(stubRecorder)
+	var seen []EventKind
+	s := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("crash"), Rec: rec,
+		Sink: func(ev Event) { seen = append(seen, ev.Kind) },
+		Now:  func() time.Time { return time.UnixMilli(1700000000000) }}
+	if err := s.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rec.crashes) != 1 || rec.crashes[0].ExitCode != 2 {
+		t.Errorf("RecordCrash calls = %+v, want one with §10's exit code 2", rec.crashes)
+	}
+	// Run also emits an exited event to mean "supervision ended". Writing that as a
+	// clean-exit row would overwrite §14's last_error, so the recorder must not see it.
+	if len(rec.exits) != 0 {
+		t.Errorf("a crash wrote %d exit rows, want 0", len(rec.exits))
+	}
+	// Observation keeps both, because Sink is where §8's notifications come from.
+	if len(seen) != 3 || seen[0] != EventStarted || seen[1] != EventCrashed || seen[2] != EventExited {
+		t.Errorf("Sink saw %v, want STARTED, CRASHED, EXITED", seen)
+	}
+}
+
+func TestRecorderStaysSilentOnUnavailable(t *testing.T) {
+	rec := new(stubRecorder)
+	var seen []EventKind
+	s := &Supervisor{Kind: KindAdapter, Restart: RestartOnFailure, MaxCrashes: 2,
+		Launch: helperLauncher("crash"), Rec: rec, Backoff: func(int) time.Duration { return time.Millisecond },
+		Sink: func(ev Event) { seen = append(seen, ev.Kind) }}
+	if err := s.Run(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Run = %v, want ErrUnavailable", err)
+	}
+	if len(rec.crashes) != 2 {
+		t.Errorf("RecordCrash calls = %d, want one per crash (2)", len(rec.crashes))
+	}
+	if rec.crashes[1].Crashes != 2 {
+		t.Errorf("second crash carried Crashes=%d, want the running count for §8's budget", rec.crashes[1].Crashes)
+	}
+	if len(rec.exits) != 0 || len(rec.started) != 2 {
+		t.Errorf("rows = %d exits / %d starts, want 0 exits and one start per launch", len(rec.exits), len(rec.started))
+	}
+	last := seen[len(seen)-1]
+	if last != EventUnavailable {
+		t.Fatalf("last observation = %s, want UNAVAILABLE", last)
+	}
+	// §8's exhaustion is a Notification, not a process lifecycle row.
+	for _, ev := range rec.crashes {
+		if ev.Kind != EventCrashed {
+			t.Errorf("recorder got a %s row, want only lifecycle rows", ev.Kind)
+		}
+	}
+}
+
 func TestBackoffFor(t *testing.T) {
 	// §8: 1s, 2s, 4s, 8s, 上限 30s. The reading taken here is "keep doubling, then
 	// cap", so attempt 5 is 16s; CO-19 asks 主控 to confirm or pin 30s right after 8s.
