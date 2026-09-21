@@ -130,6 +130,40 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
 **代码侧引用规矩**：注释里引本文**只准写 `§4.1`** 或方法名，禁止引用不存在的条款号。
 可机判形式：任何 `§<数字>` 引用都必须能被 `grep -n "^#\+ <同号>" specs/**/*.md` 查到，查不到即缺陷。
 
+### 4.2 两帧取证信号 `turn/claimed` / `turn/dispatched`（CO-29 回写，11:5x）
+
+**这是主控欠的文档，不是实现的问题。** 11:48:03 实测：这两个名字在 `specs/` 与 `docs/` 里
+**0 个文件命中**，在 `core/` 里 **7 个文件在用**（`internal/adapter/stream.go` 定义与校验、
+`cmd/fake-adapter` 发出、`internal/process` 消费）。CO-8 当年裁了这套两段式信号，**但从没回写进本文**，
+所以 §10 的验收清单字面盖不到它，`test` 的状态机用例与 adapter 自己的 §7.2/§10 语义用例都缺前置。
+以下按 `stream.go` 的**实现与校验代码**记录，不是按转述：
+
+| 帧 | 载荷 | 含义 | 校验（实现在 `StreamFrame.Validate`） |
+|---|---|---|---|
+| `turn/claimed` | `{execution_id, accepted, queue_position?, provider_execution_id}` | **Adapter 接下了这条指令** | `execution_id` 为空 → `INVALID_PARAMS`；`provider_execution_id` 为空 → `INVALID_PARAMS`，理由原文："Recovery cannot query a run it cannot name" |
+| `turn/dispatched` | `{turn_id, execution_id, provider_execution_id}` **三者皆必填** | **一个 turn 真的开始了** | 任一为空 → `INVALID_PARAMS`（原文分别："has no turn_id"、"has no execution_id"、"has no provider_execution_id (CO-8 makes it part of the evidence)"） |
+
+**四条语义，一条都不能丢**：
+1. **`claimed` 故意不带 `turn_id`** —— "接下了"不等于"开始了"；**唯一的开始证明是 `dispatched`**。
+2. **没有 `dispatched`，Core 不许把状态显示成 running**（这正是 §12"不得把 UNKNOWN 显示成确定值"在本层的落点）。
+3. **`provider_execution_id` 必须挂在 `claimed` 上**，因为 **Core 可能在 claimed-未-dispatched 这个窗口里死掉**；
+   Recovery 要先拿它去问 Provider，**才允许**把这轮判成 `UNKNOWN`。少了这个字段，崩溃恢复就只能猜。
+4. **这两帧是 `execution_id` 唯一允许越过进程边界的地方**（其余四条通知只靠 `turn_ref` 归属，见 §6 规则 5），
+   代价是 §4 的 `session/send` 必须把 `execution_id` 交给 Adapter（CO-24）——
+   这条例外要承认它存在，别假装 §6 规则 5 是绝对的。
+
+**⚠ 两处实现内部自相矛盾，等 adapter 一句话定，我不擅自选**（本文按**代码**记录，不按注释）：
+1. `stream.go` 载荷注释写 `turn/claimed = {turn_ref, execution_id, ...}`（带 `turn_ref`），
+   `ExecutionID` 字段注释却说这两帧"**不带** turn_ref、靠 `execution_id` 自证归属" —— 同文件两处相反。
+   定了之后我把结论写死在本节，并同步 §6 规则 5 的适用范围。
+2. `turn/dispatched` 的 `provider_execution_id`：紧挨着校验的注释说它"**may be empty (CO-13)**、
+   不许被回读成'从未运行'"，而**下面四行代码就是拿它为空返回 `INVALID_PARAMS`**。
+   两种读法给出两种崩溃语义（"跑过但没名字" vs "根本没跑"），直接影响 Recovery 判 `UNKNOWN` 的口径。
+   **本文暂按代码（必填）**，等 adapter 定：若 CO-13 才是本意，那是**代码要改**，不是注释改一下就行。
+（这两条都不影响上面四条语义。）
+
+
+
 
 ## 5. 三态投递原语（Phase 0 §6.4 的直接结论）
 

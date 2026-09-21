@@ -41,9 +41,11 @@ x-websocket-frames:
   endpoint: /ws/v1/events
   handshake: 'ticket 必填（§2.1：从 POST /api/v1/ws-ticket 换，单次使用、30s、校验即作废，复用被拒并 close 1008）'
   cursor: seq
-  order: 'F-16：客户端连上后必须先发 client_frames.hello 声明游标，服务端才开始回控制帧；?from_seq= 只是初值，客户端 hello 优先。§5 原文"连接后第一帧 hello"读起来像服务端先说，属歧义，以本条为准。'
-  cursor-default: '带游标 → 补发 seq > from_seq 的事件；不带 → 只收此后新事件并回 hello_ack{server_seq} 明确起点。禁止"缺省即全量重放"（journal 可能很大，一次重连 = 自己 DDOS 自己）。'
-  known-gap: 'REQ-F-17 已修并实测（2026-09-20 14:22-14:23，对象为当时监听 127.0.0.1:62599 的 Core）：不发 client hello → 服务端 4 秒内零帧；发 client hello → 立刻收到 {"type":"hello_ack","server_seq":0}。即 F-16 的顺序要求成立、F-17 的空 journal 分支已回帧；live 测试 8/8 绿。客户端防御同在：server_seq 低于游标不回退。归因限制见 evidence/live-t53.txt 第 4 节。'
+  order: 'F-16 + REQ-F-20 裁定（§5）：**游标的唯一权威是客户端 hello 帧的 from_seq**。`?from_seq=` 只是初值，只在"根本没收到 hello"（HelloTimeout 那条路）时回落生效。'
+  cursor-authority: '省略 from_seq 的 hello = 明确声明"我只要此后新事件"，它会把 query 带来的游标主动作废 —— 省略既不是 0，也不是沿用 URL 上的值（与 §1 冻结的"缺省即全量重放=禁止"同源）。'
+  cursor-default: '带游标 → 首帧 hello{from_seq} 回显 + 只补发 seq > 游标 的事件；不带游标 → 首帧 hello_ack{server_seq=journal 头}，此后只收新事件；游标超过头部 → 零补发，不回灌历史。'
+  criteria: '§5 判据三条（违反任一即口径漂移，归 core/test 落表）：① 只给 query + hello 省略游标 → 不补发、首帧 hello_ack{server_seq}；② 只给 query + 不发 hello（超时）→ 补发 seq > query值；③ hello 带游标且与 query 不一致 → 以 hello 为准。'
+  known-gap: '已解除（原 REQ-F-17；本行的旧“未修”声明作废，留着会被下一个人当现状读）。2026-09-21 用自起 Core 实测三条路径：不带游标 → 首帧 hello_ack{server_seq=journal 头}；hello 带游标 → 首帧 hello 回显 + 只补发 seq > 游标 的事件；游标超过头部不回灌历史。'
   client_frames:
     hello:
       description: 客户端连上后的第一帧（F-16）。from_seq 省略 = 只要此后新事件
@@ -793,8 +795,8 @@ components:
       required: [next_cursor]
       properties:
         next_cursor:
-          type: [string, "null"]
-          description: '无更多数据时的形态契约未定：我原先写"必须是 null 而非空串"，但实测 Core 在 2026-09-20 16:16 返回空串 ""（自属实例复现两次），故此处只声明两种都可表示"没有下一页"，正式口径等 REQ-F-19 裁定'
+          type: string
+          description: 'T-80 / REQ-F-19 裁定：空串是"没有下一页"的唯一合法表示。分页出口只在取满一页且非空时才写 encodeCursor（其结果永不为空串），所以"空"与"有值"不可能撞。null 与"字段整个省略"都不许成为第二种表示 —— 同一件事两种写法会让生成客户端判两次。'
     # ── 枚举（对齐 000001 的 CHECK 与契约① §5）────────────────────────────
     ProjectStatus: { type: string, enum: [ACTIVE, ARCHIVED, UNAVAILABLE, UNKNOWN] }
     AdapterHealth: { type: string, enum: [UNKNOWN, STARTING, HEALTHY, DEGRADED, UNAVAILABLE, STOPPED] }
