@@ -965,7 +965,7 @@ components:
         updated_at: { $ref: '#/components/schemas/Timestamp' }
     Session:
       type: object
-      required: [id, adapter_instance_id, managed, sync_state, state_confidence]
+      required: [id, adapter_instance_id, managed, sync_state, state_confidence, sync_cursor]
       properties:
         id: { type: string }
         adapter_instance_id: { type: string }
@@ -979,7 +979,9 @@ components:
         sync_cursor:
           type: [string, "null"]
           minLength: 1
-          description: '同一"同步游标"域，按 §2 REQ-F-21④ 排除空串；null=库里 NULL=从未同步。是否必须出现在响应里未实测（/sessions 仍 501，拿不到真响应）→ 见 REQ-F-22，不凭猜改 required。'
+          description: |-
+            T-96 正式口径：两侧对称 —— required + 可空 + 字符串侧 minLength 1。
+            缺键（省略）与空串都是非法的第三种“没有”；null 只表示库里 NULL=从未同步。REQ-F-22 关闭。
         remote_revision: { type: [string, "null"] }
         state_confidence: { $ref: '#/components/schemas/Confidence' }
         provider_status_raw: { $ref: '#/components/schemas/JsonMap' }

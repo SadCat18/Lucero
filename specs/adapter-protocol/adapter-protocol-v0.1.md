@@ -85,6 +85,8 @@ WorkBuddy 桌面 5.5.6 / 内置 CLI 2.137.1 / sandbox 5.5.5）。`adapter_instan
 | `quota/read` | C→A | §7 额度契约 |
 | `approval/list` | C→A | 挂起审批；载荷必须结构化 |
 | `approval/respond` | C→A | 幂等；同一审批二次回应返回首次结果 |
+| `session/create` | C→A | **REQ-T8 / CO-5 回写（13:3x，从 `internal/adapter/send.go` 的 `CreateSessionParams` / `CreateSessionResult` 直接读，不是转述）**：请求 `{client_request_id（必填）, project_id?, title?, base_sha?}`；回执 `{remote_session_id（必填）, created, provider_raw?}`。`client_request_id` 由 Core 生成 UUIDv7 且强制，因为**这一调用天然非幂等，没有它重试会建出两个远端会话**；`created: false` **不是失败**，是幂等命中、返回首次那条；`base_sha` 可空由 CO-14 允许（对不齐 commit 的 Provider 分支留空）。回执缺 `remote_session_id` → `INVALID_PARAMS`（原文："CO-5 has no third shape"） |
+| `model/select` | C→A | **CO-36 实情：本文与实现都还没有字段**。13:2x 实测 `grep -rn "model/select\|model_key" --include=*.go core/internal/adapter/` 只命中 `handshake.go` 里 `writeMethods` 那一项，**没有任何请求/回执结构体与校验**。现按 adapter 的最小读法登记为**目标形状**：请求 `{remote_session_id, model_key}`、回执同形状。**状态：待建 / adapter——这是 spec-first 声明，实现为零**，落地前 `test` 不许把它当可断言面（否则又是一条指向不存在的判据）。 |
 | `session/locate` | C→A | **v0.1 只留桩**：Phase 0 §5 结论是五家 deep-link 到会话粒度全部未实测，
   只有 OpenCode `/tui/select-session` 有程序化证据。返回 `CAPABILITY_UNAVAILABLE` 即为正确实现 |
 | `stream/*` | A→C | 通知流，§6 |
@@ -138,17 +140,17 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
 所以 §10 的验收清单字面盖不到它，`test` 的状态机用例与 adapter 自己的 §7.2/§10 语义用例都缺前置。
 以下按 `stream.go` 的**实现与校验代码**记录，不是按转述：
 
-| 帧 | 载荷 | 含义 | 校验（实现在 `StreamFrame.Validate`） |
+| 帧 | 载荷 | 含义 | 校验（实现在 `StreamFrame.Validate`；**13:0x 曾按裁定前口径写本表，现已与 ✅ 段对齐**） |
 |---|---|---|---|
-| `turn/claimed` | `{execution_id, accepted, queue_position?, provider_execution_id}` | **Adapter 接下了这条指令** | `execution_id` 为空 → `INVALID_PARAMS`；`provider_execution_id` 为空 → `INVALID_PARAMS`，理由原文："Recovery cannot query a run it cannot name" |
-| `turn/dispatched` | `{turn_id, execution_id, provider_execution_id}` **三者皆必填** | **一个 turn 真的开始了** | 任一为空 → `INVALID_PARAMS`（原文分别："has no turn_id"、"has no execution_id"、"has no provider_execution_id (CO-8 makes it part of the evidence)"） |
+| `turn/claimed` | `{turn_ref, execution_id, accepted, queue_position?, provider_execution_id}` | **Adapter 接下了这条指令** | `execution_id` 为空 → `INVALID_PARAMS`；`provider_execution_id` 为空 → `INVALID_PARAMS`，理由原文："Recovery cannot query a run it cannot name" |
+| `turn/dispatched` | `{turn_ref, turn_id, execution_id, provider_execution_id?}` —— **前三者必填**；`provider_execution_id` 可空，但给了非空就必须等于 `claimed` 那个值 | **一个 turn 真的开始了** | 任一为空 → `INVALID_PARAMS`（原文分别："has no turn_id"、"has no execution_id"、"has no provider_execution_id (CO-8 makes it part of the evidence)"） |
 
 **四条语义，一条都不能丢**：
 1. **`claimed` 故意不带 `turn_id`** —— "接下了"不等于"开始了"；**唯一的开始证明是 `dispatched`**。
 2. **没有 `dispatched`，Core 不许把状态显示成 running**（这正是 §12"不得把 UNKNOWN 显示成确定值"在本层的落点）。
 3. **`provider_execution_id` 必须挂在 `claimed` 上**，因为 **Core 可能在 claimed-未-dispatched 这个窗口里死掉**；
    Recovery 要先拿它去问 Provider，**才允许**把这轮判成 `UNKNOWN`。少了这个字段，崩溃恢复就只能猜。
-4. **这两帧是 `execution_id` 唯一允许越过进程边界的地方**（其余四条通知只靠 `turn_ref` 归属，见 §6 规则 5），
+4. **这两帧是 `execution_id` 唯一允许出现的地方**（其余四条通知**只有** `turn_ref`；而按 12:4x 裁定，**这两帧也一律带 `turn_ref`**，见下方 ✅），
    代价是 §4 的 `session/send` 必须把 `execution_id` 交给 Adapter（CO-24）——
    这条例外要承认它存在，别假装 §6 规则 5 是绝对的。
 

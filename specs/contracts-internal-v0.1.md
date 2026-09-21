@@ -199,9 +199,11 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
 
 | ID | 断言 | 怎么测（行为，不是"有没有命中"） | 状态 / 归属 |
 |---|---|---|---|
-| A18-1 | 连续成功 append 跨过阈值（1000）必须出现**新的一行锚点**，且该行 `seq` 等于库内当时最后一行的 `seq` | 测试里连推过阈值 → 读 `<data-dir>/audit.head` 末行 → 与 `SELECT max(seq) FROM audit_entries` 比对 | 待建 / audit |
-| A18-2 | 事务**提交失败**不得留下任何锚点行（锚点绝不领先库内状态） | 强制提交阶段失败，断言锚点文件行数不变 | 待建 / audit |
-| A18-3 | **推进必须幂等：同一 `seq` 区间被推进两次，锚点不得多写一行**（12:4x 改判：从"人守白名单"换成"结构上双计无效"） | 对同一提交结果连调两次推进入口，断言 `audit.head` 行数不变、第二次不产生新行 | **待建 / audit（选①）** |
+| A18-1 | 连续成功 append 跨过阈值（1000）必须出现**新的一行锚点**，且该行 `seq` 等于库内当时最后一行的 `seq` | 测试里连推过阈值 → 读 `<data-dir>/audit.head` 末行 → 与 `SELECT max(seq) FROM audit_entries` 比对 | 现存 / audit（`TestCheckpointCounterCrossing`、`TestAdvanceAnchorsOnlyTheHeadItSaw`；13:28:57 逐条 `--- PASS`）|
+| A18-2 | 事务**提交失败**不得留下任何锚点行（锚点绝不领先库内状态） | 强制提交阶段失败，断言锚点文件行数不变 | 现存 / audit（`TestAnchorCommitRejectsWithoutWriting`；另 `TestAnchorLineAheadOfDatabaseIsUnverified`、`TestCheckWithoutAnchorIsUnverifiedNotVerified` 钉住「锚点领先或缺失不许报 VERIFIED_LOCAL」）|
+| A18-3 | **推进必须幂等：同一 `seq` 区间被推进两次，锚点不得多写一行**（12:4x 改判：从"人守白名单"换成"结构上双计无效"） | 对同一提交结果连调两次推进入口，断言 `audit.head` 行数不变、第二次不产生新行 | 现存 / audit（选①已实现：`TestCheckpointCounterIgnoresEmptyWork`、`TestChainCheckpointsOnlyWhatItAppended`）|
+
+**⚠ 残余洞（13:2x 记，未闭）**：幂等只在推进入口这一层成立；测试若绕过它、直接给计数器喂合成 `n`（`Advance(999, Head{Seq: 库里很小的 seq})`）仍能伪造「跨过阈值」，于是「双计无效」这个保证在**用例层**又被打穿。`core/cmd/core` 有两条这样的用例（`TestAnchorAdvancesOnlyAfterCommit`、`TestWiredAnchorCounterIsAttached`），已派 backend 改成用真 append 逼近阈值（账本 REQ-A9）。**判据的写法本身要经得起「合成入参」作弊。**
 
 **A18-3 为什么改成"结构幂等"而不是"白名单"**：12:37:12 实测**推进路径已有两条独立生产点**
 （`internal/approval/store_sqlite.go` 的 `ch.Checkpoint()` 在提交成功后；`cmd/core/rejections.go` 的
