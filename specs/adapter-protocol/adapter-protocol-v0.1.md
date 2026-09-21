@@ -152,15 +152,21 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
    代价是 §4 的 `session/send` 必须把 `execution_id` 交给 Adapter（CO-24）——
    这条例外要承认它存在，别假装 §6 规则 5 是绝对的。
 
-**⚠ 两处实现内部自相矛盾，等 adapter 一句话定，我不擅自选**（本文按**代码**记录，不按注释）：
-1. `stream.go` 载荷注释写 `turn/claimed = {turn_ref, execution_id, ...}`（带 `turn_ref`），
-   `ExecutionID` 字段注释却说这两帧"**不带** turn_ref、靠 `execution_id` 自证归属" —— 同文件两处相反。
-   定了之后我把结论写死在本节，并同步 §6 规则 5 的适用范围。
-2. `turn/dispatched` 的 `provider_execution_id`：紧挨着校验的注释说它"**may be empty (CO-13)**、
-   不许被回读成'从未运行'"，而**下面四行代码就是拿它为空返回 `INVALID_PARAMS`**。
-   两种读法给出两种崩溃语义（"跑过但没名字" vs "根本没跑"），直接影响 Recovery 判 `UNKNOWN` 的口径。
-   **本文暂按代码（必填）**，等 adapter 定：若 CO-13 才是本意，那是**代码要改**，不是注释改一下就行。
-（这两条都不影响上面四条语义。）
+**✅ 两处"注释与代码相反"已由主控裁定（12:4x）——不必再等回答；adapter 若不同意给理由即可，别沉默改代码**：
+
+1. **`turn_ref` 一律必带**，包括 `turn/claimed`/`turn/dispatched`。归属规则收成一条无例外：
+   **所有 Adapter→Core 通知都带 `turn_ref`；`claimed`/`dispatched` 额外再带 `execution_id`。**
+   两者同时在场时 **Core 必须校验一致**，不一致 = `丢弃 + Audit`（沿用 §6 规则 5 的处置）。
+   理由：与其保留"这类靠 A 归属、那类靠 B 归属"的例外清单（今天已经数不出统一答案），
+   不如让归属只有一种写法，并把多带一个字段变成**可交叉验证的冗余**，而不是第二真相源。
+   → `stream.go` 那句"carry no turn_ref"要改，载荷注释与字段注释归一。
+2. **`provider_execution_id`：`claimed` 必填不变；`dispatched` 改为"可空，但不得与 `claimed` 的非空值冲突"**。
+   CO-8 要它挂 `claimed`，是因为 **Core 可能死在 claimed-未-dispatched 窗口**，Recovery 必须先有个能问的名字；
+   而 CO-13 承认**有的 Provider 到 dispatched 时给不出名字** —— 此时强制非空，真 Adapter 就发不出 `dispatched`，
+   于是**那一轮永远不显示 running**。这个失败模式比"缺一个字段"严重得多（且直接撞 §12：不许把"看不见"演成确定状态）。
+   所以 `dispatched` 允许空，**前提是同一 `turn_ref` 的 `claimed` 已给过非空值**；给了非空就必须等于 `claimed` 那个值。
+   → **这条是代码要改**（现在 `StreamFrame.Validate` 对 dispatched 空值直接 `INVALID_PARAMS`），
+   且校验点落在 **Core 侧 tracker**（"这条 turn 是否已拿到过名字"），不是让 Adapter 自己保证。
 
 
 

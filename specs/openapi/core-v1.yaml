@@ -976,7 +976,10 @@ components:
         sync_state:
           allOf: [{ $ref: '#/components/schemas/SyncState' }]
           description: UNKNOWN 不得折成 Offline/Failed
-        sync_cursor: { type: [string, "null"] }
+        sync_cursor:
+          type: [string, "null"]
+          minLength: 1
+          description: '同一"同步游标"域，按 §2 REQ-F-21④ 排除空串；null=库里 NULL=从未同步。是否必须出现在响应里未实测（/sessions 仍 501，拿不到真响应）→ 见 REQ-F-22，不凭猜改 required。'
         remote_revision: { type: [string, "null"] }
         state_confidence: { $ref: '#/components/schemas/Confidence' }
         provider_status_raw: { $ref: '#/components/schemas/JsonMap' }
@@ -1012,10 +1015,20 @@ components:
         project_id: { type: [string, "null"] }
     SyncResult:
       type: object
+      description: 契约③ §2「同步游标」行（REQ-F-21 裁定，T-89）：**语义与 §2 的分页游标相反，不许照抄分页口径**。
       required: [sync_state, next_cursor]
       properties:
         sync_state: { $ref: '#/components/schemas/SyncState' }
-        next_cursor: { type: [string, "null"] }
+        next_cursor:
+          type: [string, "null"]
+          minLength: 1
+          description: |
+            四条口径：① 没有新条目时**回显当前位置**（入参或库里已存值），回空串即非法；
+            ② "不知道 / 不可同步"由 sync_state + state_confidence 表达，游标不许兼职当那个信号（§12 同一条线）；
+            ③ null 只有一个含义 = 库里为 NULL = 从未同步 → 下次从头拉；
+            ④ 合法值只有"非空字符串"与"null"两种，"省略 / null / 空串"三种"没有"并存就是要收掉的形状
+              （所以本字段 required + minLength 1 + 可 null）。
+            照抄分页的"空串唯一"会造出一个"从头开始"的假信号，那正是 §5 明令禁止的缺省即全量重放。
         added_messages: { type: integer }
         state_confidence: { $ref: '#/components/schemas/Confidence' }
     Message:

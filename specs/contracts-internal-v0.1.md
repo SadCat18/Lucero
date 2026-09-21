@@ -201,11 +201,18 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
 |---|---|---|---|
 | A18-1 | 连续成功 append 跨过阈值（1000）必须出现**新的一行锚点**，且该行 `seq` 等于库内当时最后一行的 `seq` | 测试里连推过阈值 → 读 `<data-dir>/audit.head` 末行 → 与 `SELECT max(seq) FROM audit_entries` 比对 | 待建 / audit |
 | A18-2 | 事务**提交失败**不得留下任何锚点行（锚点绝不领先库内状态） | 强制提交阶段失败，断言锚点文件行数不变 | 待建 / audit |
-| A18-3 | **推进计数器只允许一条生产路径**，新增调用点即缺陷待说明 | `grep -rn "\.Checkpoint()\|Checkpoints.Advance(" --include=*.go core/ \| grep -v _test.go` 的结果集必须是**白名单**（当前：`approval` 提交后、`cmd/core/rejections.go`、`audit/append.go` 内部转发）；任何新增都要写清为什么不是双计 | 现存 / 主控本轮复核 |
+| A18-3 | **推进必须幂等：同一 `seq` 区间被推进两次，锚点不得多写一行**（12:4x 改判：从"人守白名单"换成"结构上双计无效"） | 对同一提交结果连调两次推进入口，断言 `audit.head` 行数不变、第二次不产生新行 | **待建 / audit（选①）** |
 
-**为什么 A18-3 判"白名单"而不是判"有没有命中"**：计数器双计会把"每 1000 条"悄悄变成"每 500 条"——
-它**不会**造出领先库的 head（head 取自库内 `Certified()`），但**阈值语义就废了**，
-而阈值正是这个机制唯一的功能目的。巡检 11:59 已就此发过一条纠正，**别再造第二个调用点**。
+**A18-3 为什么改成"结构幂等"而不是"白名单"**：12:37:12 实测**推进路径已有两条独立生产点**
+（`internal/approval/store_sqlite.go` 的 `ch.Checkpoint()` 在提交成功后；`cmd/core/rejections.go` 的
+`checkpoints.Advance(int(after.Seq-before.Seq), after)`），所以"指定 `cmd/core` 为唯一推进者"这个选项
+**在事实层就不成立**——要唯一就得删掉一条在跑的路径，而那条的消费者根本不在 audit 包内。
+**裁定选①：计数器改 seq 驱动**（记住"已锚定到哪个 seq"，`after.Seq - anchoredSeq >= 1000` 才写一行；
+第二次调用差值为 0 → 天然 no-op）。于是"谁在推进"不再是正确性前提，白名单退化成**记录**而不是闸门。
+**同时更正我记账时引用的一条错前提**：audit 说的"`UseCheckpoints` 零生产调用方"**字面今天已不成立**
+（`cmd/core/main.go:140` 确实在生产里调），它真正成立的是"**今天没人写 approvals，所以那条腿 dormant**"。
+两种说法对阈值隐患的结论相同，但**"谁在跑"必须说准**，否则选路会被错前提带走。
+阈值语义仍要钉死：双计不会造出领先库的 head（head 取自 `Certified()`），但会把"每 1000 条"悄悄变成"每 500 条"。
 
 
 
