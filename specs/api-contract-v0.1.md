@@ -181,6 +181,7 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | `core/api/http/**`、`core/api/websocket/**`、`core/cmd/core/**` | `backend` | **16:52 补**：transport 层原先无人归属。它是业务 Service 的薄投影，**不得含任何业务判断或状态迁移**；一律经各模块 Service 与 `db.Touch/Create`，WS 推送只能发生在事务提交之后（ADR-008） |
 | `core/internal/approval/**`、`permission/**`、`audit/**` | `audit` | `approvals` 的 SQL 只准出现在 `internal/approval` |
 | `core/internal/notification/**` | `backend` | **C12 补（17:45）**：此表原无 owner。Notification 是独立聚合，写入走 `Tx.Create(AggNotification,…)` 并发 `notification_created`；`audit`/`adapter` 需要发通知时**调它的 Service**，不得自己写 `notifications` 表 |
+| `core/internal/project/**` | `backend` | **REQ-P-1 裁定（15:3x，本轮新造的行）**：`projects` 是 ADR-017 十张聚合表之一，但此前 §7 从没给它 owner —— 于是 `POST /projects` 只能挂 501。**归 `backend`**：它的写出口只有 transport，且没有任何现存角色共享它的判断逻辑；为"只装一行 CRUD"另开一个别人的包，等于亲手造一条跨角色接缝。**配套禁令**：`project.Service` 只做聚合 CRUD 与版本推进，**不得**在里面调 adapter/process（依赖方向 §0）；需要探针的走 §7 已有的 `adapter_instances` 那条线。 |
 | `core/internal/adapter/**`、`process/**`、`adapters/fake/**`、`core/cmd/fake-adapter/**` | `adapter` | **11:25 补**：契约② §10 的 CO-1 裁定把 FakeAdapter 落点定在 `core/cmd/fake-adapter/`，但本表漏同步，导致 lint 把契约批准的正当落点判成越界（`test` 的 REQ-T5）。`adapters/fake/` 只放 fixture 与说明 |
 | `core/test/**`、`scripts/**` | `test` | 不得在别人包里建 `_test.go` |
 | `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**` | `frontend` | 禁止 import Core 内部类型 |
