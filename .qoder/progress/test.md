@@ -68,11 +68,14 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
 
 ## Current checkpoint
 
-- Stage: T-135 三件落完（C8-10 取代 C8-8 的字面数闸门、C8-11 与 C8-12 两条新腿）+ 账本 T-141 第一段
-  （T84-7a 现存 / T84-7b 显式 SKIP）。契约① §6 23:19:52 落的"合并行机械展开约定"我这边已合规，
-  并钉成 C8-12 里的 6 行展开自证表。
-  lint 连续十二轮 exit 0；默认面 **53 个顶层用例（声明 53 = 顶层结果 53）/ 39 PASS / 14 顶层 SKIP / 0 FAIL**，
-  开 `LUCERO_TEST_FAKE_ADAPTER=1` ⇒ **44 PASS / 9 SKIP / 0 FAIL**（含子用例 69 PASS、0 FAIL）。
+- Stage: **09-23 00:0x 追加**：契约① §6 展开约定改了口径（③"最近一个全名"+ 新 ③b"混排非法必须报错"），
+  我跟着翻了一次判据（`expandEventCell` 加两条守门 + 自证表加两行反例，两条守门各当场证明会咬）。
+  之前：T-135 三件落完（C8-10 取代 C8-8 的字面数闸门、C8-11 与 C8-12 两条新腿）+ 账本 T-141 第一段
+  （T84-7a 现存 / T84-7b 显式 SKIP）。
+  lint 连续十四轮 exit 0；默认面 **53 个顶层用例（声明 53 = 顶层结果 53）/ 39 PASS / 14 顶层 SKIP / 0 FAIL**，
+  开 `LUCERO_TEST_FAKE_ADAPTER=1` ⇒ **44 PASS / 9 顶层 SKIP / 0 FAIL**（含子用例 69 PASS、0 FAIL）；
+  挂死解除后 `go test ./...` 也进了验收面：**18/18 包 ok**（"全"只指 `core` 这一个 Go 模块）。
+  一次 `TestCrashRestartSameDataDir` 的红按 FL 处理成"撞上游改写、不算证据"，细节在 Verification 首条。
   三件等主控：REQ-T15（五行判据表回写 + "非字面量传码要不要判红"）、REQ-T14 剩余镜像、
   T84-7b 的 backend 第二段。
 - Status: in_progress
@@ -95,6 +98,28 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
 
 ## Completed
 
+- **09-23 00:1x 轮（T-153：第 15 条是通用口径，先回照我自己）**：主控把"命令要 `^全名$` + 显式包路径"
+  升级成**契约① §1.1 第 15 条**，所以第一件事是查**我自己**写的命令有没有违规，而不是等着别人来提。
+  - **实测把这条的"为什么"钉死**（00:12:22）：`go test -count=1 -v -run TestDroppedFrameReaches ./test/ ./internal/process/`
+    ⇒ **两条近名用例都被命中**、两份 `--- PASS` 来自两个包（谁的绿记到谁头上全靠运气）；
+    换成 `-run '^TestDroppedFrameReachesAuditSeam$' ./test/` ⇒ 只命中我这条，
+    且**两个子用例照常跑**（7a PASS 0.89s、7b SKIP）——顺带回答"锚定会不会把子用例掐掉"：不会。
+  - `scripts/flaky_watch.sh`：新增 `RUNRE='^'"$RE"'$'`，四个档位的 `-run` 都改用它；
+    **`RE` 本身必须保持原样**——probe 靠它去匹配 `--- PASS: <名字>` 那一行，
+    我要是一时省事直接把 `^…$` 拼进 `RE`，那 4×N 次采样会**全部判成"探测不成立"**（exit 2）。
+    这个"加固自己却把自己弄瞎"的形状写在脚本注释里了。用法行同步注明"`-r` 收用例名、不收正则"。
+    复跑：`-r TestDroppedFrameReachesAuditSeam -n 1` 四档 4/4 PASS、探测失败 0、`--selftest` exit 0、`bash -n` 干净。
+  - `scripts/crash_recovery.sh`：`-run 'TestCrash' ./test/...` ⇒ `-run '^(TestCrash[A-Za-z0-9]*)$' ./test/`
+    （整族是故意的，所以写成锚定的族形而不是裸前缀；裸前缀明天会被别人加的 `TestCrashRecoveryXxx` 静默并进我的清单）。
+    改后实测选择集不变：**3 PASS + 4 SKIP 共 7 条 `TestCrash*`**、exit 0。
+  - **删掉我自己留的那份表文副本**：REQ-T14 下面那个 ```markdown 围栏里还贴着 C8-6~C8-9 四行可粘文本，
+    而它已经滞后——里面 C8-8 还写着 29/12，契约正文今天标的是"已作废、被 C8-10 取代"。
+    这条规矩是我自己 09-22 写下的（"契约有表还留副本就是第三处真相"），今天轮到我自己执行。
+    删除用 python 做整块替换，**两个 assert 先行**（含 `| C8-6 |` 的围栏块必须恰好 1 个、且每个 ``` 都有闭合行），
+    删后复验 `grep -c '^## '` = 11、`| C8-6 |` 命中 0。REQ-T14/REQ-T15 两条同时标 **已办结**。
+  - **主控对我要的那个口径的裁定记在案**：非字面量传码 **不升红**——"把码改成常量/变量传"是合法 Go 风格，
+    为它开红等于惩罚合法重构；真正的不变量用**类型**收口比用 lint 收口强。
+    **重开条件**写进 C8-11：该计数从 0 变 ≥1 时动类型或明写例外，不许回来把这条改成红。今天仍 0 处、仍只打印。
 - **09-23 00:0x 轮（T-151 巡检①：契约① §6 的展开约定改了口径，我跟着翻一次判据）**：
   原文把 ③ 从"本行**第一个**全名"改成"该简写之前**最近一个**全名"，并新加 **③b：合并格只许
   「全是全名」或「一个全名 + 若干简写」两种形态，混排（假想 `a_b` / `c_d` / `_e`）是表格坏了、
@@ -830,6 +855,11 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
 ## Coordination
 
 - **REQ-T15（T-135/T-141 交付回写，判据表文本 —— 请主控落进契约② 判据表，我不改 `specs/**`）**：
+  **→ 09-23 00:1x 已办结（账本 T-153）**：五行全部落进契约②，`①′` 按我的 M-C 探针改写并被采纳；
+  我要的那个口径主控裁了 **"不升红"**（把码改成常量/变量传是合法 Go 风格，为它开红等于惩罚合法重构；
+  真正的不变量用**类型**收口比用 lint 收口强），并把**重开条件**写进 C8-11：
+  "非字面量传码"从 0 变成 ≥1 时动类型或明写例外，**不许回来把这条改成红**。今天仍 0 处、仍只打印。
+  另外这条口径被升级成**契约① §1.1 第 15 条**（不止 T84-7）：判据表命令列一律 `^全名$` + 显式包路径。s/**`）**：
   - **C8-8 行**：状态改 **`已被 C8-10 取代（09-22 23:2x，不是并列）`**，正文前面加一句
     「本行把 29/12 写成了字面闸门，09-22 被自己的一次合法扩列（C28① 收 `duplicate_project_path`）判红」。
   - **C8-10 行**：状态 `待建` ⇒ **`现存（09-22 23:19:03 实跑：§15.1=17、§15.2=30=码名 17+— 13，双向相等）`**；
@@ -845,11 +875,16 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
     建议在同一格补一句：**"另有 `db` 的包内对拍 `core/internal/eventjournal/contract_parity_test.go`
     （`TestCatalogMatchesContract`，23:10:05 复跑 62 类 PASS）—— 它比 `catalog` map、本行比 `const` 声明，
     两个观察面不重复。"** 若主控认为一条判据只留一个执行者，请明说删哪条，我不擅自合并。
-  - **T84-7 行**：拆成两格状态 —— `T84-7a 丢弃必须到达 Recorder 接缝（现存）`，命令写全为
-    `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestDroppedFrameReachesAuditSeam ./test/...`
+  - **T84-7 行**：拆成两格状态 —— `T84-7a 丢弃必须到达 Recorder 接缝（现存）`，命令按 §1.1 第 15 条写成
+    `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run '^TestDroppedFrameReachesAuditSeam$' ./test/`
     （**请把包路径一起写上**：`internal/process/connection_test.go` 里 adapter 自带的那条叫
     `TestDroppedFrameReachesTheAuditSeam`，只多一个 `The`，两条并排读会认错归属——
-    Go 的 `-run` 是无锚定子串匹配，写全名 + 写全包才是可复现命令）。
+    Go 的 `-run` 是无锚定子串匹配，写全名 + 写全包才是可复现命令。
+    **00:12:22 我把这条实测了一遍**：`-run TestDroppedFrameReaches` 对 `./test/ ./internal/process/` 两包同跑
+    ⇒ **两条近名用例都被命中**（两份 `--- PASS` 分别来自两个包）；换成 `^…$` + 单包 ⇒ 只命中我这条，
+    且 **两个子用例照常跑**（7a PASS 0.89s / 7b SKIP），也就是"锚定不会把子用例一起掐掉"。
+    主控把这条从"我这两行"升级成了**契约① §1.1 第 15 条**（通用口径），于是我自己账本与两个脚本里的
+    命令也一并改成锚定形——见 09-23 00:1x 那条 Completed。）
     实测：2 条 `DroppedEvent`（`turn/claimed` + `turn/dispatched`），帧内 id 与票号绑定 id 两个不同值都在。
     `T84-7b 一行审计 + event_journal 零新增（SKIP（blocked）：等 cmd/core 里的 process.Recorder 实现）`。
   - **一个要主控裁的口径（不裁我就按现状留着）**：C8-11 只判**字面量**码。哪天有人把码改成常量或变量传进来，
@@ -889,14 +924,16 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
   FL-1~FL-8 逐条对过脚本分支，FL-8 的"报扫过的文件数"两个分支都印（实测 122 个 .go）。
 - **REQ-T14（新，第四张表）：§15.1 ↔ §15.2 的集合一致性今天没有 Go 侧执行者**（主控 09-22 T-131② 点的那条）。
   我已落在 `core/test/errcode_mapping_test.go`（三个独立顶层用例、全程只用 `t.Errorf`），请把这四行镜像进契约② §15.2 末尾，
-  与 C8 同处一张表；命名沿用 C8-n 以免另起一族：
+  与 C8 同处一张表；命名沿用 C8-n 以免另起一族。
+  **→ 09-23 00:1x 已办结**：四行（含后来的 ①′ 与 C8-10/11/12）都进了契约② 判据表，
+  我这份账本随之删掉了当时贴的可粘表文副本——那份副本已经滞后（它还写着作废的 C8-8 29/12），
+  留着就是第三处真相，见下面括号里的说明。
 
-```markdown
-| C8-6 | 正向：§15.2『来自』列每个反引号码名都必须 ∈ §15.1 码列 | `go test -count=1 -v -run TestHTTPErrorCodesComeFromAdapterSet ./test/...` | 现存（PASS）/ test |
-| C8-7 | 反向：§15.1 每个码都要有 HTTP 映射行；**例外按形状判**——只有『来自』以 `—` 开头的行不参与，不点名放行 `version_conflict` | `go test -count=1 -v -run TestAdapterCodesHaveHTTPMapping ./test/...` | 现存（PASS）/ test |
-| C8-8 | **解析器自证**：§15.2 必须解析出 29 行 = 17 带码名 + 12 以 `—` 开头，且两者之和 = 总行数；§15.1 码列 17 个。任一不符 ⇒ 判判据自己坏了（红），**不许拿半张表去判人**。锚点用标题文本（`### 15.1 `→`#### 15.1.1`、`### 15.2`→`### 15.3`），锚点找不到或区间没有终点也报同一种红 | `go test -count=1 -v -run TestErrorCodeContractTablesParse ./test/...` | 现存（守门已咬过一次：我第一版把列索引写错，三条当场全红）|
-| C8-9 | 契约③ §7.1 尾那句"`api/http`/`cmd/core` 出现 `adapter_instances`/`adapter_capabilities` 的表名字面量写调用即 W13-2 红"由 **W13-2 的运行时表全集**覆盖（`biz_tables()` 从迁移解析，两张都在里面），不另立判据 | `bash scripts/check_ownership.sh`（2b 段逐行印 `[W13-2] <表>: n`） | 现存（今日 0 命中）/ test |
-```
+（这块原来贴着一份 C8-6~C8-9 的可粘表文，09-23 00:1x 删掉：REQ-T14/REQ-T15 的行都已落进契约② 判据表，
+账本再留一份就是第三处真相——而且这份副本已经滞后：它写的 C8-8 还是 29/12，契约正文今天标的是
+`已作废、被 C8-10 取代`。权威文本在契约② §15 之后那张表（C8-6 / C8-7 / C8-8 作废 / C8-9 / C8-10 /
+C8-11 / C8-12）与 T84-7a/7b；我这三个文件只是执行者：`core/test/errcode_mapping_test.go`、
+`core/test/turn_attribution_test.go`、`scripts/check_ownership.sh`。）
 - **REQ-T12 状态更新（不用你回，只报确认）**：你们 09-22 在契约③ §7.1 后那段注里已用实测确认
   "今天没有任何非测试代码构造 `Supervisor`、也没有 `Recorder` 的任何实现"——正是我 09-21 报的那句
   （`grep -rn audit core/internal/process/` 零命中）。T84-7 的三段归属已按契约记下：adapter 加"丢弃"事件、
@@ -943,7 +980,8 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
   （含 W13-3 与 C8-5 的**反向用例**）。09-22 T-135 轮：check 8 的 INFO 行去掉"唯一例外 version_conflict"
   这句点名口径，改成与 C8-7 一致的**按形状**表述（`—` 开头的行天然不进集合）；字面量闸门本来就不在 lint 里
   （它一直用 `>=8` 下界），所以这次只有 lint 与 Go 执行者的**措辞**对齐，没有行为变化
-- `scripts/crash_recovery.sh` — FIRST SPRINT §7 的跑法与 blocked 清单
+- `scripts/crash_recovery.sh` — FIRST SPRINT §7 的跑法与 blocked 清单；09-23 00:1x 命令改锚定族形
+  （`-run '^(TestCrash[A-Za-z0-9]*)$' ./test/`，见 §1.1 第 15 条）
 - `scripts/flaky_watch.sh` — 契约② 判据表 FL 的执行者：四档（single/shuffle/isolated/parallel）+
   五句判决分类器 + `-a <ISO>` 时间线档（扫 `../core ../specs ../scripts` 里 ±90s/前看 SLACK 的 .go mtime，
   并打印扫了多少个文件）；`--selftest` 喂六组合成计数证明分类器不是永真式。
@@ -974,6 +1012,28 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
 
 ## Verification evidence
 
+- **09-23 00:07:28~00:08:27（本机 `date`）③b 那轮交付前最后一次重跑**，四条全部 exit 0：
+  默认面 `./test/...` ⇒ `=== RUN` 顶层 53 = 顶层结果 53 = 声明 53，**39 PASS / 14 SKIP / 0 FAIL**；
+  开旗标 ⇒ **44 PASS / 9 SKIP / 0 FAIL**；`go test ./...` ⇒ **18/18 包 ok、0 FAIL、0 "no test files"**
+  （"全"= `core` 这一个 Go 模块的 18 个包，`apps/desktop` 与仓库根脚本不在里面）；lint exit 0。
+  **同一条记录里必须写的上一次红**：00:03:18 那一趟默认面 `TestCrashRestartSameDataDir` **FAIL（26.42s，
+  烧完 25s 预算）**，红句是"硬杀后同目录重启 25s 内没有换新 `core.endpoint` —— 残留锁没被自动回收"。
+  我没有当场记 flaky、也没有当场记回归，做了三件事：
+  ①**FL 四档 × 3**（00:05:33~00:06:24）⇒ 12/12 PASS、窗口内零改写 ⇒ 判决"未复现（不等于已绿）"；
+  ②**时间线档** `-a 2026-09-23T00:03:18+08:00 -s 240` ⇒ 扫 139 个 .go、**6 个落在改写窗口里**：
+  `core/api/http/projects.go`(前 133s)、`core/api/http/projects_test.go`(前 218s)、
+  `internal/project/service.go`(前 151s)、`internal/eventjournal/contract_parity_test.go`(前 110s)、
+  `core/test/errcode_mapping_test.go`(前 51s，我自己的 ③b 还原)、
+  以及 **`cmd/core/core_test.go` 在失败之后 7 秒被改写** ⇒ 按 FL-8 的口径**这次观察不算证据**；
+  ③**FL 四档看不到的那一维**（`-run` 过滤会跳过同包前置用例）：`go test -count=2 ./test/` 不过滤、
+  旗标关闭、与红那次同一配置 ⇒ 00:07:02 **78 PASS / 28 SKIP / 0 FAIL**。
+  **结论与请求**：这条记"撞上游在途改写，既不计 flaky 也不计回归"；要留档需要 **backend 就
+  00:01~00:03:25 那段 `cmd/core` + `api/http/projects.go` 改动交一次带时刻的复采**
+  （残留锁自动接管在 `cmd/core` 自己那侧有 `TestStaleLockIsTakenOver` 盯着，不是我这条的替代物）。
+  **另记自己一条工具教训**：第一次给 ③b 守门做探针我把分支写成 `case false:` / `if false {`，
+  `sawShort` 变只写不读 ⇒ **包编不过**，而我 grep 只兜 `^--- ` ⇒ 屏幕零输出，差点当成"探针没反应"。
+  关掉分支要用 `> 99` / `&& false` 这类**仍读取该变量**的写法，且探针输出必须同时兜
+  `build failed` / `declared and not used`。
 - **09-22 23:34:19~23:35:0x（本机 `date`）T-135 交付前最后一次重跑**，六条命令全部 exit 0：
   `go test -count=1 -v ./test/...` ⇒ **53 顶层 RUN / 53 顶层结果 / 39 PASS / 14 顶层 SKIP / 0 FAIL**；
   开 `LUCERO_TEST_FAKE_ADAPTER=1` ⇒ **44 PASS / 9 顶层 SKIP / 0 FAIL**（把子用例的 `--- ` 行一起数：
@@ -1217,9 +1277,9 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
   **REQ-T10**（五张表的镜像指针翻转还有没有剩）、Q1/Q2（`approval/respond` 与 `session/create` 的写方法归属）。
   在别人手里的：**T84-7b / REQ-T12 第二段**（backend 在 `cmd/core` 注 `process.Recorder` 实现）、
   U13-6、REQ-T7、T-D 剩余 4 条、T-142（db 的展开⑤）、T-143（adapter 的 import 白名单）。
-- First action after recovery: ①最后一步必做的一次重跑：
-  `go test -count=1 -v -run 'TestErrorCodeContractTablesParse|TestHTTPErrorCodesComeFromAdapterSet|TestAdapterCodesHaveHTTPMapping|TestTransportCodesAreInContract|TestEventCatalogMatchesJournalConstants' ./test/`
-  （当前 5 PASS）+ `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestDroppedFrameReachesAuditSeam ./test/`
+- First action after recovery: ①最后一步必做的一次重跑（命令按**契约① §1.1 第 15 条**写：`^全名$` + 显式包路径）：
+  `go test -count=1 -v -run '^(TestErrorCodeContractTablesParse|TestHTTPErrorCodesComeFromAdapterSet|TestAdapterCodesHaveHTTPMapping|TestTransportCodesAreInContract|TestEventCatalogMatchesJournalConstants)$' ./test/`
+  （当前 5 PASS）+ `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run '^TestDroppedFrameReachesAuditSeam$' ./test/`
   （7a PASS / 7b SKIP）；②**先查 §15.2 与事件目录有没有被再次扩列**（`git log -1 --format=%h` 对基线）——
   这两张表都会随功能长，判据已经改成不数行数，但趋势数一变我仍要重跑而不是抄上一次的数字；
   ③查 `cmd/core` 里有没有出现 `process.Recorder` 的实现（`grep -rn 'RecordDrop' core/cmd/`）——

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // Queryer 是本包用到的读接口子集：consumer-side 窄接口，*sql.DB / *sql.Conn / *sql.Stmt 直接满足。
@@ -106,6 +107,51 @@ func (r *Repository) ListMessages(ctx context.Context, sessionID string, limit i
 		m.RemoteMessageID, m.SequenceNo, m.TextContent, m.SyncedAt =
 			remote.String, seq.Int64, text.String, synced.Int64
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListFilter 是 GET /api/v1/sessions 的条件。ProjectID 是**契约里明写的过滤位**
+// （yaml 的 `project` 参数，"F-8 批准"），不是我自己加的（对照 C26：没有契约来源的字段不许兼职）。
+// 三个字段全空的 ProjectID = 不过滤；After* 走 keyset，没有 OFFSET（契约③ §2）。
+type ListFilter struct {
+	ProjectID      string
+	AfterCreatedAt int64
+	AfterID        string
+	Limit          int
+}
+
+// ListPage 按 (created_at, id) 升序出一页 —— 与 task/project 那两条 list 同一个序、同一套二元游标形状，
+// 所以 transport 复用现成的 encodeCursor/decodeCursor，本批零新增编解码函数。
+func (r *Repository) ListPage(ctx context.Context, f ListFilter) ([]Session, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	where := []string{"1=1"}
+	args := []any{}
+	if f.ProjectID != "" {
+		where = append(where, "project_id = ?")
+		args = append(args, f.ProjectID)
+	}
+	if f.AfterID != "" {
+		where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
+		args = append(args, f.AfterCreatedAt, f.AfterCreatedAt, f.AfterID)
+	}
+	args = append(args, limit)
+	rows, err := r.q.QueryContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE `+
+		strings.Join(where, " AND ")+` ORDER BY created_at, id LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session: list: %w", err)
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		s, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("session: list scan: %w", err)
+		}
+		out = append(out, s)
 	}
 	return out, rows.Err()
 }

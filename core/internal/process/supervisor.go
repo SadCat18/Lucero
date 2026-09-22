@@ -193,9 +193,13 @@ type Launcher func() (*exec.Cmd, error)
 type Recorder interface {
 	// RecordStart fires once per live process instance and carries the pid that
 	// §14's process_instances row has to name.
-	// No row handle crosses this way: (kind, process_role) plus "the latest row" plus the
-	// in-memory crash counter already say which lifecycle fact a call is, and the
-	// injector is configured per Supervisor, so it knows both halves of the key.
+	// No row handle crosses this way: the injector knows which lifecycle fact a call is
+	// from the event's Kind plus which row it belongs to from "the latest row for this
+	// Supervisor", and a Supervisor is configured per process, so both halves are in
+	// hand before the call. The halves are named after the columns they map to
+	// (T-155): 000001's process_instances has process_type CHECK(ADAPTER/WORKER) plus
+	// owner_type/owner_id - there is no process_role column, so an earlier draft of this
+	// comment named a thing that does not exist.
 	RecordStart(ev Event)
 	// RecordExit is a clean exit: ev.Status is §14's EXITED, ev.ExitCode the real one.
 	RecordExit(ev Event)
@@ -220,14 +224,21 @@ type Recorder interface {
 // frame's own execution_id is reported as it arrived, not as the ticket was bound,
 // precisely because the disagreement between the two is the event being recorded.
 type DroppedEvent struct {
-	Kind             Kind
-	ProcessRole      string
-	Method           string
+	Kind   Kind
+	Method string
+	// TurnRef is the ticket as it arrived, FrameExecutionID the execution the frame
+	// itself named, BoundExecutionID what this connection had bound to that ticket.
+	// The two execution ids are recorded unreconciled (T84-7): the disagreement between
+	// them is the fact the audit row exists to preserve.
 	TurnRef          string
 	FrameExecutionID string
 	BoundExecutionID string
 	Reason           string
 	Timestamp        int64
+	// No role field: T-155 measured this file's ProcessRole as zero-producer,
+	// zero-consumer and deleted it rather than inventing a producer for a column
+	// 000001's process_instances does not have. contract ③'s field list still names it,
+	// which is a contract-side lag for 主控 to close, not a reason to re-add the field.
 }
 
 // Sink receives every Event; it must not block (the restart loop is on this

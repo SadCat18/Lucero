@@ -14,7 +14,11 @@ package test
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -253,16 +257,74 @@ func TestDroppedFrameReachesAuditSeam(t *testing.T) {
 	t.Run("T84-7b 一行审计且 event_journal 零新增", func(t *testing.T) {
 		// 判据形状已经写在这里，只差被测的那一段落地 —— 前提不成立时显式 SKIP，不静默消失（T-124）。
 		//
-		// 要断的三件事（契约② T84-7 那一格 + §12"UNKNOWN 不许显示成确定值"在本层的落点）：
+		// 要断的三件事（契约② T84-7 那一格 + 契约③ §7.2 + §12"UNKNOWN 不许显示成确定值"在本层的落点）：
 		// ① 接缝收到 N 条丢弃 ⇒ `audit_entries` 恰好新增 N 行（多一行是伪造事实，少一行是静默丢弃）；
 		// ② `event_journal` 新增 0 行 —— 丢弃是审计事实，不是域事件，发出去就等于把矛盾下游化；
-		// ③ 审计行里帧内 id 与票号绑定 id 逐字保留（脱敏之后仍是两个都在，REQ-A10/A11 那条顺序）。
+		// ③ 审计行里帧内 id 与票号绑定 id 逐字保留、且**能指出是哪个 Adapter**（脱敏之后仍是两个都在）。
 		//
-		// 阻塞点（点名，不含糊）：`Recorder` 的实现方在 `cmd/core/processpipe.go`（账本 T-141 第二段，
-		// backend 23:0x 在途）。它没落地之前，②③ 两条在真链路上没有任何被测物；
-		// 而我**不能**拿 `internal/process` 自己的 stubRecorder 去判这三条 —— 那是在判替身，
-		// 判到的绿与产品行为无关（T-29：判决必须落在被测层自己的返回值或直接产物上）。
-		t.Skipf("blocked（REQ-T12 第二段，归 backend）：等 cmd/core 里出现真正的 process.Recorder 实现，" +
-			"本用例改成起真 Core + 造一次矛盾帧 + 数 audit_entries/event_journal 两张表的行数差")
+		// 观察面（T-163 裁定②：不给导出接缝，`Recorder` 留在 `package main`）：
+		// **黑盒子进程 + 数两张表** —— 起真 Core、造一次矛盾帧、比 `audit_entries`/`event_journal` 的行数差。
+		// 白盒 import 不到是对的，但那条路不需要任何人挪包。
+		//
+		// 摘 SKIP 的三段前提里只有①能被机器判，那就只判①；②③写成名字，不假装我看见了。
+		root := repoRoot(t)
+		if root == "" {
+			t.Skip("仓库根没找到 ⇒ 前提无法判定。宁可 SKIP 也不装作判过（判据看不见东西时最坏的就是给个干净理由）")
+		}
+		mounted, evidence := dropRecorderMounted(root)
+		if !mounted {
+			t.Skipf("blocked：三段前提只落了第一段。①装配点未接——%s；②probe 未接 ⇒ Core 今天没有跑着的 adapter 连接，"+
+				"任何帧都走不到丢弃分支（backend 在 cmd/core/processpipe.go 的注释里写明了这一点，并且给了理由："+
+				"挂上去就是给一个空转的东西记账）；③没有让 FakeAdapter「撒谎」的注入面 ⇒ 就算①②都齐，我也造不出"+
+				"『票号说 B、帧里写 EVIL』那一发（REQ-T16 在问主控）。"+
+				"三段缺一我都只能测替身，而 T-29 说得很清楚：判到的绿与产品行为无关。", evidence)
+		}
+		t.Skipf("前提①已满足（%s），但仍不测：还差②活连接与③注入面（REQ-T16）。"+
+			"**这条 SKIP 的理由变了，就是它该被改写的信号** —— 不要把它换成一个会红的 TODO，更不要凭空绿。", evidence)
 	})
+}
+
+// dropRecorderMounted 只回答一个问题：`cmd/core` 的**生产码**里有没有把丢弃记账挂上桥。
+// 判的是 `newDropRecorder(` 这个调用点，不判 dropaudit.go 存不存在 ——
+// 文件在盘上不等于挂上了（09-23 00:54 实测就是"实现在、生产码调用点 0 处"）。
+// 路径从仓库根拼，不写 `../cmd/core`：go test 的 cwd 是包目录，深度一改就静默扫到空集，
+// 而"扫到空集"在这段代码里会伪装成一个很干净的前提成立。
+func dropRecorderMounted(root string) (bool, string) {
+	dir := filepath.Join(root, "core", "cmd", "core")
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return false, fmt.Sprintf("扫 %s 失败：%v", dir, err)
+	}
+	if len(files) == 0 {
+		return false, fmt.Sprintf("%s 一个 .go 都没扫到（目录挪了？这是判据看不见东西，不是前提成立）", dir)
+	}
+	var hits []string
+	prod := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue // 别人自己的单测里当然会调用它，那不算装配
+		}
+		prod++
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return false, fmt.Sprintf("读 %s 失败：%v", f, err)
+		}
+		for _, line := range strings.Split(stripGoComments(string(raw)), "\n") {
+			if !strings.Contains(line, "newDropRecorder(") {
+				continue
+			}
+			trimmed := strings.TrimSpace(line)
+			// 定义行不算调用点。这条守卫不是我新加的聪明：C8-11 那条腿上我专门为
+			// `func writeError(...)` 写过同一条，今天在自己的门上漏了一遍 —— 同族错误第二次，记进账本。
+			// 漏掉的后果很具体：门会说"前提①已满足"，而盘上什么都没接。
+			if strings.HasPrefix(trimmed, "func ") {
+				continue
+			}
+			hits = append(hits, trimmed)
+		}
+	}
+	if len(hits) == 0 {
+		return false, fmt.Sprintf("%s 下 %d 个生产 .go（共扫 %d 个 .go）里没有 `newDropRecorder(` 的调用点", dir, prod, len(files))
+	}
+	return true, fmt.Sprintf("找到调用点 %q（共 %d 处）", hits[0], len(hits))
 }

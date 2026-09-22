@@ -116,6 +116,8 @@ type Config struct {
 
 	// 注入时才挂 POST /api/v1/sessions/{id}:sync（今天只有只读链这一格能力）。
 	Sessions SessionSyncer
+	// 注入时才挂 GET /api/v1/sessions（面板今天就在调这条，还吃着 501）。
+	SessionRead SessionReader
 }
 
 // NewHandler 装出 /api/v1 面：除 /health 外全部要求 Bearer；带 Origin 的外部请求 403；
@@ -126,6 +128,7 @@ func NewHandler(c Config) http.Handler {
 	registerNotificationRoutes(mux, c)
 	registerProjectRoutes(mux, c)
 	registerSessionRoutes(mux, c)
+	registerSessionListRoute(mux, c)
 
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

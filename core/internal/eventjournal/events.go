@@ -6,6 +6,7 @@ package eventjournal
 // Event types are lowercase snake_case: <domain>_<past-tense-action>.
 const (
 	ProjectCreated             = "project_created"
+	ProjectUpdated             = "project_updated"
 	ProjectArchived            = "project_archived"
 	AdapterRegistered          = "adapter_registered"
 	AdapterHealthChanged       = "adapter_health_changed"
@@ -70,7 +71,7 @@ const (
 )
 
 var catalog = map[string]bool{
-	ProjectCreated: true, ProjectArchived: true,
+	ProjectCreated: true, ProjectUpdated: true, ProjectArchived: true,
 	AdapterRegistered: true, AdapterHealthChanged: true, AdapterCapabilityVerified: true,
 	AdapterDowngraded: true, AdapterRestartExhausted: true,
 	ModelDiscovered:   true,

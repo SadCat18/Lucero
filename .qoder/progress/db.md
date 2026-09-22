@@ -3,7 +3,7 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-23T00:02+08:00
+LAST_UPDATED: 2026-09-23T00:53+08:00
 
 ## Objective
 
@@ -32,17 +32,30 @@ LAST_UPDATED: 2026-09-23T00:02+08:00
 
 ## Current checkpoint
 
-- Stage: T-149 ② 已落（③b 三种非法形状各自报错，取值逻辑未动），T-142 已闭单
+- Stage: T-161 第二半已闭（`ProjectUpdated` 常量 + `true` 集合），C8-12 的 Go 那条腿转绿
 - Status: complete
-- Last verified action: `go vet` VET_OK；scoped 门禁 → 2 包 ok；全仓 `go test ./internal/... -count=1`
-  → **13 个包 ok、FAIL 行 0**；变异标记 0 命中；基线现取 `82f01f6`，
-  `git diff --stat HEAD` 本角色范围**只有 `contract_parity_test.go` (+36/−24)**，
-  `events.go`、`platform/db/`、`core/migrations/` 均不在 diff 内 = 与基线逐字节相同
+- Last verified action: 改前 `TestCatalogMatchesContract` FAIL（点名 `[project_updated]`）→ 改后 PASS（63/63）；
+  `go vet` VET_OK；scoped 门禁 2 包 ok；全仓 `go test ./internal/... -count=1` → **13 包 ok、FAIL 行 0**；
+  基线现取 `a567704`，`git diff --stat HEAD` 本角色范围**只有 `events.go` (+2/−1)**，
+  `platform/db/` 与 `core/migrations/` 不在 diff 内 = 与基线逐字节相同
 - Next action: 无待办；账上无未闭合项
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-161 / REQ-DB-7 第二半已闭（两行，无迁移）**：`events.go` 补 `ProjectUpdated = "project_updated"` 常量
+  **并同步进 `true` 集合**（`ProjectCreated: true, ProjectUpdated: true, ProjectArchived: true`）。
+  改前 `TestCatalogMatchesContract` 正红着，原文：
+  `event contract §6 registers [project_updated] but the catalogue has no entry/constant for them`；
+  改后 → `contract §6 and the catalogue agree on 63 event types`，常量 `grep` 复核 **63**。
+  这条顺带证实 ③b 守门**没有误伤真表**：§6 第 167 行是
+  `` `project_created` / `project_updated` / `project_archived` ``（"全部写全名"的合法形态），
+  解析器正确提出 3 个名字、没报"形状坏了"。
+  - **故意没加单类型用例**：`Registered("project_updated")` 已被 parity 覆盖，再写一条只是抄一遍断言；
+    REQ-DB-5 那条专用用例留着是因为它还要钉 `notification_*` 三兄弟与近似拼法，这条没有同等额外面。
+  - **上游半条不在我范围**：`specs/openapi/core-v1.yaml` 的 `EventType` 枚举仍缺 `project_updated`
+    （巡检已报、归 frontend）；`PATCH /projects/{id}` 本体是 backend 的活 ——
+    我这行只把"`Tx.Touch` 写不进去"那个硬阻塞拿掉。
 - **T-149 ② 已落（③b 混排必须报错）**：`eventTypesIn` 现在只认 §6 的两种合法形状
   —— **全部写全名** 或 **一个全名打头 + 若干 `_xxx`**；三种非法形状各自报错：
   ① 全名之前出现简写（孤儿，如 `_handled / _read`）；② 已有 ≥2 个全名后出现简写

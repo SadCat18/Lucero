@@ -223,6 +223,8 @@ func (c *Core) handler() http.Handler {
 		ProjectRead: c.db.Read,
 		// :sync 今天只有只读链这一格能力（C25）：Service 里一行都不写，所以只给它一把读的 Repository。
 		Sessions: session.NewService(session.NewRepository(c.db.Read)),
+		// 面板的 listSessions 今天打的是 catch-all 的 501，这条把它接成真读路径。
+		SessionRead: session.NewRepository(c.db.Read),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{
