@@ -331,6 +331,13 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     - **落点与顺序**：实现归 `db`（`internal/platform/db`）；`cmd/core` 那三格改走这两个入口归 `backend`；
       **`adapter` 合验的行级那一半在这条落地之前仍只到"显式未接"**——`lifecyclecolumns_test.go` 里那个
       `LUCERO_REQ_DB2=1` 开关就是钉这件事的，**谁都不许为了变绿把它改成 SKIP**。
+    - **落地判据（这条通道"什么叫做完"）**：`LUCERO_REQ_DB2=1 CGO_ENABLED=0 go test -count=1 -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
+      必须 **PASS**（不是 SKIP、不是 `t.Fatal` 那句"还没接上真写路径"）——
+      **验收方是 `backend`（它改那三格 Recorder），`db` 只负责两个入口存在且形状对**。
+      **另：REQ-DB-2 落地之前不要顺手带 `LUCERO_REQ_DB2=1` 跑全仓**，那条按设计就是红的
+      （该用例里"未接上真写路径即 `t.Fatal`、且明写不许改成 SKIP 蒙过去"那一句是故意的）。
+      **主控 09-23 05:09 实跑为证**：带 flag 单跑该用例 ⇒ `--- FAIL (0.00s)`、报的就是那句 ⇒
+      这是**已知未闭**，不是新线索，谁拿它去判别人的批次红都算误伤。
 
 18. **C34 裁定（09-23 05:07）：`process_instances.owner_type` / `owner_id` 的词表。** backend 明说"我不猜"，是对的——
     这两列在 schema 里是**无 CHECK 的可空 TEXT**，所以值域只能由契约登记、由 lint 钉，代码里"看起来自然"的写法不算数。
