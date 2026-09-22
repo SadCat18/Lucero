@@ -298,6 +298,18 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 > ② **失败原因分层**：到期限 ⇒ 消息里必须出现"期限"这个原因，**不许拿底层管道错误冒充**
 > （`ADAPTER_UNRESPONSIVE` 的生产方是 Core 自己，归因写错了事后从 `details_json` 里翻不回来）。
 
+> **`Recorder` 的形状第一次进契约（2026-09-22 23:2x）**：`internal/process` 的 `Recorder` 现在是**四个方法** ——
+> `RecordStart(ev Event)` / `RecordExit(ev Event)` / `RecordCrash(ev Event)` / `RecordDrop(ev DroppedEvent)`；
+> `DroppedEvent` 的字段是 `Kind` `ProcessRole` `Method` `TurnRef` `FrameExecutionID` `BoundExecutionID` `Reason` `Timestamp`
+> （**注意 `FrameExecutionID` 与 `BoundExecutionID` 都按"当时收到的样子"记，不互相校正 —— 这两个值不一致本身就是那条要落审计的事实**）。
+> **为什么会漂**：判据表 T84-7 从 09-21 起就把"三方法定稿"当事实引用，可那句话只活在派发账本里，
+> **契约从来没写过这个接口** ⇒ adapter 加第四个方法时没有任何机械东西会响。
+> **但别把它读成"两家各按一份的 P0"**：Go 的接口是实现即编译校验的，`cmd/core` 少实现一个方法就 build 不过，
+> 漂移会被编译器抓住；真正的洞是**"读契约的人以为契约说了什么"**（它当时什么都没说）。
+> 所以本条只补记录、**不另立判据**。通用口径：**接口形状要"定稿"就写进契约，不要写在派发里。**
+> `RecordDrop` 的实现侧约束（归 `backend` 的 `cmd/core`）：只写审计行、**不写 `event_journal`**（T84-7 断的就是这一对），
+> 且这里不得出现 `Tx.Append("audit_entries"` 表名字面量（W13-2），审计行走 `audit` 自己的出口。
+
 
 ## 8. 明确不做（v0.1）
 
