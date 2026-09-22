@@ -144,6 +144,16 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     - **白名单写死在 db 里**：变量 **`narrowTables`** 当前**只有 `idempotency_keys`**，
       可写列 `state`/`response_json`/`updated_at`/`expires_at`，主键 `key`。白名单外一律 error
       （"not in platform/db's narrow update whitelist"）。**加表要过我这关**（写 REQ，不许顺手加）。
+    - **REQ-DB-6 裁定（09-23 00:3x）：`process_instances` 的退出/崩溃改写不进 `narrowTables`，本条是"加表要过我这关"的一次正式答复：不准。**
+      理由不是它不够窄，是**它要发事件**：事件契约 §6 登记着 `process_started`/`process_exited`/`process_crashed`
+      （`aggregate_type=process`），而本入口的定性就是"**不取 version、不写事件**"（判据 U13-4）。
+      走 `UpdateOnce` 写这两格 = **行改了、事件静默丢掉**，正是 REQ-A10/A11 那一族"字节对了、归因缩水"。
+      `db` 在 `narrowTables` 的注释里把这条守得很干净（"没有消费者的入口就是投机开的门"）——**现在有了消费者，
+      但来的不是这个门**：真正的洞是 **REQ-DB-2**（"无版本、但要发事件"的表没有写路径），
+      `process_*` 与 `core_ready`/`core_shutdown` 是**同一个洞的两半**（`core` 根本没有表），所以**一次做掉、共用一条通道**，
+      不要给 `process_instances` 单开窄门、也不要为它补 `version` 列（`000002` 没给它版本是有道理的：
+      它的改写来自 Supervisor 的异步观察，不是用户的 `If-Match`，加了版本也没有并发语义可保护）。
+      **⇒ backend 那两格继续阻塞在 REQ-DB-2 上，不算它欠账；`RecordStart` 走 `Append` 不受影响。**
     - **聚合表物理封死**：`Tx.UpdateOnce` 开头对 **`aggTables`** 的命中判断直接 error，
       所以第 12 条那张表**不可能被误用来绕过版本**。
     - **`guardCol`/`guardVal` 是"只封存一次"的关键**：第一次写把 `state` 改掉并落 `response_json` → 1 行；

@@ -164,7 +164,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 
 | event_type | 触发者（包） | payload 关键字段 | Audit |
 |---|---|---|---|
-| `project_created` | project | `name` `canonical_path` | – |
+| `project_created` / `project_updated` / `project_archived` | project | created：`name` `canonical_path`；**updated：`name` `metadata`**；archived：`reason` | – |
 | `project_archived` | project | `reason` | – |
 | `adapter_registered` | adapter | `adapter_key` `protocol_version` | – |
 | `adapter_health_changed` | adapter | `from` `to` `confidence` | – |

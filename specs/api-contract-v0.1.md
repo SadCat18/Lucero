@@ -301,6 +301,8 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 > **`Recorder` 的形状第一次进契约（2026-09-22 23:2x）**：`internal/process` 的 `Recorder` 现在是**四个方法** ——
 > `RecordStart(ev Event)` / `RecordExit(ev Event)` / `RecordCrash(ev Event)` / `RecordDrop(ev DroppedEvent)`；
 > `DroppedEvent` 的字段是 `Kind` `ProcessRole` `Method` `TurnRef` `FrameExecutionID` `BoundExecutionID` `Reason` `Timestamp`
+> （**⚠ 后继注（09-23 00:3x）：本清单里的 `ProcessRole` 已被本节末尾裁定删除 —— 它是"声明了但零生产者、零消费者、库里也没有这一列"的字段。
+> 清单原文保留不改，是为了让人看见"当初以为需要它"这件事；执行按本节末尾那条。**）
 > （**注意 `FrameExecutionID` 与 `BoundExecutionID` 都按"当时收到的样子"记，不互相校正 —— 这两个值不一致本身就是那条要落审计的事实**）。
 > **为什么会漂**：判据表 T84-7 从 09-21 起就把"三方法定稿"当事实引用，可那句话只活在派发账本里，
 > **契约从来没写过这个接口** ⇒ adapter 加第四个方法时没有任何机械东西会响。
@@ -322,6 +324,15 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 > 这与 `supervisor.go:196` 那句注释的本意一致（"注入器按 Supervisor 配置，它知道键的两半"），
 > **但那句注释里的 `process_role` 是个不存在的名词，必须一并改成 `process_type` + `owner_*`**（注释比代码强，同 T-143 那一族）。
 > 判据侧同步：契约② 判据表 **T84-7b** 增加一条"审计行必须能指出是哪个 Adapter，**不许留空串冒充**"。
+
+> **裁定②：不把 `Recorder` 挑出 `package main`（09-23 00:3x，解 backend 与 `test` 那次"判断相反"）**。
+> 两边其实都没说错，**分歧在观察面**：backend 说"实现在 `cmd/core`（`package main`）里，`test` import 不到 ⇒ 翻不成 GREEN"——
+> 这对**白盒 import** 那条路成立；`test` 说"等的只是实现出现"——这对**它实际选的路**成立：
+> 它 00:20 那格 `t.Run("T84-7b …")` 写得很明白，落地时改成"**起真 Core + 造一次矛盾帧 + 数 `audit_entries`/`event_journal` 两张表的行数差**"
+> （`core/test/turn_attribution_test.go:253~266`，我 00:3x 逐字读过），并且它明确拒绝拿 `internal/process` 自己的 `stubRecorder` 判这三条
+> （"那是在判替身，判到的绿与产品行为无关"）。⇒ **黑盒子进程 + 数表，不需要任何导出，也不需要挪包。**
+> **附带一条不许顺手做的事**：不要为了"让 test 能 import"把装配代码从 `cmd/core` 搬进某个 internal 包 ——
+> 那是为了让判据好写而改产品结构，方向反了；真需要可测性，就把**行为**暴露在进程边界上（现在正是这样）。
 
 
 ## 8. 明确不做（v0.1）
