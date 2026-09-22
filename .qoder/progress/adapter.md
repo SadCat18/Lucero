@@ -5,7 +5,7 @@ SCOPE: Core↔Adapter 协议实现（帧编解码/握手/capability/三态/流�
 EVIDENCE_DIR: .qoder/progress/adapter.md（本轮为纯单测证据，不落 .qoder/evidence/）
 SCRATCH_DIR: D:\Project\Lucero\.scratch\adapter\（T-47：一次性产物只准落这里，仓库已 ignore；
              永不碰 /tmp、%TEMP%、$env:TEMP 的通配删除；只删自己建的具体文件名）
-LAST_UPDATED: 2026-09-21T16:04:30+08:00  # 本行写盘前一条命令里 `date` 实读（不是估的），此后未再改
+LAST_UPDATED: 2026-09-22T22:57:41+08:00
    # 自纠两处（T-43）：① 本行上一度写成 `14:36:20`，那**不是** `date` 读出来的、是估的（当时最后一次实读是
    # 14:31:49）；② 09-21 11:11 我用一条 `\S+` 的正则改这行，把 `LAST_UPDATED:` 前缀 itself 吃掉了，
    # 当场用 Edit 修回 —— 记账本自己的教训：**改标头行必须锚全文，不能用 `^KEY: \S+` 这种吞前缀的写法**。
@@ -64,17 +64,21 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   §4 方法表**已有** `session/create` 一行（REQ-T8 闭），互校用例里那条豁免与"代码有契约没有"的状态一并撤掉，
   现在 `writeMethods` 的每个名字都必须能在 §4 找到、且 §4.1 声明的写必须都在我集合里（双向对拍，t5 会红）。
 - Status: in_progress
-- Last verified action: 交付前最后一次重跑 **09-21 16:03:44 起 / 16:03:53 收**（`date` 实读）：
-  带 `-v` 的 `go test -count=1 ./internal/... ./cmd/... ./api/...` = **316 PASS / 5 SKIP / 0 FAIL、16 包全 ok**。
-  我三包 16:04:06 逐包单跑 = **87 PASS / 2 SKIP / 0 FAIL**，声明数 42 + 24 + 23 = **89** 对上
-  （本轮 +1：`TestStreamNotificationsMatchContractTables`）。源码最新 mtime **16:03:26**（变异批还原，
-  与 15:5x 批前备份 `cmp` identical）< 该次跑；`gofmt -l` 我三目录空、`vet` rc=0、`grep -rn ZMUT core/` = 0。
-  证形对的是 HEAD `1ed70c1`（16:02:01，纯台账提交，`git show --stat 1ed70c1 -- <我的路径>` 为空 ⇒
-  没吞我的活），脏差 **9 files / 398 insertions(+) / 41 deletions(-)**、`??` = 0。
-- Next action: **等 REQ-T12 落地**（backend 的 `Recorder` 装配；T-123 已把我的 blocked 解除、T-122 15:56 投给
-  backend，15:56:38 复采仍是 0 个生产 import 方），落地即按我那五条可执行判据合验并按三句证形交回。
-  等的时候我做自维护件：本轮补了 §6/§4.2 通知表与六个常量的双向互校，下一件同类是
-  §7 额度形状与 `quota.go` 的互校（目前只有整数码表 §1 有对拍）。
+- Last verified action: 交付前最后一次全仓跑 **09-22 22:56:35 起 / 22:56:43 收**（`date` 实读），
+  `-v` + `-timeout 900s` 的 `go test -count=1 ./internal/... ./cmd/... ./api/...` =
+  **338 PASS / 6 SKIP / 1 FAIL、16 包 ok**，且**日志里没有 `panic: test timed out`** —— 这就是 T-132 的 P0
+  （"probe 让 `go test ./...` 整仓挂死"）已经消除的直接证据，不是"我看它不挂了"。
+  我三包逐包：`internal/adapter` **50 PASS / 0 / 0**（声明 50，probe 六条 + store 两条 + 丢弃接缝前的一条都在）、
+  `internal/process` **24 PASS / 1 SKIP / 0 FAIL**（声明 25），`cmd/fake-adapter` 本轮未改。
+  唯一那条 FAIL 是 `cmd/core/TestLauncherDeadlineBoundsReads`（`processpipe_test.go:124: Close 报错:
+  kill: invalid argument`，backend 的文件与 Windows 上 kill 语义，不是我改的形状：那文件能编译通过，
+  说明 Recorder 第四方法没有打断它的实现）。`gofmt -l` 我三目录空、`grep -rn ZMUT core/` = 0。
+  **今天(09-22)我一度 6 小时没交报告**：15:19 被唤醒、15:54 还在写文件，账本停在 09-21 16:05 ——
+  T-132 点得对，"代码在盘 ≠ 验收闭口"是我前天自己立的。这一段就是补账。
+- Next action: 把 probe 交给 backend 接线（`api/http` 薄投影 + `cmd/core` 构造注入 Launcher），
+  并附上 §7.2 新增两条要求已落地的证据；合验 REQ-T12 时一起验丢弃接缝写出的审计行。
+  另：`Registry.Probe` 的**成功路径目前只被进程内测过**（真握手走 `scriptedLauncher`），
+  真子进程那条腿要等 backend 递进真 Supervisor。
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/adapter/... ./internal/process/... ./cmd/fake-adapter/...`
 
 ## Completed
@@ -524,6 +528,28 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   就是这条用例存在的全部理由。
   **顺带更正一处我自己刚写下的**：Next action 上一版写"除 REQ-T12 外我包内无未交项 ⇒ 转 blocked/等待"，
   这话把"等别人"和"没有可做的"混成一件了；本轮起按 T-123 的解除口径写成"等 REQ-T12，等的时候做自维护件"。
+
+- **第 10 轮（09-22）：`Registry.Probe`（§7.2 / REQ-AD-1 / T-129）+ Recorder 的丢弃接缝（T84-7 前半）**，
+  以及 T-132 抓出的两个 P0。
+  交付面：`probe.go`（Launcher 注入 + Entry/Registry/ProbeResult/Probe + `AdapterInstance()` 投影）、
+  `probe_store_sqlite.go`（`adapter_instances`/`adapter_capabilities` 的 upsert，写只走 platform/db，
+  事件只用 `adapter_registered`/`adapter_health_changed`/`adapter_capability_verified` 三个已登记名）、
+  用例 8 条（6 probe + 2 真库 store）+ 丢弃接缝 1 条。
+  **两个 P0 都是我写的，都被现场栈/失败输出定位，不是猜的**：
+  ① **挂死**：夹具 `scriptedLauncher.Start` 里 `in, _ := io.Pipe()` / `_, fwd := io.Pipe()` —— `io.Pipe`
+    无缓冲且**四条腿都得有人握着**，我各扔掉一端，等于 Core 写的字节没有读者、替身要读的没有写者，
+    `Writer.Write` 永久阻塞，整个包的测试二进制被带走（所以是"整仓挂死"而不是"一条用例红"）。
+    主控 22:41 逐条单跑定位到 `probe_test.go:106` 的栈，判"根因在夹具不在实现"——**判对了**。
+  ② **实现问题**：`ctx` 有期限时能中断，但归因丢了 —— 报的是 `write initialize: io: read/write on
+    closed pipe`，因为我把写放在 select 之前、又在关闭管道之后才取写错的错。修法是把写/读整体搬进
+    同一个 goroutine、select 只可能报期限，并按 §7.2 补写新增的两条硬要求：
+    **无期限时 Probe 自加 `defaultProbeTimeout = 10s`（具名常量，不是只活在测试里的字面量）**，
+    以及"原因分层"（消息必须同时说出「没有 initialize 回应」和「期限」）。
+  **两条 SILENT/自伤也记账**：x1 变异第一次是 SILENT —— 我的断言只 `Contains("deadline")`，而
+  `ctx.Err()` 本身打印 "context deadline exceeded"，**归因错了也能通过**；收紧成"事实 + 原因"两半都必须在，
+  x1 才 FIRED。这与记忆里"不得只验声明文本"同族，是今天第二次踩在同一类断言上。
+  ③ 变异批 `mut-r10.py` 第一次 x1 报 **BUILD-BROKEN**（我又一次往多行 Sprintf 里插行尾 `/*…*/` 改坏参数表），
+  改成整串替换后才是有效判决。
 
 
 ## Remaining
@@ -1078,7 +1104,20 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - 第 9 轮：`core/internal/adapter/contract_table_test.go`（`TestStreamNotificationsMatchContractTables`
   + `methodConst`/`notificationRow` 两个解析器，复用同文件的 `contractFile`/`readContract`/`section`，
   不另起第二套读契约的代码）；`core/internal/adapter/stream.go` 无改动（曾被 w1/w2 变异又还原）
+
 ## Changed files
+- 第 10 轮（09-22，probe + 丢弃接缝 + T-132 两个 P0）：
+  `core/internal/adapter/probe.go`（新）、`core/internal/adapter/probe_store_sqlite.go`（新）、
+  `core/internal/adapter/probe_test.go`（新，6 条）、`core/internal/adapter/probe_store_test.go`（新，2 条真库）、
+  `core/internal/adapter/purity_test.go`（**判据改写**：§6 规则 4 的"全包零非 stdlib import"收成
+  "只有 `probe_store_sqlite.go` 与 `*_test.go` 可 import 白名单里的三个包，`database/sql`/`os/exec` 全文件仍禁，
+  `internal/process` 任何文件都禁"，并加"allow-list 里的文件必须存在"的反向检查 —— 依测试自己原先写的
+  "要放宽就连包名和允许它的条款一起写进来"）；
+  `core/internal/process/supervisor.go`（`Recorder` 第四方法 `RecordDrop` + `DroppedEvent` +
+  nil-safe 的 `recordDrop`）、`core/internal/process/connection.go`（丢弃点接上接缝 + `boundTo`；
+  第一版在 nil `sup` 上取 `.Kind` 直接把 read 循环 panic 掉，已由 `TestDroppedFrameReachesTheAuditSeam` 与全仓跑兜住）、
+  `core/internal/process/supervisor_test.go`（stub 加 `drops`）、`core/internal/process/connection_test.go`
+  （`TestDroppedFrameReachesTheAuditSeam`）
 - 第 8 轮（CO-40 收口 + §10 对拍）：`core/cmd/fake-adapter/readers_test.go`（`section10` 解析器 +
   `TestFakeAdapterSatisfiesContractSection10`，含两条"注入各自要验它那一行的行为"的子进程路径）、
   `core/cmd/fake-adapter/main.go` 与 `core/cmd/fake-adapter/service.go`（无行为改动，仅随上轮排空点收口的注释）、
@@ -1161,6 +1200,21 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - `core/internal/adapter/stream.go` — §4.2 的两处结论落地：`CarriesTurnRef` 只含四条、
   `turn/dispatched` 放开 Provider 句柄（CO-13）、跟踪器同口径；注释与 §4.2 载荷表对齐
 ## Verification evidence
+- **第 10 轮 4 条变异 `mut-r10.py`，最终全部 FIRED、not-fired: none**（`probe.go`/`connection.go` 批后
+  `identical=True`、`marker_hits=0`）：
+  | # | 变异 | 判据 | 结果 |
+  |---|---|---|---|
+  | x1 | 到期消息改成"closed pipe"（拿底层管道错冒充原因） | §7.2 新增②：原因分层 | **第 1 次 SILENT**（断言只查 `deadline` 字样，`ctx.Err()` 天然带）→ 收紧成"事实+原因"后 **FIRED** |
+  | x2 | §2.2 的 major 不符被压成通用 outage 码 | §15.2 靠码分 426/503 | **FIRED** |
+  | x3 | 失败路径照样写 capability 行 | §7.2：不伪造 capability 行 | **FIRED** |
+  | x4 | 泵丢帧不再叫接缝 | T84-7：一次丢弃留一条审计接缝 | **FIRED** |
+- **交付跑（第 10 轮）**：`date` 实读 **22:56:35 起 / 22:56:43 收**，`-v -timeout 900s` 全仓 =
+  **338 PASS / 6 SKIP / 1 FAIL、16 包 ok**、**无 `panic: test timed out`**（P0 的判据就是这条：挂死会打这一行）。
+  唯一 FAIL = `cmd/core/TestLauncherDeadlineBoundsReads`（backend 的文件，`kill: invalid argument`，
+  且该文件能编译 ⇒ 与 `Recorder` 第四方法无关）。三包逐包：adapter 50/0/0、process 24/1/0。
+  三句证形第②句：`git diff --stat HEAD -- <我的路径>` 于 22:58 现取哈希后交，新文件四个
+  （`probe.go`、`probe_store_sqlite.go`、`probe_test.go`、`probe_store_test.go`）必须走
+  `git diff --no-index --stat /dev/null <文件>`（REQ-T11 第三句）。
 - **第 9 轮 5 条变异 `mut-r9.py` 全部 FIRED、not-fired: none**（批前 `cp` 两份、批后 `cmp` identical、
   `marker_hits=0`、`go vet` rc=0、`grep -rn ZMUT core/` = 0）：
   | # | 变异 | 目标 | 失败消息（原样） |

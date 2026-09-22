@@ -48,6 +48,12 @@ func (s *fakeStore) MarkUnverified(_ context.Context, key, displayName, reason s
 // scriptedLauncher answers the way a real Adapter's stdio does, or fails to start at all.
 // answers == nil means "the child never comes up"; answers == -1 means it comes up and
 // then says nothing, which is the deadline path.
+//
+// io.Pipe is unbuffered and every end has to stay held: the reader Core writes into must
+// have its writer alive in the peer goroutine, and the writer Core reads from must have its
+// reader alive there too. Dropping either end is what made these tests hang - the write
+// blocked forever inside a fixture, which is a much worse bug to ship than a failing one,
+// because it takes the whole package's test binary down with it.
 type scriptedLauncher struct {
 	calls   int
 	answers int
@@ -65,19 +71,19 @@ func (l *scriptedLauncher) Start(ctx context.Context, key string) (io.ReadWriteC
 	if l.answers == 0 {
 		return nil, os.ErrClosed
 	}
-	in, _ := io.Pipe() // Adapter -> Core
-	_, fwd := io.Pipe()
+	fromPeerR, fromPeerW := io.Pipe() // Adapter -> Core
+	toPeerR, toPeerW := io.Pipe()     // Core -> Adapter
 	go func() {
-		defer fwd.Close()
+		// Holding both peer ends for the life of the goroutine is what keeps the
+		// unbuffered pipes from deadlocking a write or starving a read.
+		defer fromPeerW.Close()
+		defer toPeerR.Close()
 		if l.answers < 0 {
-			select {
-			case <-ctx.Done():
-			case <-time.After(3 * time.Second):
-			}
+			<-ctx.Done()
 			return
 		}
-		r := NewReader(in)
-		w := NewWriter(fwd)
+		r := NewReader(toPeerR)
+		w := NewWriter(fromPeerW)
 		f, err := r.Read()
 		if err != nil {
 			return
@@ -92,7 +98,7 @@ func (l *scriptedLauncher) Start(ctx context.Context, key string) (io.ReadWriteC
 		}
 		_ = w.Write(reply)
 	}()
-	p := &duplex{r: in, w: fwd}
+	p := &duplex{r: fromPeerR, w: toPeerW}
 	l.pipe = p
 	return p, nil
 }
@@ -236,8 +242,12 @@ func TestProbeGivesUpOnTheCallersDeadline(t *testing.T) {
 	if !asProbeError(err, &e) || e.Code != ErrAdapterUnresponsive {
 		t.Fatalf("err = %v, want ADAPTER_UNRESPONSIVE on the silence path", err)
 	}
-	if !strings.Contains(err.Error(), "deadline") {
-		t.Errorf("message %q should name the deadline as the reason", err)
+	// Two halves, both required: what happened (no reply) and why (the deadline). The
+	// first mutant of this assertion passed by accident, because ctx.Err() prints
+	// "context deadline exceeded" even when the message blames a closed pipe - so the
+	// fact has to be named too, not just the word.
+	if !strings.Contains(err.Error(), "no initialize reply") || !strings.Contains(err.Error(), "deadline") {
+		t.Errorf("message %q should say there was no initialize reply and name the deadline as the reason", err)
 	}
 }
 

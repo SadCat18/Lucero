@@ -544,6 +544,52 @@ func TestConnectionDropsUnboundTurnRef(t *testing.T) {
 	}
 }
 
+// TestDroppedFrameReachesTheAuditSeam is T84-7's half of §4.2 裁定 ① inside this package:
+// a frame the pump throws away must still reach the injector, because "dropped and
+// reported to the consumer" leaves no trace once the consumer is gone. It asserts the
+// seam only - what row the injector writes is audit's own outlet, and this package must
+// never name the audit_entries table (W13-2).
+func TestDroppedFrameReachesTheAuditSeam(t *testing.T) {
+	c, p := pipeConnection(t)
+	rec := new(stubRecorder)
+	// Connect normally wires sup; the pipe harness builds a Connection without one, so
+	// the test attaches the Supervisor the drop path reads its recorder from.
+	c.sup = &Supervisor{Kind: KindAdapter, Rec: rec,
+		Now: func() time.Time { return time.UnixMilli(1700000000000) }}
+	go p.answerOne(t, handshakeResult())
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodStreamDelta, SequenceNo: 1,
+		TurnRef: "never-issued", Channel: adapter.ChannelAssistant, ExecutionID: "e-stranger",
+		Text: "orphan"}); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	select {
+	case ev := <-c.Inbound():
+		if ev.Frame != nil {
+			t.Fatalf("the unattributable frame was forwarded as %+#v", ev.Frame)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pump neither forwarded the frame nor reported the drop")
+	}
+	if len(rec.drops) != 1 {
+		t.Fatalf("RecordDrop fired %d times, want exactly one per discarded frame", len(rec.drops))
+	}
+	got := rec.drops[0]
+	if got.Method != adapter.MethodStreamDelta || got.TurnRef != "never-issued" ||
+		got.FrameExecutionID != "e-stranger" || got.BoundExecutionID != "" {
+		t.Errorf("drop = %+v, want the frame's own method, ticket, and the execution_id it claimed (bound stays empty: nothing was ever bound)", got)
+	}
+	if got.Kind != KindAdapter || got.Reason == "" || got.Timestamp != 1700000000000 {
+		t.Errorf("drop = %+v, want the supervised kind, a reason, and the clock's ms", got)
+	}
+	// A drop is not a process lifecycle row: the three lifecycle methods must be silent.
+	if len(rec.started) != 0 || len(rec.exits) != 0 || len(rec.crashes) != 0 {
+		t.Errorf("lifecycle rows fired for a dropped frame: %+v", rec)
+	}
+}
+
 // TestConnectionDropsContradictoryIdentity is §4.2 裁定 ①'s cross-check: once the pair
 // carries a ticket too, a frame that names an execution the ticket was never bound to
 // has two truths in it, and neither may win by default. Forwarding it is how one

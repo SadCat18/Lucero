@@ -7,7 +7,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
+
+// defaultProbeTimeout bounds one probe attempt when the caller passed no deadline
+// (§7.2's hard requirement, added after the 15:54 draft). It is a named constant rather
+// than a literal in one call site because the caller is an api/http handler goroutine:
+// without a bound, one Adapter that never answers turns into one HTTP request that never
+// returns. 10s is the same order as §4's own " Adapter 无响应" window and stays well under
+// anything a browser would time out at.
+const defaultProbeTimeout = 10 * time.Second
 
 // probe.go is the registration half of this package: what contract ③ §7.2 (REQ-AD-1)
 // calls the entry point of `POST /api/v1/adapters/{key}/probe`. The package used to be
@@ -183,19 +192,15 @@ func (r *Registry) Probe(ctx context.Context, adapterKey string) (*ProbeResult, 
 
 	res, err := r.exchange(ctx, pipe, adapterKey)
 	if err != nil {
-		// One row either way: failed() records the health change, so a mismatch must not
-		// write first here and again there.
-		var mismatch *Error
-		if errors.As(err, &mismatch) && mismatch.Code == ErrProtocolVersionMismatch {
-			// §2.2 refuses a different major without guessing, and §15.2 maps that to 426,
-			// not to the 503 an unreachable Adapter gets.
-			return r.failedWith(ctx, entry, ErrProtocolVersionMismatch, err.Error())
-		}
-		return r.failed(ctx, entry, err.Error())
+		// One row either way: failedWith records the health change, so a coded refusal
+		// must not write once here and once there.
+		return r.failedWith(ctx, entry, codeOf(err, ErrAdapterUnresponsive), err.Error())
 	}
 	hs, err := NewHandshake(r.protocol, *res)
 	if err != nil {
-		return r.failed(ctx, entry, "handshake: "+err.Error())
+		// §2.2's major mismatch surfaces here rather than in exchange, and it has to keep
+		// its own code: §15.2 maps it to 426, while an unreachable Adapter gets 503.
+		return r.failedWith(ctx, entry, codeOf(err, ErrAdapterUnresponsive), "handshake: "+err.Error())
 	}
 	caps := hs.EffectiveCapabilities()
 	backend := ""
@@ -227,6 +232,18 @@ func (r *Registry) Probe(ctx context.Context, adapterKey string) (*ProbeResult, 
 	return &out, nil
 }
 
+// codeOf keeps whatever §15.1 code the inner step already decided on, so a refusal the
+// Adapter itself gave (AUTH_REQUIRED, PROTOCOL_VERSION_MISMATCH) is not flattened into the
+// generic outage code on the way out. Fallback only for uncoded errors: a write failure or
+// a pipe that closed has no code of its own.
+func codeOf(err error, fallback ErrorCode) ErrorCode {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return fallback
+}
+
 // failed is the only failure shape: one health row, no capability rows, and a code from
 // §15.1's existing vocabulary rather than an invented one.
 func (r *Registry) failed(ctx context.Context, entry Entry, reason string) (*ProbeResult, error) {
@@ -249,7 +266,25 @@ func (r *Registry) failedWith(ctx context.Context, entry Entry, code ErrorCode, 
 // exchange drives §2's adapter/initialize over a live pipe pair: one request, one reply,
 // nothing else. It returns the decoded InitializeResult so the negotiation and the
 // capability resolution run through the same NewHandshake the rest of Core uses.
+//
+// Two §7.2 requirements shape this function. ① It bounds the attempt itself: the caller is
+// an api/http handler goroutine, so a ctx without a deadline would turn one silent Adapter
+// into one request that hangs forever. ② The reason must survive: the write and the read
+// run in one goroutine and the select only ever reports the deadline, because closing the
+// pipe to release that goroutine makes its own error read as "io: read/write on closed
+// pipe" - and probe produces ADAPTER_UNRESPONSIVE, whose producer is Core itself, so a
+// misattributed reason cannot be recovered from later.
 func (r *Registry) exchange(ctx context.Context, pipe io.ReadWriteCloser, adapterKey string) (*InitializeResult, error) {
+	deadline := defaultProbeTimeout
+	if d, ok := ctx.Deadline(); ok {
+		deadline = time.Until(d)
+		if deadline <= 0 {
+			deadline = time.Nanosecond
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
 	in, out := NewReader(pipe), NewWriter(pipe)
 	id := NewRequestID().String()
 	params, err := json.Marshal(InitializeParams{
@@ -259,26 +294,28 @@ func (r *Registry) exchange(ctx context.Context, pipe io.ReadWriteCloser, adapte
 		return nil, fmt.Errorf("probe %s: initialize params: %w", adapterKey, err)
 	}
 	req := &Frame{JSONRPC: JSONRPCVersion, ID: id, Method: MethodInitialize, Params: params, RequestID: id}
-	if err := out.Write(req); err != nil {
-		return nil, fmt.Errorf("probe %s: write initialize: %w", adapterKey, err)
-	}
 	done := make(chan readResult, 1)
 	go func() {
+		if err := out.Write(req); err != nil {
+			done <- readResult{err: fmt.Errorf("probe %s: write initialize: %w", adapterKey, err)}
+			return
+		}
 		f, err := in.Read()
-		done <- readResult{f, err}
+		done <- readResult{f: f, err: err}
 	}()
 	select {
 	case <-ctx.Done():
-		// Closing the pipe is how the read goroutine is released; leaving it blocked
-		// would leak one goroutine per timed-out probe. probe owns no deadline of its own
-		// because §7.2 pins the timeout口径 to whoever started the process.
+		// Closing the pipe is how the goroutine is released; leaving it blocked would
+		// leak one goroutine per timed-out probe. The reason reported is the deadline,
+		// not the closed-pipe error the goroutine is about to see.
 		_ = pipe.Close()
 		return nil, &Error{Code: ErrAdapterUnresponsive,
-			Message: fmt.Sprintf("probe %s: no initialize reply before the caller's deadline: %v",
-				adapterKey, ctx.Err())}
+			Message: fmt.Sprintf("probe %s: no initialize reply before the %s deadline: %v",
+				adapterKey, deadline, ctx.Err())}
 	case got := <-done:
 		if got.err != nil {
-			return nil, fmt.Errorf("probe %s: read initialize reply: %w", adapterKey, got.err)
+			return nil, &Error{Code: ErrAdapterUnresponsive,
+				Message: fmt.Sprintf("probe %s: %v", adapterKey, got.err)}
 		}
 		f := got.f
 		if f.Kind() != KindResponse || f.ID != id {

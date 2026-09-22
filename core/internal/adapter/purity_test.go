@@ -43,6 +43,11 @@ var (
 	allowedStoreImports = map[string]bool{
 		"github.com/SadCat18/lucero/core/internal/platform/db":  true,
 		"github.com/SadCat18/lucero/core/internal/eventjournal": true,
+		// audit.Rules() is the only legal source of the redaction rule set (REQ-A1: the
+		// rules must be the ones audit exports, not a second hand-written list), and
+		// platform/db refuses every write until InitRedaction has run - so the store's
+		// test has to import it. Test files only; the store file itself stays without it.
+		"github.com/SadCat18/lucero/core/internal/audit": true,
 	}
 )
 
@@ -73,8 +78,8 @@ func TestOnlyStdlibImports(t *testing.T) {
 				}
 				continue
 			}
-			if storeFiles[e.Name()] && allowedStoreImports[path] {
-				continue // sanctioned by contract ③ §7.2, see the note above
+			if allowedStoreImports[path] && (storeFiles[e.Name()] || strings.HasSuffix(e.Name(), "_test.go")) {
+				continue // sanctioned by contract ③ §7.2; a test may build a real store
 			}
 			found = append(found, e.Name()+": "+path)
 		}

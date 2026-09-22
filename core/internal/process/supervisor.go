@@ -266,7 +266,11 @@ func (s *Supervisor) max() int {
 // it), so a drop must stay observable through the Inbound error and must never be the
 // thing that panics a healthy connection.
 func (s *Supervisor) recordDrop(ev DroppedEvent) {
-	if s.Rec == nil {
+	// s itself may be nil: a Connection built without a Supervisor (the pipe harness in
+	// the tests) still has to be able to drop a frame. My first version guarded only Rec
+	// and panicked the pump - a drop must never be the thing that kills a healthy
+	// connection, which is the sentence this function's comment already carried.
+	if s == nil || s.Rec == nil {
 		return
 	}
 	if ev.Timestamp == 0 && s.Now != nil {

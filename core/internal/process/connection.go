@@ -425,11 +425,7 @@ func (c *Connection) notify(f *adapter.Frame) {
 		// numbers shadow the resume position of a real turn. This is also the one
 		// place the frame does not travel onward with its error attached: a lossy
 		// stream is survivable, a crossed one writes two executions into one row.
-		c.sup.recordDrop(DroppedEvent{
-			Kind: c.sup.Kind, Method: s.Method, TurnRef: s.TurnRef,
-			FrameExecutionID: s.ExecutionID, BoundExecutionID: c.boundTo(s.TurnRef),
-			Reason: why.Message,
-		})
+		c.recordDrop(s, why)
 		c.deliver(Inbound{Err: why})
 		return
 	}
@@ -461,6 +457,21 @@ func (c *Connection) notify(f *adapter.Frame) {
 	// The ticket has done its job: it stops here.
 	s.TurnRef = ""
 	c.deliver(Inbound{ExecutionID: execID, Frame: s})
+}
+
+// recordDrop hands one discarded frame to the injector. The nil check is on the
+// Supervisor, not just the Recorder: a Connection built straight from pipes (the pump
+// harness in the tests) has no Supervisor at all, and reading one field off it to build
+// the event is what panicked the read loop the first time this existed.
+func (c *Connection) recordDrop(s *adapter.StreamFrame, why *adapter.Error) {
+	if c.sup == nil {
+		return
+	}
+	c.sup.recordDrop(DroppedEvent{
+		Kind: c.sup.Kind, Method: s.Method, TurnRef: s.TurnRef,
+		FrameExecutionID: s.ExecutionID, BoundExecutionID: c.boundTo(s.TurnRef),
+		Reason: why.Message,
+	})
 }
 
 // boundTo reports what this connection had already bound to a ticket, "" when it never
