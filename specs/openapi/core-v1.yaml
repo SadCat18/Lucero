@@ -870,8 +870,9 @@ components:
         execution_cancelled, execution_failed, execution_succeeded, execution_interrupted,
         approval_requested, approval_resolved, approval_expired, approval_cancelled,
         grant_issued, grant_revoked, grant_expired,
+        policy_created, policy_updated,
         quota_observed,
-        notification_created, notification_handled,
+        notification_created, notification_handled, notification_read,
         handoff_created, handoff_ready, handoff_completed, handoff_failed,
         process_started, process_exited, process_crashed,
         core_ready, core_shutdown
