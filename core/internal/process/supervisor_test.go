@@ -49,6 +49,8 @@ func helperLauncher(mode string) Launcher {
 // only assert what was handed over, never what row it became.
 type stubRecorder struct {
 	started, exits, crashes []Event
+	// drops is T84-7's seam: one entry per frame the pump could not attribute.
+	drops []DroppedEvent
 	// rows stands for the row handle cmd/core owns: this package only ever sees the
 	// string come back, then go out again untouched.
 	rows int
@@ -80,6 +82,8 @@ func TestRecorderSeesCleanExitOnce(t *testing.T) {
 		t.Errorf("timestamp = %d, want Now()'s Unix ms (§14 stores ms)", got)
 	}
 }
+
+func (r *stubRecorder) RecordDrop(ev DroppedEvent) { r.drops = append(r.drops, ev) }
 
 func TestRecorderSeparatesCrashFromExit(t *testing.T) {
 	rec := new(stubRecorder)

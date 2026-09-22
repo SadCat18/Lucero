@@ -4,7 +4,7 @@ import { CHAIN, chain, runChain, stepState } from '../stores/panel';
 
 <template>
   <section class="card">
-    <h2>垂直链（契约① §7）<button :disabled="chain.running" @click="runChain()">
+    <h2>垂直链（事件契约 §7）<button :disabled="chain.running" @click="runChain()">
         {{ chain.running ? '执行中…' : '驱动整条链' }}</button></h2>
     <ol class="rail">
       <li v-for="(s, i) in CHAIN" :key="s.key" :class="stepState(s, i)">

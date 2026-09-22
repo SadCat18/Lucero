@@ -450,7 +450,9 @@ func claimIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation,
 // body 是我自己 json.Marshal 的，落库的是 Tx.scrubArgs 处理后的另一份；没被脱敏命中时只差键序，
 // 一旦被命中就是**真实内容分叉** —— 首次响应把未打码的值发到线上、库里存打码版，正好绕开 §2.2 要守的线。
 // 回读之后：首次与重放逐字节相等，且 wire 与存储按构造一致，脱敏规则以后怎么改都不会漏。
-func sealIdempotency(ctx context.Context, tx *db.Tx, key string, v taskView) (string, error) {
+// sealIdempotency 把首次响应封存进幂等记录。v 是 any：task 与 project 两条 POST 共用同一份封存逻辑，
+// 复制第二份迟早会和这里的"先封存后写出"的顺序漂移（C18 裁定 ② 依赖那个顺序）。
+func sealIdempotency(ctx context.Context, tx *db.Tx, key string, v any) (string, error) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		return "", err

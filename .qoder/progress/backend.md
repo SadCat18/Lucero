@@ -3,7 +3,7 @@ TASK_ID: backend-core
 STATUS: in_progress
 SCOPE: Task / Execution / Session / Quota / Notification 五个业务包的领域类型、状态机、投影、读写 Service；加 transport 薄层 core/api/{http,websocket}** 与 core/cmd/core/**；不写迁移、不碰 approvals 表
 EVIDENCE_DIR: none
-LAST_UPDATED: 2026-09-21T16:30:48+08:00   ← 本机 `date` 实测（第二十八批真正收尾，含 16:30 的探针后复跑与账本对齐）；上一条 16:29:28 是同批两分钟前的读数，已被取代；更早的 `09-19T17:30` 是估写，作废（T-43/T-46）
+LAST_UPDATED: 2026-09-22T15:58:46+08:00   ← 本机 `date` 实测（第二十九批收尾，含 15:58 那次交付后复跑）；上一条 15:52:57 是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）；再上一条属第二十八批 09-21 16:30:48
 
 ## Objective
 
@@ -56,24 +56,28 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 > 没跑 `date` 就写"未计时（本机未跑 date）"。上一条实测：`2026-09-20T13:15:41+0800`。
 > 给巡检的对照口径：头部 `LAST_UPDATED` 是**最后一次实测到的时钟**，不是文件写入时刻，所以恒有 mtime ≥ 它、
 > 差值在分钟内（写完还要再动文件，mtime 只会往后走）。若两边的差超过一整个小时，那才是"凭感觉编时刻"的信号。
+>
+> **09-22 补记（T-43 的当场自纠）**：写第二十九批收尾时我把 `LAST_UPDATED` 填成 `15:52:57`，而那一分钟**没有跑过 `date`** —— 是估的。
+> 发现后按口径处理：原值标作废、换上实测读数，不改写任何历史条目。同一轮我另有一处口径错（把 `internal/project` 说成
+> "别的 agent 在写"，其实是我自己这一轮刚建的文件），也记在 Completed 第二十九批开头。
 
-- Stage: Wave-2 backend 第二十八批 —— **T-122 三件小裁都落地**（归因行幂等断言 + 两份 `RedactionHit` 的交叉一致性用例
-  + "间歇红"量化到约 30 次执行 0 复现），过程中**改掉我自己一处过度声明**（"派生 audit_id 挡重放"，变异判 SILENT）；
-  **`process.Recorder` 的实现今天没落** —— `process_instances` 起得了行、改不了行（实测白名单拒绝），已提 **REQ-DB-6** 请裁 (a)/(b)。
-  上一批：§5.4 审计链按 §2.2.1 改完（`TestSealCoversTheBytesThatLand` 是真闸门；T-119 那条红的最可信解释=我的变异窗口，等主控确认）
-- Status: in_progress（八包全绿 = 交付前最后一次 **16:26:56→16:27:06**（gofmt 0、`MUTMARK` 0、探针残留 0）；
+- Stage: Wave-2 backend 第二十九批（09-22）—— **T-130② 落地：建了 `internal/project`，`POST /api/v1/projects` 真通**
+  （聚合 CRUD + 恰一行 `project_created`；canonicalize 三个反例同键；冲突 409；空路径=NULL；§7 禁令守着：域包外零 SQL、
+  不 import adapter/process）。**T-130① probe 一行没写**（等 adapter 的 `Registry.Probe`；顺带只读到 `internal/adapter`
+  此刻编不过，15:42:38，不在我依赖链上）。**T-130③ REQ-T12 仍缺两样**（adapter 的 Launcher 实现位 + REQ-DB-6 裁定），
+  我没建没人调的构造点。**T-130④ flaky 实现一行未改**，只交样本
+- Status: in_progress（九包全绿 = 交付前最后一次 **15:58:03→15:58:10**（15:50:02→15:50:40 那遍含 `gofmt -w` 后重取，两条都算数），
+  真进程冒烟八项两遍 15:50:40→15:50:44 与 15:51:13→15:51:16 全 OK；
   等别人：REQ-DB-3 卡 pause/resume 正向写、REQ-DB-2 卡 core_ready、REQ-DB-4 卡 Execution 离开 CREATED、
-  **REQ-DB-5 卡 `:read`**、**REQ-DB-6 卡 `Recorder`/`process_instances` 改行与三个 `process_*` 事件**、
-  REQ-AD-1 卡 probe、C25 卡 `:sync` 降级形状、C26 卡 state 缺省、
-  C27 剩两个点头（派生 `audit_id` 的理由已按实测改写；`RedactionHit` 搬运不合并、已加交叉用例）、C19/C24；
-  **REQ-A9 已随 T-101 作废**；**A18-3 那条腿仍然不接**（第 110 条有行为级断言）
-- Last verified action: 见 Verification evidence 第 108~129 条（121=三条腿变异判决；122=交付重跑与清理；
-  123~124=T-119 的归因与共享路径排除；125=电池纪律；126=T-120 三件核对；
-  **127=`process_instances` 能不能改行的实测（Append 成、UpdateOnce 被白名单拒）**；
-  128=第二十八批交付重跑 16:26:56→16:27:06 + 三条新用例点名验真；129=我那处过度声明的自我纠正记录）
-- Next action: 按 T-120① 建 `core/internal/project/`（`project.Service`：聚合 CRUD + 版本推进，禁调 adapter/process）
-  并把 `POST /api/v1/projects` 脱 501 —— 一次一个口，带自己的响应形状证据（required 六键 + canonicalize 冲突 409）。
-  T-122 那份 `Recorder` 排在它后面，且要先有 REQ-DB-6 的裁定
+  REQ-DB-5 卡 `:read`、**REQ-DB-6 卡 Recorder/`process_instances` 改行**、REQ-AD-1 卡 probe（入口已判给 adapter）、
+  C25 卡 `:sync` 降级形状、C26 卡 notifications `state` 缺省、C27 剩两个点头、**C28 卡 409 code 名与 GET 的 501/405 口径**、
+  C19/C24；**REQ-A9 已作废**；**A18-3 那条腿仍然不接**
+- Last verified action: 见 Verification evidence 第 108~134 条（131=本批九包重跑 + 八项真进程两遍 + 按具名清理；
+  132=`internal/project` 变异判决（含一条 SILENT 与一条"pattern 没匹配上，我没证成"）；
+  133=transport 变异（**不读回库会红**；两层冗余单删不红、全删才红）+ 我自己两次被抓的编译错；
+  134=`internal/adapter` 在途编译错只读记录，与我的九包互不影响）
+- Next action: 落 `GET /api/v1/projects`（同一 path 上补方法分支；游标沿用**分页**口径 `next_cursor: ""`，
+  不与同步游标共用编解码），一次一个口、带自己的响应形状证据
 
 - Verification: `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/... ./api/... ./cmd/core/ -count=1 -timeout 240s` 八包全 ok
 
@@ -675,6 +679,45 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   要么由 db 开一条**非聚合事件**写入口（REQ-DB-1 那条同源的路，我早先是这么解 `idempotency_keys` 的）。
   **在裁之前我不落这份实现**：拿 `Append` 硬凑一个"看起来完成"的 Recorder，正是要防的那种形状。
 
+### 第二十九批（09-22 15:31~15:51）：T-130② 落地 —— `internal/project` 建起来了，`POST /projects` 脱 501
+
+- **先纠一句我自己说错的话**（15:41 前后）：我看到 `internal/project` "已经存在且 vet 报错"，就说成"别的 agent 在写这个包、我不动它"。
+  **那是我自己这一轮刚建的文件**（`domain.go`/`service.go` 是我 15:3x 写的，vet 报的是我的未用变量）。
+  判据没错（先核对再动手），但这次我没核对就下结论 —— 记在这里，不藏。
+- **交付**：`core/internal/project/`（`domain.go` + `service.go` + 4 条用例）与 `core/api/http/projects.go`（+ 4 条 HTTP 用例）；
+  `Config.Projects` 一个字段 + `cmd/core/main.go` 一行注入。**边界就照 §7 那一行**：只做聚合 CRUD 与版本推进，
+  写走 `tx.Create(db.AggProject, …)` + 恰一行 `project_created`（§6 的两个键 `name`/`canonical_path`，多一个键都不给），
+  **不 import adapter/process**，canonicalize 是项目域规则所以住在域包里（transport 里零 SQL、零表名字面量 ⇒ 不碰 W13-2）。
+- **canonicalize 的收法与它的代价**（写进注释，别下一个人当"顺手修正"）：
+  领域模型 §7 的三个反例（`D:\MZO`、`D:/MZO`、`\?\D:\MZO`）必须同键 ⇒ 去命名空间前缀、分隔符统一、
+  折叠重复、丢 `.` 段与尾分隔符、**整条小写作键**。小写不是审美：那条冻结的部分唯一索引
+  `idx_projects_canonical_path` 只在字符串相等时判冲突，想区分大小写就得改 `COLLATE`（000001 冻结，v0.1 不做）。
+  空路径写 **NULL** 而不是空串 ⇒ 无路径的项目可以有任意多个（索引明确豁免 NULL），这条我用例钉了。
+- **两个我特意没做的形状**：① `GET /projects` 仍 501（yaml 里有定义，我按"一次一个口"在同一 path 上按方法分流，
+  没实现那半明确回 501 而不是 405）；② `:archive` 之后同键可复用这一格 **不在用例里假装验过**（那要 `:archive` 先落地）。
+- 一处共用改动：`sealIdempotency` 的入参从 `taskView` 泛化成 `any` —— 复制第二份"先封存后写出"迟早会和 C18 裁定 ② 的顺序漂移。
+- 409 的 `code` 我用的是 **`duplicate_project_path`**：契约② 的 code 词表还没收口（REQ-F-4），
+  这条是自挑的，请主控认或给名（同 C21/C26 那个系列，我不静默发明第二个）。
+
+### 第二十九批·续（15:31~15:51）：T-130 的另三件 —— probe 没碰、REQ-T12 我量了缺口、flaky 没改实现
+
+- **① probe 保持 501**：我一行没写（`api/http` 里没有 `probe` 相关代码，路由仍走兜底 501）。
+  只读观察一条给主控：**`internal/adapter` 此刻编不过**（15:42:38 `go build ./internal/adapter/` →
+  `probe_store_sqlite.go:143 declared and not used: found`、`:146 cannot call s.d.Read`、`:254 undefined: txReader`、`:289 undefined: marshalString`）
+  —— adapter 正在写 `Registry.Probe` 的途中，**我没去修、也没因此停下自己那半边**；
+  它交出来之前 `go test ./...` 全仓跑会红在这一包，这不是我这批的账。
+- **③ REQ-T12 装配：我照 T-130③ 去量，量到的仍是同一道墙**（15:31:40 实测，排除测试）：
+  `Supervisor{` / `NewSupervisor` / `func .*) RecordStart` 在非测试代码里 **0 命中** ⇒ 今天没有任何人构造过 `Supervisor`。
+  我要接这根线需要两样东西，都在别人手里：
+  (i) adapter 那条"拉起并交回管道"的窄接口（`process.Launcher` 的**实现位**，现在只有类型没有实现）；
+  (ii) **REQ-DB-6** 的裁定 —— 上一批我实测过 `process_instances` 起得了行、改不了行
+  （`UpdateOnce` 报 `not in platform/db's narrow update whitelist`），Recorder 落不了库，硬凑就是"看起来完成"的那种形状。
+  所以我今天**不建一个没人调的构造点**（ponytail：不造没人的脚手架），等 (i)(ii) 任一到就接。
+  顺带一句事实纠正：主控说"`Notifications` 你已经注进 handler.go/main.go 了"——对，`Projects` 今天也同形注进去了。
+- **④ flaky 那条按 FL 档走，实现一行没改**：主控 15:11:05 那一枪是第 6 个样本（一红五绿）。
+  我这侧新增的样本：09-21 16:30:12 两包 `-count=1` ok、09-22 15:47:40 那批变异电池里 `api/http`/`internal/project` 全 ok、
+  15:50:02 九包 `-count=1` 全 ok。**四档都没红的这轮我也不写"已修/已绿"** —— 我只写"未复现 + 我的窗口归因待确认"。
+
 ## Remaining
 
 - `task.Service` 的其余状态动作：~~`Prepare`/`Pause`/`Resume`~~ **第十六批已交付**（正向写等 REQ-DB-3，见第 79 条）；
@@ -1047,6 +1090,14 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   ③ 改成必须显式传 —— 那就变 400 `validation_failed`，前端少一次"以为没有未读"的误判。
   现在钉住行为的是 `TestInboxPagesWithCursor` 与 `TestInboxQueryValidation`；裁哪个我都跟着改断言，**不会留两套都能过的写法**。
 
+- **C28 → 主控（第二十九批我自挑的两个形状，请认或给名）**
+  ① `POST /projects` 的 canonicalize 路径冲突，我发的是 **`409 duplicate_project_path`**。
+  契约② 的错误码词表还没收口（REQ-F-4），这名字是我起的 —— 给个既成词我就跟着换（同 C21/C26 那串"我没静默发明"的账）。
+  ② 同一个 path 上 `GET /api/v1/projects` 我按方法分流回 **501**（yaml 里它有定义），而不是回 405 说"这方法不支持"；
+  我认为 501 才是实话（能力没接、不是方法不对），但这条如果和主控的统一口径冲突，说一声我改。
+  ③ 另外两件是**我故意没做**的，别当成漏项：`GET /projects` 的 keyset 分页（下一批，见 Next action）、
+  `:archive` 之后同一把路径键可复用（那格我没有用例假装验过，因为 `:archive` 还不存在）。
+
 - **C27 → 主控（T-109 的排序前置已达成，而且现在这半天的形状是"活的 §2.2.1 缺陷"，请放行或明确继续压）**
   14:25 那句"排在 db 的 T-107 之后（拿不到导出入口就没东西可注）"里的**理由今天已经不成立**：
   `db.Scrub` 已导出（`internal/platform/db/redact.go:194`，14:37:09 实测），audit 侧 `Chain.Scrub` 字段与
@@ -1187,6 +1238,26 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
 - `core/internal/session/repository_test.go`（改）— 新增真表用例 `TestSyncCursorKeepsNullApartFromAPosition`（NULL / `'20'` / 存进去的 `''` 三态）
 - `core/cmd/core/**`、`core/api/**`、`internal/task|execution|quota|notification/**` — **本批一个字没动**（A18-3 未裁；`:sync` 不存在）
 - `.qoder/progress/backend.md`（本文件）
+
+第二十九批（T-130②：`internal/project` 建起来 + `POST /projects` 脱 501）：
+- `core/internal/project/domain.go`（**新建**）— `Status` 四值词表、`Project`/`Draft`、`Canonicalize`（含"为什么整条小写"：
+  那条冻结的部分唯一索引只认字符串相等）
+- `core/internal/project/service.go`（**新建**）— `ErrInvalid`/`ErrPathConflict`、§6 两键的 `CreatedPayload`、
+  `Create`（`tx.Create(db.AggProject,…)`；空路径不写列；冲突**两道**：先查一次给人话 + UNIQUE 兜底翻译）、
+  `Get`（C18 裁定 ② 的回读口，`Queryer` 只声明 `QueryRowContext`）
+- `core/internal/project/service_test.go`（**新建**）— 四条真表用例：三个反例同键 / 建行+恰一事件+payload 不超键 /
+  冲突整体回滚 + 空路径可多行 / 读回与响应同源
+- `core/api/http/projects.go`（**新建**）— `ProjectService` 接口、`createProjectBody`/`projectView`（四个可空项显式 null）、
+  `registerProjectRoutes`（没注入就 501；GET 这一腿明确 501 不假装 405）、`createProject`（Idempotency-Key 必填 → 403；
+  同事务里 claim→Create→Get→seal；错误码映射含 409）
+- `core/api/http/projects_test.go`（**新建**）— 四条：201 形状与库内一致 / 换写法 409 / 入口闸（缺 key、空白 name、
+  metadata 非对象、无口令 401、GET 501）/ 重放逐字节相同且密钥不在响应、库内、事件里；两个 helper `post`/`countQuery`
+- `core/api/http/handler.go`（改）— `Config.Projects` 一个字段 + 一行注册
+- `core/api/http/tasks.go`（改）— `sealIdempotency` 入参 `taskView` → `any`（两条 POST 共用同一份"先封存后写出"）
+- `core/cmd/core/main.go`（改）— `handler()` 注入 `project.NewService(nil)`（纯 Service，不需要 Store 之外的东西）
+- `.scratch/backend/t47-smoke.sh`（改）— 第 ⑧ 项：真进程 `POST /projects` 建 + 换写法撞 409
+- `.qoder/progress/backend.md`（本文件）
+- probe 那条**一行没写**（T-130①）；`internal/adapter/**` 在途编译错我没去修（第 134 条）
 
 第二十八批（T-122 三件小裁 + Recorder 撞 REQ-DB-6 后收手）：
 - `core/cmd/core/core_test.go`（改）— 新增 `TestRedactionRowIsWrittenOncePerRejection`（重放不多行 + 无命中不写归因行的反向对照）、
@@ -2516,6 +2587,39 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
      起因是 16:28 我在那个包里建过又删掉了一个临时探针文件 —— 删完就得再跑一遍，不能让"我记得删干净了"当证据。
      工作树形状（`git status --short -- core/cmd/core core/api`）：`M core_test.go`、`M main.go`、`M rejections.go`、
      `M api/http/handler.go`、`M api/http/tasks.go` + `?? notifications.go`、`?? notifications_test.go`。
+131. **第二十九批交付级重跑**：九包 `-count=1`（新包一起进去）15:50:02 → 15:50:09 全 ok
+     （project 1.642s / task 2.243s / execution 1.762s / session 1.493s / quota 1.507s / notification 1.742s /
+     api-http 1.099s / api-websocket 4.536s / cmd-core 1.691s）；`go build ./internal/project/ ./api/... ./cmd/core/` 静默、
+     `go vet` 三包 ok。`gofmt -l` 当时是 **1**（我的 `joined :=` 少缩进）→ `gofmt -w internal api cmd` 后为 0，
+     并按"格式改完要重取那份绿"重跑了 `./internal/project/ ./api/http/ ./cmd/core/` = 3 包 ok（15:50:40）。
+     真进程冒烟这轮加到第 ⑧ 项：15:50:40→15:50:44 与 15:51:13→15:51:16 两遍，
+     `RESULT_PROJECT= OK_created_shape_and_canonicalized` + `RESULT_PROJECT_CONFLICT= OK_duplicate_path_409` +
+     原四项全 OK + `RESULT=DONE`，第一遍的 `core.log` 里 `2026-09-22 15:50:41 audit 链: UNKNOWN`；
+     run 目录 `155040-t49`、`155113-t49` 按具名删除，`.scratch/backend/` 复核只剩 `t47-smoke.sh`。
+     **交账之后再原样跑一遍（15:58:03 → 15:58:10）：九包仍全 ok**（project 1.617s / task 2.197s / execution 1.724s /
+     session 1.446s / quota 1.408s / notification 1.613s / api-http 1.161s / api-websocket 4.237s / cmd-core 1.818s），
+     `gofmt -l` 0、`MUTMARK` 0、`find . -name 'zz_*'` 0、scratch 只剩脚本；
+     那次之后只动过本文件，所以"交付前最后一次重跑"取这条 **15:58** 的读数。
+132. **`internal/project` 的变异判决（15:35:41 / 15:37:51）**：
+     | 变异 | 判决 | 红在哪 |
+     | --- | --- | --- |
+     | 空路径也写列（`if path != ""` → `if true`） | FIRED | `TestPathConflictAndEmptyPathRules`（第二条无路径项目撞了空串行） |
+     | canonicalize 不做大小写折叠 | FIRED | `TestCanonicalizeAcceptsTheThreeDocumentedForms` + 冲突那条 |
+     | 去掉 UNIQUE 兜底翻译（`if isUniqueOnPath(err)` → `if false`） | **SILENT** | 前面的预查先命中，兜底这条路今天没有公开入口 —— 如实记"证不了"，不给它开后门 |
+     | UNC 前缀保留那条腿 | **没证成** | 我的替换 pattern 两次都没匹配上（反斜杠转义），试到第三次我停手，不拿"大概会红"当证据 |
+133. **transport 侧的变异与两次自己的编译错（15:44:26 / 15:46:17 / 15:47:40）**：
+     两条真信号 —— ① `TestInboxRejectsTaskCursor` 那对双向断言在 `decodeCursor` 去掉分隔符判断后 FIRED ✓；
+     ② "首次响应不读回库"（把 `project.Get` 换成手拼结构体）FIRED 在 `TestCreateProjectOverHTTP` ✓，
+     C18 裁定 ② 那条口从此有用例挡着。
+     两条 SILENT 也照实记：只删预查、或只删 UNIQUE 兜底，各自都不红 —— 这两层**互为冗余是设计**，
+     所以我补了一刀"两层全删" ⇒ `TestProjectPathConflictIs409` FIRED ✓，这才证明断言有牙（单删不红不该当成断言没牙）。
+     两次我自己的错都在**跑之前**被抓：`canonical_path` 那个 var 块里漏改导致 `declared and not used`；
+     以及我把整条 SELECT 喂给了本包只收表名的 `countRows` → `SQL logic error: near "SELECT"`，
+     改成另起 `countQuery` 而不是把 `countRows` 变成"两可函数"。
+134. **别人在途的可见影响（只读，不改不催）**：15:42:38 `go build ./internal/adapter/` 报 4 处
+     （`probe_store_sqlite.go:143/146/254/289`），而 `go build ./internal/project/ ./api/... ./cmd/core/` 同期 OK ——
+     也就是说 `internal/adapter` 的红**不在我的依赖链上**（cmd/core 不 import adapter），我九包重跑不受它影响。
+     但 `go test ./...` 全仓会红在这一包：请主控与 adapter 对时间线，别按"backend 交上来是红的"算账。
 
 ## Recovery note
 

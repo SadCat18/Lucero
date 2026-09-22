@@ -59,7 +59,7 @@ describe('F-16：客户端必须先发 hello', () => {
 const urls: (number | null)[] = [];
 const url = (fromSeq: number | null) => { urls.push(fromSeq); return 'ws://fake/ws/v1/events'; };
 
-describe('契约① §7 链投影', () => {
+describe('事件契约 §7 链投影', () => {
   it('11 步覆盖了链上的全部 22 类事件，一步不缺', () => {
     const mapped = new Set(CHAIN.flatMap((s) => s.events));
     const ORACLE = ['project_created', 'session_discovered', 'session_managed', 'task_created',
@@ -136,6 +136,52 @@ describe('WS 游标与 resync 回落', () => {
     s.feed(JSON.stringify({ type: 'hello_ack', server_seq: 900 }));
     expect(link.seq).toBe(1200);          // 只前进不回退
     expect(data.events).toHaveLength(0);  // 控制帧不进时间线、不算事件
+    s.close();
+  });
+
+  /**
+   * F20-4 判据要求的读法：**字面上的第一帧**。为躲心跳而 `continue` 的容错读法会把
+   * "首帧是 X"悄悄降级成"第 N 帧里出现过 X"，所以这里一次只喂一帧、且喂的就是被断言的那一帧。
+   * 断的是**客户端自己的游标**（`s.seq`，即下次重连要声明的位置）而不是面板显示值 ——
+   * 第一版我只断 `link.seq`，变异"把回显当游标用"当场不咬：`link.seq` 只由 `onSeq` 写，看不见内部游标被改。
+   * 用例名即契约③ §5 判据表 F20-4 那一格写的 `helloAckAdvancesCursor` —— **改名必须回写那一格**。
+   */
+  async function afterFirstFrame(startSeq: number | null, frame: Record<string, unknown>) {
+    made.length = 0; urls.length = 0; link.seq = startSeq; link.state = 'connecting';
+    data.events.length = 0; data.seen.clear();
+    const s = connectEvents({ url, socketFactory });
+    await tick();
+    s.feed(JSON.stringify(frame));
+    const got = { cursor: s.seq, shown: link.seq, state: link.state, events: data.events.length };
+    s.close();
+    return got;
+  }
+
+  it('helloAckAdvancesCursor：首帧 hello_ack ⇒ server_seq 写进游标；首帧 hello 回显 ⇒ 不得覆盖（契约③ §5 F20-4）', async () => {
+    // 形状②：hello 省略游标 → 首帧 hello_ack{server_seq}。不写进游标 = 重连后重复渲染同一段事件。
+    expect(await afterFirstFrame(null, { type: 'hello_ack', server_seq: 1200 }))
+      .toEqual({ cursor: 1200, shown: 1200, state: 'live', events: 0 });
+    // 抬升只在"比已知位置更新"时发生；server_seq 更低时不得把游标拽回去（REQ-F-17 的客户端防御）
+    expect((await afterFirstFrame(1200, { type: 'hello_ack', server_seq: 900 })).cursor).toBe(1200);
+
+    // 形状①：hello 带游标 → 首帧是**回显**，只当就绪信号。三个方向都不许覆盖，其中"高于游标"最危险：
+    // 照抄就等于承认 43..900 已看过，那段事件永不再补发 —— 面板会静缺一截。
+    for (const echoed of [42, 9, 900]) {
+      const r = await afterFirstFrame(42, { type: 'hello', from_seq: echoed });
+      expect(r.cursor, `回显 from_seq=${echoed} 不得改写客户端游标`).toBe(42);
+      expect(r.shown, `回显也不该顺手改写面板显示值`).toBe(42);
+      expect(r.state, `回显仍是就绪信号，不该把连接判成未就绪`).toBe('live');
+    }
+
+    // 可观察的落点：游标写没写对，看**下一次重连声明了什么**。这是"写进自己的游标"唯一外部可证的形态。
+    made.length = 0; urls.length = 0; link.seq = null;
+    const s = connectEvents({ url, socketFactory });
+    await tick();
+    s.feed(JSON.stringify({ type: 'hello_ack', server_seq: 777 }));
+    made[0].onclose?.();
+    await new Promise((r) => setTimeout(r, 300));
+    open(1);                                        // 假 socket 不自动 open（见 F-16 那组）
+    expect(JSON.parse(made[1].sent[0])).toEqual({ type: 'hello', from_seq: 777 });
     s.close();
   });
 

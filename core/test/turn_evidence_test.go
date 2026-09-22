@@ -4,25 +4,14 @@ package test
 // 本文件是那四条语义的**独立转录**：判据来自契约② §4.2 与 §6 规则 5 的文本，
 // 表里的期望值一条都不从 `stream.go` 的实现里抄（实现改了而契约没改 ⇒ 这里应当红）。
 //
-// 判据表 T84（一行一判据 + 可跑命令 + 状态三值 `现存/SKIP（blocked）/待建`；命令一律带 `-v`）
+// 判据见 **契约② §4.2 判据表 T84**（T84-1~T84-7；09-22 由本文件的注释镜像进本文）。
+// 状态列、以及 T84-7 的三段归属（adapter 给 `Recorder` 加"丢弃"事件、backend 在 `cmd/core` 注实现、
+// test 落判据）都以契约那张为准，这里不抄第二份；本文件与 `turn_attribution_test.go` 只是执行者。
 //
-// | ID    | 断言（两侧都断）                                                                       | 当场命令                                                            | 状态 |
-// |-------|----------------------------------------------------------------------------------------|---------------------------------------------------------------------|------|
-// | T84-1 | `claimed` 故意不带 `turn_id`；**唯一**的开始证明是 `dispatched` ⇒ `TurnID()` 前空后有   | `go test -count=1 -v -run TestClaimedCarriesNoTurnID ./test/...`      | 现存 |
-// | T84-2 | 没有 `dispatched`，Core 不许把状态显示成 RUNNING（§12"不许把 UNKNOWN 显示成确定值"在本层的落点）；能到 RUNNING 的唯一路径是 Claim→Dispatch 同一 execution_id | `go test -count=1 -v -run TestRunningRequiresDispatch ./test/...`     | 现存 |
-// | T84-3 | `provider_execution_id` 必须挂在 `claimed` 上，**含 `accepted=false` 的拒绝路径也要留下它**（Core 可能死在 claimed-未-dispatched 窗口里，Recovery 要先拿它问 Provider） | `go test -count=1 -v -run TestClaimedKeepsProviderHandle ./test/...`  | 现存 |
-// | T84-4 | **裁定 ①**：`turn_ref` 一律必带（六种通知无例外），取证两帧额外再带 `execution_id`——那是可交叉验证的冗余、不是第二真相源 | `go test -count=1 -v -run TestTurnRefMandatoryOnEveryNotification ./test/...` | 现存 |
-// | T84-5 | **裁定 ②**：`dispatched` 的 `provider_execution_id` 可空（前提 claimed 给过非空），给了非空就必须等于 claimed 的值；异名 ⇒ UNKNOWN。全打在 Core 侧 tracker | `go test -count=1 -v -run TestDispatchedHandleOptionalButNeverContradicts ./test/...` | 现存 |
-// | T84-6 | **裁定 ① 的另一半**：票号绑定与帧内 `execution_id` 一致 ⇒ 收下并推到 RUNNING；不一致 ⇒ 丢弃（两个 tracker 都不动、假 id 的帧 0 条转发） | `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestTurnRefCrossCheck ./test/...`（在 `turn_attribution_test.go`） | 现存 |
-// | T84-7 | "丢弃 + **Audit**"里 Audit 那一半：一次丢弃要留一行审计、且不写 event_journal | 无可跑命令——`internal/process` 的 `Recorder` 只有三个生命周期方法，包内 grep `audit` 零命中 | 待建（REQ-T12） |
-//
-// 口径来历：本文件 12:2x 那版是按 §4.2 原文"两处未定"写的，所以未定部分只断"不被要求"。
-// 主控 12:4x 出了裁定（Q3/Q4 闭），T84-4/5 随之改成硬断言；T84-6 原来被我列成"缺注入面"，
-// 13:3x 主控指路后发现路径本来就通（`process.Supervisor` + 真 FakeAdapter 就能造出矛盾帧），
-// 已落成 `turn_attribution_test.go`。今天只剩 T84-7 一条"能力还没人造"的待建。
-// 留这条记录因为它是这轮最值钱的一课：**契约改一次，判据就要跟着翻一次；
-// 把"今天实现的样子"当成契约写进用例，翻的时候没人知道该不该红。**
-// 纪律不变：未定的口径不判绿（那是把"暂按代码"钉成契约），也不判红（那是替别人做决定）。
+// 一句只属于"怎么写判据"的教训留在这儿：**契约改一次，判据就要跟着翻一次**。
+// 12:2x 那版按 §4.2 原文"两处未定"只断了一边；主控 12:4x 裁定后 T84-4/5 翻成硬断言，
+// T84-6 也从"缺注入面"翻成实测可跑（我 12:5x 列成 blocked 是错的，13:3x 指路才对）。
+// 不变那半句：口径未定时不判绿（等于把"暂按代码"钉成契约），也不判红（等于替别人做决定）。
 
 import (
 	"encoding/json"

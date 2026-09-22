@@ -64,7 +64,7 @@ export function createCoreClient(cfg: CoreClientConfig = {}) {
     return payload as T;
   }
 
-  /** 契约① §8：高风险写必须带 Idempotency-Key；调用方可自带 */
+  /** 事件契约 §8：高风险写必须带 Idempotency-Key；调用方可自带 */
   const key = (): string => globalThis.crypto.randomUUID();
 
   return {

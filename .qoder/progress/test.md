@@ -3,7 +3,7 @@ TASK_ID: wave2-tests
 STATUS: in_progress
 SCOPE: Wave-2 三类测试（ownership lint / 状态机矩阵 / Adapter 契约 harness）+ Crash 骨架；对业务代码只读
 EVIDENCE_DIR: .qoder/evidence/test/
-LAST_UPDATED: 2026-09-21T16:16+08:00（本机 date 实取；T-121/T-124 的四条验收在 16:14:06~16:15:23 完成，其后只动过本文件）
+LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验收在 15:44:16~15:45:28 完成）
 
 ## Objective
 
@@ -67,11 +67,11 @@ LAST_UPDATED: 2026-09-21T16:16+08:00（本机 date 实取；T-121/T-124 的四�
 
 ## Current checkpoint
 
-- Stage: T-119 已交付（`scripts/flaky_watch.sh` 四档采样 + FL 分类器带六句反向用例；本次间歇红判为"未复现"，按口径不写已绿）。
-  lint 连续十轮 exit 0；默认面 46 PASS / 14 顶层 SKIP / 0 FAIL，开旗标 62 PASS / 9 SKIP / 0 FAIL。
-  两件要主控看的：CO-36 预告的"红一批"没发生（0 命中，附证据）；`delivery_unacknowledged` 与"规则 6"在 specs/docs 里也 0 命中。
+- Stage: T-131 三件落完（T84/FL 两张表翻指针、账本删副本；新增 §15.1↔§15.2 的 Go 侧判据三件套）。
+  lint 连续十一轮 exit 0；默认面 50 个顶层用例（声明数=结果数 50=50）/ 14 顶层 SKIP / 0 FAIL，开旗标 65 PASS / 9 SKIP。
+  三件等主控：REQ-T14（C8-6~C8-9 四行镜像）、§15.2 那段"表名字面量"禁令已由 W13-2 覆盖（无需新增）、T84-7 的三段归属我这边保持 待建。
 - Status: in_progress
-- Last verified action: 16:14:06~16:15:23 四条验收 + flaky_watch 两档（selftest / -a 时间线），全部 exit 0
+- Last verified action: 15:44:16~15:45:28 四条验收 + flaky_watch 两档，另跑"声明数=顶层结果数"对账 50=50
 - Next action: ①**REQ-T12**（一句话）：`丢弃 + Audit` 的 Audit 由谁记 —— `internal/process` 的 `Recorder`
   只有 RecordStart/Exit/Crash，包内 grep `audit` 零命中；同时请把 `delivery_unacknowledged` 与 §6 那两点
   真正回写进事件目录（今天 specs/docs 全文 0 命中，我的探针只能对派发文本负责）。
@@ -87,7 +87,45 @@ LAST_UPDATED: 2026-09-21T16:16+08:00（本机 date 实取；T-121/T-124 的四�
 
 ## Completed
 
+- **09-22 15:2x~15:3x 轮（T-131 三件 + T-124 落点）**：
+  - **① T84 表已镜像 ⇒ 指针翻转**：`core/test/turn_evidence_test.go` 的文件头七行表删掉，换成
+    "判据见契约② §4.2 判据表 T84"+一句教训（契约改一次判据跟着翻一次）；账本 `Coordination` 里
+    那份 T84 交本同步删除。T84-7 的三段归属按契约执行（adapter 加 `Recorder` 的"丢弃"事件、
+    backend 在 `cmd/core` 注实现、我落判据），我这边仍是 `待建`——**但契约现在钉了一条我没实现的禁令**：
+    "审计行不许在 `process`/`cmd` 里出现表名字面量"。这条归 lint（我的 `check_ownership.sh` 正好有
+    按表名扫的机器），已作为 **C8-9/新判据**列在下面 ② 的交本里一起交。
+  - **② 新判据：§15.1 码集 ↔ §15.2『来自』列，Go 侧执行者补上了**。新文件
+    **`core/test/errcode_mapping_test.go`**，三个各自独立的顶层用例、**全程只用 `t.Errorf` 不用 `t.Fatal`**
+    （理由见下面 T-124 那条——被父级 `t.Fatal` 吞掉的子用例今天咬过 audit）：
+    - `TestErrorCodeContractTablesParse`：解析器自证。守门数取自主控给的口径，且 15:22 在盘上实测对上：
+      §15.2 表 **29 行 = 17 行带码名 + 12 行以 `—` 开头**；§15.1 码列 **17** 个；两者加起来 ≠ 总行数 ⇒ 红。
+    - `TestHTTPErrorCodesComeFromAdapterSet`：正向，§15.2 引用的每个码名必须在 §15.1 里。
+    - `TestAdapterCodesHaveHTTPMapping`：反向，§15.1 每个码都要有 HTTP 映射行；
+      **例外按形状判**（『来自』以 `—` 开头的 12 行不参与），不点名放行 `version_conflict`。
+    - 锚点用标题文本（`### 15.1 ` → `#### 15.1.1`、`### 15.2` → `### 15.3`），找不到锚点或区间没有终点
+      ⇒ 直接报"解析器坏了"，**拒绝把空集当结论**（主控说的那四个坑我这边第一个就撞上过）。
+    - **守门今天真的咬了我一次**：第一版按 awk 的列习惯写 `cells[4]`（split 之后 `来自` 其实是 `cells[3]`），
+      解析器当场报"§15.2 第 1 行的『来自』既不是码名也不是 `—` 开头" ⇒ 三条用例全红。
+      **这条红就是"守卫不是永真"的实测证据**，不用再造变异。修完三条全 PASS（15:3x）。
+    - lint 里 check 8 的 C8-4 早就是同一对集合的 bash 执行者。两处并存我在交本里写明主从：
+      **Go 用例是主**（`go test ./test/...` 是所有人的默认入口），lint 那条降为镜像提示。
+  - **③ FL 表逐条对过（脚本没骗表）**：契约里 FL-1~FL-8 与 `scripts/flaky_watch.sh` 的分支一一对上；
+    FL-8 要求的"报扫过的文件数"在两个分支里都印（`扫了 122 个 .go 文件…`）✓。
+    `flaky_watch.sh` 已由主控 `5ccd1a0` 补提交入册（`git ls-files scripts/` 现在含它）——
+    我这边接手盯住它不再漂回未跟踪：每次交回都跑 `git status --porcelain -- core/test scripts`。
+  - **④ T-124 那族新错的落点**（规矩第 22 条，我自己这边的处置）：
+    - 落点一：`core/test/errcode_mapping_test.go` 文件头第 12~14 行——三条判据**各自独立顶层用例 + 只用
+      `t.Errorf`**，就是为了不在父级掐掉兄弟子用例；
+    - 落点二：本文件"验证规矩"里新增一条对账命令（"包 ok"不算跑过）：
+      `grep -hc "^func Test" core/test/*.go` 之和 与 `-v` 输出里顶层 `--- ` 行数必须相等。
+      09-22 15:3x 实测 **50 = 50** ✓。**这条规矩今天以另一种形式咬了我一次**：我 `-run` 里把
+      `TestHTTPErrorCodesComeFromAdapterSet` 误打成 `...Adapterset`，那条用例整条没跑而包照样 `ok`——
+      是我按新规矩数 `=== RUN` 才发现的，不是我本来想看的。
+    - 落点三：后半句按巡检的建议**并进同一节**（不另开一条）：**任何计数都必须配原文行**——
+      计数只证明"数量对"，原文行才证明"是那条"。
+  - 交付状态（09-22 15:44:16~15:45:28）：六条命令全 exit 0；默认面 50 个顶层用例声明数 = 顶层结果数 50，PASS 计数含子用例；开旗标 65 条 PASS / 9 顶层 SKIP / 0 FAIL。
 - **16:06~16:16 轮（T-121 + T-124：时间线核对成为 FL 的前置档，另纠正我一句错标）**：
+
   - **`flaky_watch.sh` 加了 `-a <失败时刻>` 一档（只核对时间线、不跑测试）并全仓扫**：
     `TL_DIRS=(../core ../specs ../scripts)`，报**扫过的 .go 文件数**，命中改写窗口就判
     "既不计 flaky 也不计回归，先请改动方交还原后的复采"。这一档就是 T-121② 要 backend 用的那个方法，
@@ -738,57 +776,27 @@ LAST_UPDATED: 2026-09-21T16:16+08:00（本机 date 实取；T-121/T-124 的四�
   包内 `grep -rn audit` 零命中。所以请指定：这条"帧被丢弃"的事实由 **process 自己记**（Recorder 加一个方法），
   还是由 **消费 `Inbound{Err}` 的那一侧记**（cmd/core 或 audit 的入口）？两种我都能测，但得有一种写进契约，
   不然"丢弃 + Audit"里后半个词永远没人负责。
-- **REQ-T10（续）：F20 已镜像，剩下 **T84** 一张还住在测试注释里 —— 文本在这儿，可直接粘进契约② §4.2**
-  （放 C8 那张旁边即可；子用例计数取自 14:05:12~14:06:20 的 `.qoder/evidence/test/go-test-*.txt`，
-  命令一律带 `-v`；用例名都是 `core/test/` 里的真实符号，无行号）：
+- **REQ-T10 全部闭合**：T84 与 FL 两张表已由主控镜像进契约② §4.2 / §4.2 之后（09-22，
+  权威在那边）。账本里两份可粘文本随之删除——契约有表还留副本就是第三处真相。
+  测试侧落点：`turn_evidence_test.go` 与 `scripts/flaky_watch.sh` 的文件头都已换成指针；
+  FL-1~FL-8 逐条对过脚本分支，FL-8 的"报扫过的文件数"两个分支都印（实测 122 个 .go）。
+- **REQ-T14（新，第四张表）：§15.1 ↔ §15.2 的集合一致性今天没有 Go 侧执行者**（主控 09-22 T-131② 点的那条）。
+  我已落在 `core/test/errcode_mapping_test.go`（三个独立顶层用例、全程只用 `t.Errorf`），请把这四行镜像进契约② §15.2 末尾，
+  与 C8 同处一张表；命名沿用 C8-n 以免另起一族：
 
-  ```markdown
-  #### 判据表 T84（§4.2 两帧取证信号；`test` 逐行解析用，命令一律带 `-v`）
-
-  14:05 逐条实跑标定，除 T84-7 外全 `--- PASS`。被测面是 Core 侧导出接缝
-  （`TurnTracker` / `CarriesTurnRef` / `NewStream`，以及 `process.Supervisor` + 真 FakeAdapter），
-  一条期望值都不从 `stream.go` 的实现里抄。
-
-  | ID | 断言（两侧都要断） | 当场命令 | 状态 / 归属 |
-  |---|---|---|---|
-  | T84-1 | `claimed` 不给 `turn_id`，`dispatched` 才给 ⇒ `TurnID()` 前空后有 | `go test -count=1 -v -run TestClaimedCarriesNoTurnID ./test/...` | 现存（PASS）/ test |
-  | T84-2 | 没有 `dispatched` 不许显示 RUNNING：8 个形状里**恰 1 个**可达 RUNNING（正例），其余逐条判"不等于 RUNNING"；错误面也两侧判（该拒的 4 个不许静默收下、不该拒的 3 个不许乱拒） | `go test -count=1 -v -run TestRunningRequiresDispatch ./test/...` | 现存（PASS×8 子用例）/ test |
-  | T84-3 | `provider_execution_id` 必须挂在 `claimed` 上，**含 `accepted=false` 的拒绝路径也要留下两个 id**；空值被拒且不许留下"看起来有名字"的假证据 | `go test -count=1 -v -run TestClaimedKeepsProviderHandle ./test/...` | 现存（PASS）/ test |
-  | T84-4 | 裁定第 1 条：**六种通知一律必带 `turn_ref`**（缺 ⇒ `INVALID_PARAMS`、带 ⇒ 成帧，逐个判） | `go test -count=1 -v -run TestTurnRefMandatoryOnEveryNotification ./test/...` | 现存（PASS）/ test |
-  | T84-5 | 裁定第 2 条：`dispatched` 的 `provider_execution_id` 可空（前提 `claimed` 给过非空）、给了非空就必须等于它；异名 ⇒ UNKNOWN。全打在 `TurnTracker` 上 | `go test -count=1 -v -run TestDispatchedHandleOptionalButNeverContradicts ./test/...` | 现存（PASS×3 子用例）/ test |
-  | T84-6 | 裁定第 1 条的另一半：票号绑定与帧内 `execution_id` **一致 ⇒ 收下并推进**；**不一致 ⇒ 丢弃**（两个 tracker 都不动、假 id 的帧 0 条转发） | `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestTurnRefCrossCheck ./test/...` | 现存（PASS×2 子用例）/ test（`turn_attribution_test.go`） |
-  | T84-7 | 裁定第 1 条写的"丢弃 **+ Audit**"里 Audit 那一半：一次丢弃留一行审计、且不写 `event_journal` | 无可跑命令：`internal/process` 的 `Recorder` 只有 RecordStart/RecordExit/RecordCrash，包内 grep `audit` 零命中 | **待建**（REQ-T12）/ 归属待主控指定 |
-  ```
-
-  粘完之后我把 `core/test/turn_evidence_test.go` 的文件头表改成一行指针（同 F20 的做法），
-  **在那之前不动**——不然就成了"注释指向一个不存在的表"，正是巡检 13:04 提醒的那个顺序问题。
+```markdown
+| C8-6 | 正向：§15.2『来自』列每个反引号码名都必须 ∈ §15.1 码列 | `go test -count=1 -v -run TestHTTPErrorCodesComeFromAdapterSet ./test/...` | 现存（PASS）/ test |
+| C8-7 | 反向：§15.1 每个码都要有 HTTP 映射行；**例外按形状判**——只有『来自』以 `—` 开头的行不参与，不点名放行 `version_conflict` | `go test -count=1 -v -run TestAdapterCodesHaveHTTPMapping ./test/...` | 现存（PASS）/ test |
+| C8-8 | **解析器自证**：§15.2 必须解析出 29 行 = 17 带码名 + 12 以 `—` 开头，且两者之和 = 总行数；§15.1 码列 17 个。任一不符 ⇒ 判判据自己坏了（红），**不许拿半张表去判人**。锚点用标题文本（`### 15.1 `→`#### 15.1.1`、`### 15.2`→`### 15.3`），锚点找不到或区间没有终点也报同一种红 | `go test -count=1 -v -run TestErrorCodeContractTablesParse ./test/...` | 现存（守门已咬过一次：我第一版把列索引写错，三条当场全红）|
+| C8-9 | 契约③ §7.1 尾那句"`api/http`/`cmd/core` 出现 `adapter_instances`/`adapter_capabilities` 的表名字面量写调用即 W13-2 红"由 **W13-2 的运行时表全集**覆盖（`biz_tables()` 从迁移解析，两张都在里面），不另立判据 | `bash scripts/check_ownership.sh`（2b 段逐行印 `[W13-2] <表>: n`） | 现存（今日 0 命中）/ test |
+```
+- **REQ-T12 状态更新（不用你回，只报确认）**：你们 09-22 在契约③ §7.1 后那段注里已用实测确认
+  "今天没有任何非测试代码构造 `Supervisor`、也没有 `Recorder` 的任何实现"——正是我 09-21 报的那句
+  （`grep -rn audit core/internal/process/` 零命中）。T84-7 的三段归属已按契约记下：adapter 加"丢弃"事件、
+  backend 在 `cmd/core` 注实现、我落判据；在实现之前它是 `待建`，我不会为了凑绿去接一条不存在的接缝。
 - **REQ-T10（第二张）已闭合：判据表 MS 于 15:2x 镜像进契约② §4（六行），我这边同轮换成了指针**。
   账本里原来粘的那份 MS 表**已删除**——契约就是权威，账本再留一份就是第三处真相。
-  现在只剩 **T84** 没镜像（文本在本节上面那条）；粘进 §4.2 后我同样翻指针。
-- **REQ-T10（第三张待镜像）：判据表 FL（间歇红口径，T-119）——请和 T84 一并粘进契约②**。
-  机制在 `scripts/flaky_watch.sh`，脚本头只写"判据见契约② 判据表 FL"，不留第二份口径。
 
-  ```markdown
-  #### 判据表 FL（间歇红；`test` 用 `scripts/flaky_watch.sh` 实现，15:46 主控定）
-
-  一句话口径：**只在 `./...` 全跑时出现、单跑不复现的失败记为 flaky 并带采样时刻，既不计绿也不计回归。**
-  四档采样（缺一档就分辨不出并发形状）：`single` 单独跑一个包一个用例 / `shuffle` 同二进制内
-  `-count=2 -shuffle=on` / `isolated` 多包一起跑但 `-p 1`（去跨包并发、留包内 shuffle）/
-  `parallel` 不限 `-p`（即 `go test ./...` 的默认并行）。
-  **每次采样前取一次 `date`；判的是 `-run` 命中的那行 `--- PASS/FAIL/SKIP`，不判包级 `ok`**——
-  `-run` 是前缀匹配且不带 `-v` 时 SKIP 看不见、包照样报 ok。
-
-  | ID | 断言 | 当场命令 | 状态 / 归属 |
-  |---|---|---|---|
-  | FL-1 | 只有 `parallel` 红、`isolated` 全绿 ⇒ 判 **FLAKY（跨包并发）**，带两次采样时刻 | `bash scripts/flaky_watch.sh -run <用例名> -p <包> -n 2` | 现存（分类器由 `--selftest` 反向验，不靠真红一次） |
-  | FL-2 | `single` 也红 ⇒ 判 **REGRESSION**（稳定复现），派归属角色，**不许标成 flaky** | 同上 | 现存 |
-  | FL-3 | `shuffle` 红而 `single` 绿 ⇒ **FLAKY（同二进制并发）**：同包内共享的东西（包级变量、临时资源计数）才是方向，跨包端口不是 | 同上；最小复现手段 = 同包 `-shuffle=on` + `-count=2` | 现存（**16:10:54 已第一次由实测落地**：`cmd/core` 两跑全红、无 flag 绿，见 ledger 125 条） |
-  | FL-4 | `parallel` 与 `isolated` **都红** ⇒ **FLAKY（未定维度）**：不是"一起跑"造成的，方向要回到共享面枚举 | 同上 | 现存 |
-  | FL-5 | 四档都不红 ⇒ **未复现**，只报采样次数与时刻，**不得写成"已绿/已修"** | 同上 | 现存 |
-  | FL-6 | 任一采样没拿到该用例的 `---` 行（编译不过 / 用例改名）⇒ **探测不成立**，exit 2 并拒绝下结论 | `bash scripts/flaky_watch.sh --selftest` 里喂合成计数验 | 现存 |
-  | FL-7 | 共享面必须**可枚举**，不许一个一个猜：`core.lock` / `core.endpoint` / `audit.head` / 真子进程端口 / **同批包里被改到的共享契约** | 脚本末尾自动列（数 `cmd/core/*_test.go` 的 `Config{` 与 `DataDir:`/`t.TempDir()` 是否相称 + 三个文件名引用处） | 现存 |
-  | FL-8 | **前置档，比 FL-1~FL-5 优先**：记 flaky 之前先核时间线 —— 失败时刻往前 `-s`（默认 120）秒、往后 90 秒内，**全仓**（`core/`+`specs/`+`scripts/`）有任何 .go 的 mtime 落进窗口 ⇒ 这次观察**不算证据**，既不计 flaky 也不计回归；判决必须报扫过的文件数 | `bash scripts/flaky_watch.sh -a 2026-09-21T15:29:31+08:00` | 现存（15:29:31 那次实测命中：`core_test.go` 失败后 54s、`rejections.go` 失败后 58s 被改写） |
-  ```
 
   为什么多一条 FL-7 的第五项：`.qoder/progress/backend.md` 第 **110** 条（约 2242~2258 行）记的红，
   根因是 `internal/audit` 改字段（`count int` → `lastSeq/anchoredSeq/seeded`）打红了 `cmd/core` 的两条用例 ——
@@ -843,6 +851,27 @@ LAST_UPDATED: 2026-09-21T16:16+08:00（本机 date 实取；T-121/T-124 的四�
 - `.qoder/progress/test.md` — 本文件
 
 ## Verification evidence
+
+- **09-22 15:44:16~15:45:28（本机 `date -Iseconds`）T-131 交付前最后一次重跑**，六条命令全部 exit 0：
+  `go test -count=1 -v ./test/...` ⇒ 0 FAIL；开 `LUCERO_TEST_FAKE_ADAPTER=1` ⇒ **65 PASS / 9 顶层 SKIP / 0 FAIL**；
+  `check_ownership.sh` exit 0（第十一轮）、`--selftest` exit 0、`crash_recovery.sh` exit 0、
+  `flaky_watch.sh --selftest` exit 0（六句判决各就各位）。
+  **新增的一条对账（T-124 规矩 ①）**：`grep -hc '^func Test' core/test/*.go` 求和 = **50**，
+  `-v` 输出里顶层 `--- ` 行数 = **50** ⇒ 没有用例声明了却没跑。
+  基线 `4f7fb43`；证形三句：`git diff --stat HEAD -- core/test scripts` ⇒ `1 file changed, 7(+), 18(-)`
+  （T84 指针翻转），`git status --porcelain` ⇒ 另有一行 `?? core/test/errcode_mapping_test.go`，
+  `git diff --no-index --stat /dev/null core/test/errcode_mapping_test.go` ⇒ `236 insertions(+)`（我先写了 195，复测才发现自己又犯了"计数没配原文"，改回来了）。
+- **C8-6/7/8 三条判据的实测原文（15:3x，`-v`）**：
+  `解析器自证：§15.1=17 码、§15.2=29 行（码名 17 / `—` 12）`；
+  `§15.2 的 17 个码名逐个在 §15.1 里找到了`；`反向也过：§15.1 的 17 个码都有 HTTP 映射行；带 — 的那 12 行按形状不参与，不靠点名`。
+  **守门非永真的证据不是变异，是我自己第一次跑错**：`来自` 列我按 awk 习惯取了 `cells[4]`（split 后应为 `cells[3]`），
+  解析器当场报 `§15.2 第 1 行的『来自』既不是码名也不是 `—` 开头："" ⇒ 解析形状变了`，三条全红。
+  这类"表格解析器静默读空"正是主控 09-22 让我自带守门的原因，实测它确实会拦。
+- **今天我自己撞到的"包 ok 不算跑过"（新规矩的来源）**：我 `-run` 里把
+  `TestHTTPErrorCodesComeFromAdapterSet` 误打成 `...Adapterset` ⇒ 那条整条没跑、包照样 `ok`；
+  按 `=== RUN` 原文行数对账才发现。教训并入"计数必须配原文行"同一节。
+- **09-21 16:14:06~16:15:23（本机 `date -Iseconds`）T-121/T-124 交付前最后一次重跑**：六条 exit 0（默认面 46 PASS / 14 顶层 SKIP / 0 FAIL、开旗标 62 / 9 / 0、lint 第十轮 exit 0、selftest、crash、flaky_watch 两档全 0）。
+  `-a` 档全仓扫实测：`扫描范围=../core ../specs ../scripts`、`扫了 122 个 .go 文件`。
 
 - **09-21 16:02:08~16:03:14（本机 `date -Iseconds`）T-119 交付前最后一次重跑**，六条命令全部 exit 0：
   默认面 `go test -count=1 -v ./test/...` **46 PASS / 14 顶层 SKIP / 0 FAIL**、开

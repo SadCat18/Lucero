@@ -201,6 +201,33 @@ type Recorder interface {
 	RecordExit(ev Event)
 	// RecordCrash is an abnormal one, with ev.Crashes counting toward §8's budget.
 	RecordCrash(ev Event)
+	// RecordDrop is T84-7's half of §4.2 裁定 ①'s "丢弃 + Audit": the pump decided a frame
+	// could not be attributed, and that decision has to leave a trace. It is the fourth
+	// method, added on 主控's instruction in T-129 - T-62 froze the interface at three
+	// methods and said not to reopen its shape, so the conflict is recorded rather than
+	// ignored; the frozen properties are kept: void return, no row handle, no DB import.
+	//
+	// The distinction that matters: a drop is an audit fact, not a process lifecycle row
+	// and not a domain event. The implementation must go through audit's own append API -
+	// if this package ever wrote the audit_entries table itself it would be W13-2 red,
+	// and the event journal must stay out of it (T84-7: 一次丢弃留一行审计、且不写
+	// event_journal).
+	RecordDrop(ev DroppedEvent)
+}
+
+// DroppedEvent is what the pump knows at the moment it throws a frame away: enough to
+// reconstruct the decision afterwards, and nothing that guesses at attribution. The
+// frame's own execution_id is reported as it arrived, not as the ticket was bound,
+// precisely because the disagreement between the two is the event being recorded.
+type DroppedEvent struct {
+	Kind             Kind
+	ProcessRole      string
+	Method           string
+	TurnRef          string
+	FrameExecutionID string
+	BoundExecutionID string
+	Reason           string
+	Timestamp        int64
 }
 
 // Sink receives every Event; it must not block (the restart loop is on this
@@ -232,6 +259,20 @@ func (s *Supervisor) max() int {
 		return s.MaxCrashes
 	}
 	return MaxConsecutiveCrashes
+}
+
+// recordDrop hands one discarded frame to the injector. It is nil-safe for the same
+// reason emit is: today nothing in the tree implements Recorder at all (T-129 measured
+// it), so a drop must stay observable through the Inbound error and must never be the
+// thing that panics a healthy connection.
+func (s *Supervisor) recordDrop(ev DroppedEvent) {
+	if s.Rec == nil {
+		return
+	}
+	if ev.Timestamp == 0 && s.Now != nil {
+		ev.Timestamp = s.Now().UnixMilli()
+	}
+	s.Rec.RecordDrop(ev)
 }
 
 func (s *Supervisor) emit(ev Event) {

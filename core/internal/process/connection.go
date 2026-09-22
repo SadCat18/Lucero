@@ -425,6 +425,11 @@ func (c *Connection) notify(f *adapter.Frame) {
 		// numbers shadow the resume position of a real turn. This is also the one
 		// place the frame does not travel onward with its error attached: a lossy
 		// stream is survivable, a crossed one writes two executions into one row.
+		c.sup.recordDrop(DroppedEvent{
+			Kind: c.sup.Kind, Method: s.Method, TurnRef: s.TurnRef,
+			FrameExecutionID: s.ExecutionID, BoundExecutionID: c.boundTo(s.TurnRef),
+			Reason: why.Message,
+		})
 		c.deliver(Inbound{Err: why})
 		return
 	}
@@ -456,6 +461,15 @@ func (c *Connection) notify(f *adapter.Frame) {
 	// The ticket has done its job: it stops here.
 	s.TurnRef = ""
 	c.deliver(Inbound{ExecutionID: execID, Frame: s})
+}
+
+// boundTo reports what this connection had already bound to a ticket, "" when it never
+// issued one. It exists for the audit row only: the drop decision has already been made,
+// and reading the map again must not be able to change it.
+func (c *Connection) boundTo(turnRef string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.execByRef[turnRef]
 }
 
 // attributeLocked resolves a frame to Core's own Execution id. There is exactly one

@@ -310,7 +310,7 @@ export interface paths {
         get: operations["listTasks"];
         put?: never;
         /**
-         * 建任务；`Idempotency-Key` 强制（契约① §8 高风险写）
+         * 建任务；`Idempotency-Key` 强制（事件契约 §8 高风险写）
          * @description 命中已完成记录时返回首次响应，不重放副作用、不产生新事件。产 `task_created`。
          */
         post: operations["createTask"];
@@ -767,10 +767,16 @@ export interface components {
             };
         };
         /**
-         * @description 契约② §15.2 的 HTTP 面错误码：闭集（§15 明写"命名分裂是故意的"，Adapter 层大写蛇形不得出现在这里，也不得放开成 free string）。后 4 条是 Core transport 自有码（实测自 api/http/handler.go 的 writeError），§15.2 尚未收编 → REQ-F-14；与 version_conflict 同类，HTTP 层专有、不经 Adapter。映射：protocol_not_initialized/capability_unavailable=503、protocol_version_mismatch=426、write_entry_none=405、delivery_mode_unsupported=422、local_data_unavailable/cancelled/version_conflict=409、session_not_found=404、auth_required/unauthorized=401、rate_limited=429、dangerous_flag_refused/origin_not_allowed=403、timeout=504、provider_error=502、internal=500、method_not_allowed=405、not_implemented=501。
+         * @description 契约② §15.2（含 §15.2.1 收编）左列的完整投影 = 29 条；闭集，不得放开成 free string，
+         *     Adapter 层大写蛇形不得出现在这里（§15「命名分裂是故意的」）。
+         *     **HTTP 状态映射不在此重抄**：权威是 §15.2 与 §15.2.1 那两张表，`scripts/validate-openapi.mjs`
+         *     每次运行都现场解析它们并与本 enum 双向对拍 —— 快照会腐烂（REQ-F-14 就是这么少 10 条的）。
+         *     三对"同 HTTP 码、不同名字"是 §15.2.1 故意保留、不许合并：`unauthorized`/`auth_required`(401)、
+         *     `not_found`/`session_not_found`(404)、`internal_error`/`internal`(500)；
+         *     区别在**生产者**：客户端要能分清"这请求在 Core 里就没过"还是"过 Core 到了 Provider 才挂"。
          * @enum {string}
          */
-        ErrorCode: "protocol_not_initialized" | "protocol_version_mismatch" | "capability_unavailable" | "write_entry_none" | "delivery_mode_unsupported" | "local_data_unavailable" | "session_not_found" | "auth_required" | "rate_limited" | "dangerous_flag_refused" | "cancelled" | "timeout" | "provider_error" | "internal" | "version_conflict" | "unauthorized" | "origin_not_allowed" | "method_not_allowed" | "not_implemented";
+        ErrorCode: "protocol_not_initialized" | "protocol_version_mismatch" | "capability_unavailable" | "write_entry_none" | "delivery_mode_unsupported" | "local_data_unavailable" | "session_not_found" | "auth_required" | "rate_limited" | "dangerous_flag_refused" | "cancelled" | "timeout" | "provider_error" | "internal" | "read_only" | "adapter_unresponsive" | "execution_state_unknown" | "version_conflict" | "validation_failed" | "unauthorized" | "origin_not_allowed" | "idempotency_key_required" | "not_found" | "method_not_allowed" | "idempotency_replay" | "idempotency_mismatch" | "illegal_transition" | "not_implemented" | "internal_error";
         CursorPage: {
             /** @description T-80 / REQ-F-19 裁定：空串是"没有下一页"的唯一合法表示。分页出口只在取满一页且非空时才写 encodeCursor（其结果永不为空串），所以"空"与"有值"不可能撞。null 与"字段整个省略"都不许成为第二种表示 —— 同一件事两种写法会让生成客户端判两次。 */
             next_cursor: string;
@@ -795,7 +801,7 @@ export interface components {
         /** @enum {string} */
         RiskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | "UNKNOWN";
         /**
-         * @description 契约① §5.1 的状态机**只在 Core 里裁决**；面板只做投影。
+         * @description 事件契约 §5.1 的状态机**只在 Core 里裁决**；面板只做投影。
          *     AGENT_COMPLETED != ACCEPTED；UNKNOWN 不得显示成 FAILED/0/Offline。
          * @enum {string}
          */
@@ -824,7 +830,7 @@ export interface components {
         /** @enum {string} */
         HandoffState: "CREATED" | "PREPARING" | "READY" | "STARTING_TARGET" | "COMPLETED" | "FAILED" | "CANCELLED";
         /**
-         * @description 契约① §6 事件目录 v0.1 的完整投影。目录外的 event_type 属 P0（禁止事项 1）。
+         * @description 事件契约 §6 事件目录 v0.1 的完整投影。目录外的 event_type 属 P0（禁止事项 1）。
          * @enum {string}
          */
         EventType: "project_created" | "project_archived" | "adapter_registered" | "adapter_health_changed" | "adapter_downgraded" | "adapter_restart_exhausted" | "adapter_capability_verified" | "model_discovered" | "session_discovered" | "session_managed" | "session_synced" | "message_recorded" | "task_created" | "task_queued" | "task_preparing" | "task_running" | "task_waiting_approval" | "task_agent_completed" | "task_verifying" | "task_waiting_acceptance" | "task_accepted" | "task_failed" | "task_cancelled" | "task_interrupted" | "task_paused" | "task_blocked" | "task_resumed" | "task_transferring" | "task_state_corrected" | "execution_created" | "execution_started" | "execution_output_flushed" | "execution_paused" | "execution_resumed" | "execution_approval_requested" | "execution_approval_resolved" | "execution_cancelled" | "execution_failed" | "execution_succeeded" | "execution_interrupted" | "approval_requested" | "approval_resolved" | "approval_expired" | "approval_cancelled" | "grant_issued" | "grant_revoked" | "grant_expired" | "quota_observed" | "notification_created" | "notification_handled" | "handoff_created" | "handoff_ready" | "handoff_completed" | "handoff_failed" | "process_started" | "process_exited" | "process_crashed" | "core_ready" | "core_shutdown";
@@ -1176,7 +1182,7 @@ export interface components {
             context_ids?: string[];
             created_at?: components["schemas"]["Timestamp"];
         };
-        /** @description 契约① §2 信封 */
+        /** @description 事件契约 §2 信封 */
         EventJournalEntry: {
             /**
              * Format: int64

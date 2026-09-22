@@ -1,8 +1,9 @@
 // 契约③ §3 端点表 + §4 链映射 + §2/§2.1/§5 约定 是否被 yaml 逐条投影；
-// 外加契约① §6/§7、契约② §15.2 与 T-17/T-26/T-30 裁定的落地检查。
+// 外加事件契约 §6/§7、契约② §15.2 与 T-17/T-26/T-30/T-127 裁定的落地检查。
 // 用法：cd apps/desktop && npm run validate
 import SwaggerParser from '@apidevtools/swagger-parser';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -37,30 +38,117 @@ const CHAIN_CALLS = [
   'post /api/v1/approvals/{id}:resolve', 'post /api/v1/tasks/{id}:accept',
 ];
 
+/** 事件契约 §7 垂直链：读围栏代码块里的全名，不再手抄 22 条。
+ *  ⚠ §6 事件目录**故意不解析**：那张表有 `execution_cancelled / _failed / _succeeded` 这种合并族行，
+ *  展开要靠"同前缀"推断，猜错就是一次静默的半张表 —— 那比快照更坏。EventType 仍是我手抄的投影，
+ *  重核命令见 CHAIN 下面那条注释。 */
+function parseChainEvents() {
+  let raw;
+  try {
+    raw = fs.readFileSync(EVENT_CONTRACT, 'utf8');
+  } catch (e) {
+    broken(`读不到事件契约：${EVENT_CONTRACT} —— ${e.message}`);
+  }
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const i7 = lines.findIndex((l) => /^## 7\. /.test(l));
+  const i8 = lines.findIndex((l, i) => i > i7 && /^## 8\. /.test(l));
+  if (i7 < 0 || i8 < 0) broken(`事件契约 §7 区间锚点没找准（§7=${i7 + 1}，§8=${i8 + 1}）`);
+  const fence = lines.slice(i7, i8).join('\n').match(/```([\s\S]*?)```/);
+  if (!fence) broken('事件契约 §7 里找不到围栏代码块 ⇒ 链 oracle 的形状变了');
+  const evs = [...new Set(fence[1]
+    .split(/[→\n]/)
+    .map((s) => s.replace(/×\s*N/, '').trim())
+    .filter((s) => /^[a-z_]+$/.test(s)))];
+  if (evs.length < 10) broken(`事件契约 §7 只解出 ${evs.length} 个事件名（链不可能这么短）⇒ 解析器坏了`);
+  return evs;
+}
+
 // §2 幂等豁免表 + T-30 的免 Principal 表：两张表都只有一条，漂移即红
 const IDEMPOTENCY_EXEMPT = ['/api/v1/ws-ticket'];
 const PRINCIPAL_EXEMPT = ['/api/v1/ws-ticket'];
 
-// 契约② §15.2 左列 15 条（闭集，不得放开）
-const RPC_CODES = ['protocol_not_initialized', 'protocol_version_mismatch', 'capability_unavailable',
-  'write_entry_none', 'delivery_mode_unsupported', 'local_data_unavailable', 'session_not_found',
-  'auth_required', 'rate_limited', 'dangerous_flag_refused', 'cancelled', 'timeout', 'provider_error',
-  'internal', 'version_conflict'];
-// Core transport 自有码（实测自 api/http/handler.go），§15.2 尚未收编 → REQ-F-14
-const TRANSPORT_CODES = ['unauthorized', 'origin_not_allowed', 'method_not_allowed', 'not_implemented'];
+/* ── 契约② §15.2 左列：**运行时解析，不内嵌副本**（T-127②）─────────────────
+   为什么不能抄一份：REQ-F-14 就是抄的 —— 我那份 15 条快照漏了 §15.2 本来就有的
+   read_only / adapter_unresponsive / execution_state_unknown，契约扩列时 validator 永远看不见。
+   四个自坑一起防掉：CR 不剥→行尾正则全废；锚点不锚行首→`#### 15.2.1` 与正文示例会冒充标题；
+   路径不绝对化→换 cwd 就静默读不到；解析空集不当错→拿半张表判人。 */
+const CONTRACT2 = path.join(root, 'specs', 'adapter-protocol', 'adapter-protocol-v0.1.md');
+const EVENT_CONTRACT = path.join(root, 'specs', 'events', 'event-contract-v0.1.md');
+/** 基线会随契约加词漂移；漂移时**先改这里的期望再改判据**，不许让解析器"降级通过" */
+const C2_BASELINE = { rows: 29, named: 17, dashed: 12 };
+
+/** 解析器坏了就停。`probing` 时改成 throw，好让下面那两条"自破坏探针"能就地验证守门真的会拦。 */
+let probing = false;
+function broken(msg) {
+  if (probing) throw new Error(msg);
+  console.error(`  解析器坏了：${msg}`);
+  console.error('  ⇒ 判据不可用。宁可 exit 2 停在这里，也不拿半张表去判 yaml（半张表会判出假的"缺码"）。');
+  process.exit(2);
+}
+
+function parseHttpCodes(textOverride) {
+  let raw = textOverride;
+  if (raw === undefined) {
+    try {
+      raw = fs.readFileSync(CONTRACT2, 'utf8');
+    } catch (e) {
+      broken(`读不到契约②：${CONTRACT2} —— ${e.message}`);
+    }
+  }
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const hits = (re) => lines.map((l, i) => (re.test(l) ? i : -1)).filter((i) => i >= 0);
+  const from = hits(/^### 15\.2 /);       // 行首 + 尾随空格：排除 `#### 15.2.1`
+  const to = hits(/^### 15\.3/);
+  if (from.length !== 1) broken(`§15.2 标题锚点命中 ${from.length} 次（要恰好 1 次），命中处 1-based 行号=[${from.map((i) => i + 1)}]`);
+  if (!to.some((i) => i > from[0])) broken('找不到 §15.2 之后的 §15.3 标题 ⇒ 区间无法闭合，硬取文件尾会把别的表读进来');
+  const end = to.find((i) => i > from[0]);
+  const rows = [];
+  for (let i = from[0]; i < end; i++) {
+    const m = lines[i].match(/^\| `([a-z_]+)` \| (\d{3}) \| (.*) \|$/);
+    if (m) rows.push({ code: m[1], status: Number(m[2]), from: m[3] });
+  }
+  const dashed = rows.filter((r) => r.from.trimStart().startsWith('—'));
+  const named = rows.filter((r) => !r.from.trimStart().startsWith('—'));
+  if (!rows.length) broken(`区间 ${from[0] + 1}..${end + 1} 解出 0 行表格（区间里有 ${end - from[0]} 行文本，却没一行匹配）`);
+  if (rows.length !== C2_BASELINE.rows || named.length !== C2_BASELINE.named || dashed.length !== C2_BASELINE.dashed)
+    broken(`§15.2 解出 ${rows.length} 行（${named.length} 带 §15.1 码名 / ${dashed.length} 带 —），`
+      + `基线是 ${C2_BASELINE.rows} = ${C2_BASELINE.named} + ${C2_BASELINE.dashed} ⇒ 表格形状变了，先核对新表再动判据`);
+  if (new Set(rows.map((r) => r.code)).size !== rows.length) broken('§15.2 左列有重码 ⇒ 集合运算不可信');
+  return { rows, named, dashed, range: `${from[0] + 1}..${end + 1}` };
+}
+
+/** Core 真发出来的 transport 码：现场扫 writeError 调用点，不抄 §15.2.1 正文那张表。
+ *  ⚠ 采样面是**整个 `core/api/**` 递归**，不是某个文件 —— REQ-F-14 报成"4 条"就是因为只扫了 handler.go。 */
+function scanGoTransportCodes() {
+  const dir = path.join(root, 'core', 'api');
+  const files = [];
+  const walk = (d) => {
+    let ents;
+    try {
+      ents = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.go') && !e.name.endsWith('_test.go')) files.push(p);
+    }
+  };
+  walk(dir);
+  if (!files.length) return null;                     // 没有 core/ 源码的签出：这条不判，也不算绿
+  const set = new Set();
+  for (const f of files) {
+    const t = fs.readFileSync(f, 'utf8').replace(/\r\n?/g, '\n');
+    for (const m of t.matchAll(/writeError\(w, http\.Status[A-Za-z]+, "([a-z_]+)"/g)) set.add(m[1]);
+  }
+  return { files: files.length, codes: [...set].sort() };
+}
 
 // T-30 裁定：/health 的 state 词表，无 DEGRADED
 const HEALTH_STATES = ['BOOTING', 'READY', 'STOPPING', 'STOPPED', 'UNKNOWN'];
 
-// 契约① §7 垂直链事件序列
-const CHAIN_EVENTS = [
-  'project_created', 'session_discovered', 'session_managed', 'task_created', 'task_queued',
-  'task_preparing', 'execution_created', 'execution_started', 'task_running', 'message_recorded',
-  'execution_output_flushed', 'execution_approval_requested', 'task_waiting_approval',
-  'approval_requested', 'notification_created', 'approval_resolved', 'grant_issued',
-  'execution_approval_resolved', 'execution_succeeded', 'task_agent_completed',
-  'task_waiting_acceptance', 'task_accepted',
-];
+// 事件契约 §7 的 22 类链事件不再内嵌（T-127② 同一病根），见 parseChainEvents()
 
 const HTTP = ['get', 'post', 'patch', 'put', 'delete', 'options', 'head', 'trace'];
 const fail = [];
@@ -138,19 +226,54 @@ const offsetParams = Object.entries(api.paths).flatMap(([p, item]) =>
 offsetParams.length ? bad('出现 offset 分页（§2 明令禁止）') : ok('无 offset 分页参数');
 
 const S = api.components.schemas;
-// 契约② §15.2：闭集、覆盖 15 条、无大写形、error.code 指向它
+// 契约② §15.2 三方对拍：**当场解析的契约表** ↔ yaml enum ↔ Core 真发出来的码。
+// 判据按 §15.2.1 的形状走（『来自』以 — 开头 = HTTP 层专有），不按名字写死 version_conflict。
+const c2 = parseHttpCodes();
+ok(`契约② §15.2 现场解析（第 ${c2.range} 行区间）= ${c2.rows.length} 行：${c2.named.length} 带 §15.1 码名 + ${c2.dashed.length} 带 —`);
+// 守门的自破坏探针（T-66④）：在**内存里**把契约改坏三种，守门必须每种都自己报"坏了"。
+// 不动 specs/ 那个文件 —— 它在别人的写范围里，中途被第三方读到或写到都会串味。
+try {
+  const real = fs.readFileSync(CONTRACT2, 'utf8');
+  probing = true;
+  for (const [name, tweak] of [
+    ['少一行（拿掉 validation_failed）', (t) => t.replace(/^\| `validation_failed` .*$/m, '')],
+    ['把 — 改成码名（"按形状豁免"失效）', (t) => t.replace('| `not_found` | 404 | —', '| `not_found` | 404 | `NOT_FOUND`')],
+    ['§15.2 标题被改名（区间锚不到）', (t) => t.replace(/^### 15\.2 .*$/m, '### 15.2x 改名了')],
+  ]) {
+    let caught = null;
+    try {
+      parseHttpCodes(tweak(real));
+    } catch (e) {
+      caught = e.message;
+    }
+    caught ? ok(`守门自证：${name} → 当场拒判（"半张表"过不去）`)
+      : bad(`守门失效：${name} 竟被放行 ⇒ 那条 29=17+12 的守门是装饰品`);
+  }
+} finally {
+  probing = false;
+}
 const codes = S.ErrorCode?.enum;
 Array.isArray(codes) && !S.ErrorCode.anyOf && !S.ErrorCode.pattern
   ? ok(`ErrorCode 是闭集（${codes.length} 条，未放开 free string）`)
   : bad('ErrorCode 不是闭集（§15 明令不得放开）');
-const missCodes = RPC_CODES.filter((c) => !codes?.includes(c));
-missCodes.length ? bad('§15.2 缺码：' + missCodes.join(', ')) : ok(`§15.2 的 15 条全在`);
-const extraCodes = (codes ?? []).filter((c) => !RPC_CODES.includes(c));
-extraCodes.length
-  ? (extraCodes.every((c) => TRANSPORT_CODES.includes(c))
-      ? ok(`另含 transport 自有码 ${extraCodes.length} 条（${extraCodes.join(', ')}）→ REQ-F-14 待 §15.2 收编`)
-      : bad('ErrorCode 混进未登记的码：' + extraCodes.join(', ')))
-  : bad('ErrorCode 缺 Core transport 自有码（实测会返回，闭集必须覆盖）');
+const c2Codes = c2.rows.map((r) => r.code);
+const missCodes = c2Codes.filter((c) => !codes?.includes(c));
+missCodes.length ? bad(`§15.2 有、enum 里没有（${missCodes.length} 条）：` + missCodes.join(', '))
+  : ok(`§15.2 左列 ${c2Codes.length} 条全在 enum 里（数据源是当场解析，不是内嵌快照）`);
+const extraCodes = (codes ?? []).filter((c) => !c2Codes.includes(c));
+extraCodes.length ? bad('enum 里有契约之外的码（越权投影）：' + extraCodes.join(', '))
+  : ok('enum 与 §15.2 左列**双向相等**（不多一条也不少一条）');
+const go = scanGoTransportCodes();
+if (!go) ok('本签出没有 core/api 源码 ⇒ 跳过实现侧对拍（跳过 ≠ 通过，这里明确记为未判）');
+else {
+  if (!go.codes.length) broken(`扫了 core/api 的 ${go.files} 个非测试 .go 却零命中 writeError ⇒ 扫描正则坏了，不能拿"没扫到"当"没有"`);
+  const dashedSet = new Set(c2.dashed.map((r) => r.code));
+  const goNotDoc = go.codes.filter((c) => !dashedSet.has(c));
+  const docNotGo = [...dashedSet].filter((c) => !go.codes.includes(c));
+  goNotDoc.length || docNotGo.length
+    ? bad(`实现侧与 §15.2 的 — 行不等：Core 真发而文档未列=[${goNotDoc.join(',')}]；文档列而 Core 不发=[${docNotGo.join(',')}]`)
+    : ok(`Core 实测 ${go.codes.length} 条 transport 码（扫 ${go.files} 个文件）与 §15.2 的 ${dashedSet.size} 行 — 逐字相等`);
+}
 (codes ?? []).every((c) => /^[a-z][a-z0-9_]*$/.test(c))
   ? ok('全部小写蛇形（RPC 面的大写形没混进来）') : bad('存在非小写蛇形码');
 S.ErrorEnvelope.properties.error.properties.code?.enum
@@ -237,10 +360,11 @@ String(wf?.['cursor-authority']).includes('省略') && String(wf?.order).include
 Array.isArray(wf?.criteria) || String(wf?.criteria).match(/[①②③]/)
   ? ok('§5 三条判据随 yaml 一起落地（防后来者只断一边）')
   : bad('未投影 §5 判据 ①②③');
-// 契约① §6/§7
-const miss = CHAIN_EVENTS.filter((e) => !S.EventType.enum.includes(e));
+// 事件契约 §7 链 ↔ yaml EventType 目录（链当场解析；目录侧仍是我的投影，见下面那条 note）
+const chainEvents = parseChainEvents();
+const miss = chainEvents.filter((e) => !S.EventType.enum.includes(e));
 miss.length ? bad('EventType 目录漏链事件：' + miss.join(', '))
-  : ok(`契约① §7 链的 ${CHAIN_EVENTS.length} 类事件全在目录内（目录 ${S.EventType.enum.length} 条）`);
+  : ok(`事件契约 §7 链的 ${chainEvents.length} 类事件全在目录内（目录 ${S.EventType.enum.length} 条）`);
 
 for (const n of ['TaskStatus', 'ExecutionStatus', 'Confidence', 'SyncState', 'AdapterHealth',
   'ModelAvailability', 'RiskLevel', 'CapabilityHealth'])

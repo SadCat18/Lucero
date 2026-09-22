@@ -31,6 +31,7 @@ import (
 	"github.com/SadCat18/lucero/core/internal/audit"
 	"github.com/SadCat18/lucero/core/internal/notification"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/project"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
 
@@ -214,6 +215,9 @@ func (c *Core) handler() http.Handler {
 		Tasks:   c.tasks, TaskList: task.NewRepository(c.db.Read), Store: c.store,
 		// inbox 那一腿是纯读：不注入 Store，所以它不需要事务通道。
 		Notifications: notification.NewRepository(c.db.Read),
+		// 建项目这条口只要一个 Service（canonicalize 与冲突判定都在 internal/project 里）；
+		// 时钟与 §5.4/审计那两处共用同一个 nowMillis，别在业务包里各取一次时间。
+		Projects: project.NewService(nil),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{

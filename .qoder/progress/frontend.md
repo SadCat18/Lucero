@@ -3,9 +3,9 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-21T13:42:31+08:00（四道闸门最后一次全量重跑 13:37:09 全绿；13:42:04 只单独重跑过
-cursor-shape 一份 = 6 passed。此后仅改本文件与 `.qoder/evidence/frontend/`、`.scratch/frontend/` 下的文本，
-源码零改动 —— 用 `find … -newermt "2026-09-21 13:37:09"` 反查为空，不是"我记得没动"）
+LAST_UPDATED: 2026-09-22T15:38:23+08:00（T-127/T-128 轮；四道闸门 15:37:42 全绿、F20-4 命令 15:37:45 单跑 1 passed；
+本轮基线已换：`git log -1 --format=%h` = `4f7fb43`。上一轮 T-96 的"最后一次重跑 09-21 13:37:09 + 此后源码零改动（find -newermt 反查为空）"
+那套证据继续有效，别拿本轮数字去覆它）
 
 ## Objective
 
@@ -101,7 +101,10 @@ F-9 `hello_ack`；F-11 幂等豁免集合相等断言；F-3 bootError 诊断位�
 > **补记（2026-09-21T13:38:36+08:00，T-96 轮）**：下面 F-17 / F-18 两条是**当时的原始记录，已不是当前状态** ——
 > F-17 由 T-76 轮在自属实例上实测解除（A/B 对照，见 11:23 段）、F-18 由 T-53 轮交付；
 > F-19 / F-20 / F-21 / F-22 全部关闭（F-22 见本轮段）。原始行不删不改（T-43），别再拿它们当阻塞读。
-> 当前待裁项只剩 **REQ-F-14**（ErrorCode 四条传输层码收编进 §15.2）、**LAG-1**、**LAG-2**、**OBS-F-1**。
+> 当前待裁项只剩 **LAG-1**（§3 缺 F-8 批准的三个读与 `?project=`）与 **OBS-F-1**（core.lock 存活判定，归 backend）；
+> **REQ-F-14 与 LAG-2 已于 09-22 由 T-127/T-128 关闭**（enum 29 条三方对拍；§5 歧义句已重写、F20-4 用例 `helloAckAdvancesCursor` 已建）。
+> **命名约定（同批下发）**：本台账 09-22 之前写的 `契约① §2/§5/§6/§7/§8` 全部指**事件契约**（内部契约当时还没有那些节）；
+> 今后 `契约①` 单写指 `contracts-internal-v0.1.md`，事件那份一律写作「事件契约」—— 历史行不回头改。
 
 - **REQ-F-14（要裁）**：`ErrorCode` 闭集必须覆盖线上真会出现的码，故我在 §15.2 的 15 条之外并进了
   `unauthorized / origin_not_allowed / method_not_allowed / not_implemented`（全部实测自 Core 的 writeError）。
@@ -450,13 +453,98 @@ dev 注入正式化到 `vite.config.ts` 的 proxy `configure`（只 /api；/ws �
   不触碰 `client.ts` / `events.ts` / `panel.ts` 任何线上行为路径；下一次接 `:sync` 时随 11 步真链一起重跑。
 
 ## 当前 checkpoint（覆盖此前所有同名段）
-- Stage：REQ-F-19 / F-20 / F-21 / **F-22** 四条游标口径全部落 yaml，且每条除 validator 外另有实例级形状断言；面板无待办
-- Status：in_progress（阻塞在别人的端点，不在我）
+- Stage：REQ-F-19 / F-20 / F-21 / **F-22** 四条游标口径全部落 yaml，且每条除 validator 外另有实例级形状断言；面板无待办- Status：in_progress（阻塞在别人的端点，不在我）
 - Last verified action：13:37:09 四道闸门全绿（validate / codegen / 25 passed|10 skipped / build+no-secret）；
   本轮磁盘变异一次且**不咬**（已用 `diff`=0 证明还原），判别力改由进程内 `degraded()` 自证
 - Next action：等 backend 让 `POST /projects`、`adapters/{key}/probe`、`POST /sessions/{id}:sync` 脱 501 ——
   到位即用面板跑 §4 的 11 步真链，逐跳 ok/blocked 落 `.qoder/evidence/frontend/`；
   同一次里重跑 live 全量断言并留 `live-t96.txt`（补掉上面那条"10/10 无原始输出"的缺口）。
   期间不动契约文件；若当场观察到任何阻塞前提已消失，当轮就改这行并附 grep 证据（T-80）。
+- Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+  （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`）
+
+## T-127 / T-128 轮（REQ-F-14 收编 + F20-4 归我）· 本机 date 2026-09-22T15:38:23+08:00
+
+### 先认账：主控的数是实测的，我那句"4 条"是采样面太窄
+我当初只扫了 `core/api/http/handler.go` 一个文件，就下了"transport 自有码 4 条"的结论 —— 这是"范围式否定"同族，
+只是这次方向是**少数**（少数会导致 enum 少收，线上真返回的码在闭集外 ⇒ 客户端 `not_core_error_body` 之类误判）。
+本轮把 validator 的采样面改成 **`core/api/**` 递归、排除 `_test.go`**：当场 5 个文件、12 个码，与 §15.2 里 `—` 那 12 行**逐字相等**。
+
+### T-127①：`ErrorCode` enum 19 → **29**
+补 10 条：7 条 transport（`validation_failed` `not_found` `internal_error` `illegal_transition`
+`idempotency_key_required` `idempotency_replay` `idempotency_mismatch`）+ 3 条 §15.2 本来就有、我 `RPC_CODES` 快照漏抄的
+（`read_only` `adapter_unresponsive` `execution_state_unknown`）。
+**描述里那段 HTTP 状态码映射我整段删了** —— 那也是一份快照，正是这次的病根；改成"权威在 §15.2/§15.2.1 两张表，validator 每次现场解析并对拍"，
+并把"三对同 HTTP 码、不同名字不许合并"（`unauthorized`/`auth_required`、`not_found`/`session_not_found`、`internal_error`/`internal`）
+连**为什么**（区别在生产者）一起写进 schema。codegen 后生成物 `ErrorCode` 联合 = 29 条，10 条新增逐个核到（`schema.ts:779`）。
+
+### T-127②：validator 不再内嵌任何一份码表
+`RPC_CODES`(15) 与 `TRANSPORT_CODES`(4) 两段常量删净，改成 `parseHttpCodes()`：
+锚点用 **`^### 15\.2 `（行首 + 尾随空格）** —— 这一条是主控给的坑里最阴的：`#### 15.2.1` 这个标题含子串 `### 15.2`，
+不锚行首就会命中它；正文里那句 `` `/^### 15.2/` `` 示例同样会冒充标题。区间 `[15.2, 15.3)` 一次把 §15.2 的 18 行与 §15.2.1 的 11 行都读进来 = 29。
+**守门按裁定的三个数**：`rows===29 / named===17 / dashed===12`，任一不对 → `broken()` → **exit 2** 并打印"解析器坏了 / 宁可停也不拿半张表判人"。
+豁免判据按**形状**不按名字（『来自』列 `—` 开头 = HTTP 层专有），所以将来再收编 N 条我不需要改代码。
+CR 一律先 `replace(/\r\n?/g,'\n')`，路径全部 `path.join(root,…)` 绝对化（root 由 `import.meta.url` 推，不受 cwd 影响）。
+**顺手清掉同一病根的第三份快照**：`CHAIN_EVENTS`（我手抄的 22 类链事件）改成 `parseChainEvents()` 读事件契约 §7 的围栏块，
+守门是"解出 <10 个 ⇒ 坏了"，不设写死的 22（契约自己的 C8 注就说了"行数会漂，别写死进断言"）。
+**§6 事件目录我故意没解析**，理由写进注释：那张表有 `execution_cancelled / _failed / _succeeded` 这种合并族行，
+展开要猜前缀，猜错就是一次**静默的半张表** —— 比快照更坏。`EventType` 仍是我的投影，这一条留给"合并行展开约定"或由主控定落点。
+
+**守门自己也要有自破坏探针（T-66④）**，且**不改 specs/ 那个文件**（它在别人的写范围里，中途被第三方读到会串味）：
+`probing` 模式下 `broken()` 改 throw，在内存里把契约改坏三种 —— 少一行 / 把 `—` 换成码名 / §15.2 标题改名 ——
+三条全部 `ok 守门自证：… → 当场拒判`。enum 侧另做了一次**磁盘变异**（我自己的 yaml，备份 `.scratch/frontend/yaml-t127.bak`）：
+拿掉 `read_only` ⇒ `exit=1`，且**两个方向同时报红**（`§15.2 有、enum 里没有` + `enum 里有契约之外的码`）。
+回滚证明：`diff specs/openapi/core-v1.yaml .scratch/frontend/yaml-t127.bak` → **0 差异**，`grep -rn 'MUT-T12' specs/openapi packages apps/desktop/src` → **0 命中**。
+
+### T-127③：`契约①` 歧义引用 6 处 → 「事件契约」
+yaml 的 322 / 809 / 826 / 853 / 1280 / 1299 六处（建任务 summary、枚举对齐注释、状态机说明、事件目录投影、信封、WS 帧）全部改掉，
+**另加我自己源码里同族的 4 处**（`ChainRail.vue`、`stores/panel.ts`、`chain.test.ts` 的 describe 名、`client.ts` 注释）—— 同一句话在 UI 里一样会被读错。
+改法是逐条 assert 锚点命中数==1 再 `split/join`（不是 `String.replace`，避开 `$'` 那个坑）。
+核完：`grep -rn 契约① specs/openapi apps/desktop/src packages/api-client/src` → **只剩生成物 0 处**（codegen 后 `契约①=0 / 事件契约=4`）。
+
+### T-128：F20-4 归我，用例名照表写、不改名
+判据表那一格写的命令是 `cd apps/desktop && npx vitest run -t helloAckAdvancesCursor`，
+所以我把用例名**原样**取成 `helloAckAdvancesCursor`（**没改名 ⇒ 那一格不用回写，表里的命令不是假的**）。
+实测输出：`Tests 1 passed | 35 skipped (36)`、`✓ … helloAckAdvancesCursor…（契约③ §5 F20-4）`、exit=0，时刻 15:37:45。
+断两侧：首帧 `hello_ack{server_seq:1200}` ⇒ 游标 1200；首帧 `hello` 回显 ⇒ 游标**不动**（回显值取 9 / 42 / 900 三个方向都判，
+"高于游标"那侧最危险：照抄就等于承认 43..900 看过，那段永不再补发）；再加一条可观察落点 —— 重连时第二根 socket 发出的
+`hello` 帧必须声明 `from_seq:777`，这才是"写进自己的游标"外部唯一可证的形态。
+
+**这条用例是第一版没咬人、被我自己变异抓出来的**（重要，别当已完成读过）：
+第一版我断的是 `link.seq`（面板显示值），跑 M2 变异"把回显当游标用"→ **exit=0 全绿**。原因：`link.seq` 只由 `onSeq` 回调写，
+`hello` 分支根本不回调它 ⇒ 断的是**错误的观察面**，而真正决定重连位置的是 `openEventStream` 内部的 `lastSeq`。
+修法：断 `s.seq`（客户端自己的游标）+ 重连时声明的 `from_seq`。改完两条变异都红：
+M1（`hello_ack` 不写游标）→ `expected { cursor: null … } to deeply equal { cursor: 1200 … }`、exit=1；
+M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: expected 9 to be 42`、exit=1。
+备份 `.scratch/frontend/events-t128.bak`，回滚 `diff` **0 差异**、`MUT-T128` 全仓 **0 命中**。
+"读字面第一帧"这条判据按 T-128 的要求落成 helper 契约：`afterFirstFrame()` 一次只喂一帧、喂的就是被断言那一帧，没有任何按类型筛帧的循环；
+真实 WS 侧的 `firstFrame()`（live-core）本来就是"第一个 onmessage 就 resolve"，也不筛。
+
+### 证形（基线 `git log -1 --format=%h` = `4f7fb43`，已被别人推进过，所以这份差≈本轮增量）
+证据文件两份：`.qoder/evidence/frontend/gates-t127.txt`（五段：validate / codegen / vitest 全量 / F20-4 表内原命令 / build）
+与 `.qoder/evidence/frontend/t127-t128-mutation.txt`（三次磁盘变异的原始失败行 + 回滚 diff + 守门自证三条）。
+`git diff --stat HEAD -- apps packages specs/openapi` → 7 files，+233/−48：
+`validate-openapi.mjs` +182 段里主体是解析器、`chain.test.ts` +48、`core-v1.yaml` 27、`gen/schema.ts` 18、
+`ChainRail.vue` / `panel.ts` / `client.ts` 各 2（就是改名那一处）。`git status --porcelain` → **无 `??`**（本轮没建新文件）。
+闸门（本机 date **2026-09-22 15:37:42 +0800** 那一轮，全量在 `.qoder/evidence/frontend/gates-t127.txt`）：
+① `validate` 全部通过（含三条守门自证 + 三方对拍）exit=0；② `codegen` 78.6ms，enum 生成物 29 条；
+③ `vitest run` → **`Tests 26 passed | 10 skipped (36)`**（skip 的仍是 `live-core.test.ts` 整份，skip 不计过）；
+④ F20-4 表内原命令单独跑 1 passed；⑤ `build`（vue-tsc + vite + `check:no-secret`）exit=0。
+**本轮没重跑的**：live 那 10 条。理由与上轮同：改动在 schema enum、注释措辞、校验脚本与面板测试，
+`client.ts` 只改了一行注释、`events.ts` 最终与回滚后一致（`diff`=0 可证），线上行为路径未变。
+"这份绿是最后一次重跑"的证法（不靠记忆）：五步在同一条命令链里跑完（15:37:39 起，各步 exit 全 0），
+之后 `find specs/openapi packages/api-client/src apps/desktop/src apps/desktop/scripts -newermt "2026-09-22 15:37:42"` → **空输出**
+⇒ 从 vitest 起跑那一刻起源码没再动过；codegen 那步排在 find 判定**之前**（生成物 mtime 必然晚于链条起点，反过来排就是自己骗自己）。
+
+## 当前 checkpoint（覆盖此前所有同名段）
+- Stage：REQ-F-14 关闭（enum 29 条三方对拍 + 守门自证）；「事件契约」引用改净；**F20-4 已建并双向变异验过**；面板无待办
+- Status：in_progress（阻塞在别人的端点，不在我）
+- Last verified action：15:37:42 四道闸门全绿（26 passed | 10 skipped）+ F20-4 表内命令 1 passed；
+  磁盘变异 3 次（M1/M2/M3）**全部 FIRED**、全部 `diff`=0 还原、`MUT-T12*` 全仓 0 命中
+- 留给主控的一句话（不是请求，是登记）：`ErrorCode` 那 3 对"同 HTTP 码不同名"我已在 schema 里写明理由；
+  `EventType`（§6 目录）仍是唯一一份手抄投影，因为合并族行要推断才敢解析 —— **要么给一句展开约定，要么认这条留白**
+- Next action：等 backend 让 `POST /projects`、`adapters/{key}/probe`、`POST /sessions/{id}:sync` 脱 501 ——
+  到位即用面板跑 §4 的 11 步真链，逐跳 ok/blocked 落 `.qoder/evidence/frontend/`，同一次重跑 live 全量并补 `live-t96.txt`
+  （补掉 09-21 那条"10/10 只有台账、无原始输出"的缺口）。期间不动契约文件；阻塞前提一旦消失当轮改这行并附 grep 证据（T-80）。
 - Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
   （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`）

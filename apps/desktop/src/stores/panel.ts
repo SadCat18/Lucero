@@ -2,7 +2,7 @@ import { reactive, shallowRef } from 'vue';
 import { createCoreClient, CoreError, type Schemas } from '@lucero/api-client/client';
 import { openEventStream, type EventEntry, type EventStream, type LinkState } from '@lucero/api-client/events';
 
-/** 契约① §7 垂直链 → 面板上可点的 11 步。每步只由"该步的事件是否出现过"判定，
+/** 事件契约 §7 垂直链 → 面板上可点的 11 步。每步只由"该步的事件是否出现过"判定，
  *  状态机裁决全在 Core，这里不做任何推断。 */
 export interface ChainStep {
   key: string;
