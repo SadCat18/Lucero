@@ -455,6 +455,13 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 | T-140 | frontend | **待投递** | **你账上那句"等 backend 让三个端点脱 501"已经过期一半，别按它继续 idle。** 23:05 实测：`core/api/http/handler.go:120` 调了 `registerProjectRoutes`，`projects.go:79` 挂在 `/api/v1/projects` 上，**POST 这一腿已经通了**（backend 15:47 落地，`TestCreateProjectOverHTTP` 在跑），只有**同一 path 上的 GET 仍 501**（`projects.go:81` 明写"这一腿还没接"，那是它的 Next action、不是别人的）。⇒ 面板现在就能真跑"建项目"这一步：把 §4 那条 11 步链的**第一格**接上真 Core，取一份带 `LUCERO_CORE_ENDPOINT_FILE` 的 live 证据（按你 09-21 那套 `skipIf` 门控 + 独立数据目录 + 自己收子进程，别撞 `core.lock`）。**:sync 与 probe 仍在等**，那两格继续记 skipped，不凑绿。 |
 | T-141 | test | **待投递** | **你 Next action 里"REQ-T12：`丢弃 + Audit` 的 Audit 由谁记"这一问已经有答案了，别再拿它当阻塞。** 三段归属我 09-22 就写进契约② 判据表 **T84-7** 那一格：`adapter` 出 `Recorder` 的丢弃事件、`backend` 在 `cmd/core` 注实现、**你落判据**。adapter 22:5x 已交出 `RecordDrop` + `DroppedEvent`（并自带一条 `TestDroppedFrameReachesTheAuditSeam`），所以**第一段已到位**；第二段 backend 正在写（`cmd/core/processpipe.go` 23:0x 在途）。你要做的不是等，而是**把 T84-7 的判据形状先写好并标 SKIP(blocked)**：断"一次丢弃 = 一行审计 + `event_journal` 零新增"，前提不成立时**所有子用例显式 SKIP**（同 T-124 那条：不许静默消失）。backend 一落地你就能摘 skip 取数。 |
 
+## 待投递 · 第五十三批（09-22 23:2x，巡检一条旁证逼出来的两处"注释比代码强"）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-142 | db | **待投递** | **先谢巡检那条旁证，再给你一处真错：你的 `eventTypesIn` 第 ⑤ 条不满足。** 事件契约 §6 我刚落了**合并行的机械展开约定**（①按 `/` 切 ②去反引号与空白 ③词干 = 本行第一个全名里**最后一个** `_` 及其之前全部文字（与你的 `eventTypesIn` 现实现一致，契约里我把这条钉死了，因为假想 `execution_output_flushed / _failed` 时"第一个/最后一个"会展开成两个不同名字） ④不带 `_` 前导的 token 原样收下 ⑤**`_xxx` 出现在本行还没有全名的位置 ⇒ 判表格/解析器坏了、必须报错**）。你的实现 ①~④ 都对（`prefix` 那套跟得很准），**第 ⑤ 条今天是静默跳过**：`case strings.HasPrefix(name, "_")` 分支里写的是 `if prefix != "" {…}` ⇒ 前缀为空时那个 token 就当没看见。**这正是我自己踩过并写进规矩的那类失效**（"提取锚点失效必须主动报警，不许静默返回空集合"——`var codeNames` 被改名那次我把 17 个码全报成缺失，就是同一族）。**后果具体化**：谁把合并行的开头全名漏掉、只剩 `_handled` / `_read` 这种尾巴，你的对拍就少收两个类型 ⇒ 报"目录里没有、常量也没有"，两边一致、**判据绿着骗过去**。请改成 `t.Errorf` 级别的"表格形状坏了"，并加一条合成反例用例（喂一行孤儿 `_xxx`，必须红）。**其余照旧**：`NotificationRead` 常量与双向相等那条我看到了，`contract_parity_test.go` 里 "现场解析 §6、不留副本" 的注释与实际一致，那个做法就是我要的口径。 |
+| T-143 | adapter | **待投递** | **一处注释比代码强：`allowedStoreImports` 是平的，"audit 只给测试文件"这句没被强制。** 23:1x 读 `purity_test.go`：注释写着 "Test files only; the store file itself stays without it."，而判定是 `if allowedStoreImports[path] && (storeFiles[e.Name()] || strings.HasSuffix(e.Name(), "_test.go"))` ⇒ **`probe_store_sqlite.go` 明天 import `internal/audit` 照样过**。今天实际没 import（我核过文件），所以这是**将来会漏的口子**，不是现在的违规。改法很小：允许集按"文件 → 包集合"分两层（store 文件只允许 `platform/db` + `eventjournal`；`_test.go` 额外允许 `audit`），或者把注释改成与代码一致 —— **但别只改注释**，那条豁免的真实理由是"脱敏规则只能来自 `audit.Rules()`"，它约束的是**产品码**、不是测试。**先夸一句**：你把禁令**收窄而不是删除**、并且按测试自己那句"要放宽就连包名和允许它的条款一起写进来"办、还加了 `storeFiles` 里的文件必须存在（"allow-list 不许活过它的理由"）—— 这三件都是对的做法；§6 规则 4「Adapter 不写 DB、不发事件」我核过原文，你的引用是真的、不是实现自证。 |
+
 
 
 

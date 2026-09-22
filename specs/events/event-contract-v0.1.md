@@ -211,6 +211,22 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 
 （表中合并同族的行仍按逐条类型登记，实现时不得把多个类型压成一个。）
 
+> **合并行的机械展开约定（2026-09-22 落文，因为今天有两个解析器要各自猜它）**
+> 本表第一列允许写成 `` `notification_created` / `_handled` / `_read` `` 这种同族合并形状。展开规则**只有一条**：
+> ① 按 `/` 切；② 每个 token 去掉反引号与空白；③ **词干 = 本行第一个"全名"里最后一个 `_` 及其之前的全部文字**，
+> 以 `_` 开头的 token ⇒ **词干 + 该 token 去掉前导 `_`**（`_read` 在 `notification_created` 之后 ⇒ `notification_read`）；
+> **为什么钉"最后一个 `_`"**：全名若含两个 `_`（假想 `execution_output_flushed / _failed`），
+> "第一个 `_` 之前"会展开成 `execution_failed`、"最后一个 `_` 之前"会展开成 `execution_output_failed`——
+> **两种读法今天都不冲突**（我 09-22 逐行数过：§6 里没有任何合并行的全名带两个 `_`，也没有一行两种词干不同），
+> 但两个解析器各猜一套就会在将来某天分歧，所以这里定死按**最后一个 `_`**，与 `db` 的 `eventTypesIn` 现实现一致；
+> ④ 不带 `_` 前导的 token 就是全名，原样收下（`grant_issued` / `grant_revoked` 那种整行写全的形态合法）；
+> ⑤ **`_xxx` 出现在"本行还没有全名"的位置 ⇒ 判表格或解析器坏了、必须报错**，
+> **不许静默跳过**（静默少收一个类型，正是这类解析器最坏的失效方式：它一直报绿）。
+> 现有解析器：`core/internal/eventjournal/contract_parity_test.go` 的 `eventTypesIn`（`db`）。
+> **它第 ⑤ 条今天不满足**（`if prefix != ""` 会把孤儿 `_xxx` 直接丢掉）⇒ 已派 T-142 改成报错。
+> 契约② 判据表 **C8-12**（`test` 落的那条"目录 ↔ 常量双向相等"）**必须按本约定展开**，
+> 否则两个包各猜一套规则，就会有一个把合法合并行读成缺失常量。
+
 > **`notification_read` 是 2026-09-22 补登记的（REQ-DB-5 裁定）**：`notifications.state` 从 `000001` 起就有
 > `UNREAD→READ` 这条边、也有 `read_at` 列，`internal/notification` 侧要落这条边就必须发事件，可目录里只有
 > `_created`/`_handled` ⇒ backend 的 `POST /notifications/{id}:read` 今天**没有合法事件可发**，只能挂 501。
