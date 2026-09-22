@@ -117,9 +117,10 @@ GET  /api/v1/notifications?state=&cursor=; POST /api/v1/notifications/{id}:read|
                                          **决定性事实我核过**：`apps/desktop/src/stores/panel.ts` 的 inbox 调用**本来就显式带
                                          `state: 'UNREAD'`** ⇒ 这个默认值对面板零收益、纯留隐患，backend 那两行默认直接删。
                                          与 REQ-F-21（同步游标不许用空串兼职"没有位置"）、§12（UNKNOWN 不许显示成 0）同一条线。
-                                         **`:read` 今天仍落不了库**：它要发的 `notification_read` 我刚补登记进事件契约 §6，
-                                         但 `internal/eventjournal/events.go` 里还没这个常量（REQ-DB-5，归 `db`）——
-                                         **在那之前 `:read` 保持 501，别发一个不登记的事件**（事件契约 §9 禁止事项 1）。
+                                         **`:read` 已放行（09-23 02:0x 解除 C31）**：它缺的 `notification_read` 常量
+                                         db 已补（`events.go:61` 声明 + `:95` 进 `true` 集合，主控 02:01 复核），
+                                         事件契约 §6 也登记了 ⇒ **这条 501 的原因消失，可以做**。
+                                         仍禁的是"发一个不登记的事件"（事件契约 §9 禁止事项 1）——现在它登记了，所以不冲突。
 GET  /api/v1/search?q=&scope=messages,tasks   → FTS5；返回命中 + 片段 + 上下文 id
 GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、ping）
                                            # ⚠ 这个 query 参数只在"客户端根本没发 hello"时才生效；
