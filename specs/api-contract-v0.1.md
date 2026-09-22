@@ -93,8 +93,11 @@ POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、
                                           否则第二个 Adapter 一 discover 就会认领走第一个的会话。
                                           ② **路径参数 `{id}` 就是 `adapter_instances.id`（UUIDv7），与同前缀 `probe` 的 `{key}` 不是一回事**——
                                           yaml 那两格分别 `ref` 的是 `parameters/Id`（"聚合根 UUIDv7"）与 `parameters/Key`（"adapter_key，非实例 id"）。
-                                          **装配层不许把 `splitAdapterPath` 返回的 `key` 变量直接喂进名为 `adapterInstanceID` 的参数**：
-                                          那是"类型对、语义错"，第一次真跑就 404，而单测（httptest 里自己塞 id）永远绿。要么显式解析，要么把形参改名。
+                                          **调用方拿得到真 id**：§4 的 11 步先 `probe`，探针回执里就带实例 id（`panel.ts` 用的正是 `adapter.id`）⇒ 这一格不用改按 key 寻址。
+                                          装配方的合法形状是**按实例 id 反查 `adapter_key`** 再判"本机有没有起法"：反查不到 = 404（对象不存在）、
+                                          有实例但没配起法 = 501、那个 Adapter 病了 = 503 —— **三个码不许混成一个**（混了就是把处置信息丢给调用方）。
+                                          **一条命名禁令**：`splitAdapterPath` 回来的那个变量名叫 `key`，而它在 `sessions:discover` 这一腿上装的是**实例 id** ⇒
+                                          落地方请改名或写明；留着的下一次就是真 404（而 httptest 里自己塞 id 的用例照样绿）。
                                           ③ **同一批里出现两次同一个 `remote_session_id` ⇒ 整批拒**（400 `validation_failed`），
                                           不许"后一条覆盖前一条"（那是静默丢事实）。**已存在的行：一行不改、一条事件都不发、不 `Touch`**——
                                           "幂等"若只保证行不重复，就会每次调用都往事件链与审计链上加笔，§7 那条 oracle 序列没法断言。
