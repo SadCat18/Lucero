@@ -12,7 +12,10 @@ cd "$CORE_DIR" || exit 2
 export CGO_ENABLED=0 PATH="$(dirname "$GO"):$PATH"
 
 echo "# crash 相关用例（$($GO version))"
-$GO test -count=1 -v -run 'TestCrash' ./test/... 2>&1 | grep -E '^(--- |ok|FAIL)'
+# 命令写成锚定形（契约① §1.1 第 15 条）：`-run TestCrash` 是无锚定子串匹配，
+# 今天恰好只有这一族，明天别人加一个 `TestCrashRecoveryWhatever` 就会被静默算进我的清单。
+# 整族是**故意**的，所以用 `^(TestCrash…)$` 而不是 `-run TestCrash`；包路径也写死到 ./test/。
+$GO test -count=1 -v -run '^(TestCrash[A-Za-z0-9]*)$' ./test/ 2>&1 | grep -E '^(--- |ok|FAIL)'
 status=${PIPESTATUS[0]}
 
 echo

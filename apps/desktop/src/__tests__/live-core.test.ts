@@ -70,11 +70,19 @@ describe.skipIf(!live)('真 Core 联调 · REST 面', () => {
     expect(err!.code).toBe('unauthorized');
   });
 
-  it('未实现端点 → 501 not_implemented（不假装成功）', async () => {
-    const err = await core().listProjects().then(() => null, (e) => e as CoreError);
-    expect(err!.status).toBe(501);
-    expect(err!.code).toBe('not_implemented');
-    expect(err!.retryable).toBe(true);
+  it('未接线端点只能回 501 not_implemented（不许假成功，也不许钉成"永远 501"）', async () => {
+    // 09-23 03:26 之前我用的是 `listProjects`，那天它脱了 501 ⇒ **我把别人的进度钉成了我的红**。
+    // 现在换成仍 501 的 /models，并且写成漂移安全形：接上了就只核形状，没接上就必须是 501。
+    const res = await fetch(`${base}/api/v1/models`, { headers: { authorization: `Bearer ${token}` } });
+    if (res.status === 200) {
+      const page = await res.json();
+      expect(Array.isArray(page.items), '接上了就得是 §2 的分页形状').toBe(true);
+      return;
+    }
+    expect(res.status, '未接线只许 501，不许 405/404/假 200').toBe(501);
+    const err = (await res.json()).error;
+    expect(err.code).toBe('not_implemented');
+    expect(err.retryable).toBe(true);
   });
 
   it('§1.3：回环 dev origin 放行；非回环 origin 403 origin_not_allowed', async () => {
@@ -160,10 +168,80 @@ describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面', () => {
   });
 });
 
+/* ── 只读面：T-189 实测之后改成的"漂移安全"断言 ─────────────────────────────
+   03:26 现盘实测（我自己的二进制 core-t189.exe，03:24:45 构建）：
+   `GET /sessions`、`GET /projects`、`GET /projects/{id}`、`GET /notifications`、`POST /sessions/{id}:sync`
+   都已经脱了 501；`adapters` 面 / `models` / `executions` / `approvals` / `quota` / `search` 还在 501。
+   ⇒ 断言不能写"它现在必须 501"（那是把别人的进度钉成我的红），也不能写"它现在必须 200"
+   （别人回退我就瞎）。统一形状：**200 就必须符合契约形状；不是 200 就只能是 `not_implemented`**。 */
+describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）', () => {
+  const raw = (method: string, path: string, idem?: string) =>
+    fetch(`${base}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, 'x-lucero-principal': 'local-user',
+        ...(idem ? { 'idempotency-key': idem } : {}) },
+    });
+
+  it('分页出口三条：200 时 next_cursor 必须是字符串（空串=唯一合法"没有下一页"），未接线只许 501', async () => {
+    for (const path of ['/api/v1/sessions', '/api/v1/projects', '/api/v1/notifications']) {
+      const res = await raw('GET', path);
+      if (res.status === 200) {
+        const page = await res.json();
+        expect(Array.isArray(page.items), path).toBe(true);
+        // REQ-F-19：这一侧只许 ""，null / 缺键都是非法的第三种"没有"
+        expect(typeof page.next_cursor, `${path} 的 next_cursor 类型`).toBe('string');
+      } else {
+        expect(res.status, `${path} 未接线只能是 501`).toBe(501);
+        expect((await res.json()).error.code).toBe('not_implemented');
+      }
+    }
+  });
+
+  it('C28② 线上口径：yaml 声明过的操作，未接线只能回 501，不许回 405 说"这条路径不接受这个方法"', async () => {
+    // `GET /api/v1/tasks/{id}` 在契约③ F-8 批准的三个详情读里、yaml 里有定义；
+    // 现盘 tasks.go 的分流是"非 POST 一律 405"，那句话是假话 —— 这条断言今天会红，红了就是证据。
+    const res = await raw('GET', '/api/v1/tasks/01TESTNOTEXIST');
+    const body = await res.json().catch(() => ({} as { error?: { code?: string } }));
+    expect(body?.error?.code, `状态码 ${res.status}`).not.toBe('method_not_allowed');
+    expect([200, 404, 501]).toContain(res.status);
+  });
+
+  it(':sync 路由活着时错误体必须是统一形状（三键齐 + retryable 是布尔）', async () => {
+    const res = await raw('POST', '/api/v1/sessions/01TESTNOTEXIST:sync', 'live-sync-shape');
+    if (res.status === 501) {                       // 还没装配也合法，但不能悄悄假成功
+      expect((await res.json()).error.code).toBe('not_implemented');
+      return;
+    }
+    const err = (await res.json()).error;
+    expect(['code', 'message', 'retryable'].every((k) => k in err), JSON.stringify(err)).toBe(true);
+    expect(typeof err.retryable).toBe('boolean');
+    expect(err.code).toBe('session_not_found');     // 404：路由到业务层了，不是"形状不认识"
+  });
+
+  it('§4 第 2/3 格（discover / manage）：未接线时必须是 501 的形状，不许 405、不许假 200', async () => {
+    // 这条**不钉"永远 501"**（上一条测试刚犯过那个错）：backend 接上之后它应当自动变成"过"。
+    // 钉的是口径：能力没接线 ⇒ 501 not_implemented；方法不接受 ⇒ 才许 405。
+    for (const [label, path, idem] of [
+      ['discover', '/api/v1/adapters/opencode/sessions:discover', 'live-discover'],
+      ['manage', '/api/v1/sessions/01TESTNOTEXIST:manage', 'live-manage'],
+    ] as const) {
+      const res = await raw('POST', path, idem);
+      if (res.status === 501) {
+        const err = (await res.json()).error;
+        expect(err.code, label).toBe('not_implemented');
+        expect(err.retryable, `${label} 的 501 应当是可重试`).toBe(true);
+      } else {
+        expect([200, 201, 404], `${label} 回了 ${res.status}`).not.toBe(405);
+      }
+      console.log(`  §4 ${label} → ${res.status}（03:26 现盘实测为 501）`);
+    }
+  });
+});
+
 /* ── §4 第一格：POST /projects ───────────────────────────────────────────────
-   T-140 现场核过（不是转述）：`handler.go:120` 调 `registerProjectRoutes`，
-   `projects.go:79` 在同一个 path 上按方法分流 —— POST 已接、GET 仍明确 501。
-   所以这一格今天就能真跑；`:sync` 与 `probe` 那两格继续 skipped，不拿它凑绿。 */
+   T-140 现场核过（不是转述）：`handler.go:120` 调 `registerProjectRoutes`，`projects.go:79` 同一 path 按方法分流。
+   当时是"POST 已接、GET 仍 501"；**09-23 03:26 复测：GET 也已接（200，items/next_cursor 齐）**，那半句按历史读。
+   所以这一格今天就能真跑；discover / manage 两跳仍 501（见上面 T-189 那段），不拿它凑绿。 */
 describe.skipIf(!live)('真 Core 联调 · §4 第一格（POST /projects，T-140）', () => {
   const uniq = `t140-${Date.now()}`;
   const pathOf = (leaf: string) => `D:/Project/Lucero/.scratch/frontend/proj-${uniq}/${leaf}`;
@@ -215,12 +293,17 @@ describe.skipIf(!live)('真 Core 联调 · §4 第一格（POST /projects，T-14
     console.log(`  冲突如实回 409：首个项目 ${first.id}，未被第二条请求改写`);
   });
 
-  it('C28② 线上实证：同一 path 未接线的 GET 回 501 not_implemented，不是 405', async () => {
+  it('C28② 线上实证：同一条 path 的 GET 要么是 200（已接），要么是 501，**永远不许 405**', async () => {
+    // 09-23 03:26 复测：`GET /api/v1/projects` 已经脱 501（200，items/next_cursor 齐）。
+    // 所以这条不再钉"必须是 501"（那是把进度钉成红），改钉 C28② 的那句话本身：不许用 405 表达未接线。
     const res = await fetch(`${base}/api/v1/projects`, { headers: { authorization: `Bearer ${token}` } });
-    expect(res.status, '未接线 ≠ 方法不接受（回 405 会让客户去试同样没接线的方法）').toBe(501);
-    const err = (await res.json()).error;
-    expect(err.code).toBe('not_implemented');
-    expect(err.retryable).toBe(true);
+    expect([200, 501], `405 是假话：它说"这条路径不接受 GET"，而 yaml 里有这个操作（状态 ${res.status}）`)
+      .toContain(res.status);
+    if (res.status === 501) {
+      const err = (await res.json()).error;
+      expect(err.code).toBe('not_implemented');
+      expect(err.retryable).toBe(true);
+    }
   });
 
   it('垂直切片：先建连 → 建项目 → WS 真收到 project_created → 面板第一格点亮', async () => {

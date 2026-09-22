@@ -108,6 +108,8 @@ type Config struct {
 
 	// 注入时才挂 GET /api/v1/notifications（读侧一口，不需要 Store）。
 	Notifications NotificationLister
+	// NotifRead + Store 都在时才挂 POST /api/v1/notifications/{id}:read（写侧要事务通道）。
+	NotifRead NotificationReader
 
 	// Projects + Store 都在时才挂 POST /api/v1/projects（写侧要事务通道）。
 	Projects ProjectService
@@ -118,6 +120,8 @@ type Config struct {
 	Sessions SessionSyncer
 	// 注入时才挂 GET /api/v1/sessions（面板今天就在调这条，还吃着 501）。
 	SessionRead SessionReader
+	// SessionManage + Store 都在时才挂 POST /api/v1/sessions/{id}:manage（写侧要事务通道）。
+	SessionManage SessionManager
 
 	// 注入时才挂 POST /api/v1/adapters/{key}/probe（§7.2 的 backend 半边：只投影，不写）。
 	Adapters AdapterProber
@@ -129,6 +133,7 @@ func NewHandler(c Config) http.Handler {
 	mux := http.NewServeMux()
 	registerTaskRoutes(mux, c)
 	registerNotificationRoutes(mux, c)
+	registerNotificationItemRoute(mux, c)
 	registerProjectRoutes(mux, c)
 	registerProjectItemRoute(mux, c)
 	registerSessionRoutes(mux, c)

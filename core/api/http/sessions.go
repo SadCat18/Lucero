@@ -3,11 +3,14 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/session"
 )
 
@@ -31,7 +34,7 @@ type syncResultView struct {
 // 同一条前缀路径上今天有两格能力：`{id}` 的单条读（GET，要 SessionRead）与 `{id}:sync`（POST，要 Sessions）。
 // 各自的"没接线"分支分别回 501 —— 不许因为另一格装上了就拿 405 说"这条路不接受这个方法"，那是假话。
 func registerSessionRoutes(mux *http.ServeMux, c Config) {
-	if c.Sessions == nil && c.SessionRead == nil {
+	if c.Sessions == nil && c.SessionRead == nil && c.SessionManage == nil {
 		return
 	}
 	mux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +51,7 @@ func registerSessionRoutes(mux *http.ServeMux, c Config) {
 			}
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
-					"/api/v1/sessions/{id} 只有 GET；:sync 是带冒号的那条", false)
+					"/api/v1/sessions/{id} 只有 GET；:sync 与 :manage 是带冒号的那两条", false)
 				return
 			}
 			getSession(w, r, c, id)
@@ -62,6 +65,19 @@ func registerSessionRoutes(mux *http.ServeMux, c Config) {
 				return
 			}
 			syncSession(w, r, c, id)
+		case verb == "manage":
+			// T-195②：这一格以前掉进下面的 `default:`（一句 501，理由写着"不猜它该走哪条腿"），
+			// 修法是**把它接进分流**而不是另挂一条 mux pattern —— 两条 pattern 抢同一条前缀迟早分叉。
+			if c.SessionManage == nil || c.Store == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					":manage 还没装配业务面（写侧要 Service + 事务通道）", true)
+				return
+			}
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", ":manage 只能 POST", false)
+				return
+			}
+			manageSession(w, r, c, id)
 		default:
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"没听过的 custom verb 一律 501，不猜它该走哪条腿", true)
@@ -215,4 +231,90 @@ func getSession(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	default:
 		serverError(w, r, err)
 	}
+}
+
+// SessionManager 是 `POST /api/v1/sessions/{id}:manage` 的业务面。它与 SessionSyncer 分成两个字段：
+// 一个要事务通道（写）、一个只要读 —— 合成一个接口就会逼 cmd/core 造一个只为凑签名的转发类型。
+type SessionManager interface {
+	Manage(ctx context.Context, tx session.TouchWriter, id string,
+		cmd session.ManageCommand) (session.Session, bool, error)
+}
+
+// manageBody 是 yaml `ManageSessionRequest`：`managed` required、`project_id` 可空。
+// `ProjectID` 收 `json.RawMessage` 而不是 `*string`，因为**"没给这一格"与"给了 null"是三态里的两态**：
+// `*string` 会把两者都解码成 nil，于是"解绑"在 HTTP 面上根本无法表达（而 C41 裁定明写 `null` = 这次没绑/解绑）。
+type manageBody struct {
+	Managed   *bool           `json:"managed"`
+	ProjectID json.RawMessage `json:"project_id"`
+}
+
+// projectIDFromRaw 把上面那三态翻成 ManageCommand 的指针语义。
+func projectIDFromRaw(raw json.RawMessage) (*string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	switch {
+	case trimmed == "":
+		return nil, nil // 请求里没这个键：不动归属
+	case trimmed == "null":
+		empty := ""
+		return &empty, nil // 显式 null：解绑（领域侧空串 = 没有归属）
+	default:
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return nil, err
+		}
+		return &s, nil
+	}
+}
+
+func manageSession(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	var body manageBody
+	if err := decodeStrict(w, r, &body); err != nil {
+		return // decodeStrict 已经把 400 写出去了
+	}
+	if body.Managed == nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "managed 是必填的布尔位", false)
+		return
+	}
+	projectID, err := projectIDFromRaw(body.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "project_id 必须是字符串或 null: "+err.Error(), false)
+		return
+	}
+	cmd := session.ManageCommand{
+		Managed: *body.Managed, ProjectID: projectID,
+		EventID: newUUIDv7(), PrincipalID: r.Header.Get("X-Lucero-Principal"),
+	}
+	cmd.CorrelationID, cmd.CausationID = cmd.EventID, cmd.EventID
+
+	var out session.Session
+	err = c.Store.Write(r.Context(), func(tx *db.Tx) error {
+		var err error
+		// 第二个返回值"真改了吗"只决定库里有没有那条事件；两种情况的响应形状必须一致，所以这里不接它。
+		out, _, err = c.SessionManage.Manage(r.Context(), tx, id, cmd)
+		return err
+	})
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, sessionViewOf(out))
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, sql.ErrNoRows):
+		writeError(w, http.StatusNotFound, "session_not_found", "没有这条 Session", false)
+	case errors.Is(err, session.ErrProjectNotFound), errors.Is(err, session.ErrInvalidCommand):
+		// 请求指向不存在的项目 / 命令本身不合法：都是**写错了的请求**，不是 Core 病了
+		// （域侧已预检存在性，就是为了让 FK 报错不要冒到 transport 变成 500）。
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
+	default:
+		serverError(w, r, err)
+	}
+}
+
+// decodeStrict 是"读请求体 + 不认的键一律 400"这一套的唯一落点（C35 那条口径）。
+// 抽出来是因为这段一旦被抄第二遍，两遍迟早分叉；静默丢弃未知键更糟——那会让调用方以为改动生效了。
+func decodeStrict(w http.ResponseWriter, r *http.Request, into any) error {
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(into); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "请求体不合法: "+err.Error(), false)
+		return err
+	}
+	return nil
 }

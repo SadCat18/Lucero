@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -258,11 +260,18 @@ func requireExactViewKeys(t *testing.T, body string) {
 	}
 }
 
+// topLevelJSONKeys 返回**逐次出现**的顶层键（重复的会留两份 —— 这正是它不用 `Unmarshal` 的全部理由）。
+// `json.Decoder.Token()` 在对象里是"键、值、键、值"交替的，所以每层带一个 expectKey 位；
+// 不这样做的话字符串值会被当成键（第一版就是这么把自己判红的）。
 func topLevelJSONKeys(t *testing.T, body string) []string {
 	t.Helper()
 	dec := json.NewDecoder(strings.NewReader(body))
+	type frame struct {
+		isObj     bool
+		expectKey bool
+	}
+	var stack []frame
 	var keys []string
-	depth := 0
 	for {
 		tok, err := dec.Token()
 		if errors.Is(err, io.EOF) {
@@ -274,14 +283,32 @@ func topLevelJSONKeys(t *testing.T, body string) []string {
 		switch v := tok.(type) {
 		case json.Delim:
 			switch v {
-			case '{', '[':
-				depth++
-			case '}', ']':
-				depth--
+			case '{':
+				stack = append(stack, frame{isObj: true, expectKey: true})
+			case '[':
+				stack = append(stack, frame{isObj: false})
+			default: // '}' 或 ']'：这一层的值消费完了，父层下一个该是键
+				stack = stack[:len(stack)-1]
+				if n := len(stack); n > 0 && stack[n-1].isObj {
+					stack[n-1].expectKey = true
+				}
 			}
 		case string:
-			if depth == 1 {
-				keys = append(keys, v)
+			n := len(stack)
+			if n == 0 || !stack[n-1].isObj {
+				continue
+			}
+			if stack[n-1].expectKey {
+				if n == 1 {
+					keys = append(keys, v)
+				}
+				stack[n-1].expectKey = false
+			} else {
+				stack[n-1].expectKey = true
+			}
+		default: // 数字/布尔/null：都是值 ⇒ 下一个是键
+			if n := len(stack); n > 0 && stack[n-1].isObj {
+				stack[n-1].expectKey = true
 			}
 		}
 	}

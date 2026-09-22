@@ -5,7 +5,7 @@ SCOPE: Core↔Adapter 协议实现（帧编解码/握手/capability/三态/流�
 EVIDENCE_DIR: .qoder/progress/adapter.md（本轮为纯单测证据，不落 .qoder/evidence/）
 SCRATCH_DIR: D:\Project\Lucero\.scratch\adapter\（T-47：一次性产物只准落这里，仓库已 ignore；
              永不碰 /tmp、%TEMP%、$env:TEMP 的通配删除；只删自己建的具体文件名）
-LAST_UPDATED: 2026-09-23T00:35:39+08:00  # 本机 date 实读（T-155 删字段后）
+LAST_UPDATED: 2026-09-23T03:30:43+08:00  # 本机 date 实读（T-193 收窄合验范围）
    # 自纠两处（T-43）：① 本行上一度写成 `14:36:20`，那**不是** `date` 读出来的、是估的（当时最后一次实读是
    # 14:31:49）；② 09-21 11:11 我用一条 `\S+` 的正则改这行，把 `LAST_UPDATED:` 前缀 itself 吃掉了，
    # 当场用 Edit 修回 —— 记账本自己的教训：**改标头行必须锚全文，不能用 `^KEY: \S+` 这种吞前缀的写法**。
@@ -75,10 +75,23 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   说明 Recorder 第四方法没有打断它的实现）。`gofmt -l` 我三目录空、`grep -rn ZMUT core/` = 0。
   **今天(09-22)我一度 6 小时没交报告**：15:19 被唤醒、15:54 还在写文件，账本停在 09-21 16:05 ——
   T-132 点得对，"代码在盘 ≠ 验收闭口"是我前天自己立的。这一段就是补账。
-- Next action: 把 probe 交给 backend 接线（`api/http` 薄投影 + `cmd/core` 构造注入 Launcher），
-  并附上 §7.2 新增两条要求已落地的证据；合验 REQ-T12 时一起验丢弃接缝写出的审计行。
-  另：`Registry.Probe` 的**成功路径目前只被进程内测过**（真握手走 `scriptedLauncher`），
-  真子进程那条腿要等 backend 递进真 Supervisor。
+- Next action: **等主控发"开始合验"这一句**（T-185 明说由它主动发、我不用去问；
+  **T-193 已按我 03:19 那组实测把范围收窄：行级落库五条判据归 backend 的 T-192②，合验只剩协议侧
+  ——握手与能力核定、`CarriesTurnRef` 六条范围、票号↔execution_id 一致/矛盾两侧、丢弃到达接缝、
+  fake 的 claimed→dispatched→close→下轮链——外加黑盒能观察的部分**），发令即跑
+  `bash .scratch/adapter/verify-req-t12.sh`（03:11 已试跑通，可重入、只读、不碰别人文件）。
+  **上一版这句已过期并划掉**："把 probe 交给 backend 接线 / 真子进程那条腿要等 backend 递进真 Supervisor"——
+  03:10 实测前置条件已经成立：`core/api/http/adapters.go:32 registerAdapterProbeRoute`、
+  `core/cmd/core/probeassembly.go`、`core/cmd/core/processpipe.go:76 Rec: newDropRecorder(l.store, adapterKey, l.now, l.logf)`、
+  `core/cmd/core/dropaudit.go` 全在 HEAD（`917b6c4` 03:06:09）；而且 `Registry.Probe` 的成功路径也不再只有进程内——
+  backend 有 `TestProbeOverRealHandshakeWithFakeAdapter`。**我这段时间不动 `cmd/core`/`api/http`**（T-185 的禁令，
+  且 `api/http/adapters_test.go` 还压着 +34/−7 未提交、T-186 会再叫 backend 动它）。
+  **预备时发现的那条缺口**（不等发令就能报）：REQ-T12 五条判据是**行级**判据，而 `cmd/core` 全部测试里
+  真读 `process_instances` 的只有 **1 处**（`dropaudit_test.go:146`，断言 `count(*)=0`，即"丢弃不写生命周期行"）；
+  `exit_code` / `restart_policy` / `owner_type` / `metadata_json` / `status` 在**该查询里各 0 处**
+  ⇒ 判据 ①②③④ 今天无人断言，⑤ 由我包内 `TestEnumsFitTheFrozenProcessInstancesTable` 前置挡住枚举漂移、
+  但"真写一次没被 CHECK 拒"仍需 ① 那条用例。落点只能在 `cmd/core`（`package main` 不可被我 import），
+  所以我交的是判据与命令，不是那一半测试。
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/adapter/... ./internal/process/... ./cmd/fake-adapter/...`
 
 ## Completed

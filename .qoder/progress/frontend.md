@@ -3,11 +3,10 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-23T01:43:37+08:00（T-173 自跑复核：§6 已由主控拆成三行 + 补 ③c，我这边零改动即转绿。
-五步链 01:43:37 全 exit=0：validate 全部通过 / codegen / vitest 26 passed|16 skipped / F20-4 1 passed / build；
-证据 .qoder/evidence/frontend/gates-t173.txt；find（排除生成物）在 01:43:39 之后 0 行。
-REQ-F-25（把 validate 前置进 build）主控裁「不做」，我没动 package.json；三方相等那条腿落在契约② C8-13（core/test）。
-前面各轮口径按原段读：T-165 01:16:27 / T-150 00:03:26 / T-144 23:42:43 / T-140 23:37:30（live 23:37:11 16 passed / 0 skip））
+LAST_UPDATED: 2026-09-23T03:36:30+08:00（T-191 子轮：巡检要的一行门控诊断已落到 `.qoder/evidence/frontend/chain-gating-t191.md`，
+字段含路径、实测 status/code、命中分支 file:line、归属构建、重跑命令。同一实例 03:34:42 重建后复跑，五条读数与 03:24 那次一致。
+更正本身有三处与现盘不符（discover 是 501 不是 405；manage 有路由、走 default 明确 501；`:sync` 已通到业务层、实测 404），写在正文。
+离线五步链仍是 03:31:00 那份全 0；live 03:30:45 是 1 failed | 19 passed，唯一那条红指向 backend 的 405。更早各轮按原段读。）
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -700,9 +699,10 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
 - Last verified action：23:37:30 五步链全 exit=0；live 23:37:11 `16 passed (16)`；M5 变异先红后 `diff`=0 还原
 - 待主控/待别人：① **REQ-F-23**（同码双生产者的『来自』列语义，见上面 ④）；② backend 把
   `POST /sessions/{id}:sync` 与 `adapters/{key}/probe` 脱 501（`GET /projects` 那一腿按 `projects.go:81` 是它自己的 Next action）
-- Next action：等 `:sync` 与 `probe` 脱 501 → 接 §4 第二~四格（discover → manage → sync），
-  用 `run-t140.sh` 那套起法把链逐跳 ok/blocked 落 `.qoder/evidence/frontend/`；**不空等 `GET /projects`**（它不在 §4 链上，面板自己分页就够）。
-  期间不动契约文件；阻塞前提一旦消失当轮改这行并附读码证据（T-80/T-140 两次都是这一条）。
+- Next action：等 §4 第 2/3 格脱 501 —— `POST /adapters/{id}/sessions:discover`（`adapters.go:96` 只认 probe/capabilities）
+  与 `POST /sessions/{id}:manage`（api/http 里没有这条 verb，被 `tasks`/`sessions` 那两处一律判 501）。
+  **`:sync` 与 `probe` 已从这张名单上划掉**：`:sync` 实测 404 到业务层（只缺真 session id，而 id 恰恰要前两跳才能拿到），
+  `probe` 是"真去连一次"的探针、不在 §4 这四跳里。期间不碰契约文件；前提一消失当轮改这行并附实测（T-80/T-140/T-189 三次同因）。
 - Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
   （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`；退出码一律在无管道处取）
 
@@ -843,3 +843,110 @@ git status --porcelain -- apps packages specs → 我这侧三个 M：validate-o
 core-v1.yaml（T-165 补的 project_updated）、gen/schema.ts（codegen 自写）。§6 那三行是主控改的，我一个字节没动。
 live 仍未重跑：find client.ts/events.ts/stores/components/__tests__ -newermt "2026-09-22 23:37:11" → 空，
 所以那次 16 passed / 0 skip 仍指当前运行时代码。
+
+
+## T-189 子轮（盘上对账：两边都只说对了一半，我自己起实例逐跳量）· 本机 date 2026-09-23T03:31:00+08:00
+
+### 我量的是什么实例（归属只到这份构建为止）
+`.scratch/frontend/core-t189.exe` 是我 **03:24:45** 用现盘 `core/cmd/core` 现建的；数据目录 `coredata-t189*` 独立、跑完自删；
+起的两次 PID（1520 / 1256）收尾都 `alive=False`。**这不是 backend 正在跑的那个实例**，也不代表 03:24 之后的在途改动。
+脚本 `.scratch/frontend/run-t189.sh` / `run-t189b.sh` / `run-t189c.sh`，原始输出进证据目录三份。
+
+### 事实表（现盘实测，不是读注释）
+| 跳 | 端点 | 实测 | 判定 |
+|---|---|---|---|
+| §4 第 1 格 | `POST /projects` | **201** | 通（已在跑） |
+| §4 第 2 格 | `POST /adapters/{id}/sessions:discover` | **501** `not_implemented`（"adapters 这条路径只认 {key}/probe、{id} 与 capabilities"） | 不通 |
+| §4 第 3 格 | `POST /sessions/{id}:manage` | **501**（"没听过的 custom verb 一律 501，不猜它该走哪条腿"） | 不通 |
+| §4 第 4 格 | `POST /sessions/{id}:sync` | **404** `session_not_found`，错误体三键齐 | **路由已到业务层** |
+| 探针口 | `POST /adapters/{key}/probe` | **501**（"probe 还没装配 Registry，cmd/core 没给出 Adapter 的起法"） | 口挂了、业务面没装配 |
+| 只读面 | `GET /projects`、`/projects/{id}`、`/sessions`、`/sessions?project=`、`/notifications`、`/tasks` | **200**（分页出口 `next_cursor: ""`） | 面板这几格今天就能真渲染 |
+| 只读面 | `/adapters*`、`/models`、`/executions`、`/approvals`、`/quota`、`/search`、`/sessions/{id}/messages` | 501 | 仍空 |
+
+### 两边各有一半过期（我按现盘说）
+- 主控说"probe 这条口已通"：**半对**。路由确实挂了（400/403/405 分支都能进），但 `adapters.go:50` 的装配分支还回 501；
+  所以 backend 那条 `RESULT_ADAPTER_PROBE=OK_real_handshake_400_403_405` 是**handler 级冒烟**，不是端到端能连一次。
+- 巡检说"`:sync` 仍占位（`sessions.go` 那句命中 1）"：**量的是 `c.Sessions == nil` 那条分支的文案**；
+  现盘 `main.go:251` 已经注入了 `Sessions: session.NewService(...)` ⇒ 我实测 `:sync` **不再回 501**，而是 404 到业务层。
+  ⇒ `:sync` 不该再挂在"等 backend 脱 501"的名单上；真正缺的是 discover 与 manage 两跳（巡检这两条判对了）。
+- **我自己台账里那句"除 health/ws-ticket 外全部 501"整段作废**（09-19 写的）：现在 projects / sessions / tasks / notifications
+  四个面都已 200。历史段不回头改，以本段为准。
+
+### 抓到一条与 C28② 冲突的行为（归 backend，判据腿归 test）
+`GET /api/v1/tasks/{id}` → **405** `method_not_allowed`（"状态动作必须用 POST …:queue"）。
+但这个操作在契约③ F-8 批准的三个详情读里、我 yaml 里也有 `get /api/v1/tasks/{id}` ⇒ 按契约② §15.2.1 C28②
+"路由存在、方法合法、能力没接线 ⇒ 501"，回 405 就是在说"这条路径不接受 GET"，是**假话**——
+客户端会去试 POST 而不是等实现。代码落点：`core/api/http/tasks.go` 的 `registerTaskRoutes` 里
+`/api/v1/tasks/` 子树第一句就是 `if r.Method != http.MethodPost → 405`，`GET {id}` 永远进不到后面的分流。
+同族第二条（轻）：`GET /sessions/{id}/messages` 被 `splitSessionVerb` 当"形状不认识"回 501，理由是错的（那是契约里的合法路径）。
+
+### 我自己这一轮的两个错（同一类：把别人的进度钉成我的断言）
+1. 旧断言"未实现端点 → 501"用的是 `listProjects`，而它 03:26 已经 200 ⇒ **我自己的测试红了，红的是我的快照过期**；
+2. 我新写的第一版 discover/manage 断言又写成 `expect(status).toBe(501)` —— 同一封邮件里我刚给自己写完"不许钉永远 501"的注释。
+两处都改成**漂移安全形**：200 就核契约形状、非 200 只许 501、**永远不许 405**（对未接线的读口）；
+并且把"钉 501"和"钉 405"分清楚：前者是别人的进度，后者是 C28② 的口径，只有后者该长期红。
+
+### live 与离线两份绿各是什么
+- live（03:30:45）：**1 failed | 19 passed (20)** —— 唯一那条失败是上面那个 405，指向 backend；我不为它凑绿，也不删断言。
+- 离线五步链（03:31:00，`gates-t189.txt`）：`validate` 全部通过 / `codegen` / `vitest` **26 passed | 20 skipped (46)**
+  （skip 的是 `live-core.test.ts` 整份 20 条）/ F20-4 表内原命令 1 passed / `build` exit=0；起点之后 `find` 为 0 行。
+- 证据：`probe-t189-routes.txt`（四跳原文）、`probe-t189-reads.txt`（只读面原文）、`live-t189.txt` + `live-t189-head.txt`。
+
+## T-191 子轮（接受更正，但更正本身有三处与现盘不符）· 本机 date 2026-09-23T03:36:30+08:00
+
+主控更正"discover / manage 现在就能跑"是错的。这条我接受，而且上一轮我已经用实测报过同样的结论：第 2/3 格都是 501。
+但那次更正里另外三处是按代码路径推的，我 03:34:42 重建复跑的结果不一样，按现盘说：
+
+1. discover 不是 405，是 501。`splitAdapterPath`（`adapters.go:85`）先因为路径里含冒号判"不认这个形状"，
+   于是走 `adapters.go:37` 的 501，根本到不了"只接受 GET"那句 405。
+2. manage 不是"路由不存在"。`/api/v1/sessions/` 子树是挂着的，`splitSessionVerb` 拆出 `verb="manage"` 之后落到
+   `sessions.go:66-68` 的 `default:`，明确 501，原文是"没听过的 custom verb 一律 501，不猜它该走哪条腿"。
+   结论一样（不通），归因不一样：区别在于 backend 要"新挂一条路由"，还是"把已知 verb 接进分流"。
+3. `:sync` 不回 501，它已经通到业务层。`main.go:253` 无条件注入 `Sessions: session.NewService(...)`，
+   所以 `c.Sessions == nil` 那条 501 分支（`sessions.go:56`）进不去；实测 404 `session_not_found`，错误体三键齐。
+   所以第 4 格 blocked 的原因不是"`:sync` 没做"，而是真的 session id 只能由第 2/3 格产出。
+   这个区别有后果：backend 若以为 `:sync` 还欠一次实现，就会去做第二遍；它其实只欠一个能同步的对象。
+
+### 巡检那条要求照办了
+每跳写成一行可复用诊断，字段是：路径 + status/code + 命中分支 file:line + 归属构建 + 一条重跑命令。
+落在 `.qoder/evidence/frontend/chain-gating-t191.md`，"归属只到 03:34:42 那份构建为止"写在文件头。
+第 5 条 `GET /api/v1/tasks/{id}` 回 405（`tasks.go:110-112`）也写进去了，并注明它不是 blocked 而是口径冲突，
+由我的 live 断言钉着：backend 改完自动转绿，不必有人来通知。
+
+### 复跑与状态
+- 新构建 03:34:42 复跑：五条读数与 03:24 那次逐字一致，`probe-t189.txt` 已覆盖为新版。
+- 离线五步链仍是 03:31:00 那份：26 passed | 20 skipped、F20-4 1 passed、build+no-secret 全 0。
+  那之后只动了 `.qoder/` 与 `.scratch/` 下的文件；`find apps/desktop/src apps/desktop/scripts specs/openapi packages/api-client/src -newermt "2026-09-23 03:31:12"` 除 `gen/schema.ts`（codegen 自写）外为空。
+- live 断言（03:30:45）：1 failed | 19 passed（20）。唯一那条红就是上面第 5 条的 405，指向 backend，我不删断言也不凑绿。
+
+### 一条工具环境的重复故障（今天第三次，同一坑）
+三次都是"写含中文的行时被塞进不可见字符 U+FFFC"：
+第一次落在 validator 的探针消息里，被我自己那条按规则号匹配的探针当场抓成"归因错乱"；
+第二次落在 .sh 脚本注释里；这一次落在我准备拼进台账的 .mjs 里，扫出 3 个 U+FFFC，所以我没有跑它，
+改成先写 .md、扫码点、再用纯 ASCII 的脚本拼接。
+后果差别很大：落在 .go/.ts 源码里会被编译器或断言抓到；落在注释和文档里就静默进盘。
+建议把这条交给 `test` 的 lint 清单：对非 ASCII 文件扫 U+FFFC / U+200B / U+FEFF。
+我这侧已经把"写盘后扫码点、把数量写进证据"变成固定动作。
+
+### 更正：上一小节那句"工具塞不可见字符"是我说错了
+
+同一轮自查。上面「一条工具环境的重复故障」那一节作废。那三次看到的替代符不是我写进文件的字节，
+而是我的 Read 工具在渲染某些中文行时给出的替身。判据是可复跑的，别信我这句话：
+
+- 码点扫 U+FFFC / U+200B / U+FEFF 四个文件：ledger-t189.mjs、run-t189b.sh、validate-openapi.mjs、ledger-t191.mjs，全部 0。
+- 再看字节：sed -n '17p' .scratch/frontend/ledger-t189.mjs 交给 od -c，只有合法 UTF-8 中文字节，例如 347 246 273 是"科"；
+  U+FFFC 的字节形是 357 277 274，没有出现。
+
+三件事的真实原因都不涉及字符污染：
+
+1. 探针报"归因错乱"是我自己的逻辑洞：③b 的判定条件写成 fulls.length !== 1，把 fulls.length === 0 的孤儿简写也吞了，
+   于是孤儿被报成"混排（0 个全名 + 1 个简写）"。修法是 ③b 只管大于 1，孤儿留给 ⑤，再补一条归因自证。
+2. bash 里 grep 不到文案，是我 draft 的期望串与代码实际文案不一致：我改了代码没同步改期望。
+3. ledger-t191.mjs 我因为看见替身符就没跑它，改走 .md 加 ASCII 拼接。结果一样达成，但拒绝的理由是假的；
+   而 ledger-t189.mjs 自己就跑得很顺，它输出的第二行正是"不可见字符 0"。
+
+留下来的有效纪律，和污染无关：判"文件脏"或"文件对"只能按码点或 od 扫字节，不能按任何回显。
+这是我 charter 里"工具回显可能是幻影"的一个新亚种：以前我以为幻影出现在"内容对不对"这一层，
+这次是合法内容被渲染成非法字符，反向骗我一次。
+顺带一条给 lint 的提醒：真要扫脏字符，就以字节为准，并且把扫描器自己也当成被测对象。
+本次这个文件自己是干净的吗：写完扫过才算，见报告里的数字。

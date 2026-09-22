@@ -271,12 +271,14 @@ func TestNotifyRejectsBadDrafts(t *testing.T) {
 	}
 }
 
-// §6 目录里触发者为 notification 的两行：键对账 + Audit 列都是 –。
+// §6 目录里触发者为 notification 的三行：键对账 + Audit 列都是 –。
+// 第三行 `notification_read` 是 REQ-DB-5 补登记的（09-22），第四十二批才第一次有生产者。
 func TestEventCatalogMatchesContract6(t *testing.T) {
 	want := []string{"approval_id", "notification_type", "priority", "task_id"}
 	for name, v := range map[string]any{
 		notification.EventCreated: notification.CreatedPayload{NotificationType: "projection_rejected", Priority: "HIGH"},
 		notification.EventHandled: notification.HandledPayload{NotificationType: "projection_rejected", Priority: "HIGH"},
+		notification.EventRead:    notification.ReadPayload{NotificationType: "projection_rejected", Priority: "HIGH"},
 	} {
 		if !strings.HasPrefix(name, "notification_") {
 			t.Errorf("%s 不符合 §1 命名", name)

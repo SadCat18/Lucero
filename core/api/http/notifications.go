@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SadCat18/lucero/core/internal/notification"
+	"github.com/SadCat18/lucero/core/internal/platform/db"
 )
 
 // NotificationLister 是 GET /api/v1/notifications 需要的读面，由 internal/notification 的
@@ -116,6 +118,103 @@ func listNotifications(w http.ResponseWriter, r *http.Request, c Config) {
 		next = encodeInboxCursor(last)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
+}
+
+// NotificationReader 是 `:read` 这条口的写面。它与 NotificationLister 分成两个字段而不是合成一个接口：
+// 一个挂在 *Repository、一个挂在 *Service，合并就会逼 cmd/core 造一个只为凑签名的转发类型（同 sessions 那两个）。
+type NotificationReader interface {
+	MarkRead(ctx context.Context, tx notification.Toucher, id string,
+		cmd notification.ReadCommand) (notification.Notification, bool, error)
+}
+
+// registerNotificationItemRoute 认领子树 `/api/v1/notifications/`（`:read` 这条口）。
+// 认领整棵子树就要负责邻居：`{id}:handle` 与"别的形状"必须**保持它们今天的 501**，
+// 不许因为多了这段代码而变成 404/405 —— 那是静默的行为变更（第四十一批的 adapters 同一条规矩）。
+func registerNotificationItemRoute(mux *http.ServeMux, c Config) {
+	mux.HandleFunc("/api/v1/notifications/", func(w http.ResponseWriter, r *http.Request) {
+		id, verb, ok := splitNotificationVerb(r.URL.Path)
+		if !ok {
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"notifications 的单条路径只认 {id}:read 与 {id}:handle；别的形状 Core 不猜", true)
+			return
+		}
+		switch verb {
+		case "read":
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+					"/api/v1/notifications/{id}:read 只有 POST", false)
+				return
+			}
+			if c.NotifRead == nil || c.Store == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"POST /api/v1/notifications/{id}:read 还没装配（写通道或 Service 没注入）", true)
+				return
+			}
+			readNotification(w, r, c, id)
+		case "handle":
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+					"/api/v1/notifications/{id}:handle 只有 POST", false)
+				return
+			}
+			// declared、方法合法、能力没接线 ⇒ 501（C28②）。今天不许为它编一个假 200，
+			// 也不许把它回成 405 让客户去换方法。
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"POST /api/v1/notifications/{id}:handle 还没接线（`notification_handled` 已登记，缺的是状态边由谁裁）", true)
+		default:
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"notifications 的单条路径只认 {id}:read 与 {id}:handle", true)
+		}
+	})
+}
+
+// splitNotificationVerb 只认 `{id}:read` / `{id}:handle` 两种形状；空 id、多一段、第二个冒号都算不认识。
+func splitNotificationVerb(path string) (id, verb string, ok bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/notifications/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", "", false
+	}
+	i := strings.LastIndexByte(rest, ':')
+	if i < 0 {
+		// 没有动词的那条（GET /notifications/{id}）契约里根本没 declared ⇒ 不认。
+		return "", "", false
+	}
+	id, verb = rest[:i], rest[i+1:]
+	if id == "" || verb == "" || strings.Contains(id, ":") {
+		return "", "", false
+	}
+	if verb != "read" && verb != "handle" {
+		return "", "", false
+	}
+	return id, verb, true
+}
+
+func readNotification(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	principal := r.Header.Get("X-Lucero-Principal")
+	correlation := newUUIDv7()
+	var out notification.Notification
+	err := c.Store.Write(r.Context(), func(tx *db.Tx) error {
+		var err error
+		// 第二个返回值"真改了吗"只决定库里有没有第二条事件；两种情况的响应形状必须一致，
+		// 所以这里不接它（接了又只在注释里用，就是死代码）。
+		out, _, err = c.NotifRead.MarkRead(r.Context(), tx, id, notification.ReadCommand{
+			EventID: newUUIDv7(), PrincipalID: principal, CorrelationID: correlation, CausationID: correlation,
+		})
+		return err
+	})
+	switch {
+	case err == nil:
+		// C18 裁定 ②：两种情况都回"库里那一行"，不回显请求。
+		writeJSON(w, http.StatusOK, notificationViewOf(out))
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrAggregateNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "没有这条通知", false)
+	case errors.Is(err, notification.ErrIllegalTransition):
+		writeError(w, http.StatusConflict, "illegal_transition", err.Error(), false)
+	case errors.Is(err, notification.ErrInvalidDraft):
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
+	default:
+		serverError(w, r, err)
+	}
 }
 
 // encodeInboxCursor / decodeInboxCursor 是 **分页** 游标（inbox 三元组：档 + created_at + id）。

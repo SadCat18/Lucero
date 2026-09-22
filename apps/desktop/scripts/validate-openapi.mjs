@@ -521,7 +521,7 @@ const { types: catalog, dups: catalogDups } = parseEventCatalog();
 catalogDups.length
   ? bad(`事件契约 §6 有 ${catalogDups.length} 个类型被登记了两次（去重后 ${catalog.length} 类）：`
     + catalogDups.map((d) => `${d.type}（第 ${d.firstLine} 行 + 第 ${d.againLine} 行）`).join('；')
-    + ' ⇒ 我不改 §6（那是主控该同步的那格），但这条红留着：重名两行的 payload 列哪天漂了，集合对拍看不见')
+    + ' ⇒ 多半是 ③c 说的那种"为省行把 payload 不同的同族塞进一格"又漏删了原行；我不改 §6（那是主控该同步的那格），但这条红留着')
   : ok(`§6 目录展开无重名（${catalog.length} 类）`);
 const catalogMissing = catalog.filter((t) => !(S.EventType.enum ?? []).includes(t));
 const catalogExtra = (S.EventType.enum ?? []).filter((t) => !catalog.includes(t));
@@ -579,7 +579,7 @@ try {
   orphan.err && orphan.err.includes('⑤') && !orphan.err.includes('③b')
     ? ok('归因自证：孤儿简写报在**⑤**名下（没被 ③b 抢走），fulls=0 时 ③b 不该开口')
     : bad(`归因错乱：孤儿简写报成了 [${String(orphan.err).slice(0, 46)}]`);
-  mixedBack.err && mixedBack.err.includes('混排')
+  mixedBack.err && mixedBack.err.includes('③b')
     ? ok('守门自证 G：简写之后又出现全名 → 同一条 ③b 拒判（不只看行首）')
     : bad(`守门漏角 G：全名出现在简写之后的混排没被 ③b 拦住（err=${String(mixedBack.err).slice(0, 40)}）`);
   ambOk.err

@@ -99,8 +99,11 @@ func TestHealthReflectsARealBoot(t *testing.T) {
 	if items, ok := listed["items"].([]any); !ok || len(items) != 0 {
 		t.Errorf("空库的 tasks 列表应为空数组，实际 %v", listed)
 	}
-	// 第三十二批把 GET /api/v1/projects 接通了，所以"仍未实现"的例子换成 `:read`（它还等 REQ-DB-5）。
-	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/notifications/n-none:read", ep.Token, nil); !isStatus(err, "501") {
+	// 这条"仍未实现 ⇒ 501"的例子跟着交付面移动：第三十二批用 `GET /projects`，第四十批之后换成 `:read`，
+	// 而第四十二批把 `POST /notifications/{id}:read` 接通了 —— 它现在合法地回 405（GET 到一条只接受 POST 的口），
+	// 再拿它当 501 的例子就是拿一个已经存在的口当例子，测的是别的格子。现在用 `GET /adapters/{id}`
+	// （yaml declared、今天仍 501，且 `adapters.go` 的子树分流把它钉在 501 上）。
+	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/adapters/a-none", ep.Token, nil); !isStatus(err, "501") {
 		t.Errorf("未实现的端点应 501，实际 %v", err)
 	}
 	// 而 /projects 这条现在必须在真进程的装配里真的能用 —— 顺带把新接的读通道钉到真二进制上：

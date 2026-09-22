@@ -355,7 +355,11 @@ principals:Append'
 # w13_hits <root...>：按 §7.1 的模式取命中（_test.go 造 fixture 允许，不算越界）。
 # 单独成函数只为了让 selftest 和真检查跑的是同一个表达式，而不是各测各的。
 w13_hits() {
-  { grep -rn --include='*.go' -E "$W13_RE" "$@" 2>/dev/null || true; } | grep -v '_test\.go:' || true
+  # strip_comments 这一道**必须在这里**，不是在下游：09-23 01:02 实测漏了它，backend 注释里那句
+  # "这里出现 `Tx.Append(\"audit_entries\"` 字面量即 W13-2 红"被当成代码，造出一条**引用自己判据的假红**。
+  # 同一条腿的假绿方向也一样成立（表写被删了而注释还留着 ⇒ 不 strip 就报绿）。
+  { grep -rn --include='*.go' -E "$W13_RE" "$@" 2>/dev/null || true; } | grep -v '_test\.go:' \
+    | strip_comments | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$' || true
 }
 
 # w13_classify <file> <table> <method> → allow | table-red | out-of-scope | not-a-table | parse-broken
@@ -842,8 +846,22 @@ const q = `SELECT id FROM quota_accounts`
   mkdir -p "$w3/api"
   printf 'package http\n\nfunc (c *counter) do() {\n\t_, _ = c.Tasks.Create(ctx, in)\n\t_, _ = c.Sessions.Touch(ctx, id)\n}\n' > "$w3/api/service.go"
   printf 'package http\n\nfunc (h *handler) write() {\n\t_, _ = tx.Append("tasks", map[string]any{})\n}\n'              > "$w3/api/agg.go"
+  # T-166/T-170 要的成对判决照 §7.1 写死：**同一张表 `tasks` 两种角色** ——
+  # agg.go 里 `Append("tasks"` 是真写 ⇒ 必须红；comment.go 里同一字面量只出现在注释 ⇒ 必须不红。
+  # （09-23 01:02 真炸过的那条假红来自 backend 用注释复述本规则：`// 这里出现 Tx.Append("audit_entries"…`，
+  #   所以第二种形状也保留，它是这条判据的"作者写规则"用例。）
+  printf 'package http\n\n// 这里出现 Tx.Append("tasks" 字面量即 W13-2 红）\n// 以及真实那次：Tx.Append("audit_entries"\n' > "$w3/api/comment.go"
+  printf 'package http\n\nfunc (h *handler) w2() {\n\t_, _ = tx.Append("sessions", m) // sessions 是注释\n}\n'          > "$w3/api/trailing.go"
   local wn; wn="$(w13_hits "$w3" | wc -l | tr -d ' ')"
-  (( wn == 1 )) || { report "  [SELFTEST FAIL] W13 模式命中 $wn 处，期望 1 —— Service 调用（不传表名字面量）又被当成写表，REQ-WS-3 第 4 条假阳性会复活"; fails=$((fails+1)); }
+  (( wn == 2 )) || { report "  [SELFTEST FAIL] W13 模式命中 $wn 处，期望 2（agg.go + trailing.go）—— 注释里的表名又被当成代码，或者行内注释后的真调用被剥过头"; fails=$((fails+1)); }
+  local wh; wh="$(w13_hits "$w3")"
+  printf '%s\n' "$wh" | grep -q 'comment\.go' && { report "  [SELFTEST FAIL] 只在注释里出现的 Append(\"tasks\" / Append(\"audit_entries\" 被 W13 判成写调用（w13_hits 里 strip_comments 没生效）"; fails=$((fails+1)); }
+  printf '%s\n' "$wh" | grep -q 'agg\.go' || { report "  [SELFTEST FAIL] 真写 Append(\"tasks\"（agg.go）没被判红 —— 与上一条合起来就是「成对判决」塌了一边"; fails=$((fails+1)); }
+  printf '%s\n' "$wh" | grep -q 'trailing\.go' || { report "  [SELFTEST FAIL] 行内注释之后的真写调用没被 W13 抓到（剥过头 ⇒ 漏报比误报更坏）"; fails=$((fails+1)); }
+  # T-166 要的是"两个判决都打出来"：只在失败时才有输出，等于让"没红"和"没判"长一样。
+  info "  [W13 注释自证·成对] 同一张表 tasks：真写(agg.go)判红、只出现在注释(comment.go)不红；trailing.go 行内注释之后的真写判红；comment.go 里 audit_entries 的注释复述不红（合成树命中 $wn 处）"
+  # （原来这条是 `wn == 1`；09-23 加了 comment.go / trailing.go 两个形状之后期望变 2，
+  #   而"Service 调用不算写表"那一半由下面的 wz == 0 单独守着，不在这里重复计数。）
   # CO-36 的 W13-3 另一半（反向断言本身也要被反向验一次）：整棵树只有 Service 形状时命中必须是 **0**。
   # 只有"混合目录里命中 1 处"那半边证明不了什么 —— 模式若还残留 .Create( 这种宽形状，
   # 那 1 处命中会把它一起糊过去。0 这一侧单独造一棵树才测得到。

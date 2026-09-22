@@ -1,6 +1,6 @@
 package test
 
-// 本文件是契约② 判据表 C8-6 / C8-7 / C8-10 / C8-11 / C8-12 / C8-13 六条行的执行者。
+// 本文件是契约② 判据表 C8-6 / C8-7 / C8-10 / C8-11 / C8-12 / C8-13 / C8-14 七条行的执行者。
 // 判据文本住在契约里，这里只留指针（REQ-T10）；两处口径若漂，以契约为准
 // （本文件与 lint 都只是它的执行者）。
 //
@@ -116,9 +116,18 @@ type codeTables struct {
 	dashRows     int      // 『来自』以 `—` 开头的行数
 	totalRows    int      // §15.2 数据行总数
 	skipped      int      // 长得像表格行却一行都没计入的次数（C8-10 ① 的落点）
-	namedRaw     int      // 『来自』码名的原始条数（与去重后的差 = 合法的一对多，只打印不判，见 §1.1 第 16 条）
+	namedRaw     int      // 『来自』码名的原始条数（与去重后的差 = 违反 §15.2.2 的一对一，C8-14 判红）
 	transportRaw int      // §15.2 左列的原始条数（去重前）—— 这一列重复是漂移，已在解析时判红
 	transport    []string // §15.2 左列 = HTTP 面自己会发的码（去重排序，C8-11 的比对集）
+	namedAt      []httpNamePair
+}
+
+// httpNamePair 是 §15.2 一行里"左列 HTTP 码 ↔『来自』Adapter 码名"这一对。
+// C8-14 要"出现两次即红并点名两行"，所以解析时就得把行身份留下 ——
+// 只交一个去重集合，红话就说不出是谁和谁撞了（左列本身唯一，C8-10 已判，所以拿它当行身份）。
+type httpNamePair struct {
+	httpCode string // 左列
+	adapter  string // 『来自』列的 Adapter 码名；`—` 行不产这一项（不是被过滤掉，是结构上不出现）
 }
 
 // parseCodeTables 解析 §15.1 的码列与 §15.2 的两列。
@@ -190,6 +199,7 @@ func parseCodeRows(s151, s152 []string) (codeTables, error) {
 		case codeNameRE.MatchString(from):
 			ct.namedRows++
 			ct.named = append(ct.named, from)
+			ct.namedAt = append(ct.namedAt, httpNamePair{httpCode: left, adapter: from})
 		default:
 			return ct, errAnchor(fmt.Sprintf("§15.2 第 %d 行的『来自』既不是码名也不是 `—` 开头：%q ⇒ 解析形状变了", ct.totalRows, cells[3]))
 		}
@@ -202,10 +212,11 @@ func parseCodeRows(s151, s152 []string) (codeTables, error) {
 	if dup, ok := firstDup(ct.transport); ok {
 		return codeTables{}, errAnchor(fmt.Sprintf("§15.2 左列（HTTP 码）里 %s 出现两次 —— 一行一个 HTTP 码是这张表的定义", dup))
 	}
-	// 『来自』那一列**故意不判重**（T-183 裁：合规收窄，不是漏做）：两个不同 HTTP 码映射到同一个
-	// Adapter 码是合法形状，判它等于替契约把"映射"写成"双射"。
-	// **什么时候该转红**：契约② §15.2 先落一条 REQ 明写"一一映射"，这条腿再翻成判红；
-	// 在那之前只打印 `原始/去重` 两个数（看得见、不咬人）。
+	// 『来自』那一列**在这里仍然不判重**，但不是"放行"：一对一是契约② §15.2.2 的语义，
+	// 由 C8-14（`TestAdapterCodeMapsToSingleHTTPName`）专门判红并点名两行。
+	// 这条腿只把 `namedAt`（行身份）留下来给它用 —— 解析器同时判两件事会让红话说不清是谁的判据。
+	// 历史（保留一句，免得有人再把它改回"只打印"）：02:3x 曾裁为"只打印不判红"，
+	// 因为那时契约没说话；03:1x 主控先把双射写进 §15.2.2、再立 C8-14 —— 先立语义再上判据。
 	ct.namedRaw = len(ct.named)
 	ct.transportRaw = len(ct.transport)
 	ct.codes151 = sortedUniq(ct.codes151)
@@ -364,8 +375,83 @@ func TestErrorCodeContractTablesParse(t *testing.T) {
 		len(ct.codes151), ct.totalRows, ct.namedRows, ct.dashRows, len(ct.named))
 	// §1.1 第 16 条要求的"原始 / 去重"两个数另起一行：左列与 `—` 的重复已在解析时判红，
 	// 『来自』那一列的重复是**合法的一对多**（两个 HTTP 码映射到同一个 Adapter 码），所以只报数不判。
-	t.Logf("计数对（原始/去重）：§15.2 左列 %d/%d（重复即红）、『来自』%d/%d（重复合法，仅打印不咬人）",
+	t.Logf("计数对（原始/去重）：§15.2 左列 %d/%d（重复即红）、『来自』%d/%d（重复由 C8-14 判红，本条只报数）",
 		ct.transportRaw, len(ct.transport), ct.namedRaw, len(ct.named))
+}
+
+// TestAdapterCodeMapsToSingleHTTPName 执行 C8-14：§15.2『来自』列里每个 Adapter 码名**最多出现一次**
+// （语义在契约② §15.2.2 —— 09-23 03:1x 主控先把双射写进正文、再立这条判据，顺序不能反）。
+//
+// 为什么不并进 C8-10：C8-10 判的是"两张表的码名集合互相相等"，而**集合语义看不见重复** ——
+// 17 行引用 17 个码名各一次，与"某个码名被引用两次、另一个码名没被引用"在双向相等下可以同时是绿的。
+// C8-14 判的是行数与码数之间的关系，正是 §1.1 第 16 条那一族的第三条腿。
+//
+// `—` 行不参与：**不是一条过滤规则，是结构上进不来** —— switch 里 `—` 那一支先命中，
+// 码名那一支（本检查唯一读的地方）永远不会收到它。盘上现有 13 行 `—` 而本条绿，
+// 就是这件事在真数据上的样子；所以我**不加**一条"喂两行 `—` 进去不红"的合成用例（那会是个零作为的空判据）。
+func TestAdapterCodeMapsToSingleHTTPName(t *testing.T) {
+	// 合成反例（§1.1 第 16 条第③件）：绿/红两边都摆出来，否则"检查根本没看这些对"也能交成通过。
+	synthetic := []struct {
+		name    string
+		in      []httpNamePair
+		wantMin int // 期望报出的冲突条数下界（0 = 必须干净）
+		why     string
+	}{
+		{"各一次", []httpNamePair{{"timeout", "TIMEOUT"}, {"internal_error", "INTERNAL"}}, 0, "一对一的合法形状"},
+		{"同码名两行", []httpNamePair{{"timeout", "TIMEOUT"}, {"adapter_timeout", "TIMEOUT"}}, 1,
+			"红话必须点名两行的左列，不然读者还得自己去数是谁撞了"},
+		{"同码名三行", []httpNamePair{{"a", "SAME"}, {"b", "SAME"}, {"c", "SAME"}}, 3,
+			"两两配对 ⇒ 三行报 3 对，不是只报第一对"},
+	}
+	for _, c := range synthetic {
+		got := dupAdapterNames(c.in)
+		switch {
+		case c.wantMin == 0 && len(got) > 0:
+			t.Errorf("C8-14 判据过严：%s 本该通过却报了 %v", c.name, got)
+		case c.wantMin > 0 && len(got) < c.wantMin:
+			t.Errorf("C8-14 合成反例失效：%s 本该至少报 %d 条，实得 %d 条（%v）—— %s",
+				c.name, c.wantMin, len(got), got, c.why)
+		}
+	}
+	ct, err := parseCodeTables(t)
+	if err != nil {
+		t.Errorf("§15.1/§15.2 解析坏了，本条无从判断：%v", err)
+		return
+	}
+	// 行身份必须与它自称的行数对得上：不然"点名两行"会点向不存在的行。
+	if ct.namedRows != len(ct.namedAt) {
+		t.Errorf("namedRows=%d 与留下的行身份数 %d 不等 ⇒ 解析器数了两遍不同的东西，本条结论不可信",
+			ct.namedRows, len(ct.namedAt))
+	}
+	for _, d := range dupAdapterNames(ct.namedAt) {
+		t.Errorf("违反契约② §15.2.2 的一行一码：%s —— 同一个 Adapter 码名被两行『来自』引用；"+
+			"要么拆成两个码，要么先在 §15.2.2 改掉双射语义，**不许改判据来迁就表**", d)
+	}
+	t.Logf("C8-14：『来自』带码名 %d 行、去重 %d 个、`—` 行 %d（结构上不参与，非过滤）⇒ 一对一成立",
+		ct.namedRows, len(ct.named), ct.dashRows)
+}
+
+// dupAdapterNames 把"同一个 Adapter 码名被多行引用"两两配成对报出来，
+// 用左列 HTTP 码当行身份（左列自身唯一由 C8-10 保证，所以这个身份不含糊）。
+func dupAdapterNames(in []httpNamePair) []string {
+	byCode := map[string][]string{}
+	var order []string
+	for _, p := range in {
+		if _, ok := byCode[p.adapter]; !ok {
+			order = append(order, p.adapter)
+		}
+		byCode[p.adapter] = append(byCode[p.adapter], p.httpCode)
+	}
+	var out []string
+	for _, code := range order {
+		rows := byCode[code]
+		for i := 0; i < len(rows); i++ {
+			for j := i + 1; j < len(rows); j++ {
+				out = append(out, fmt.Sprintf("%s 同时出现在『来自』的两行（左列 %q 与 %q）", code, rows[i], rows[j]))
+			}
+		}
+	}
+	return out
 }
 
 // TestHTTPErrorCodesComeFromAdapterSet 执行 C8-6 正向：§15.2 每个带码名的『来自』都必须在 §15.1 里，

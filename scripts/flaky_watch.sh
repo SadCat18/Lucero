@@ -51,6 +51,16 @@ while getopts "r:p:n:a:s:h" o; do
   esac
 done
 shift $((OPTIND - 1))
+# 契约① §1.1 第 15 条：取证命令要"锚定 + 显式包路径"。`-r` 收的是**用例名**不是正则，这里另算一份
+# 带 ^…$ 的 RUNRE 交给 go test；**RE 本身保持原样**，因为下面 probe 要拿它去匹配
+# `--- PASS: <名字>` 行（把锚塞进那个模式里会让每一次采样都判成"探测不成立"）。
+# 锚定不影响子用例：Go 按 `/` 分段匹配，第一段整名命中后子用例照常全跑（09-23 00:12:22 实测）。
+# 要跑一族请直接把命令交给 go test（本工具的判决依赖"这一条用例的 --- 行"，多命中会把它自己搞糊涂）。
+RUNRE='^'"$RE"'$'
+# -timeout 必须带上：09-23 02:43 那趟并发包里 cmd/core 挂到 Go 看门狗 10 分钟，
+#   四档 ×3 会被一个别人的挂死拖成 40 分钟；180s 之内拿不到结论就判"探测不成立"，
+#   判决交给栈而不是交给等待。
+TMO="${LUCERO_FLAKY_TIMEOUT:-180s}"
 PEERS=("$@")
 [[ ${#PEERS[@]} -eq 0 ]] && PEERS=(./test/ ./api/http/)
 # -at 模式下要查的目录：**默认全仓扫**（core/ + specs/ + scripts/）。
@@ -208,10 +218,10 @@ SAMPLES="$N"
 RUN_FROM="$(date -Iseconds)"
 printf 'flaky_watch  用例=%s  主包=%s  每档 %s 次  并发跑的包：%s  窗口起点=%s\n\n' "$RE" "$MAIN" "$N" "${PEERS[*]}" "$RUN_FROM"
 
-run_mode single   "$N" -count=1 -v -run "$RE" "$MAIN"
-run_mode shuffle  "$N" -count=2 -shuffle=on -v -run "$RE" "$MAIN"
-run_mode isolated "$N" -count=1 -shuffle=on -p 1 -v -run "$RE" "$MAIN" "${PEERS[@]}"
-run_mode parallel "$N" -count=2 -shuffle=on -v -run "$RE" "$MAIN" "${PEERS[@]}"
+run_mode single   "$N" -count=1 -v -timeout "$TMO" -run "$RUNRE" "$MAIN"
+run_mode shuffle  "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN"
+run_mode isolated "$N" -count=1 -shuffle=on -p 1 -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
+run_mode parallel "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
 timeline "$RUN_FROM" "$(date -Iseconds)" cmd/core internal/adapter
 
 # 共享面枚举（判据要求"可枚举的几个"，不许一个一个猜）。

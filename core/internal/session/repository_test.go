@@ -215,6 +215,10 @@ func TestListMessagesOrdersBySequenceThenTime(t *testing.T) {
 	}
 }
 
+// strPtrForTest 给 payload 夹具造字符串指针：C41 裁定（09-23 04:1x）之后 `ManagedPayload.ProjectID` 是 `*string`
+// —— 键必须在、值可以是 null，所以表里那份手抄样例也得能表达"绑着"与"没绑"两种。
+func strPtrForTest(s string) *string { return &s }
+
 // §6 目录里触发者为 session 的四行，独立手抄，与包内常量 + payload 键双向对账。
 var catalog6 = []struct {
 	eventType string
@@ -223,7 +227,7 @@ var catalog6 = []struct {
 }{
 	{EventDiscovered, []string{"remote_session_id", "adapter_instance_id"},
 		DiscoveredPayload{RemoteSessionID: "r", AdapterInstanceID: "a"}},
-	{EventManaged, []string{"managed", "project_id"}, ManagedPayload{Managed: true, ProjectID: "p"}},
+	{EventManaged, []string{"managed", "project_id"}, ManagedPayload{Managed: true, ProjectID: strPtrForTest("p")}},
 	{EventSynced, []string{"sync_state", "sync_cursor", "remote_revision", "confidence"},
 		SyncedPayload{SyncState: SyncSynced, SyncCursor: "20", RemoteRevision: "rev", Confidence: ConfidenceHigh}},
 	{EventMessageRecorded, []string{"role", "kind", "sequence_no", "remote_message_id"},

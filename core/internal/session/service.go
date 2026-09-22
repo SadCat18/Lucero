@@ -26,11 +26,23 @@ type SyncOutcome struct {
 	Confidence Confidence
 }
 
-// Service 现在只有只读链这一格能力；写侧（真的推进 sync_state / 发 session_synced）等 adapter 的连接层，
-// 不在这里挂一个没人实现的接口位。
-type Service struct{ repo *Repository }
+// Service 的只读那一格（`:sync` 走降级链）今天仍然一行都不写；写侧从第四十五批起多了一条 `Manage`
+// （见 manage.go —— 它是纯聚合的一次写，不依赖 adapter 的连接层）。
+// 两个方法要的能力不同，所以 `Manage` 自己吃一个 `TouchWriter`，这里不把事务通道存进 Service：
+// 存进来就等于允许"拿构造时的库、在别的请求里写"。
+type Service struct {
+	repo *Repository
+	// now 只给写侧用（`updated_at`）。缺省取墙钟，装配方（cmd/core）会把它那份共享时钟传进来。
+	now func() int64
+}
 
-func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+func NewService(repo *Repository, clock ...func() int64) *Service {
+	now := nowMillisNow
+	if len(clock) > 0 && clock[0] != nil {
+		now = clock[0]
+	}
+	return &Service{repo: repo, now: now}
+}
 
 // SyncFromLocal 走只读链：库里这条 Session 有内容就把它回给调用方，并且**明写这是降级**
 // （`sync_state=DEGRADED` + `state_confidence=LOW`），不拿"看起来成功"冒充真同步。

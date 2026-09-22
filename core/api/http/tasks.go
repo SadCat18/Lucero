@@ -107,15 +107,32 @@ func registerTaskRoutes(mux *http.ServeMux, c Config) {
 		}
 	})
 	mux.HandleFunc("/api/v1/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
-				"状态动作必须用 POST …:queue", false)
-			return
-		}
 		id, action, ok := splitTaskAction(r.URL.Path)
 		if !ok {
+			// 形状不认识：501 且不猜它该走哪条腿（原来这里排在方法判断后面，所以畸形路径会被回成 405）。
 			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"该状态动作尚未实现", true)
+				"tasks 的单条路径只认 {id} 与 {id}:状态动作；别的形状 Core 不猜", true)
+			return
+		}
+		if action == "" {
+			// **T-195④ 的那处真 bug 就修在这里**：`GET /api/v1/tasks/{id}`（yaml `getTask`，09-22 LAG-1 写进 §3）
+			// 与 `PATCH /api/v1/tasks/{id}`（`updateTask`）都是**合法方法**，而这两条今天没接线 ⇒
+			// 按 C28② 该回 501，不是 405。原来第一句就 `r.Method != POST → 405`，等于叫客户去换方法，
+			// 而它换哪个方法都一样没接线 —— 那正是 §15.2 那格禁止的互换。
+			switch r.Method {
+			case http.MethodGet, http.MethodPatch:
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"GET / PATCH /api/v1/tasks/{id} 都还没接线（declared 在 yaml 里，缺的是实现）", true)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+					"/api/v1/tasks/{id} 只接受 GET 与 PATCH", false)
+			}
+			return
+		}
+		// custom verb 那一类：yaml 里每条都只声明 POST ⇒ 别的动词确实是"方法不被接受"，405 站得住。
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				"状态动作必须用 POST …:"+action, false)
 			return
 		}
 		switch action {
@@ -137,14 +154,23 @@ func registerTaskRoutes(mux *http.ServeMux, c Config) {
 	})
 }
 
-// splitTaskAction 解析契约③ §3 的 custom verb 形状：/api/v1/tasks/{id}:queue
+// splitTaskAction 解析契约③ §3 的两种形状：`/api/v1/tasks/{id}`（action 返回空串）与
+// `/api/v1/tasks/{id}:queue`。**没动词那条以前直接判 not-ok**，所以 `GET /tasks/{id}` 连"合法方法"这一步都到不了
+// （T-195④）。现在空 action 是合法结果，由调用方分流；畸形形状（空 id、多一段、id 里还带冒号）才算不认。
 func splitTaskAction(path string) (id, action string, ok bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/tasks/")
-	i := strings.LastIndexByte(rest, ':')
-	if i <= 0 || rest == "" {
+	if rest == "" || strings.Contains(rest, "/") {
 		return "", "", false
 	}
-	return rest[:i], rest[i+1:], true
+	i := strings.LastIndexByte(rest, ':')
+	if i < 0 {
+		return rest, "", true
+	}
+	id, action = rest[:i], rest[i+1:]
+	if id == "" || action == "" || strings.Contains(id, ":") {
+		return "", "", false
+	}
+	return id, action, true
 }
 
 func createTask(w http.ResponseWriter, r *http.Request, c Config) {

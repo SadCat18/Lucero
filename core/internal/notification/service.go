@@ -2,8 +2,10 @@ package notification
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SadCat18/lucero/core/internal/platform/db"
@@ -82,4 +84,72 @@ func (s *Service) Notify(ctx context.Context, tx Writer, d Draft) (Notification,
 		return Notification{}, fmt.Errorf("notification: create %s: %w", n.ID, err)
 	}
 	return n, nil
+}
+
+// Toucher 是 `:read` 那一条状态边需要的最小写面（`*db.Tx` 天然满足）。
+// 与上面的 `Writer` 分开声明、不合成一个"大 Writer"：凑签名而多出来的方法，读的人会以为是必需依赖。
+type Toucher interface {
+	Touch(a db.AggregateKind, id, setSQL string, args []any, ev db.EventDraft) (int64, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// ErrIllegalTransition 是"这一条边今天不许走"。它映射成 §15.2 的 409 `illegal_transition`
+// （那张表明写这一码"来自各 Service 而非 Adapter"，所以正是这里该用的）。
+var ErrIllegalTransition = errors.New("notification: illegal state transition")
+
+// ReadCommand 带 event_id 而不带版本号：yaml 这条路径的参数只有 `Idempotency-Key` 与 `Principal`，
+// 没有 `If-Match`，所以这里不发明一道乐观锁（§15.2 的 `version_conflict` 也不该由这条路产生）。
+type ReadCommand struct {
+	EventID       string
+	PrincipalID   string
+	CorrelationID string
+	CausationID   string
+}
+
+// MarkRead 落 `UNREAD|PENDING → READ` 这一条边：一行状态改动 + 恰一行 `notification_read`，同一事务。
+// 返回的第二个值是"这一次真改了吗"——重复点"读过"是**合法的 no-op**：200、版本不动、事件也不发
+// （什么都没变还发一条更新，就是把事件写成仪式；与 `project.Patch` 的空 PATCH 同一条口径）。
+// 已处置的三态（HANDLED/IGNORED/EXPIRED）报 ErrIllegalTransition：把它们重新标成"读过"是替面板抹掉处置痕迹。
+// 这两格判据契约里都没给，是我自挑的，账上记 **C36**。
+func (s *Service) MarkRead(ctx context.Context, tx Toucher, id string, cmd ReadCommand) (Notification, bool, error) {
+	if strings.TrimSpace(cmd.EventID) == "" {
+		return Notification{}, false, fmt.Errorf("%w: 缺 event_id（重试要复用同一个，不然会发第二条事件）", ErrInvalidDraft)
+	}
+	cur, err := NewRepository(tx).Get(ctx, id)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	switch cur.State {
+	case StateUnread, StatePending:
+	case StateRead:
+		return cur, false, nil
+	default:
+		return cur, false, fmt.Errorf("%w: %s→READ（已处置的状态不再标成读过）", ErrIllegalTransition, cur.State)
+	}
+	at := s.now()
+	payload, err := Payload(ReadPayload{
+		NotificationType: cur.Type, Priority: cur.Priority, TaskID: cur.TaskID, ApprovalID: cur.ApprovalID,
+	})
+	if err != nil {
+		return Notification{}, false, fmt.Errorf("notification: read payload: %w", err)
+	}
+	// 只有两列要动：notifications 表**没有 updated_at**（000001:580 那一张的列里没有它），
+	// 所以这里不顺手写一个不存在的列 —— 那会是一条 SQL 逻辑错。
+	// `Touch` 返回的是**新版本号**（`UPDATE … RETURNING version`），不是受影响行数：
+	// 第一版我按"行数"判了个 `!= 1`，于是每一次合法的读都被我自己报成"行不在库里"。
+	// 找不到行那一格由 Touch 自己回 `ErrAggregateNotFound`，不需要我在这里数行。
+	if _, err := tx.Touch(db.AggNotification, id, "state = ?, read_at = ?",
+		[]any{string(StateRead), at}, db.EventDraft{
+			EventID: cmd.EventID, Type: EventRead, Aggregate: db.AggNotification, AggregateID: id,
+			CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID, PrincipalID: cmd.PrincipalID,
+			Payload: payload,
+		}); err != nil {
+		return Notification{}, false, fmt.Errorf("notification: mark read %s: %w", id, err)
+	}
+	updated, err := NewRepository(tx).Get(ctx, id)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	return updated, true, nil
 }

@@ -66,6 +66,9 @@ type Core struct {
 	reporter *rejectionReporter
 	tasks    *task.Service
 	store    auditedStore
+	// sessionSvc 是同一个 Service 的两次用途（`:sync` 只读 / `:manage` 写），构造一次好过两次：
+	// 两处各自的时钟一旦分叉，`updated_at` 与 `state_confidence` 就会来自两个时刻。
+	sessionSvc *session.Service
 	// probe 是 §7.2 那条 probe 腿的装配产物（Registry + Launcher）。nil = 一个 `-adapter` 都没配，
 	// 此时 transport 那格维持 501 —— 注入时必须走 adaptersField()，不能直接把 nil 塞进接口。
 	probe   *probeService
@@ -161,6 +164,8 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 		return nil, err
 	}
 	core.probe = probe
+	// session 的那个 Service 只构造一次（读侧 `:sync` 与写侧 `:manage` 共用），时钟用上面那份 nowMillis。
+	core.sessionSvc = session.NewService(session.NewRepository(d.Read), nowMillis)
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -242,15 +247,20 @@ func (c *Core) handler() http.Handler {
 		Tasks:   c.tasks, TaskList: task.NewRepository(c.db.Read), Store: c.store,
 		// inbox 那一腿是纯读：不注入 Store，所以它不需要事务通道。
 		Notifications: notification.NewRepository(c.db.Read),
+		// `:read` 是这条竖线第一次真改 notifications 的一行状态（C31 已 GO）：写要事务通道，所以配 Store。
+		NotifRead: notification.NewService(),
 		// 建项目这条口只要一个 Service（canonicalize 与冲突判定都在 internal/project 里）；
 		// 时钟与 §5.4/审计那两处共用同一个 nowMillis，别在业务包里各取一次时间。
 		Projects: project.NewService(nil),
 		// GET /projects 只要一条读通道：翻页规则住在 internal/project，这里不复制。
 		ProjectRead: c.db.Read,
 		// :sync 今天只有只读链这一格能力（C25）：Service 里一行都不写，所以只给它一把读的 Repository。
-		Sessions: session.NewService(session.NewRepository(c.db.Read)),
+		Sessions: c.sessionSvc,
 		// 面板的 listSessions 今天打的是 catch-all 的 501，这条把它接成真读路径。
 		SessionRead: session.NewRepository(c.db.Read),
+		// `:manage` 是这条竖线上第二次真改聚合（第一次是 notifications 的 `:read`）：
+		// 同一个 Service 复给读侧与写侧，时钟也复用那份共享的 nowMillis（别在业务包里各取一次时间）。
+		SessionManage: c.sessionSvc,
 		// probe 这条口（§7.2 的 backend 半边）。走 c.adaptersField() 而不是直接塞：
 		// 把 typed nil 装进接口会得到一个"非 nil 但一调就 panic"的值，501 那格就白留了。
 		Adapters: c.adaptersField(),
