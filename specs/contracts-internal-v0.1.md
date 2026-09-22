@@ -299,7 +299,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
    不得只报"我这边绿了"。只新增 `AggregateKind` 常量**不是**破坏性的（Go 加常量不影响调用方）——
    破坏来自映射与校验行为的改变，别把两件事混为一谈。
 
-17. **REQ-DB-2 裁定（09-23 05:1x）：非版本聚合的写入口 —— 版本住在事件流里，不住在行里。**
+17. **REQ-DB-2 裁定（09-23 05:07）：非版本聚合的写入口 —— 版本住在事件流里，不住在行里。**
     两个消费方在等同一条通道：① `process_instances` 的退出/崩溃改写（`process_exited`/`process_crashed`，
     事件契约 §6 登记、`aggregate_type=process`）——今天 `cmd/core/dropaudit.go` 的 `RecordExit`/`RecordCrash`
     **只能喊不能落**；② `core_ready`/`core_shutdown`——**`core` 根本没有表**。
@@ -332,7 +332,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **`adapter` 合验的行级那一半在这条落地之前仍只到"显式未接"**——`lifecyclecolumns_test.go` 里那个
       `LUCERO_REQ_DB2=1` 开关就是钉这件事的，**谁都不许为了变绿把它改成 SKIP**。
 
-18. **C34 裁定（09-23 05:1x）：`process_instances.owner_type` / `owner_id` 的词表。** backend 明说"我不猜"，是对的——
+18. **C34 裁定（09-23 05:07）：`process_instances.owner_type` / `owner_id` 的词表。** backend 明说"我不猜"，是对的——
     这两列在 schema 里是**无 CHECK 的可空 TEXT**，所以值域只能由契约登记、由 lint 钉，代码里"看起来自然"的写法不算数。
     - **v0.1 唯一合法值**：`owner_type = 'adapter_instance'`，`owner_id = adapter_instances.id`（UUIDv7）。
       **不登记 `'project'` / `'core'`**——今天没有任何生产者会那样写，登记了就是第 17 条那把尺子反着用的例子

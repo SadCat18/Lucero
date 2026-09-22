@@ -34,7 +34,7 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 - **test**：C8-6/7/8 三条一致性判据落地，我 22:34 与 22:40 各复跑一次（3 `=== RUN` / 3 `--- PASS`）。
   **frontend**：T-127/T-128 交付（enum 29 条、validator 改为运行时解析契约 + 守门退出）。
 - **过去 24h 关闭**：REQ-F-14、LAG-1、LAG-2、REQ-AD-1、REQ-T14、C25、C26、C28①②、REQ-A2（判不成立）。
-  **未关闭**：Wave-2 真子进程验收、`internal/adapter` 死锁、**REQ-DB-2 与 C34（09-23 05:1x 已裁定 ⇒ 从"待裁"变"待实现"，落点 `db` 两个入口 + `backend` 三格 Recorder）**、REQ-DB-3/4（仍待裁）、`sessions:discover`（backend 在途未交账）。
+  **未关闭**：Wave-2 真子进程验收、`internal/adapter` 死锁、**REQ-DB-2 与 C34（09-23 05:07 已裁定 ⇒ 从"待裁"变"待实现"，落点 `db` 两个入口 + `backend` 三格 Recorder）**、REQ-DB-3/4（仍待裁）、`sessions:discover`（backend 在途未交账）。
   ~~`sessions/{id}:sync` 待脱 501~~ **作废**：`main.go:253` 无条件注入 `Sessions`，那一腿早就通到业务层（T-195①），它卡的从来不是实现而是"没有真 session id"，而 id 的来源就是 discover。
 - **最近提交**：`3acd332` `b11e4ff` `7a48a45` `4f7fb43` `5ccd1a0` `6f534b4`（全部本地，**未 push**）。
 
@@ -638,7 +638,7 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 | T-205 | frontend | **已投递（05:01，巡检）** | **两条更正，都是我自己写下的旧断言，趁 T-197 已经投出去、你正在改 `live-core.test.ts` 说。**<br>① **T-197 里那句"Core 侧没有任何一条路径能创建 session"作废**——它是 04:47 的读数，backend 04:55 起就在补 `sessions:discover`（`internal/session/discover.go` + `cmd/core/discoverassembly.go` 已在盘上，尚未交账、还没进我任何一次"已验收"）。**所以这一格的状态是"锁正在被拆"，不是"锁打不开"**：你面板链第 2~4 格仍按 blocked 交，但理由请写成"discover 在途未交账"，别写"Core 不支持"。② **discover 的寻址我已裁死：路径参数是实例 id（UUIDv7），不是 `adapter_key`**（yaml `parameters/Id` vs `Key` 两格本来就分着写，`probe` 用 key、这一腿用 id）。⇒ **你 04:5x 那份门控样本里硬编码的 `/api/v1/adapters/opencode/sessions:discover` 是错样本**：`opencode` 是 key，等 backend 交账后它照样 404，而这条红会被当成 backend 的缺陷。**改法就是你 §4 已经在用的顺序**：先 `probe` 拿回执里的 `adapter.id`，再拿那个 id 打 discover（`panel.ts` 这一侧本来就是对的，别跟着 live 测试改）。<br>**另**：T-197 让你把 `:manage` 的形状断言从"501 未接线"改成"缺真 session id"——**这一条现在也过期了一半**：真 id 的来源就是 discover，所以你不必为"缺 id"另设一档，等 discover 交账后一次把这四格重排即可。**你今晚不用动代码**，等我叫。 |
 | T-206 | 记账（不投递） | — | **本批是我今晚第一次"在当事人写完之前把契约改准"，值得记方法**：① 依据全来自读码与 schema（`adapters.go:126`、`discover.go` 的 `RemoteIndex`/`Tx.Create`、`000001_core_schema.sql:174`、yaml `parameters/Id` vs `Key`），**没有一条是推的**；② 三处里两处是**我自己的措辞不严**（"按 remote_session_id 去重"、以及 T-197 那句"没有任何路径能创建 session"——后者在 04:47 为真、到 04:57 已被 T-198 推动着变了，**给它带了时刻**）；③ **改完立刻跑下游读法**：`validate-openapi.mjs` exit 0（yaml 我动了 summary/description 两行）。**另一条纪律**：我读的是 backend **未提交**的在途文件——这在本编排里是允许的（只读），但**结论只能作为"提醒 + 契约收窄"，不能当作验收**：它 04:57 那棵树还编不过（`tx.Create` 待补），我据此报"缺陷"就是拿半截代码当成品。<br>④ **本批我自己制造了一次假红并当场纠掉，这条最值得记**：我看到 `adapters.go:125` 是 `discoverAdapterSessions(w, r, c, key)`，就断言"路径段是 key 而被喂进 instanceID ⇒ 每次真跑都 404"，**并且已经把这句写进了契约③ 与 T-204/T-205**。随后读了 60 行的 `discoverassembly.go`：那里第一句就是 `SELECT adapter_key FROM adapter_instances WHERE id = ?`——**行为是对的，错的只是那个变量名**。**从"函数签名 + 变量名"推行为，和从"被调用那一层"读行为，是两种东西**；前者一次就能把三方引去改一个没坏的地方（frontend 已经开始按我上一版的话改它的门控）。**规矩：涉及"某某参数传错了"这类断言，先读被调用方的实现，再写契约；没读到就不写。** 三处已就地更正（契约③ 那格改成"命名禁令"、T-204② 改成"这条我替你核掉了"、T-205 改成"寻址已裁死、你那个 `opencode` 是错样本"）。 |
 
-## 待投递 · 第七十七批（09-23 05:10：REQ-DB-2 与 C34 我裁了 —— Wave-2 的那道平台洞补上形状）
+## 待投递 · 第七十七批（09-23 05:07：REQ-DB-2 与 C34 我裁了（本机 date 实读 05:07）—— Wave-2 的那道平台洞补上形状）
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
