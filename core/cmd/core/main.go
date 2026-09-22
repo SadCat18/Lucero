@@ -44,6 +44,8 @@ type config struct {
 	Migrations string
 	TakeOver   bool
 	TicketTTL  time.Duration
+	// Adapters 是 `-adapter key=可执行路径` 收进来的重复参数；空 = 不暴露 probe 这条口。
+	Adapters adapterFlag
 }
 
 // Core 是跑起来的那一份：持有库、锁、口令、监听与运行态。
@@ -64,8 +66,11 @@ type Core struct {
 	reporter *rejectionReporter
 	tasks    *task.Service
 	store    auditedStore
-	ln       net.Listener
-	tickets  *httpapi.Tickets
+	// probe 是 §7.2 那条 probe 腿的装配产物（Registry + Launcher）。nil = 一个 `-adapter` 都没配，
+	// 此时 transport 那格维持 501 —— 注入时必须走 adaptersField()，不能直接把 nil 塞进接口。
+	probe   *probeService
+	ln      net.Listener
+	tickets *httpapi.Tickets
 
 	state atomic.Pointer[string]
 }
@@ -77,6 +82,7 @@ func main() {
 	flag.BoolVar(&cfg.TakeOver, "take-over-lock", false, "显式接管上一个进程留下的锁文件")
 	var ttl time.Duration
 	flag.DurationVar(&ttl, "ws-ticket-ttl", 30*time.Second, "一次性 WS 短票的有效期（契约③ §1.2 默认 30s）")
+	flag.Var(&cfg.Adapters, "adapter", "登记一个可探测的 Adapter：`key=可执行路径`，可重复给；一个都不给 ⇒ probe 维持 501")
 	flag.Parse()
 	cfg.TicketTTL = ttl
 
@@ -146,6 +152,16 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	core.tasks = task.NewService(core.reporter)
 	core.store = auditedStore{d: d, checkpoints: core.checkpoints}
 
+	// T-181①：probe 的装配位。一个 `-adapter` 都没给 ⇒ `probe` 是 nil ⇒ transport 那一格维持 501
+	// （"这台机器没配 Adapter"与"你给错了 key"是两种处置，不许拿 400 伪装成前者，见 probeassembly.go）。
+	probe, err := newProbeService(d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
+		func(format string, args ...any) { log.Printf(format, args...) })
+	if err != nil {
+		core.close()
+		return nil, err
+	}
+	core.probe = probe
+
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		core.close()
@@ -198,6 +214,16 @@ func (c *Core) ensurePrincipal(id, kind, display string) error {
 	})
 }
 
+// adaptersField 把"没装配"翻译成接口的 nil。Go 里 `var p *probeService; i = p` 得到的是
+// **非 nil 的接口**（类型在、值不在），而 transport 那格的闸门判的是 `c.Adapters == nil` ——
+// 直接塞就会把一个"该回 501"的形态变成"进去就 panic"。
+func (c *Core) adaptersField() httpapi.AdapterProber {
+	if c.probe == nil {
+		return nil
+	}
+	return c.probe
+}
+
 // handler 把两个 transport 面拼起来：/ws/v1/events 走一次性短票（REQ-F-2，不接受 Authorization 头），
 // 其余 /api/v1 走 Bearer。两条共用同一个回环来源判定，CORS 规则不出现第二套。
 func (c *Core) handler() http.Handler {
@@ -225,6 +251,9 @@ func (c *Core) handler() http.Handler {
 		Sessions: session.NewService(session.NewRepository(c.db.Read)),
 		// 面板的 listSessions 今天打的是 catch-all 的 501，这条把它接成真读路径。
 		SessionRead: session.NewRepository(c.db.Read),
+		// probe 这条口（§7.2 的 backend 半边）。走 c.adaptersField() 而不是直接塞：
+		// 把 typed nil 装进接口会得到一个"非 nil 但一调就 panic"的值，501 那格就白留了。
+		Adapters: c.adaptersField(),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{

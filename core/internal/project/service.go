@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SadCat18/lucero/core/internal/eventjournal"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 )
 
@@ -98,6 +99,88 @@ func (s *Service) Create(ctx context.Context, tx *db.Tx, d Draft) (Project, erro
 	}
 	return Project{ID: d.ID, Name: d.Name, CanonicalPath: path, Type: typeName, Status: Active,
 		MetadataJSON: metadata, CreatedAt: now, UpdatedAt: now, Version: 1}, nil
+}
+
+// ErrVersionConflict 对应契约③ §2 的 409 `version_conflict`："我看到的不是你现在的"。
+// 与 task 侧同义、同形状（各自包内一份，因为 transport 按包映射错误码）。
+var ErrVersionConflict = errors.New("project: version conflict")
+
+// Patch 是 `PATCH /api/v1/projects/{id}` 的落点：**只有 `name` 与 `metadata` 两格**。
+// yaml 那句"只允许非状态字段；改状态必须走 `:verb`"在这里是**结构性**成立的 ——
+// 状态类字段根本没有对应成员，所以"顺手把 status 改了"是写不出来的代码，不是被某个 if 挡住。
+// 两个指针都是 nil = 这一列不动；`WantVersion <= 0` = 请求没带 If-Match（yaml 里它不是必填）。
+type Patch struct {
+	EventID     string // 与 Draft.EventID 同一规矩：调用方（transport）生成，本包不发明第三份 UUIDv7
+	Name        *string
+	Metadata    map[string]any
+	WantVersion int64
+}
+
+// Update 走契约③ §1.1 第 11 条那套四步：库里读当前行（版本只从这儿来，不接受调用方口头给）
+// → If-Match 比对 → 要改的列清单 → `Touch`（一个版本、一行 `project_updated`）。任何一步不过，一行都不写。
+//
+// 空 PATCH（两格都没给）**不写库、不推版本、不发事件**：`project_updated` 说的是"有东西变了"，
+// 什么都没变还发一条，就是把事件写成仪式 —— 这与 §9 那条"不许发不登记/不成立的事件"同一条线。
+func (s *Service) Update(ctx context.Context, tx *db.Tx, id string, p Patch) (Project, error) {
+	if strings.TrimSpace(p.EventID) == "" {
+		return Project{}, fmt.Errorf("%w: 缺 event_id（调用方生成，与 Draft 同一规矩）", ErrInvalid)
+	}
+	cur, err := Get(ctx, tx, id)
+	if err != nil {
+		return Project{}, err // 库里没有 ⇒ sql.ErrNoRows，交给 transport 映射 404
+	}
+	if p.WantVersion > 0 && p.WantVersion != cur.Version {
+		return cur, fmt.Errorf("%w: 请求带 v%d，库里已是 v%d", ErrVersionConflict, p.WantVersion, cur.Version)
+	}
+	var (
+		set  []string
+		args []any
+	)
+	now := s.now()
+	if p.Name != nil {
+		if strings.TrimSpace(*p.Name) == "" {
+			return cur, fmt.Errorf("%w: name 不能为空", ErrInvalid)
+		}
+		set, args = append(set, "name = ?"), append(args, *p.Name)
+	}
+	if p.Metadata != nil {
+		raw, err := json.Marshal(p.Metadata)
+		if err != nil {
+			return cur, fmt.Errorf("%w: metadata 编不成 JSON: %v", ErrInvalid, err)
+		}
+		set, args = append(set, "metadata_json = ?"), append(args, string(raw))
+	}
+	if len(set) == 0 {
+		return cur, nil
+	}
+	set, args = append(set, "updated_at = ?"), append(args, now)
+	if _, err := tx.Touch(db.AggProject, id, strings.Join(set, ", "), args, db.EventDraft{
+		EventID: p.EventID, Type: eventjournal.ProjectUpdated,
+		Payload: map[string]any{"name": orDefault(cur.Name, p.Name), "metadata": metadataOf(cur, p)},
+	}); err != nil {
+		return cur, err
+	}
+	// C18 裁定 ② 的同一句话：**响应读回库里那一行**，不回显请求体 —— 版本与 updated_at 都以落库为准。
+	return Get(ctx, tx, id)
+}
+
+func orDefault(cur string, p *string) string {
+	if p == nil {
+		return cur
+	}
+	return *p
+}
+
+// metadataOf 与 orDefault 同一条判据：没带 metadata 就把库里那份原样进 payload，别写个空对象冒充"改成了空"。
+func metadataOf(cur Project, p Patch) map[string]any {
+	if p.Metadata != nil {
+		return p.Metadata
+	}
+	m := map[string]any{}
+	if strings.TrimSpace(cur.MetadataJSON) != "" {
+		_ = json.Unmarshal([]byte(cur.MetadataJSON), &m) // 库里过不了 json_valid 的早就被 CHECK 拦了
+	}
+	return m
 }
 
 func isUniqueOnPath(err error) bool {

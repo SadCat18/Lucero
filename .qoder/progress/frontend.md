@@ -3,11 +3,11 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-23T01:19:08+08:00（T-165 子轮：补 `project_updated` ⇒ `EventType` **63 条**、
-§6 重名的处置由"停"改成"报红继续 + 点名到行"（新探针 H）。链条 01:16:27：`codegen`/`vitest`(26+16skip)/`build` 全 exit=0，
-**`validate` 剩 1 条红，在 `specs/events/event-contract-v0.1.md` §6 第 167+168 行（`project_archived` 重复登记）——
-那格不属我写范围，按 T-165"别顺手改 §6"只报不改**。前面各轮口径按原段读：T-150 00:03:26 / T-144 23:42:43 /
-T-140 23:37:30（live 23:37:11 **16 passed / 0 skip**，find 证运行时此后零改动）/ T-139 23:08:53 / T-127+128 15:37:42）
+LAST_UPDATED: 2026-09-23T01:43:37+08:00（T-173 自跑复核：§6 已由主控拆成三行 + 补 ③c，我这边零改动即转绿。
+五步链 01:43:37 全 exit=0：validate 全部通过 / codegen / vitest 26 passed|16 skipped / F20-4 1 passed / build；
+证据 .qoder/evidence/frontend/gates-t173.txt；find（排除生成物）在 01:43:39 之后 0 行。
+REQ-F-25（把 validate 前置进 build）主控裁「不做」，我没动 package.json；三方相等那条腿落在契约② C8-13（core/test）。
+前面各轮口径按原段读：T-165 01:16:27 / T-150 00:03:26 / T-144 23:42:43 / T-140 23:37:30（live 23:37:11 16 passed / 0 skip））
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -814,3 +814,32 @@ H 第一版我断 `dups.length === 1` —— **当场 FAIL**：基线本来就�
 最省事的做法是把 `validate` 挂进 `apps/desktop/package.json` 的 `build` 前置（验收命令本来就是 `npm run build`），
 **但我没有单方面做**：那会让别人的 `npm run build` 因为**别人那一格文档**的漂移而失败，属于跨角色的闸门接线，归你裁。
 要就一句话，我这侧一行改动。
+
+## T-173 子轮（那条红是主控造的、也是他修的；我按规矩自己重跑一遍）· 本机 date 2026-09-23T01:43:37+08:00
+
+### 现场状态（不引主控的数）
+- 事件契约 §6 第 167/168/169 行现在是三条独立行（created / updated / archived），文件 mtime 01:32:39；
+  表里 project_archived 只出现 **1** 次 ⇒ 我那条「重名即停」已经不再挡在 enum 与目录的对拍前面。
+- 我自己的 npm run validate：**exit=0、全部通过，一条 FAIL 都没有**。主控 01:33 那次绿不算我的，按 T-72 自己重跑。
+- 三格计数（现场）：yaml EventType 去重 **63** = §6 展开 **63**（双向相等那条 ok）；ErrorCode 30；
+  旁证 core/internal/eventjournal/events.go 的 EventType 常量 **63** 条，计数式写在证据文件里（无转义写法，可复跑）。
+
+### ③c 我没加新机械判据，只做了两件小事
+- ③c（payload 不同就不许合并）是**写表的规矩**，它的失效方式（重名）我已经有一条会响的守门；
+  再加一条"看 payload 列里有没有 xxx： 前缀"的猜测式判据，属于我会写歪的那类东西，不加。
+  三方相等那条腿主控裁定由契约② C8-13（core/test 的 Go 判据）承接，跟着 go test 跑，漂移不再依赖谁醒来。
+- 改的两处都是**归因可读性**：重名那条红的提示改成引用 ③c（下一个人能看到重名为何出现）；
+  探针 G 的匹配串从"混排"改成规则号 ③b —— 断言去匹配消息文案本身就是会被"只改措辞"打断的脆弱形状，
+  今天我自己就被这种耦合打过一次。改完 A×4 / B×2 / C×3 / D / E / G / F / 归因 / H 共 **15 条自证仍全 ok**。
+
+### 认一条账
+主控那句"一个为了省行的合并，把别人的判据挡在了自己前面"说的是他的错，但我的处置也迟了一步：
+T-165 我发现"重名即停会挡在集合对拍前面"时，只把它当成一条要上报的红，
+没有立刻想到"去重继续判 + 报红"才是让两条判据都能跑的形状 —— 那是主控 ③c 落地时顺手变成既成事实的。
+**下次遇到"我的守门挡住了一条更该响的判据"：判据顺序本身就是待修的缺陷，不该只报不动。**
+
+### 证形
+git status --porcelain -- apps packages specs → 我这侧三个 M：validate-openapi.mjs（提示与探针 G 的匹配串）、
+core-v1.yaml（T-165 补的 project_updated）、gen/schema.ts（codegen 自写）。§6 那三行是主控改的，我一个字节没动。
+live 仍未重跑：find client.ts/events.ts/stores/components/__tests__ -newermt "2026-09-22 23:37:11" → 空，
+所以那次 16 passed / 0 skip 仍指当前运行时代码。

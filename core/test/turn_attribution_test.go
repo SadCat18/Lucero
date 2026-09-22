@@ -273,13 +273,17 @@ func TestDroppedFrameReachesAuditSeam(t *testing.T) {
 		}
 		mounted, evidence := dropRecorderMounted(root)
 		if !mounted {
-			t.Skipf("blocked：三段前提只落了第一段。①装配点未接——%s；②probe 未接 ⇒ Core 今天没有跑着的 adapter 连接，"+
-				"任何帧都走不到丢弃分支（backend 在 cmd/core/processpipe.go 的注释里写明了这一点，并且给了理由："+
-				"挂上去就是给一个空转的东西记账）；③没有让 FakeAdapter「撒谎」的注入面 ⇒ 就算①②都齐，我也造不出"+
-				"『票号说 B、帧里写 EVIL』那一发（REQ-T16 在问主控）。"+
-				"三段缺一我都只能测替身，而 T-29 说得很清楚：判到的绿与产品行为无关。", evidence)
+			t.Skipf("blocked（触发条件按 T-175 定死两条，两条同时成立才摘）：①%s；"+
+				"②真 Adapter 连接还不存在（probe / `:sync` 未落地），所以『票号绑定 id 与帧内 id 不一致』这一发今天没有真实的产生方式。"+
+				"T-175 原话：**拿一条走不到的代码路径判绿，比 SKIP 更坏**。"+
+				"（这条门为什么读源码而不是数 grep：01:35 实测 `newDropRecorder(` 排除测试后原始命中 2 处，"+
+				"其中 `dropaudit.go:38` 是函数定义本身、`processpipe.go:30` 是一句注释 ⇒ 真调用点 0。"+
+				"『非 0 命中也要读原文』在这里被写成了代码。）"+
+				"三段前提里曾列的『注入面』T-175 已裁**先不加**：为一条判据新开 `debug/misattribute` 是扩产品结构；"+
+				"重开条件是①②都成立之后仍然造不出矛盾帧，那时再开 REQ 讨论（可能是走真 Adapter 的某条真实错误路径）。",
+				evidence)
 		}
-		t.Skipf("前提①已满足（%s），但仍不测：还差②活连接与③注入面（REQ-T16）。"+
+		t.Skipf("前提①已满足（%s），但仍不测：还差②真 Adapter 连接（T-175 的第二条触发条件）。"+
 			"**这条 SKIP 的理由变了，就是它该被改写的信号** —— 不要把它换成一个会红的 TODO，更不要凭空绿。", evidence)
 	})
 }

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +18,7 @@ import (
 // canonicalize、路径冲突判定、事件写入全在业务包里 —— 这里只做解析/状态码（契约③ §7 薄层禁令）。
 type ProjectService interface {
 	Create(ctx context.Context, tx *db.Tx, d project.Draft) (project.Project, error)
+	Update(ctx context.Context, tx *db.Tx, id string, p project.Patch) (project.Project, error)
 }
 
 type createProjectBody struct {
@@ -140,6 +142,120 @@ func listProjects(w http.ResponseWriter, r *http.Request, c Config) {
 		next = encodeCursor(last.CreatedAt, last.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
+}
+
+// registerProjectItemRoute 是 `/api/v1/projects/{id}` 这一条**子树**路径（与上面那条精确路径是两个 pattern，
+// Go 的 mux 允许并存）。分流仍按 C28②：PATCH 已接；GET 单条是 yaml 里 declared 但还没接线的能力 ⇒ 501
+// （不是 405 —— "这条路径不接受 GET"是假话）；PUT/DELETE 这类根本不被接受 ⇒ 405。
+func registerProjectItemRoute(mux *http.ServeMux, c Config) {
+	if c.Projects == nil || c.Store == nil {
+		return
+	}
+	mux.HandleFunc("/api/v1/projects/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/projects/")
+		if id == "" || strings.Contains(id, "/") || strings.Contains(id, ":") {
+			// 空 id 或多一段：形状不认识，不拿它去查库（那会回一个假装合法的 404）。
+			// 带冒号的那种（`:archive` 之类）今天根本没登记 ⇒ 501，但这里连形状都不认，别猜。
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"projects 的单条路径只认 {id}；带 custom verb 的那类还没接线", true)
+			return
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			updateProject(w, r, c, id)
+		case http.MethodGet:
+			if c.ProjectRead == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"GET /api/v1/projects/{id} 还没装配读通道", true)
+				return
+			}
+			getProject(w, r, c, id)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				"/api/v1/projects/{id} 只接受 GET 与 PATCH", false)
+		}
+	})
+}
+
+// getProject 是单条读：`project.Get` 读库里那一行，投影复用 `projectViewOf`。
+// 归档的项目**照样读得到** —— 这条路契约里没给任何过滤位，我不替它藏（C26 同一课）。
+func getProject(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	p, err := project.Get(r.Context(), c.ProjectRead, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrAggregateNotFound):
+			writeError(w, http.StatusNotFound, "not_found", "没有这个项目", false)
+		default:
+			serverError(w, r, err)
+		}
+		return
+	}
+	view, err := projectViewOf(p)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// updateProject 只做解析/校验/状态码（契约③ §7）：版本比对与"改哪几列"全在 project.Service.Update 里。
+func updateProject(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "读请求体失败", true)
+		return
+	}
+	// DisallowUnknownFields 不是洁癖：`status` 在词表里是**存在**的列，静默丢掉它等于让客户端以为改了。
+	// yaml 把这条口的语义写死成"只允许非状态字段；改状态必须走 :verb" ⇒ 不认识的键就 400，不猜。
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var body updateProjectBody
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "请求体不合法: "+err.Error(), false)
+		return
+	}
+	var want int64
+	if v := r.Header.Get("If-Match"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "validation_failed", "If-Match 必须是正整数版本", false)
+			return
+		}
+		want = n
+	}
+	p := project.Patch{EventID: newUUIDv7(), WantVersion: want, Metadata: body.Metadata}
+	if body.Name != nil {
+		name := *body.Name
+		p.Name = &name
+	}
+	var out project.Project
+	err = c.Store.Write(r.Context(), func(tx *db.Tx) error {
+		var err error
+		out, err = c.Projects.Update(r.Context(), tx, id, p)
+		return err
+	})
+	view, viewErr := projectViewOf(out)
+	switch {
+	case err == nil && viewErr == nil:
+		writeJSON(w, http.StatusOK, view)
+	case err == nil:
+		serverError(w, r, viewErr)
+	case errors.Is(err, project.ErrVersionConflict):
+		writeError(w, http.StatusConflict, "version_conflict", err.Error(), true)
+	case errors.Is(err, project.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
+	case errors.Is(err, sql.ErrNoRows) || errors.Is(err, db.ErrAggregateNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "没有这个项目", false)
+	default:
+		serverError(w, r, err)
+	}
+}
+
+// updateProjectBody 两个键都是可选的，但**都不给**是合法的 no-op（见 Service.Update 那一段）。
+// 没有 status / archived_at 的位置：那是结构性约束，不是运行时的 if。
+type updateProjectBody struct {
+	Name     *string        `json:"name"`
+	Metadata map[string]any `json:"metadata"`
 }
 
 func createProject(w http.ResponseWriter, r *http.Request, c Config) {

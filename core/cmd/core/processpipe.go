@@ -22,28 +22,35 @@ import (
 //     期限的正主是 adapter（它会补默认值），但那一半没落地之前，这道闸在我这边先合上。
 //   - **`process_instances` 的改行今天仍没有通道**（§1.1 第 13 条 09-23 裁定：`process_instances` 不进
 //     `narrowTables`，因为那条入口"不取版本、不写事件"；真正的洞是 **REQ-DB-2**，主控写明"不算 backend 欠账"），
-//     所以这里 `Rec` 仍是 nil。第三十四~三十七批已有 `process.Recorder` 的实现（`dropaudit.go`：`RecordDrop` 写审计行；
-//     生命周期那三格按 T-168 一律"出声但不写" —— 拿 `Append` 建行会丢掉已登记的 `process_started`，
-//     正是 §1.1 第 13 条禁止的那个形状），但**不挂在这座桥上** —— 今天没有任何调用方会走到丢弃分支
-//     （probe 未接 ⇒ 没有跑着的连接），挂上去就是给一个空转的东西记账。
-//     probe 落地那天要做的两件事：给 `launcher` 补一把写通道（`auditedStore`）与一个 `now`，
-//     然后在 `Supervisor{…}` 里加 `Rec: newDropRecorder(store, adapterKey, now, logf)`。
-//     `Rec` 为 nil 也不是漏装，是它文档里明说允许的形态
-//     （"a Supervisor with no recorder keeps supervising and simply reports through Sink"）。
+//     所以 `Rec` 的四格里**只有 `RecordDrop` 真写**，生命周期那三格按 T-168 一律"出声但不写" ——
+//     拿 `Append` 建行会丢掉已登记的 `process_started`，正是 §1.1 第 13 条禁止的那个形状。
+//     **T-181（09-23 02:08）之后 `Rec` 已经挂在桥上**：那句"probe 未接 ⇒ 没有跑着的连接，挂上去就是给空转的东西记账"
+//     的前提随着 probe 落地消失了，所以这里给 `launcher` 补了写通道（`auditedStore`）与 `now`，
+//     并在 `Supervisor{…}` 里装上 `newDropRecorder(store, adapterKey, now, logf)`（一个 adapter 一个 recorder，
+//     因为 `DroppedEvent` 里没有任何身份字段，身份只能由构造点带）。
+//     `Rec` 为 nil 仍是它文档里明说允许的形态（"a Supervisor with no recorder keeps supervising and simply
+//     reports through Sink"），但今天不是那个形态。
 
 // launcher 实现 adapter.Launcher。command 是"这个 key 该怎么起"的装配位：
 // 真的装配给 fake-adapter 的路径，测试给测试自己的 helper 进程。
+// store/now 是给 `RecordDrop` 那半格用的（T-181：probe 落地 ⇒ 桥上第一次真的有跑着的连接）。
 type launcher struct {
 	command  func(adapterKey string) (*exec.Cmd, error)
 	deadline time.Duration
 	logf     func(format string, args ...any)
+	store    auditedStore
+	now      func() int64
 }
 
-func newLauncher(command func(string) (*exec.Cmd, error), deadline time.Duration, logf func(string, ...any)) *launcher {
+func newLauncher(command func(string) (*exec.Cmd, error), deadline time.Duration, logf func(string, ...any),
+	store auditedStore, now func() int64) *launcher {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &launcher{command: command, deadline: deadline, logf: logf}
+	if now == nil {
+		now = func() int64 { return time.Now().UnixMilli() }
+	}
+	return &launcher{command: command, deadline: deadline, logf: logf, store: store, now: now}
 }
 
 var errNoDeadline = errors.New("cmd/core: 拉起的 ctx 必须带期限")
@@ -65,6 +72,8 @@ func (l *launcher) Start(ctx context.Context, adapterKey string) (io.ReadWriteCl
 		Kind:    process.KindAdapter,
 		Launch:  func() (*exec.Cmd, error) { return l.command(adapterKey) },
 		Restart: process.RestartNever,
+		// 一个 adapter 一个 recorder：`DroppedEvent` 里没有任何身份字段，adapter_key 只能由构造点带。
+		Rec: newDropRecorder(l.store, adapterKey, l.now, l.logf),
 		Sink: func(ev process.Event) {
 			l.logf("adapter %s 进程事件: kind=%s pid=%d status=%s exit=%d", adapterKey, ev.Kind, ev.PID, ev.Status, ev.ExitCode)
 		},

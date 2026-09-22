@@ -3,7 +3,7 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-23T00:53+08:00
+LAST_UPDATED: 2026-09-23T02:02+08:00
 
 ## Objective
 
@@ -32,17 +32,39 @@ LAST_UPDATED: 2026-09-23T00:53+08:00
 
 ## Current checkpoint
 
-- Stage: T-161 第二半已闭（`ProjectUpdated` 常量 + `true` 集合），C8-12 的 Go 那条腿转绿
+- Stage: T-179 已补（对拍的重名盲区）；抽 `addNames` 共用累加点后变异才测得出，含正向对照
 - Status: complete
-- Last verified action: 改前 `TestCatalogMatchesContract` FAIL（点名 `[project_updated]`）→ 改后 PASS（63/63）；
-  `go vet` VET_OK；scoped 门禁 2 包 ok；全仓 `go test ./internal/... -count=1` → **13 包 ok、FAIL 行 0**；
-  基线现取 `a567704`，`git diff --stat HEAD` 本角色范围**只有 `events.go` (+2/−1)**，
-  `platform/db/` 与 `core/migrations/` 不在 diff 内 = 与基线逐字节相同
+- Last verified action: eventjournal 五路 PASS（含新 `TestDetectsDuplicateRegistration`）；
+  scoped 门禁 2 包 ok；全仓 `go test ./internal/... -count=1` → **13 包 ok、FAIL 行 0**；`go vet` VET_OK；
+  变异标记 0 命中；基线现取 `f0ed6bf`，`git diff --stat HEAD` 本角色范围**只有 `contract_parity_test.go` (+90/−7)**，
+  `events.go`、`platform/db/`、`core/migrations/` 不在 diff 内 = 与基线逐字节相同
 - Next action: 无待办；账上无未闭合项
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-179 已补（对拍的重名盲区，一行变三处）**：`contractCatalog` 原先 `out[n] = true` 会把
+  §6 里出现两次的同一名字**静默吸收**，照样报 "agree on 63"。现在按 token 累计与去重数对拍：
+  解析改为经**唯一累加点 `addNames(counts, cell)`** 计数，收尾用 `duplicated(counts)` 点名并 `t.Errorf`
+  （附带 `tokens=N distinct=M` 两个数），只 Errorf 不 Fatalf，后面的差集照跑。
+  - **新增 `TestDetectsDuplicateRegistration` 三条合成例，两侧都有**：① 合并格自己撞自己
+    （`` `notification_created` / `_created` `` → tokens=2 distinct=1 → 点名）；
+    ② 两行撞同一类型（`` `project_updated` `` + `` `project_created` / `_updated` `` → 点名）；
+    ③ **正向对照**：全是不同名字的一行合并 + 一行全名 → tokens=5 distinct=5、必须**不**报。
+    ③ 是防止我把它写成"什么都红"的假守门。
+  - **一次自我发现的设计漏洞（比补的东西更值得记）**：第一版我把计数写在测试自己的循环里，
+    与 `contractCatalog` 里的循环是**两份** ⇒ 把生产侧改成 `counts[n] = 1` 这种退化时，合成例根本看不见。
+    抽出 `addNames` 让两侧共用同一个累加点之后，变异才测得出：
+    ```
+    --- FAIL: TestDetectsDuplicateRegistration
+        merged cell expands onto a name the same row already lists: duplicated() = ""; want "notification_created"
+        two rows list the same type: duplicated() = ""; want "project_updated"
+    --- PASS: TestCatalogMatchesContract   contract §6 and the catalogue agree on 63 event types
+    ```
+    ⇒ 合成例抓机制、对拍守内容，分工正是主控要的那条；且**不需要等 `test` 的 C8-13**，包内这条已闭上。
+    还原后 `grep T179MUT` **0 命中**。
+  - 巡检三条附带确认：① 前提我自己在盘上复核过（`map[string]bool` + 那四个词 0 命中），非过期派发；
+    ② 这是增量不是旧欠账，收到；③ "空变异"的提醒落地成上面的正向对照③。
 - **T-161 / REQ-DB-7 第二半已闭（两行，无迁移）**：`events.go` 补 `ProjectUpdated = "project_updated"` 常量
   **并同步进 `true` 集合**（`ProjectCreated: true, ProjectUpdated: true, ProjectArchived: true`）。
   改前 `TestCatalogMatchesContract` 正红着，原文：

@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,10 +54,57 @@ func pipeCommand(mode string) func(string) (*exec.Cmd, error) {
 	}
 }
 
+// TestLauncherCarriesARecorder 是 T-181② 的行为级证据：probe 一落地，这座桥上第一次真的会有跑着的连接，
+// 所以 `Rec` 从今天起不是 nil。判据**不看字段是不是 nil**（那又是一条"只验声明文本"的假证），
+// 看的是 `Supervisor` 一 `emit(EventStarted)`，生命周期那一格就以"出声、不写库"的形状落到日志里，
+// 而且点得出名：哪个 adapter、哪个 pid。
+//
+// `store` 给的是零值 `auditedStore{}`（里面 `d` 是 nil）—— 这不是省事，是把它变成一根探针：
+// 今天谁把这三格改成真写，第一下就是 nil 指针 panic，用例当场炸，不会静默放行。
+func TestLauncherCarriesARecorder(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	l := newLauncher(pipeCommand("echo"), 5*time.Second, logf, auditedStore{}, nil)
+	pipe, err := l.Start(context.Background(), "fake")
+	if err != nil {
+		t.Fatalf("Start 该成功： %v", err)
+	}
+	if _, err := pipe.Write([]byte("ping")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(pipe, buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := pipe.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, `action=started adapter_key="fake"`) {
+		t.Fatalf("挂了 recorder 之后该喊出 started 那一格（含身份），实际日志：\n%s", joined)
+	}
+	if strings.Contains(joined, `adapter_key="fake" pid=0`) {
+		t.Errorf("喊话里的 pid 是 0，等于没说出是哪个进程：\n%s", joined)
+	}
+	// 三格里今天只有 `RecordStart` 会在这条路上被叫到：`Stop` 不发 EXITED（那是 Run() 的事），
+	// 而 `RecordDrop` 要有人读帧才会响 —— 这条如实记在账上，不当成"三格都验过"。
+	if n := strings.Count(joined, "REQ-DB-2 未落"); n != 1 {
+		t.Errorf("生命周期出声该恰好一条（started），实际 %d 条：\n%s", n, joined)
+	}
+}
+
 // TestLauncherRefusesADeadlinelessContext 钉 T-133② 那句"从 handler 进去的 ctx 必须带期限，别等它"：
 // 没期限且装配方也没给默认值 ⇒ 不起进程、直接明确报错。宁可不干，也不留一条会挂住 handler 线程的路。
 func TestLauncherRefusesADeadlinelessContext(t *testing.T) {
-	l := newLauncher(pipeCommand("echo"), 0, nil)
+	l := newLauncher(pipeCommand("echo"), 0, nil, auditedStore{}, nil)
 	_, err := l.Start(context.Background(), "codex")
 	if !errors.Is(err, errNoDeadline) {
 		t.Fatalf("无期限的 ctx 该被拒，实际 %v", err)
@@ -86,7 +135,7 @@ func TestLauncherPipeRoundTrips(t *testing.T) {
 				defer cancel()
 			}
 			var pid int
-			l := newLauncher(pipeCommand("echo"), tc.deadline, capturePID(&pid))
+			l := newLauncher(pipeCommand("echo"), tc.deadline, capturePID(&pid), auditedStore{}, nil)
 			pipe, err := l.Start(ctx, "codex")
 			if err != nil {
 				t.Fatal(err)
@@ -122,7 +171,7 @@ func TestLauncherPipeRoundTrips(t *testing.T) {
 // 孩子自己先退了（adapter 握手期间崩掉就是这一形），Close 不该把"已经不在了"报成关闭失败。
 func TestLauncherCloseToleratesAChildThatAlreadyDied(t *testing.T) {
 	var pid int
-	l := newLauncher(pipeCommand("exit"), 5*time.Second, capturePID(&pid))
+	l := newLauncher(pipeCommand("exit"), 5*time.Second, capturePID(&pid), auditedStore{}, nil)
 	pipe, err := l.Start(context.Background(), "codex")
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +189,7 @@ func TestLauncherCloseToleratesAChildThatAlreadyDied(t *testing.T) {
 // 期限到了读必须**返回错误**，而不是把调用方钉死。注释里也写清这条保证的边界（下一次读才醒）。
 func TestLauncherDeadlineBoundsReads(t *testing.T) {
 	var pid int
-	l := newLauncher(pipeCommand("silent"), 120*time.Millisecond, capturePID(&pid))
+	l := newLauncher(pipeCommand("silent"), 120*time.Millisecond, capturePID(&pid), auditedStore{}, nil)
 	pipe, err := l.Start(context.Background(), "codex")
 	if err != nil {
 		t.Fatal(err)

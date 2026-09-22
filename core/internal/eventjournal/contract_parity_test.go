@@ -23,7 +23,7 @@ func contractCatalog(t *testing.T) map[string]bool {
 		t.Fatalf("read contract %s: %v", path, err)
 	}
 
-	out := map[string]bool{}
+	counts := map[string]int{}
 	inSection := false
 	for _, line := range strings.Split(string(raw), "\n") {
 		switch {
@@ -40,15 +40,22 @@ func contractCatalog(t *testing.T) map[string]bool {
 		if len(cells) < 2 {
 			continue
 		}
-		names, err := eventTypesIn(cells[1])
-		if err != nil {
+		if err := addNames(counts, cells[1]); err != nil {
 			// Report and keep going: t.Errorf lists every broken row instead of
-			// stopping at the first, and the set-difference below still runs.
+			// stopping at the first, and the checks below still run.
 			t.Errorf("event contract §6 row unparseable: %v", err)
 		}
-		for _, n := range names {
-			out[n] = true
-		}
+	}
+	// A name listed twice used to vanish into the set below, so "agree on N" could
+	// be reported while the table double-registered one type.
+	if dups := duplicated(counts); len(dups) > 0 {
+		t.Errorf("event contract §6 lists %v more than once; the total token count (%d) and the "+
+			"distinct name count (%d) disagree, so either a merged cell expands onto an existing row "+
+			"or the same type was registered twice", dups, totalTokens(counts), len(counts))
+	}
+	out := map[string]bool{}
+	for n := range counts {
+		out[n] = true
 	}
 	if len(out) < 40 {
 		t.Fatalf("only parsed %d event types from %s; the parser and the contract have drifted apart, "+
@@ -108,6 +115,40 @@ func eventTypesIn(cell string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// addNames is the single place a merged cell's expanded names get tallied, so
+// the duplicate check below is the same code the parser feeds and a mistake here
+// shows up in the synthetic test, not only against real contract data.
+func addNames(counts map[string]int, cell string) error {
+	names, err := eventTypesIn(cell)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		counts[n]++
+	}
+	return nil
+}
+
+// duplicated names a count appears more than once in, sorted for a stable message.
+func duplicated(counts map[string]int) []string {
+	var out []string
+	for n, c := range counts {
+		if c > 1 {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func totalTokens(counts map[string]int) int {
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+	return total
 }
 
 // The expansion convention is asserted against the parser directly, in both
@@ -200,5 +241,47 @@ func TestNotificationReadIsUsable(t *testing.T) {
 	}
 	if Registered("notification_read ") || Registered("notificationread") || Registered("NotificationRead") {
 		t.Fatal("catalogue accepted a near-miss spelling")
+	}
+}
+
+// A double-registered name must be reported and distinct names must not be. Both
+// halves run through the real expander, so this does not depend on the current
+// contents of the contract file.
+func TestDetectsDuplicateRegistration(t *testing.T) {
+	cases := []struct {
+		name  string
+		cells []string
+		want  string
+	}{
+		{
+			name:  "merged cell expands onto a name the same row already lists",
+			cells: []string{" `notification_created` / `_created` "},
+			want:  "notification_created",
+		},
+		{
+			name:  "two rows list the same type",
+			cells: []string{" `project_updated` ", " `project_created` / `_updated` "},
+			want:  "project_updated",
+		},
+		{
+			name:  "distinct names across a merged row and a full-name row",
+			cells: []string{" `notification_created` / `_handled` / `_read` ", " `grant_issued` / `grant_revoked` "},
+			want:  "",
+		},
+	}
+
+	for _, tc := range cases {
+		counts := map[string]int{}
+		for _, cell := range tc.cells {
+			if err := addNames(counts, cell); err != nil {
+				t.Fatalf("%s: unexpected shape error on %q: %v", tc.name, cell, err)
+			}
+		}
+		got := strings.Join(duplicated(counts), ",")
+		if got != tc.want {
+			t.Errorf("%s: duplicated() = %q; want %q", tc.name, got, tc.want)
+			continue
+		}
+		t.Logf("%s -> duplicates=%q tokens=%d distinct=%d", tc.name, got, totalTokens(counts), len(counts))
 	}
 }

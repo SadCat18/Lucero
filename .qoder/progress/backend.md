@@ -3,7 +3,11 @@ TASK_ID: backend-core
 STATUS: in_progress
 SCOPE: Task / Execution / Session / Quota / Notification 五个业务包的领域类型、状态机、投影、读写 Service；加 transport 薄层 core/api/{http,websocket}** 与 core/cmd/core/**；不写迁移、不碰 approvals 表
 EVIDENCE_DIR: none
-LAST_UPDATED: 2026-09-23T01:33:00+0800   ← 本机 `date` 实测（第三十八批收尾）；同一批里我先把这行写成过 `01:31:05`，**那个数没跑过 `date`、是凭印象填的，当场作废**（T-43 同一条第二次犯，见下面的口径说明）；上一条实测 01:24:31 属第三十七批收尾；   ← 本机 `date` 实测（第三十七批收尾，与那一遍八包/全仓重跑同一批采样）；上一条 01:07:42 属第三十六批；上一条 00:56:48 属第三十五批、00:53:26 记在 REQ-DB-7 关闭的实测旁边；上一条 00:08:55 属第三十二批、00:04:45 那次采样记在 C31/第 149 条；再往前 23:47:33 属第三十一批、23:14:55 属第三十批；15:52:57 那条是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）
+LAST_UPDATED: 2026-09-23T02:15:04+08:00   ← 本机 `date` 实测（第四十批收尾，与第二趟"按具名清 scratch"同一次采样，见第 196 条）。
+  沿革（每条都是当时的实测，最早的作废说明保留）：01:48:36 属第三十九批收尾；01:33:00 属第三十八批收尾 —— 那一批里我先写过 `01:31:05`，
+  **那个数没跑 `date`、是凭印象填的，当场作废**（T-43 同一条第二次犯）；01:24:31 属第三十七批；01:07:42 属第三十六批；
+  00:56:48 属第三十五批；00:25:42 属第三十四批；00:08:55 属第三十二批；23:47:33 属第三十一批；23:14:55 属第三十批；
+  15:52:57 那条是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）
   上一条实测 23:47:33 属第三十一批收尾（那一次同时核了 `panel.ts:123` 确实显式带 `state:'UNREAD'`）；
   再往前 23:14:55 属第三十批、15:58:46 属第二十九批；
   15:52:57 那一条是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）
@@ -64,35 +68,35 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 > 发现后按口径处理：原值标作废、换上实测读数，不改写任何历史条目。同一轮我另有一处口径错（把 `internal/project` 说成
 > "别的 agent 在写"，其实是我自己这一轮刚建的文件），也记在 Completed 第二十九批开头。
 
-- Stage: Wave-2 backend 第三十八批（09-23 01:28~01:31）—— **T-169：两处注释按裁定复原，代码零改动**。
-  `Tx.Append("audit_entries"` 与精确指针 `cmd/core` 里 `tx.Append("principals", …)` 从 `git show 2529d5b:…` 取原文贴回
-  （不手打、不整文件回滚）；裁定"修 lint 不修注释"已进 §7.1，匹配器归 `test`。
-  **一处未逐字回贴并写在账上**：那段原文里带着被 T-168 判为误读的那句规则（详见第 184 条，要连结论回贴说一声）。
-  `:66` 那条真写调用是**上一批**就删掉的（巡检 01:18 的读数早于我的修改），判决分开写在第 183 条。
-  上一批（第三十七批，01:17~01:25）：**T-168 收回 T-162①，`RecordStart` 改回"喊、不写"**。
-  我 01:0x 那句读反了：§1.1 第 12 条是"`process_instances` 属故意不发事件的可变表，**除** `process_started`/`_exited`/`_crashed`
-  三个外"——"除…外"是**排除**，即这三件是**要发事件的事实**，而 `Append` 恰恰不写事件（U13-4 同一形状）⇒ 拿它建行就是
-  §1.1 第 13 条禁止的"行写了、事件静默丢掉"。现在三格同形：都只 `logf`，等 REQ-DB-2 那条"无版本、但要发事件"的通道一起走；
-  要提前落库需要的不是白名单例外而是**一条说清"这张表写归属谁"的 REQ**（§7.1 尾：要豁免就改表并说明理由，不许口头豁免）。
-  顺手把出声那句话做成**可核对的**：喊的内容必须含"等的是 REQ-DB-2 + 没建/改哪一格 + 是哪个 adapter"，
-  而且测试端改成 `fmt.Sprintf` 渲染后再断言（原来捕获的是格式串本身 ⇒ 拿 `%q` 当"身份在场"是假证，同"只验声明文本"一族）。
-  **W13-2 那本账回到 3 条**（`process_instances` 那条真代码消失了）；注释里那两行引号写法**按巡检第 2 条不动、等主控裁**。
-  上一批（第三十六批）：`RecordStart` 一度按误读落了真写（第 176 条那次账本截断也发生在同一批）。
-- Status: in_progress（本批**只改注释**：八包全绿 = 交付前最后一次 **01:30:39→01:30:43（8 个 `ok`）**；
-  第三十七批那两遍是 01:24:11 与 01:28:07→01:28:1x，也全绿；
-  **全仓 `./...` 01:24:1x 那遍 `exit=0`、18 个 `ok`、非 `ok` 行 0**；
-  recorder 四条用例 01:20:46 前后逐条 PASS；本批回归变异 **3/3 FIRED**（M-A 把行再写回去、M-B 喊话里身份丢了、M-C 不点名等的是哪条）；
-  gofmt -l 空、vet 空；**W13-2 实测回到 `tasks.go:434`、`:460` 两条 `idempotency_keys` + `main.go:194` 一条 `principals`**，
-  与主控 22:36 记的基线逐条相同。
-  等别人：**REQ-DB-2（生命周期三格唯一的写通道）**、**C34（`owner_type`/`owner_id` 词表，随 REQ-DB-2 一起裁）**、
-  REQ-B-1、C31、REQ-AD-1、C19、C24、C27、C30；**待主控裁的一件小事**：我注释里"故意不打引号免得 grep 数成假命中"那行
-  与主控"别靠删注释消红"方向相反（`test` 已改匹配器），巡检说**既不必加回也不必再删、等裁** —— 我保持现状没动）
-- Last verified action: 见 Verification evidence 第 182~184 条（本批只改注释，绿是"没改坏"的确认；行为证据在第 177~181 条，两件事的判决分开写在第 183 条，未逐字回贴的那一处在第 184 条）与（177=本批八包 + 全仓 + recorder 计数；178=回归变异 3/3 FIRED
-  （含"把行再写回去"那一条就是本批改动的反证）；179=**W13-2 回到 3 条的实测原文**；180=两处误读的更正
-  （§12 的"除…外"、以及测试捕获格式串导致"身份在场"是假证）；181=注释引号那件事按巡检口径**保持现状等裁**，我没动）
-- Next action: 落 `PATCH /api/v1/projects/{id}`（REQ-DB-7 已闭 ⇒ `project_updated` 有合法事件可发；
-  `If-Match` 的 409 `version_conflict` 落到真库；**永不改状态**这条由 §7 的闸门守住，不在 handler 里判），
-  一次一个口、带自己的响应形状证据
+- Stage: Wave-2 backend 第四十批（09-23 02:00~02:10）—— **Next action 落地：`GET /api/v1/projects/{id}` 脱 501**（第三十九批留的那一格，把读通道接上）。
+  `registerProjectItemRoute` 的 GET 分支从"回 501"换成 `getProject`：**读库里那一行**（`project.Get`）、投影复用 `projectViewOf` ⇒
+  单条读 / 列表 / PATCH 三条路**同一个形状**（键集相等由用例逐键对账，不是我看一眼说"一样"）；读不到 ⇒ 404 `not_found`；
+  **装配侧没给读通道仍 501** —— 那道闸门留在 `Config.ProjectRead == nil`，不在 handler 里偷偷拿 404 冒充"没这个项目"。
+  归档项目**照样读得到**：这条路径契约里没给任何过滤位，我不替它藏（与 C26 同一课）。405 的话术随之改成"只接受 GET 与 PATCH"；
+  形状守卫（空 id / 多一段 / 带冒号）⇒ 501 且不摸库，本批一个字没动。本批 **W13-2 零新增**（第 194 条实测原文）。
+  另：本批在盘上量到**主控已在 `api-contract-v0.1.md:120` 解除 C31**（02:0x，`notification_read` 常量与 `true` 集合都齐了），
+  所以 `:read` 不再是我手上那句"别做" —— 注意这是**契约文件里的字**、没有单独投递给我，我按"契约为准"把它接成 Next action，
+  若主控的解除口径不是这个意思，一句就能改回。
+  上一批（第三十九批）：`PATCH /api/v1/projects/{id}` 脱 501（写侧四步 + 结构性的"永不改状态"）。
+- Status: in_progress（八包全绿 = 交付前最后一次重跑 **02:09:08→02:09:12，`exit=0`**（前一遍同口径在 02:04:27→02:04:43 也是 `exit=0`、8 个 `ok`）；
+  `api/http` + `internal/project` 按 `-v` 数过 **62 = 52 顶层 PASS + 10 子用例，FAIL=0、SKIP=0、2 个 `ok`**（02:09:18 那遍）；
+  **全仓 `./...` 同批：`exit=0`、18 个 `ok`、非 `ok` 行 0**（02:09:44→02:09:52）；真进程冒烟**十四项**全 OK（02:04:17，新第 ⑭ 项
+  `RESULT_PROJECT_GET= OK_single_read_back_and_404`）；本批变异 **4/4 FIRED**（02:03:46）；gofmt -l 空、`go vet ./...` 空（02:09:38，输出 0 行）；
+  跳过的包：全仓那一遍没跳过任何包；`-v` 计数只数了我本批改动的两包（`api/http`、`internal/project`），其余六包只按 `ok` 行计数 —— 因为它们的用例这批一条没动。
+  **W13-2 本批零新增**：仍是那 5 条（基线 3 + `dropaudit.go:18/:23` 注释里那 2 条）。
+  等别人：**REQ-DB-2（生命周期三格唯一的写通道）**、**C34（`owner_type`/`owner_id` 词表）**、**C35（PATCH 的未知键我判成 400）**、
+  **C36（`:read` 的两格我自挑判据：已读过的再 `:read` 怎么回、哪些状态允许进 `READ`，见 Next action）**、
+  REQ-B-1、REQ-AD-1、C19、C24、C27、C30；**C31 本批按契约 `:120` 判为已解除**，不再列在"等主控"里）
+- Last verified action: 见 Verification evidence 第 191~195 条（191=交付前最后重跑三样计数；192=变异 4/4 FIRED + 两条锚点自伤；
+  193=真进程第 ⑭ 项证到的与证不到的；194=W13-2 零新增实测原文；195=C31 解除是**我在盘上量到的**、非投递，以及为 Next action 核过的四条前置））
+- Next action: 落 `POST /api/v1/notifications/{id}:read`（前置**四条已逐条在盘上核过**，见第 195 条：yaml `:648` declared、
+  `eventjournal/events.go:61` 有 `notification_read` 常量且 `:95` 在 `true` 集合里、`000002_aggregate_version.sql:30` 给了 `version`、
+  `000001_core_schema.sql:580` 的 `state` 认 `READ` 且有 `read_at` 列；契约 `:120` 明写"这条 501 的原因消失，可以做"）。
+  要落的写侧形状与 `PATCH /projects` 同一套（读当前行 → `Touch`：一个版本、恰一行 `notification_read` → 读回那一行，C18②），
+  但**两处判据契约里没给、得我自挑并记账 = C36**：① 已经 `READ` 的再打一次 `:read` 是回 200 no-op（版本不动、事件不发）还是 409；
+  ② `EXPIRED`/`HANDLED`/`IGNORED` 这三态能不能进 `READ`。我打算照 `:sync` 的旧例：**回 200 且不推进版本**（幂等重放不该制造新版本），
+  状态准入**只放 `UNREAD`/`PENDING`** 两个（把已处置的重新标成"读过"是在替面板抹掉处置痕迹）—— 主控要反过来一句就能改。
+  `{id}:handle` 仍留 501，**一次只开一个口**、带自己的响应形状证据
 
 - Verification: `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/... ./internal/project/... ./api/http/... ./cmd/core/... 2>&1`
   **八包**全 ok（第三十批改用这个显式清单：`./api/...` 会把 websocket 一起算进来，报数时容易和"我几包"对不上）
@@ -942,6 +946,43 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   我这边**真代码的新写调用 = 0**。
 - 代码侧只动了注释：`gofmt -l` 空、`go build` OK、八包 `-count=1` **01:30:39→01:30:43 全 `ok`**。
 
+### 第三十九批（09-23 01:41~01:49）：Next action 落地 —— `PATCH /api/v1/projects/{id}` 脱 501
+
+- `core/internal/project/service.go`（改）— 新增 `ErrVersionConflict`、`Patch`（`EventID` + 两个可空指针 + `WantVersion`）与
+  `Service.Update`：**库里读当前行 → If-Match 比对 → 列清单 → `Touch`（一个版本、恰一行 `project_updated`）→ 再读回那一行**
+  （C18 裁定 ②：响应不是请求体的回声）。空 PATCH 是合法 no-op —— 版本不动、事件也不发，
+  "什么都没变还发一条更新"就是把事件写成仪式。`EventID` 仍由调用方给（与 `Draft.EventID` 同一规矩，本包不发明第三份 UUIDv7）。
+- `core/api/http/projects.go`（改）— `registerProjectItemRoute`（子树 `/api/v1/projects/`，与精确路径并存）+
+  `updateProject` + `updateProjectBody`；分流按 C28②：PATCH 已接、GET 单条 501（declared 未接）、别的动词 405、
+  形状不认识（空 id / 多一段 / 带冒号）501 且**不摸库**；`If-Match` 非正整数 ⇒ 400；错误映射
+  `version_conflict` 409 / `ErrInvalid` 400 / `sql.ErrNoRows`+`ErrAggregateNotFound` ⇒ 404 `not_found`。
+- **"永不改状态"是结构性的**：`Patch` 与 `updateProjectBody` 里根本没有 status 的位置 —— 不是运行时 if 挡的。
+  客户端真写 `{"status":…}` 时**不静默丢弃**（那会让它以为改成功）⇒ `DisallowUnknownFields` 一律 400；
+  这一格判据是我自挑的，记 **C35**，主控要改成"忽略并继续"我一句就能换。
+- 用例：`core/api/http/projects_patch_test.go`（**新建**，5 条）+ 变异 5/5 FIRED（第 186~187 条）
+  + 真进程第 ⓬ 项（第 188 条）。**W13-2 零新增**（第 189 条）。
+- 一处诚实的"证不了"：结构性守卫没法用变异拆（第 187 条末尾），我没有把它算成判决。
+- 两处自伤照记（第 190 条）：here-doc 被引号咬两次 → 改用编辑器工具新建文件；`Edit` 第三次吃掉函数签名行 → 编译当场抓到。
+
+### 第四十批（09-23 02:00~02:10）：Next action 落地 —— `GET /api/v1/projects/{id}` 脱 501
+
+- `core/api/http/projects.go`（改）— GET 分支从 501 换成 `getProject`：`project.Get` 读库里那一行、投影复用 `projectViewOf`，
+  所以**单条读与列表/PATCH 是同一个形状**（不是"我看着像"，是第 191 条那条用例逐键对账）；
+  `sql.ErrNoRows`/`db.ErrAggregateNotFound` ⇒ 404 `not_found`，其余错误按既有阶梯往上抛；
+  **读通道没装配仍回 501** 而不是 404 —— 闸门留在 `c.ProjectRead == nil`（装配问题不该伪装成"数据不存在"，C28② 的同一格）。
+  405 话术随行为更新成"只接受 GET 与 PATCH"。形状守卫、`DisallowUnknownFields`、If-Match 那三格**一个字没动**。
+- **归档不藏**：`getProject` 没有任何状态过滤 —— 这条路径契约里没给过滤位，我依旧不替它藏（C26 那一课在这里第二次用到）。
+  `TestGetProjectSingleMatchesListAndPatchShapes` 里那条项目就是 `ARCHIVED` 的，读得到才算对。
+- 用例：`core/api/http/projects_get_test.go`（**新建**，3 条：形状与列表/PATCH 逐键相同 + 归档可读 + `canonical_path` 已小写 +
+  `trust_domain_id: null`；未知 id ⇒ 404；**没带 Bearer ⇒ 401，不是"读通道没装所以 501"** —— 认证在路由之前，这条是给"501 满天飞"兜底的）；
+  `projects_patch_test.go`（改）里 `TestProjectItemRouteShapes` 的期望随行为改成"接上 ⇒ 404、没接 ⇒ 501"两支。
+- 变异 **4/4 FIRED**（第 192 条）：T1 摘掉 404 腿、T2 让单条读隐藏归档、T3 GET 分支退回 501、T4 拆掉 `ProjectRead == nil` 闸门。
+  T3/T4 第一次两条锚点撞成同一个匹配（`ANCHOR-INVALID-2`）⇒ 加长锚点重跑，**没有把"两条锚点合并"算成 SILENT**。
+- 真进程第 ⑭ 项（第 193 条）：02:04:17 一次跑完十四项，`HTTP=200` 的那份响应与 PATCH 的响应同版本（v2），未知 id 回 `404 not_found`。
+- **W13-2 零新增**（第 194 条）：新代码只用 `project.Get`/`projectViewOf` 两个既有符号，一个表名字面量都没落。
+- 一件**不是本批改动**但影响 Next action 的事（第 195 条）：C31 已被主控在 `api-contract-v0.1.md:120` 解除（02:0x），
+  我是**读契约时量到的**、不是收到投递 ⇒ 已在头部如实标注这个来源差别。
+
 ## Remaining
 
 - `task.Service` 的其余状态动作：~~`Prepare`/`Pause`/`Resume`~~ **第十六批已交付**（正向写等 REQ-DB-3，见第 79 条）；
@@ -1358,6 +1399,9 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   （`notification_type` `priority` `task_id` `approval_id`）、状态边是 `UNREAD→READ` 且写 `read_at`；
   还有一句要顺带裁：**重复 `:read` 一条已 READ 的通知**该回什么（我倾向 200 幂等回显当前状态、**不再发第二个事件**，
   这与 §8 的"重放复用同一批 id"同源，但事件数会不会因此变成 2 需要你认）。
+  **→ 已闭（第四十批，09-23 02:1x 在盘上量到）**：主控把解除写进了 `api-contract-v0.1.md:120`（"`:read` 已放行 … 这条 501 的原因消失，可以做"），
+  **没有单独投递给我**，所以这条按"契约为准"消费；我上面引的 `events.go:60`/`:94` 两个行号现在量到的是 `:61`/`:95`（db 之后往常量表里加过东西，
+  行号会漂、事实没变）。我原先问的那两格主控**没在契约里答** ⇒ 变成 **C36** 继续挂着（不阻塞，我先按默认落）。
 
 - **C34 → 主控（`process_instances.owner_type` / `owner_id` 的词表，我不猜）**
   T-162① 放行 `RecordStart` 走 `Append` 之后，建行时这两列没东西可填：`000001` 对它们**没有 CHECK**（自由文本），
@@ -1365,6 +1409,18 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   但"owner_type 该写 `adapter_instance` 还是 `adapter_key`？owner_id 该写 `adapter_instances.id` 还是 key？"
   是这张表的归属词表，正随 **REQ-DB-2** 一起待定 ⇒ 我**今天填 NULL**，身份改由 `metadata_json.adapter_key` 与审计行带（都不丢）。
   变异 H5 证明：一旦我凭空填一个词，测试当场红。给词表我就一行改完，不改通道。
+- **C35 → 主控（`PATCH /projects/{id}` 撞上不认识的键，我判成 400 —— 认或改）**
+  yaml 把这条口写死为"只允许非状态字段；改状态必须走 `:verb`"。我的实现是：`updateProjectBody` 只有 `name`/`metadata` 两个位置，
+  并开 `DisallowUnknownFields` ⇒ 客户端写 `{"status":"ARCHIVED"}` 得到 **400 `validation_failed`、一行都不写**。
+  我选这条是因为**静默丢弃会让对方以为改成功了**（与"别用看起来成功的响应掩盖没做的事"同一条线）。
+  另一种可裁定口径是"忽略未知键、照改其余"—— 若主控要那套，我一句就能换（连带删掉那条用例里 400 那一格）。
+  不变的部分：`status` 在 `Patch`/请求体里没有位置，所以无论哪种口径，PATCH 都改不到状态。
+- **C36 → 主控（`:read` 的两格契约没给，我自挑了默认 —— 认或改；第四十批登记，随 Next action 生效）**
+  ① **已 `READ` 的通知再打一次 `:read`**：我打算回 **200、版本不动、事件不发**（幂等重放不该制造新版本，也不该把 journal 写成计数器）；
+  另一套可裁口径是 409 `version_conflict` 或"200 但仍推进版本"。
+  ② **哪些状态允许进 `READ`**：我只放 `UNREAD`/`PENDING`，其余（`HANDLED`/`IGNORED`/`EXPIRED`/已 `READ`）不改写 ——
+  理由是把已处置的重新标成"读过"会替面板抹掉处置痕迹；若主控的口径是"`:read` 就是无条件盖 `read_at`"，我一句就能换成不校验状态。
+  两格都**不阻塞我把口开出来**，先按默认落 + 各带一条用例钉住，裁下来若相反我改用例方向。
 - **REQ-DB-7 → 主控/事件目录（`project_updated` 没登记 ⇒ `PATCH /api/v1/projects/{id}` 今天没有任何合法写法）**
   实测在第 155 条：`Touch` 无条件 `appendEvent`、`appendEvent` 第一道闸门要 `Registered(ev.Type)`、
   §6 只有 `project_created`/`project_archived`、`UpdateOnce` 明确拒绝聚合表。
@@ -1542,6 +1598,25 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   `if cursor.Valid && cursor.String != ""` 才给指针，否则 nil
 - `core/internal/session/repository_test.go`（改）— 新增真表用例 `TestSyncCursorKeepsNullApartFromAPosition`（NULL / `'20'` / 存进去的 `''` 三态）
 - `core/cmd/core/**`、`core/api/**`、`internal/task|execution|quota|notification/**` — **本批一个字没动**（A18-3 未裁；`:sync` 不存在）
+- `.qoder/progress/backend.md`（本文件）
+
+第四十批（`GET /api/v1/projects/{id}` 脱 501：单条读接上、形状与列表/PATCH 逐键相同）：
+- `core/api/http/projects.go`（改）— GET 分支接 `getProject`（新函数）+ 405 话术一行；`Config.ProjectRead` 那格闸门保留在 handler 之前
+- `core/api/http/projects_get_test.go`（**新建**）— 3 条用例（形状对账 / 404 / 不是免认证）
+- `core/api/http/projects_patch_test.go`（改）— `TestProjectItemRouteShapes` 的 GET 期望拆成"已接 ⇒ 404、未接 ⇒ 501"两支
+- `core/cmd/core/core_test.go`、`core/api/http/handler.go`、`core/internal/project/service.go` — **本批零改动**
+  （装配 `ProjectRead: c.db.Read` 第三十九批就在 `main.go` 里给了，本批只是把它接上）
+- `.scratch/backend/t47-smoke.sh`（改）— 第 ⑭ 项：真进程单条读 200（与 PATCH 同版本）+ 未知 id 404
+- `.qoder/progress/backend.md`（本文件）
+
+第三十九批（`PATCH /api/v1/projects/{id}` 脱 501：写侧四步 + 结构性的"永不改状态"）：
+- `core/internal/project/service.go`（改）— `ErrVersionConflict`、`Patch`、`Service.Update`、两个小 helper（`orDefault`/`metadataOf`）、
+  补 `eventjournal` import
+- `core/api/http/projects.go`（改）— `ProjectService` 多一个 `Update`、`registerProjectItemRoute`、`updateProject`、
+  `updateProjectBody`、补 `database/sql` import
+- `core/api/http/projects_patch_test.go`（**新建**）— `patchProject`/`createdID` 两个 helper + 5 条用例
+- `core/api/http/handler.go`（改）— `registerProjectItemRoute(mux, c)` 一行
+- `.scratch/backend/t47-smoke.sh`（改）— 第 ⓬ 项：真进程 PATCH 200（v2 + 读回）与失效 If-Match 409
 - `.qoder/progress/backend.md`（本文件）
 
 第三十八批（T-169：两处注释按裁定复原，代码零改动）：
@@ -3319,9 +3394,81 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
      09-22 的补记里：那次是 15:52:57）。发现后立即改成实测值 `01:33:00`（与当条命令里 `date '+NOW=…'` 的输出同一次采样），
      并在头部保留这条作废说明。**规矩复述**：没跑 `date` 就写"未计时"，不许估算时间戳，哪怕只差几分钟。
 
+186. **第三十九批（`PATCH /projects/{id}`）交付级重跑**：八包 `-count=1` **01:48:12 → 01:48:2x，`exit=0`、8 个 `ok`**；
+     `api/http` + `internal/project` 带 `-v` 数过 **59 个 `=== RUN` = 49 顶层 PASS + 10 子用例，`--- FAIL` 0**；
+     **全仓 `./...` 同批：`exit=0`、18 个 `ok`、非 `ok` 行 0**；gofmt -l 空、`go vet ./...` 空。
+     新增 5 条用例 01:46:25 逐条 PASS（`...WritesOneEventAndReadsBack` / `...IfMatchGate` / `...CannotTouchStatus` /
+     `...EmptyPatchWritesNothing` / `TestProjectItemRouteShapes`）。
+187. **本批变异判决（01:47:38，5 条全 FIRED）**：P1 抽掉 If-Match 比对 → IfMatchGate；P2 去掉 `DisallowUnknownFields`
+     （`status` 会被**静默丢掉**，客户端还以为改成功了）→ CannotTouchStatus；P3 让空 PATCH 也走 Touch（推版本+发事件）
+     → EmptyPatchWritesNothing；P4 响应不读回库 → WritesOneEventAndReadsBack（C18 ② 的牙齿）；
+     P5 形状守卫失效（拿 `a/b`、`:archive` 去查库）→ ItemRouteShapes。
+     **有一条我用变异证不了**："`Patch` 与 `updateProjectBody` 里没有 status 的位置"是**结构性**约束 —— 要证它就得把
+     status 加回去，那是加功能不是拆行为。我试了 P6"只加一个没人读的字段"，行为完全不可观察 ⇒ **不计判决，如实记在这儿**；
+     它的等价保障是 P2 那一格（未知键进不来 + 400）。
+188. **真进程第十三项（01:48:02）**：`PATCH /api/v1/projects/{id}` 带 `If-Match: 1` ⇒ `HTTP=200`，响应里
+     `version: 2`、`name: live-proj-patched`、`metadata: {"smoke": true}` 原样读回；再用已失效的 `If-Match: 1` 打一次 ⇒
+     `HTTP=409 {"code":"version_conflict","message":"project: version conflict: 请求带 v1，库里已是 v2","retryable":true}`
+     ⇒ `RESULT_PATCH= OK_v2_read_back_and_409_on_stale`。**证到**的是"读回库 / 版本推进 / 409"在真二进制+真库里成立；
+     **证不到**形状守卫被真进程触发（畸形路径只在 httptest 用例里跑）—— 两句分开说。
+189. **W13-2 本批零新增（01:48:2x 实测，非测试文件）**：仍是 `tasks.go:434`、`:460` 两条 `idempotency_keys` +
+     `dropaudit.go:18`、`:23` 两条注释原文（T-169 裁定保留、匹配器归 `test`）+ `main.go:194` 一条 `principals`。
+     新写的 `Update` 只用 `db.AggProject` 与 `eventjournal.ProjectUpdated` 两个符号，一个表名字面量都没落 ⇒ 不需要 W13-2 的豁免讨论。
+190. **本批抓到自己的两处**：① PATCH 的测试先用 here-doc 追加，被引号/转义连咬两次（一次 bash `unexpected EOF`、
+     一次 python 里 `\u` 写歪）⇒ 改成**用编辑器工具新建 `projects_patch_test.go`**，不再跟 shell 较劲。
+     ② `Edit` 又把下一行的行首当锚点右边界，**吞掉了 `func createProject(...)` 的签名行**（编译当场报
+     `expected declaration, found key`）—— **同型错误今天第三次**（前两次的教训分别记在第 156、167 条附近）；
+     修的时候还顺手删掉自己刚敲歪的一行垃圾（`if left := …; false`），没留第三处。
+     连续三次说明这条规矩没长进肌肉记忆：**锚点右端必须落在换行符上，不能落在下一行中间**。
+191. **第四十批交付前的最后重跑（三样分开计时，原文计数）**：
+     ① 八包 `CGO_ENABLED=0 go test -count=1 <六包+api/http+cmd/core>` ⇒ `EXIT=0`，**02:09:08→02:09:12**；
+     同一命令在 02:04:27→02:04:43 那遍也是 `exit=0` + 8 个 `ok`（本批代码在 02:03 之后没再动，两遍是同一份）。
+     ② 两包 `-v` 计数（`api/http` + `internal/project`）**02:09:18 起**：`=== RUN` 62、`--- PASS` 顶层 **52** + 子用例 **10**、
+     `--- FAIL` **0**、`--- SKIP` **0**、`^ok` 包行 **2**、`EXIT=0`。
+     ③ 全仓 `go test -count=1 ./...` **02:09:44→02:09:52**：`EXIT=0`、`^ok` **18**、非 `ok`/`---` 开头的行 **0**。
+     ④ `gofmt -l .` 空、`go vet ./...` 输出 **0 行**（`VET_EXIT=0`，**02:09:38**）。
+     报数口径（T-133①）：③ 是全仓 18 包、没跳过任何一个；② 只数了我本批改动的两包，其余六包按 `ok` 行计数，
+     因为它们这批一条用例都没动 —— 这不是"跳过"，是**计数面不同**，分开写清免得又被读成"我几包"。
+192. **本批变异 4/4 FIRED（02:03:46 那遍，脚本 `.scratch/backend/mut_getproj.py`，跑完已按具名删掉）**：
+     T1 摘掉 `getProject` 的 404 腿 ⇒ 咬住 `TestGetProjectUnknownIs404`；T2 让单条读按状态过滤（藏归档）⇒ 咬住
+     `TestGetProjectSingleMatchesListAndPatchShapes`；T3 GET 分支退回"回 501"⇒ 咬住同一条形对账用例；
+     T4 拆掉 `c.ProjectRead == nil` 那道闸门 ⇒ 咬住 `TestProjectItemRouteShapes`（未装配那支该 501）。
+     **两条自伤照记**：T3/T4 第一次跑输出 `ANCHOR-INVALID-2` —— 两条变异用同一小锚点，替换命中 2 处，脚本按"锚点不唯一"**拒改**、
+     不是"改了没咬"。我**没有**把它记成 SILENT（那是判决错位），而是加长锚点重跑 → 两条都 FIRED。
+     另有一条**证不到**：`getProject` 里没有 `if` 挡状态，所以"归档不藏"只能靠 T2 反证"如果我加了过滤会被抓"，
+     没法证"以后别人加的过滤"——那是契约/巡检的活，不是我这条用例的能力。
+193. **真进程第 ⑭ 项（最后重跑 02:12:00→02:12:05，十四项全 OK）**，原文：
+     `HTTP=200` + `{"id":"01a0ca51-…","name":"live-proj-patched","canonical_path":"d:\\live\\proj","project_type":"CODE","status":"ACTIVE","trust_domain_id":null,"metadata":{"smoke":true},"version":2,"created_at":1790100723490,"updated_at":1790100724426,"archived_at":null}`
+     与 `HTTP=404` + `{"error":{"code":"not_found","message":"没有这个项目","retryable":false}}` ⇒ `RESULT_PROJECT_GET= OK_single_read_back_and_404`。
+     **顺手对到一件更硬的**：这一遍里第 ⑭ 项的响应体与第 ⓬ 项（PATCH 读回）**逐字节相同**（同一串 JSON、同一个 `version:2`）
+     ⇒ "单条读与 PATCH 回的是同一个视图"在真进程里也被看见了，不只是单元测试里的 keySet 比对。
+     **⑭ 证不到的三件**：与 `GET /api/v1/projects`（列表）的键集相同只有单元测试那条证（真进程那一项是数组、没逐键比）；
+     归档项目可读在真进程里没覆盖（冒烟夹具那条是 `ACTIVE`）；"读通道没装配 ⇒ 501"这一支真进程永远走不到（装配是编译期决定的）。
+194. **W13-2 本批零新增（02:12 前后实测原文，`grep -rn -E '"(idempotency_keys|principals|projects|…|event_journal)"' api/http cmd/core`，排除 `_test.go`）**：
+     命中就是那 5 条 —— `api/http/tasks.go:434`、`:460`（`idempotency_keys`）+ `cmd/core/dropaudit.go:18`、`:23`（注释原文，T-169 裁定保留、匹配器归 `test`）+
+     `cmd/core/main.go:194`（`principals`）。与主控 22:36 记的基线 3 条 + 裁定保留的 2 条注释**逐条相同**，本批新代码一个表名字面量都没落。
+195. **C31 解除是我读契约时量到的、不是收到投递**（来源差别如实标）：`specs/api-contract-v0.1.md:120` 写着
+     "**`:read` 已放行（09-23 02:0x 解除 C31）**：… ⇒ 这条 501 的原因消失，可以做"，同段还留了"仍禁发未登记事件"那条。
+     为把 Next action 落到 `:read` 上，四条前置逐条在盘上核过（**不是照着记忆写的**）：
+     `specs/openapi/core-v1.yaml:648` declared `:read`（POST、带 `Idempotency-Key`+`Principal`、200 回 `Notification`）；
+     `core/internal/eventjournal/events.go:61` 有 `NotificationRead = "notification_read"` 且 `:95` 在 `true` 集合里；
+     `core/migrations/000002_aggregate_version.sql:30` `ALTER TABLE notifications ADD COLUMN version`；
+     `core/migrations/000001_core_schema.sql:580` 的 `state` CHECK 认 `READ`、且有 `read_at INTEGER` 列。
+     **顺手排掉一个我原本会当成候选的口**：`POST /api/v1/projects/{id}:archive` —— `grep -n "^  /" core-v1.yaml` 全表里
+     项目只有 `/api/v1/projects` 与 `/api/v1/projects/{id}` 两条，**没有 `:archive`** ⇒ `ProjectArchived` 常量虽然 registered，
+     那条路径根本不是 declared，开它就是我自己编端点（不是脱 501，是造 501）。
+     `{id}:handle` 已 declared（`yaml:660`）+ `NotificationHandled` registered，但它与 `:read` 同一条子树、**一次只开一个口**，
+     所以排在 `:read` 之后。
+196. **本批 scratch 按具名清（两趟，`t47-smoke.sh` 是常驻工具不动）**：第一趟 02:06 删 `020412-t49/`、`e8.log`、`repo.log`、`mut_getproj.py`；
+     第二趟 02:15 删 `021201-t49/`（02:12 重跑冒烟时新建的）、`e40.log`、`repo40.log`、`vet40.log`、`w13.txt`。
+     两趟都**先 `ls` 再点名列**、没有用通配；删 `021201-t49/` 之前先 `tasklist` 确认没有还在跑的 `core.exe`（读数：无匹配进程）。
+     末尾时钟采样 `2026-09-23T02:15:04+08:00`（本机 `date` 实测）＝头部 `LAST_UPDATED`。
+
 ## Recovery note
 
-- **当前（第三十七批之后；本机 `date` 实测见头部 `LAST_UPDATED`）**
+- **当前（第四十批之后；本机 `date` 实测见头部 `LAST_UPDATED`）**
+  第四十批的 interruption 状态：**八包 + 全仓 + 真进程十四项全绿（计数与时钟见头部 Status 与第 191/193 条，最后重跑 02:09 与 02:12）**，
+  没有半途而废的改动挂在盘上；`GET /api/v1/projects/{id}` 已脱 501，Next action 是 `POST /api/v1/notifications/{id}:read`（前置四条已在第 195 条实测）。
   T-168 之后 `process.Recorder` 的四格里**只有 `RecordDrop` 真写**（一行审计、journal 零新增）；生命周期三格一律只出声，
   等 REQ-DB-2 那条"无版本但要发事件"的通道（第 177~181 条）。上一批"RecordStart 走 Append"是误读，已作废并复原。
   §2.2.1 在 backend 这侧已收口：§5.4 的审计链现在"密封前脱敏 → 哈希盖落库字节 → 调用者写归因行"，
@@ -3346,8 +3493,15 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   （keyset 翻页、ARCHIVED 不隐藏、未知参数忽略）；
   第三十三批通了 **`GET /api/v1/sessions`**（面板 `listSessions` 真在调的那条；`project` 过滤位来自契约、没读的列不出键）；
   第三十五批通了 **`GET /api/v1/sessions/{id}`**（单条读，读不到就是 404 `session_not_found`，同路径非 GET ⇒ 405）；
-  其余仍 501（含 `:read`/`:handle`、`PATCH /api/v1/projects/{id}`（REQ-DB-7 已闭、这条腿本身还没落）、
-  `POST /api/v1/sessions/{id}:manage`、`adapters/{key}/probe`）；`cmd/core` 那条"仍未实现"的真进程例子因此从 `GET /projects` 换成了 `:read`（第 145 条）。
+  第三十九批通了 **`PATCH /api/v1/projects/{id}`**（If-Match ⇒ 409 `version_conflict`、恰一行 `project_updated`、
+  结构上改不到状态、未知键 400 见 C35）；
+  第四十批通了 **`GET /api/v1/projects/{id}`**（单条读回库里那一行、与列表/PATCH 同形状、归档不藏、未知 id ⇒ 404 `not_found`、
+  读通道未装配仍 501）；
+  其余仍 501（含 `:read`/`:handle`、`POST /api/v1/sessions/{id}:manage`、`adapters/{key}/probe`）；
+  `cmd/core` 那条"仍未实现"的真进程例子因此从 `GET /projects` 换成了 `:read`（第 145 条）——
+  **注意 `:read` 的 501 在第四十批已经量到"原因消失"**（契约 `:120` 解除 C31，见第 195 条），所以那条真进程用例钉的是"今天还没接"、
+  不是"永远不许接"；等 `:read` 落地时它要跟着换成下一个 501 口（`:handle` 或 `:manage`）。
+  （上面这句是第四十批补的口径，不改第 145 条当时的记录。）
   写侧：`task.Service` 的 Create/Queue/Prepare/Pause/Resume/Cancel/Accept/ApplyExecutionEvent 全在（pause/resume 的**正向写**仍等 REQ-DB-3）；
   `execution.Service` 有 Create/Started（再往前那一格等 REQ-DB-4）；`cmd/core` 有 §5.4 reporter + `auditedStore` 提交后交账 + ADR-018 锚点三件
   （锚点那三件的**判据形状变了**：audit 按 seq 差计账，我那两条用例已按新规则用真行重写，见第 110 条）；
@@ -3355,14 +3509,17 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   `session_synced` 今天没有生产者（那是刻意的：没推进聚合就不许发它）。
   等别人：REQ-DB-2 / REQ-DB-3 / REQ-DB-4 / REQ-P-1（现在只剩一句归属裁定，平台侧已就绪）/ REQ-AD-1 /
   REQ-A-4 / C19 / C24 / **REQ-B-1（503 那半格发不出 `adapter_downgraded`，见第 142 条）** /
-  **C31（`:read` 的前提已消失，等一句 go / no-go，见第 149 条）** /
+  **C36（`:read` 的两格契约没给：重复 `:read` 怎么回、哪些状态能进 `READ`；第四十一批按我自挑的默认落并各带一条用例，认或改）** /
+  **C31 → 第四十批已闭（解除落在 `api-contract-v0.1.md:120`，不是我收到投递，见第 195 条）** /
   **C30（`:sync` 的三个我自挑形状：503 阈值、幂等待遇、置信度固定 LOW）** /
-  **REQ-DB-5 已闭（db 23:05 交付、巡检 23:20:23 复核）—— 它不再是 `:read` 的阻塞，阻塞变成了我手上那句"别做"** /
+  **REQ-DB-5 已闭（db 23:05 交付、巡检 23:20:23 复核）—— 它不再是 `:read` 的阻塞，阻塞变成了我手上那句"别做"**
+  （**第四十批更正这一格**：那句"别做"主控已在 `api-contract-v0.1.md:120` 收回 ⇒ `:read` 现在是 Next action，不再是等待项） /
   **A18-3（裁完之前不接第二条交账腿；新口径下双计结构上不成立，第 110 条有行为级断言）**。
   本批关闭的账：**C25（`:sync` 语义）、C26（`state` 缺省）、C28（两个项目形状 + 501/405 通用口径）**。
   First action after recovery: 先重跑 `## Current checkpoint` 里那条**八包**命令确认仍绿（audit / db 那边还会动，
   开工前先看 `go build ./internal/audit/ ./internal/platform/db/`），再做 checkpoint 唯一那条 Next action
-  （第三十五批起是 **`PATCH /api/v1/projects/{id}`** —— REQ-DB-7 已闭、`project_updated` 有合法事件可发，一次只开这一个口）。
+  （第三十五批起那条 `PATCH /api/v1/projects/{id}` **已在第三十九批交付**、第四十批又交付了 `GET /api/v1/projects/{id}` ⇒
+  现在 checkpoint 唯一那条 Next action 是 **`POST /api/v1/notifications/{id}:read`**，前置四条已实测齐（第 195 条），一次只开这一个口）。
   **别顺手把 probe 接上**（T-133① 仍生效），
   也**别给 `Supervisor` 装 `Rec`**（REQ-DB-6 未裁），更**别从 session 这条腿发 `adapter_downgraded`**（REQ-B-1 未裁，
   守卫会当场拒，第 142 条那条用例就是钉这一格的）。

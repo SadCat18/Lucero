@@ -1,6 +1,6 @@
 package test
 
-// 本文件是契约② 判据表 C8-6 / C8-7 / C8-10 / C8-11 / C8-12 五条行的执行者。
+// 本文件是契约② 判据表 C8-6 / C8-7 / C8-10 / C8-11 / C8-12 / C8-13 六条行的执行者。
 // 判据文本住在契约里，这里只留指针（REQ-T10）；两处口径若漂，以契约为准
 // （本文件与 lint 都只是它的执行者）。
 //
@@ -110,13 +110,15 @@ func errAnchor(s string) error { return anchorError(s) }
 // C8-10 的形状判据比的是**行数**，而 C8-6/C8-7 的集合判据比的是**去重后的码名** ——
 // 同一列的两种数法必须分开带出来，混成一个数就会在"两行引用同一个码"那天假红。
 type codeTables struct {
-	codes151  []string // §15.1 码列（去重排序）
-	named     []string // §15.2『来自』列里的码名（去重排序）
-	namedRows int      // 『来自』带码名的行数（不去重）
-	dashRows  int      // 『来自』以 `—` 开头的行数
-	totalRows int      // §15.2 数据行总数
-	skipped   int      // 长得像表格行却一行都没计入的次数（C8-10 ① 的落点）
-	transport []string // §15.2 左列 = HTTP 面自己会发的码（去重排序，C8-11 的比对集）
+	codes151     []string // §15.1 码列（去重排序）
+	named        []string // §15.2『来自』列里的码名（去重排序）
+	namedRows    int      // 『来自』带码名的行数（不去重）
+	dashRows     int      // 『来自』以 `—` 开头的行数
+	totalRows    int      // §15.2 数据行总数
+	skipped      int      // 长得像表格行却一行都没计入的次数（C8-10 ① 的落点）
+	namedRaw     int      // 『来自』码名的原始条数（与去重后的差 = 合法的一对多，只打印不判，见 §1.1 第 16 条）
+	transportRaw int      // §15.2 左列的原始条数（去重前）—— 这一列重复是漂移，已在解析时判红
+	transport    []string // §15.2 左列 = HTTP 面自己会发的码（去重排序，C8-11 的比对集）
 }
 
 // parseCodeTables 解析 §15.1 的码列与 §15.2 的两列。
@@ -145,6 +147,14 @@ func parseCodeTables(t *testing.T) (codeTables, error) {
 	if e != nil {
 		return ct, e
 	}
+	return parseCodeRows(s151, s152)
+}
+
+// parseCodeRows 是 §15.1/§15.2 两张表的纯解析：喂行、出集合，不碰文件。
+// 为什么要拆出来：§1.1 第 16 条要求「喂一行重名进解析器必须红」，
+// 而只有真数据能红的判据等于没闭上（C8-12/C8-13 那条腿早就是这么做的）。
+func parseCodeRows(s151, s152 []string) (codeTables, error) {
+	var ct codeTables
 	for _, line := range s151 {
 		if c := firstCellMatch(line, codeNameRE); c != "" {
 			ct.codes151 = append(ct.codes151, c)
@@ -184,10 +194,40 @@ func parseCodeTables(t *testing.T) (codeTables, error) {
 			return ct, errAnchor(fmt.Sprintf("§15.2 第 %d 行的『来自』既不是码名也不是 `—` 开头：%q ⇒ 解析形状变了", ct.totalRows, cells[3]))
 		}
 	}
+	// §1.1 第 16 条第二条腿在错误码表上的落点：**该表按定义不许重名的那两列**判重复。
+	// §15.1 是码的登记表、§15.2 左列是 HTTP 码 —— 两张都是"一行一个键"，重名就是漂移。
+	if dup, ok := firstDup(ct.codes151); ok {
+		return codeTables{}, errAnchor(fmt.Sprintf("§15.1 码列里 %s 出现两次 —— 集合双向相等看不见重复，只有这条腿看得见", dup))
+	}
+	if dup, ok := firstDup(ct.transport); ok {
+		return codeTables{}, errAnchor(fmt.Sprintf("§15.2 左列（HTTP 码）里 %s 出现两次 —— 一行一个 HTTP 码是这张表的定义", dup))
+	}
+	// 『来自』那一列**故意不判重**：两个不同 HTTP 码映射到同一个 Adapter 码是合法形状，
+	// 判它等于替契约把映射写成"一对一"。但两个数要打印出来（C8-10④ 同一口径：看得见、不咬人）。
+	ct.namedRaw = len(ct.named)
+	ct.transportRaw = len(ct.transport)
 	ct.codes151 = sortedUniq(ct.codes151)
 	ct.named = sortedUniq(ct.named)
 	ct.transport = sortedUniq(ct.transport)
 	return ct, nil
+}
+
+// firstDup 返回第一个出现两次以上的元素（集合比对的盲区专用：`sortedUniq` 会把重复悄悄吃掉）。
+func firstDup(in []string) (string, bool) {
+	seen := map[string]int{}
+	var order []string
+	for _, s := range in {
+		if seen[s] == 0 {
+			order = append(order, s)
+		}
+		seen[s]++
+	}
+	for _, s := range order {
+		if seen[s] > 1 {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // firstCellMatch 取表格行的首列，只有它整体符合 re 才认（首列不是码名的行是表头/分隔行）。
@@ -222,6 +262,58 @@ func sortedUniq(in []string) []string {
 // 为什么把 C8-8 那三条字面量废掉：09-22 主控自己往 §15.2 收了 `duplicate_project_path`，
 // 29/12 立刻红 —— 那是"把基线数字当判据"的代价，码表本来就该随功能长。
 func TestErrorCodeContractTablesParse(t *testing.T) {
+	// §1.1 第 16 条的"合成反例"那一半：重名必须喂得进解析器（只有真数据能红 = 没闭上）。
+	// 五组里第 4 组是**过严守卫**：一对多是合法形状，解析器不许顺手把它判红。
+	dupCases := []struct {
+		name         string
+		s151, s152   []string
+		wantErr      bool
+		namedRawWant int
+		why          string
+	}{
+		{
+			name:    "正常两行",
+			s151:    []string{"| `TIMEOUT` | -32001 | Adapter | ✗ |", "| `INTERNAL` | -32000 | Adapter | ✗ |"},
+			s152:    []string{"| `timeout` | 504 | `TIMEOUT` |", "| `internal_error` | 500 | `INTERNAL` |"},
+			wantErr: false, namedRawWant: 2, why: "两行两码，token 数与去重数相等",
+		},
+		{
+			name:    "§15.1 码列重名（第 16 条主案）",
+			s151:    []string{"| `TIMEOUT` | -32001 | Adapter | ✗ |", "| `TIMEOUT` | -32002 | Adapter | ✗ |"},
+			s152:    []string{"| `timeout` | 504 | `TIMEOUT` |"},
+			wantErr: true, why: "集合双向相等看不见重复，只有这条腿看得见",
+		},
+		{
+			name:    "§15.2 左列重名",
+			s151:    []string{"| `TIMEOUT` | -32001 | Adapter | ✗ |"},
+			s152:    []string{"| `not_found` | 404 | `TIMEOUT` |", "| `not_found` | 409 | `TIMEOUT` |"},
+			wantErr: true, why: "一行一个 HTTP 码是这张表的定义",
+		},
+		{
+			name:    "一对多合法（过严守卫）",
+			s151:    []string{"| `SESSION_NOT_FOUND` | -32003 | Adapter | ✗ |"},
+			s152:    []string{"| `not_found` | 404 | `SESSION_NOT_FOUND` |", "| `session_gone` | 410 | `SESSION_NOT_FOUND` |"},
+			wantErr: false, namedRawWant: 2, why: "两个 HTTP 码映射到同一个 Adapter 码是合法形状 ⇒ 只报原始/去重两个数，不判红",
+		},
+		{
+			name:    "第三种形状仍然报错",
+			s151:    []string{"| `TIMEOUT` | -32001 | Adapter | ✗ |"},
+			s152:    []string{"| `timeout` | 504 | not_a_code_name |"},
+			wantErr: true, why: "『来自』既不是码名也不是 — ⇒ 表形状变了，不静默",
+		},
+	}
+	for _, d := range dupCases {
+		got, err := parseCodeRows(d.s151, d.s152)
+		switch {
+		case d.wantErr && err == nil:
+			t.Errorf("第二条腿失效：%s 本该红却解析成功（named=%v）—— %s", d.name, got.named, d.why)
+		case !d.wantErr && err != nil:
+			t.Errorf("判据过严：%s 本该通过却报错：%v —— %s", d.name, err, d.why)
+		case !d.wantErr && d.namedRawWant > 0 && got.namedRaw != d.namedRawWant:
+			t.Errorf("原始计数不对：%s 期望 namedRaw=%d 实得 %d（这条数要留给人才看得见漂移）",
+				d.name, d.namedRawWant, got.namedRaw)
+		}
+	}
 	ct, err := parseCodeTables(t)
 	if err != nil {
 		t.Errorf("解析器坏了（本文件其余各条此刻不可信）：%v", err)
@@ -268,6 +360,10 @@ func TestErrorCodeContractTablesParse(t *testing.T) {
 	// ④ 三个数字照常打印：漂移要看得见，但不咬人。
 	t.Logf("形状自证：§15.1=%d 码、§15.2=%d 行（码名行 %d / `—` %d，去重码名 %d），双向相等。数字只跟趋势",
 		len(ct.codes151), ct.totalRows, ct.namedRows, ct.dashRows, len(ct.named))
+	// §1.1 第 16 条要求的"原始 / 去重"两个数另起一行：左列与 `—` 的重复已在解析时判红，
+	// 『来自』那一列的重复是**合法的一对多**（两个 HTTP 码映射到同一个 Adapter 码），所以只报数不判。
+	t.Logf("计数对（原始/去重）：§15.2 左列 %d/%d（重复即红）、『来自』%d/%d（重复合法，仅打印不咬人）",
+		ct.transportRaw, len(ct.transport), ct.namedRaw, len(ct.named))
 }
 
 // TestHTTPErrorCodesComeFromAdapterSet 执行 C8-6 正向：§15.2 每个带码名的『来自』都必须在 §15.1 里，
@@ -356,9 +452,10 @@ func TestTransportCodesAreInContract(t *testing.T) {
 	if files < 3 {
 		t.Errorf("core/api/http/** 只扫到 %d 个非测试 .go ⇒ 目录挪了或判据失效，不能判绿", files)
 	}
+	rawLiterals := len(literals)
 	literals = sortedUniq(literals)
 	if len(literals) < 5 {
-		t.Errorf("只解析出 %d 个字面码：%v ⇒ 提取形状变了（今天盘上是 13 个），判判据自己坏了", len(literals), literals)
+		t.Errorf("只解析出 %d 个字面码：%v ⇒ 提取形状变了，判判据自己坏了", len(literals), literals)
 	}
 	ct, err := parseCodeTables(t)
 	if err != nil {
@@ -373,8 +470,9 @@ func TestTransportCodesAreInContract(t *testing.T) {
 			t.Errorf("代码会发的 transport 码 %s 不在契约② §15.2 左列 —— 要么补表（契约），要么改代码，两边都得动", c)
 		}
 	}
-	t.Logf("C8-11：扫 %d 个生产 .go、%d 个字面码全部在 §15.2 的 %d 个码里；非字面量传码 %d 处（这条腿看不见，只能靠打印留痕）",
-		files, len(literals), len(ct.transport), nonLiteral)
+	t.Logf("C8-11：扫 %d 个生产 .go、%d 个字面码全部在 §15.2 的 %d 个码里；非字面量传码 %d 处（这条腿看不见，只能靠打印留痕）；"+
+		"字面码 原始/去重 = %d/%d（同一处代码路径重复发同一个码是合法的，只报数）",
+		files, len(literals), len(ct.transport), nonLiteral, rawLiterals, len(literals))
 }
 
 // scanTransportCodes 扫 core/api/http/** 的非测试 .go，取每次 writeError 调用第 3 个实参的字面码。
@@ -600,6 +698,29 @@ func TestEventCatalogMatchesJournalConstants(t *testing.T) {
 		t.Errorf("events.go 常量解析坏了（本条无从判断）：%v", err)
 		return
 	}
+	// 第三格的合成反例（§1.1 第 16 条要三格同型）：两个常量同值在 Go 里编得过、集合比也看不出来，
+	// 但对词表是一一映射破了 —— 所以必须能喂进纯函数判红，而不是等真数据出错。
+	// 这一格**不需要**"注释里也算一个"的用例：`journalConstRE` 行首要求大写标识符 + `=`，
+	// `//` 开头的行结构上就进不来（我第一版写了这么一组，是空判据，已删）。
+	constCases := []struct {
+		name    string
+		src     []string
+		wantErr bool
+		why     string
+	}{
+		{"正常两个常量", []string{"package e\n\nconst (\n\tA = \"a_x\"\n\tB = \"b_y\"\n)\n"}, false, "两个名字两个值"},
+		{"两个常量同值", []string{"package e\n\nconst (\n\tA = \"a_x\"\n\tB = \"a_x\"\n)\n"}, true, "Go 编得过、sortedUniq 吃得掉，只有这条腿看得见"},
+		{"什么都没解析到", []string{"package e\n\nfunc f() {}\n"}, true, "空集比空集是最坏的假绿"},
+	}
+	for _, c := range constCases {
+		got, cerr := journalConstValues(c.src)
+		switch {
+		case c.wantErr && cerr == nil:
+			t.Errorf("第三格的腿失效：%s 本该红却得到 %v —— %s", c.name, got, c.why)
+		case !c.wantErr && cerr != nil:
+			t.Errorf("第三格过严：%s 本该通过却报错：%v", c.name, cerr)
+		}
+	}
 	// 两条下界都是防"锚点/正则命中别处 ⇒ 静默空集"：空集比空集相等，是最坏的假绿。
 	if len(catalog) < 20 {
 		t.Errorf("§6 只解析出 %d 个事件类型（下界 20）⇒ 区间被截断了", len(catalog))
@@ -645,8 +766,20 @@ func parseEventCatalog(t *testing.T) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []string
-	for _, line := range sec {
+	return expandCatalogRows(sec)
+}
+
+// expandCatalogRows 是 **契约① §1.1 第 16 条**那条通用规矩在事件目录上的落点（T-178 的第二条腿）。
+//
+// 为什么必须有第二条腿：集合语义**天生看不见重复**。09-23 主控把 `project_archived` 登记了两次，
+// §6 / yaml / 常量三方都是 63 ⇒ C8-12 与 C8-13 的第一腿全绿，当晚只有 frontend 的"重名即停"真响了。
+// 所以这里判两件事：① 展开前的 token 数 == 展开后**去重**的名字数；② 哪个名字、在哪两行重复，点名到行。
+// 放在解析器里而不是放在某一个用例里，是因为 C8-12 与 C8-13 共用这一份解析 —— 一条腿补上，两条判据同时闭上。
+func expandCatalogRows(lines []string) ([]string, error) {
+	var names []string
+	tokens := 0
+	seen := map[string]string{}
+	for _, line := range lines {
 		if !strings.HasPrefix(line, "| `") {
 			continue
 		}
@@ -654,13 +787,31 @@ func parseEventCatalog(t *testing.T) ([]string, error) {
 		if len(cells) < 2 {
 			return nil, errAnchor(fmt.Sprintf("§6 有一行只有 %d 列：%q", len(cells), line))
 		}
-		names, err := expandEventCell(cells[1])
+		produced, err := expandEventCell(cells[1])
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, names...)
+		// expandEventCell 是"一个 token 出一个名字"，所以 tokens 就是展开前的长度；
+		// 它不等于去重后的数量，只可能是同一格登记了两次。
+		tokens += len(produced)
+		row := strings.TrimSpace(cells[1])
+		for _, n := range produced {
+			if first, dup := seen[n]; dup {
+				return nil, errAnchor(fmt.Sprintf("§1.1 第 16 条第二条腿：%s 被登记了两次（首次 %q，又见 %q）"+
+					"⇒ 展开前 %d 个 token、展开后只有 %d 个名字，三方集合照样相等、第一腿全绿", n, first, row, tokens, len(seen)))
+			}
+			seen[n] = row
+		}
+		names = append(names, produced...)
 	}
-	return sortedUniq(out), nil
+	if len(names) == 0 {
+		return nil, errAnchor("§6 一个事件类型都没解析到 ⇒ 区间或表形状坏了，不拿空集去比")
+	}
+	if tokens != len(seen) {
+		return nil, errAnchor(fmt.Sprintf("展开前 %d 个 token ≠ 去重后 %d 个名字 ⇒ 有重名，逐个点名却在这里没抓到（判自己坏了）",
+			tokens, len(seen)))
+	}
+	return sortedUniq(names), nil
 }
 
 // expandEventCell 把目录首列拆成逐个事件类型；形状不认识就报，不猜。
@@ -729,10 +880,8 @@ func parseJournalEventConstants(t *testing.T) ([]string, int, error) {
 		return nil, 0, errAnchor("仓库根没找到")
 	}
 	dir := filepath.Join(root, "core", "internal", "eventjournal")
-	var (
-		vals  []string
-		files int
-	)
+	var contents []string
+	files := 0
 	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
@@ -745,9 +894,7 @@ func parseJournalEventConstants(t *testing.T) ([]string, int, error) {
 			return e
 		}
 		files++
-		for _, m := range journalConstRE.FindAllStringSubmatch(stripGoComments(string(raw)), -1) {
-			vals = append(vals, m[2])
-		}
+		contents = append(contents, string(raw))
 		return nil
 	})
 	if walkErr != nil {
@@ -756,5 +903,194 @@ func parseJournalEventConstants(t *testing.T) ([]string, int, error) {
 	if files == 0 {
 		return nil, files, errAnchor(fmt.Sprintf("%s 里一个非测试 .go 都没有 ⇒ 包搬家了，判据不能对着空气判绿", dir))
 	}
-	return sortedUniq(vals), files, nil
+	vals, err := journalConstValues(contents)
+	return vals, files, err
+}
+
+// journalConstValues 是第三格的**纯解析**（同 §1.1 第 16 条：合成反例必须喂得进来，
+// 只有真数据能红的判据等于没闭上）。
+// 两个常量指向同一个事件值在 Go 里合法，但对事件词表是缺陷 —— 同一个类型两个名字，
+// 谁都能发、事后对不上是谁；`sortedUniq` 会把它悄悄吃掉，所以按"原始 / 去重"两个数判红。
+func journalConstValues(contents []string) ([]string, error) {
+	var vals []string
+	for _, src := range contents {
+		for _, m := range journalConstRE.FindAllStringSubmatch(stripGoComments(src), -1) {
+			vals = append(vals, m[2])
+		}
+	}
+	if len(vals) == 0 {
+		return nil, errAnchor("一个 X = \"x\" 形状的常量都没解析到 ⇒ 常量写法变了，不拿空集去比")
+	}
+	if dup, ok := firstDup(vals); ok {
+		return nil, errAnchor(fmt.Sprintf("两个常量同值 %q ⇒ 一个事件类型两个名字，词表不再是一一映射", dup))
+	}
+	return sortedUniq(vals), nil
+}
+
+// ---------------------------------------------------------------- C8-13 ----
+
+// TestEventTypeTripleEquality 执行 C8-13：事件类型词表**三格**必须相等 ——
+// §6 目录 ↔ `specs/openapi/core-v1.yaml` 的 `EventType` 枚举 ↔ `eventjournal` 常量。
+//
+// 为什么要有第三条腿（T-172 的起因）：`project_updated` 那次登记只补了 §6 与 Go 常量，
+// yaml 那一格没人管，而 frontend 的 `enum ↔ 目录` 守门只在有人跑 `npm run validate` 时才响 ——
+// "谁醒了才炸"。判据搬到大家都已经在跑的地方（`go test ./test/...`）才是正解，
+// 所以**这里只读 yaml，绝不改它**（那一格归 frontend，codegen 也从它生成）。
+//
+// ③c（合并只许用于 payload 相同的同族行）**这条腿不机检**，理由写在这里而不是含糊过去：
+// 本判据比的是**名字集合**，③c 约束的是**payload 列**；就算某行违反了 ③c，
+// 展开出来的名字集合照样是对的 ⇒ 机检它得去解读 payload 那格的自然语言，
+// 那是替契约读散文，不是判据。留给人复核（01:3x 那次已经由主控自己拆成三行修掉了）。
+func TestEventTypeTripleEquality(t *testing.T) {
+	// 第二条腿的合成反例（§1.1 第 16 条第③件："只有真数据能红的不算闭上"）。
+	// 这一族我已经有两个先例（C8-11 的 M-A~M-K、C8-12 的展开自证表），照同一形状做。
+	dupRows := []struct {
+		name    string
+		lines   []string
+		wantErr bool
+		why     string
+	}{
+		{"合法两行", []string{"| `project_created` | project | `name` | – |", "| `project_updated` | project | `name` | – |"}, false, "两行两个名字"},
+		{"合法合并行", []string{"| `notification_created` / `_handled` / `_read` | notification | `x` | – |"}, false, "一行三个 token、三个名字，token 数 == 名字数"},
+		{"跨行重名", []string{"| `project_archived` | project | `reason` | – |", "| `project_archived` | project | `reason` | – |"}, true, "01:48 真发生过的那次：三方都是 63，第一腿全绿，只有这条腿看得见"},
+		{"格内重名", []string{"| `tasks_paused` / `tasks_paused` | task | `reason` | – |"}, true, "同一格把同一个类型写两遍"},
+		{"合并撞全名", []string{"| `a_x` / `_y` | x | `p` | – |", "| `a_y` | x | `p` | – |"}, true, "合并行展开出的 `a_y` 与另一行的全名撞上 —— 只有展开之后才看得见，所以反例必须喂在展开后"},
+	}
+	for _, d := range dupRows {
+		got, err := expandCatalogRows(d.lines)
+		switch {
+		case d.wantErr && err == nil:
+			t.Errorf("第二条腿自证失效：%s 本该红却解析成 %v（%s）", d.name, got, d.why)
+		case !d.wantErr && err != nil:
+			t.Errorf("第二条腿过严：%s 本该通过却报错：%v", d.name, err)
+		}
+	}
+	catalog, err := parseEventCatalog(t)
+	if err != nil {
+		t.Errorf("第一格（事件契约 §6）解析坏了：%v", err)
+		return
+	}
+	yamlTypes, err := parseYamlEventTypes(t)
+	if err != nil {
+		t.Errorf("第二格（openapi 的 EventType 枚举）解析坏了：%v", err)
+		return
+	}
+	constants, files, err := parseJournalEventConstants(t)
+	if err != nil {
+		t.Errorf("第三格（eventjournal 常量）解析坏了：%v", err)
+		return
+	}
+	// 三格各自的下界：任何一格读空都会让"相等"变成假绿（空集等于空集）。
+	if len(catalog) < 20 || len(yamlTypes) < 20 || len(constants) < 20 {
+		t.Errorf("某一行解析出的条数低于下界 20（§6=%d / yaml=%d / 常量=%d）⇒ 判判据坏了，不判谁漂移",
+			len(catalog), len(yamlTypes), len(constants))
+		return
+	}
+	// 三条边各报一次，红话点名到"哪一格缺、哪一格多"——两两报才说得清漂移发生在哪条通道上。
+	edges := []struct {
+		name         string
+		a, b         []string
+		aName, bName string
+	}{
+		{"§6→yaml", catalog, yamlTypes, "事件契约 §6 目录", "core-v1.yaml 的 EventType 枚举"},
+		{"yaml→§6", yamlTypes, catalog, "core-v1.yaml 的 EventType 枚举", "事件契约 §6 目录"},
+		{"常量→yaml", constants, yamlTypes, "eventjournal 常量", "core-v1.yaml 的 EventType 枚举"},
+		{"yaml→常量", yamlTypes, constants, "core-v1.yaml 的 EventType 枚举", "eventjournal 常量"},
+	}
+	for _, e := range edges {
+		for _, miss := range diffSets(e.a, e.b) {
+			t.Errorf("三格不相等 [%s]：%s 里有 %s，%s 里没有 —— 登记事件类型要三处同改（§6 / yaml / 常量）",
+				e.name, e.aName, miss, e.bName)
+		}
+	}
+	// 红的当次不能再打印"三格相等 / 四条边全空"那种绿味句子：读证据的人按 Logf 抄进交账，
+	// 一次自相矛盾的输出比不打印更坏（探针合成件 a 当场暴露）。
+	if t.Failed() {
+		t.Logf("C8-13 三格计数：§6=%d / yaml=%d / 常量=%d —— 漂移已在上面点名到具体的边与类型",
+			len(catalog), len(yamlTypes), len(constants))
+		return
+	}
+	t.Logf("C8-13 三格相等：§6=%d 类、yaml=%d 条、常量=%d 个（扫 %d 个非测试 .go）；四条边全空",
+		len(catalog), len(yamlTypes), len(constants), files)
+}
+
+// parseYamlEventTypes 读 `specs/openapi/core-v1.yaml` 里 `EventType` 的 flow 枚举。
+//
+// 锚点全用**整行相等 / 前缀**，不用行号（§1.1 第 14、15 条）；四道失败出口都是报错，
+// 因为这里最坏的失效不是红，是"读到空集 ⇒ 与另一张空集相等 ⇒ 假绿"。
+func parseYamlEventTypes(t *testing.T) ([]string, error) {
+	t.Helper()
+	root := repoRoot(t)
+	if root == "" {
+		return nil, errAnchor("仓库根没找到")
+	}
+	path := filepath.Join(root, "specs", "openapi", "core-v1.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errAnchor(fmt.Sprintf("读 %s 失败: %v", path, err))
+	}
+	lines := strings.Split(string(raw), "\n")
+	anchor := -1
+	for i, l := range lines {
+		if strings.TrimRight(l, " \t") == "    EventType:" {
+			if anchor >= 0 {
+				return nil, errAnchor("yaml 里出现两个 `    EventType:` 锚点，取哪一个？判据不能猜")
+			}
+			anchor = i
+		}
+	}
+	if anchor < 0 {
+		return nil, errAnchor("yaml 里找不到 `    EventType:` 这一格（改名或挪位置要回写判据表 C8-13）")
+	}
+	// 从锚点往下找 `enum: [`，再找到收尾的 `]`；跨过下一格的 key（同缩进或非缩进）就算失败。
+	open := -1
+	for i := anchor + 1; i < len(lines); i++ {
+		t0 := strings.TrimSpace(lines[i])
+		if i > anchor && t0 != "" && !strings.HasPrefix(t0, "-") && !strings.HasPrefix(t0, "#") &&
+			!strings.HasPrefix(lines[i], "        ") && !strings.HasPrefix(lines[i], "      ") {
+			return nil, errAnchor(fmt.Sprintf("EventType 那一格里没找到 enum 列表就撞到了下一格（%q）", t0))
+		}
+		if strings.HasPrefix(t0, "enum:") {
+			if !strings.Contains(t0, "[") {
+				return nil, errAnchor(fmt.Sprintf("enum 不是 flow 序列形状（%q）—— 换成块式列表要同步改这个解析器", t0))
+			}
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		return nil, errAnchor("EventType 那一格里没有 `enum:` —— 这一格被删了？")
+	}
+	var out []string
+	closed := false
+	for i := open; i < len(lines) && i-open < 200; i++ {
+		body := lines[i]
+		if i == open {
+			if parts := strings.SplitN(body, "[", 2); len(parts) == 2 {
+				body = parts[1]
+			}
+		}
+		if idx := strings.Index(body, "]"); idx >= 0 {
+			body = body[:idx]
+			closed = true
+		}
+		body = strings.TrimSpace(strings.Split(body, "#")[0])
+		for _, tok := range strings.Split(body, ",") {
+			name := strings.NewReplacer("`", "", "\"", "", " ", "", "\t", "").Replace(tok)
+			if name == "" {
+				continue
+			}
+			if !snakeLowerRE.MatchString(name) {
+				return nil, errAnchor(fmt.Sprintf("yaml enum 里出现不像事件名的条目 %q（第 %d 行附近）", name, i+1))
+			}
+			out = append(out, name)
+		}
+		if closed {
+			break
+		}
+	}
+	if !closed {
+		return nil, errAnchor("enum 的 `[` 找不到收尾的 `]` ⇒ 区间会吃到文件尾，不可信")
+	}
+	return sortedUniq(out), nil
 }
