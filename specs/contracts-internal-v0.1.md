@@ -249,6 +249,20 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     - 同一条也解释了今早那两次"契约里的错指针"（`//go:embed ../../../migrations` 指向非法位置、
       `core/migrations/embed.go` 给不存在的文件派了 owner）：**指针越具体，越容易在写下的下一秒变成假的。**
 
+15. **判据表的"当场命令"列必须可复现 = 包路径 + 锚定的用例名，两个都不许省（REQ-T15 裁定，09-23 00:1x 采纳 `test` 的提案）**。
+    理由不是格式洁癖，是 **Go 的 `-run` 是无锚定的子串匹配**：`-run TestDroppedFrameReaches` 会**同时命中两条**，
+    而盘上现在**真有**这一对只差一个 `The` 的名字 ——
+    `TestDroppedFrameReachesTheAuditSeam`（在 `core/internal/process/connection_test.go`，`adapter` 的）与
+    `TestDroppedFrameReachesAuditSeam`（在 `core/test/turn_attribution_test.go`，`test` 的）。
+    **只写用例名不写包，下一个人就会把别人的 PASS 记到错的归属上** —— 这正是本条第 14 项"引用形式本身不持真"的兄弟：
+    行号会在别人插行后指错，**用例子串会在别人起同名测试后指错人**。
+    判据：
+    - 命令写成 `go test -count=1 -v -run '^TestXxx$' ./pkg/path/`（**全名带 `^…$` 锚定 + 显式包路径**）；
+    - 同一判据若两家各有一条近名用例，**契约里必须两条都写出来并标归属**（见契约② 判据表 T84-7a / T84-7b），
+      不许靠"名字差不多"合并；
+    - 通用一句：**凡"可复现命令"里的定位符，要选改名才算破坏性变更的那一种**（包路径 + 全标识符），
+      子串、行号、目录里的第一个命中都不算。
+
 10. **把一张表加入聚合注册表是破坏性变更**（17:22 补，起因是我自己下达的 T-12 把 `internal/approval` 打红）：
    一旦某张表进了 `AggregateKind → 表名` 映射，`Append` 对它就失效（`aggregate rows must go through Touch or Create`），
    所有既有建卡路径必须同轮改成 `Create`。因此**db 改注册表时必须自己先跑全仓**

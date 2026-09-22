@@ -3,7 +3,9 @@ TASK_ID: backend-core
 STATUS: in_progress
 SCOPE: Task / Execution / Session / Quota / Notification 五个业务包的领域类型、状态机、投影、读写 Service；加 transport 薄层 core/api/{http,websocket}** 与 core/cmd/core/**；不写迁移、不碰 approvals 表
 EVIDENCE_DIR: none
-LAST_UPDATED: 2026-09-22T15:58:46+08:00   ← 本机 `date` 实测（第二十九批收尾，含 15:58 那次交付后复跑）；上一条 15:52:57 是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）；再上一条属第二十八批 09-21 16:30:48
+LAST_UPDATED: 2026-09-22T23:47:33+08:00   ← 本机 `date` 实测（第三十一批收尾；这一次读同时核了 `panel.ts:123` 确实显式带 `state:'UNREAD'`）；
+  上一条实测 23:14:55 属第三十批收尾；23:13:10 那条是按具名清 scratch 的命令，15:58:46 属第二十九批收尾；
+  15:52:57 那一条是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）
 
 ## Objective
 
@@ -61,25 +63,52 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 > 发现后按口径处理：原值标作废、换上实测读数，不改写任何历史条目。同一轮我另有一处口径错（把 `internal/project` 说成
 > "别的 agent 在写"，其实是我自己这一轮刚建的文件），也记在 Completed 第二十九批开头。
 
-- Stage: Wave-2 backend 第二十九批（09-22）—— **T-130② 落地：建了 `internal/project`，`POST /api/v1/projects` 真通**
-  （聚合 CRUD + 恰一行 `project_created`；canonicalize 三个反例同键；冲突 409；空路径=NULL；§7 禁令守着：域包外零 SQL、
-  不 import adapter/process）。**T-130① probe 一行没写**（等 adapter 的 `Registry.Probe`；顺带只读到 `internal/adapter`
-  此刻编不过，15:42:38，不在我依赖链上）。**T-130③ REQ-T12 仍缺两样**（adapter 的 Launcher 实现位 + REQ-DB-6 裁定），
-  我没建没人调的构造点。**T-130④ flaky 实现一行未改**，只交样本
-- Status: in_progress（九包全绿 = 交付前最后一次 **15:58:03→15:58:10**（15:50:02→15:50:40 那遍含 `gofmt -w` 后重取，两条都算数），
-  真进程冒烟八项两遍 15:50:40→15:50:44 与 15:51:13→15:51:16 全 OK；
-  等别人：REQ-DB-3 卡 pause/resume 正向写、REQ-DB-2 卡 core_ready、REQ-DB-4 卡 Execution 离开 CREATED、
-  REQ-DB-5 卡 `:read`、**REQ-DB-6 卡 Recorder/`process_instances` 改行**、REQ-AD-1 卡 probe（入口已判给 adapter）、
-  C25 卡 `:sync` 降级形状、C26 卡 notifications `state` 缺省、C27 剩两个点头、**C28 卡 409 code 名与 GET 的 501/405 口径**、
-  C19/C24；**REQ-A9 已作废**；**A18-3 那条腿仍然不接**
-- Last verified action: 见 Verification evidence 第 108~134 条（131=本批九包重跑 + 八项真进程两遍 + 按具名清理；
-  132=`internal/project` 变异判决（含一条 SILENT 与一条"pattern 没匹配上，我没证成"）；
-  133=transport 变异（**不读回库会红**；两层冗余单删不红、全删才红）+ 我自己两次被抓的编译错；
-  134=`internal/adapter` 在途编译错只读记录，与我的九包互不影响）
+- Stage: Wave-2 backend 第三十二批（09-22 23:52~09-23 00:05）—— **Next action 落地：`GET /api/v1/projects` 脱 501**。
+  `internal/project` 补读侧（`scanProject` 提成共用、`ListPage` 走 keyset 不用 OFFSET、游标**复用** tasks 那对二元编解码 ⇒ 零新增编解码函数），
+  `api/http/projects.go` 按 C28② 分流（缺 `ProjectRead` ⇒ GET 501、PUT/DELETE ⇒ 405），
+  契约没给的 status 过滤位**没有自挑**（ARCHIVED 留在列表里、未知参数必须被忽略）。
+  本批我自己弄红又自己抓到一条：`cmd/core/TestHealthReflectsARealBoot` 拿 `GET /projects` 当"还没接"的例子，
+  接通后必然红 ⇒ 换例子 + 把新口在真进程上钉三格（不是删断言）。变异 **7/7 FIRED**（含一条 `ANCHOR-INVALID` 不计判决、
+  一条被 shell 吞转义后我选择把反斜杠从夹具里拿掉）。
+  上一批（第三十一批）：C26 改到根上 + C25 让 `POST /sessions/{id}:sync` 脱 501；**REQ-DB-5 的原因已消失但 `:read` 仍按指令挂着**（C31）。
+- Status: in_progress（**八包**全绿 = 交付前最后一次 **00:03:43→00:03:47**；**全仓 `./...` 00:03:55→00:04:11 两遍：
+  第一遍除 `ok` 外零行输出、第二遍数到 18 个 `ok` ⇒ 18/18、没跳包**；两包 `-v` 计数 48 RUN = 38 顶层 + 10 子用例、FAIL=0 SKIP=0；
+  真进程冒烟**十项**全 OK（00:01:43）；gofmt -l 空 + vet 空；
+  等别人：**REQ-B-1 卡 503 那半格事件**、**C31 卡 `:read` 解不解**、REQ-DB-3、REQ-DB-2、REQ-DB-4、
+  **REQ-DB-6 卡 Recorder**、REQ-AD-1 卡 probe、C19、C24、C27 剩两个点头、**C30 三个我自挑的形状**；
+  本批关闭的账：无新裁定（C25/C26/C28 已在上一批闭））
+- Last verified action: 见 Verification evidence 第 144~149 条（144=八包 + 全仓两遍 + `-v` 计数；145=**我弄红的那条真进程用例
+  与它的修法**（含"没有别人的用例挂在这格上"的只读反查）；146=本批变异 7/7 FIRED + 两条流程如实；
+  147=零新增编解码函数；148=巡检三条的当场回读（那条 FAIL 我 23:04 就修了，他们采的是 22:56）；
+  149=REQ-DB-5 前提已在盘上的实测 + 我为什么还挂着 `:read`）
+- Next action: 落 `PATCH /api/v1/projects/{id}`（yaml 里 declared：`If-Match` + `Principal` + `UpdateProjectRequest`、
+  **永不改状态**），一次一个口、带自己的响应形状证据；顺带把 §15.2.1 里 `version_conflict` 的 409 在这一腿上落到真库
+  ① **C26 收下并改到底**：`state` 缺省 = **不过滤**（那两行"缺省取 UNREAD"删了，`ListFilter.State` 变 `*State`，
+  `ListByState` 改名 `ListPage` —— 一个可以不过滤的方法继续叫 ByState 就是骗下一个人）；
+  ② **C25 → `POST /api/v1/sessions/{id}:sync` 脱 501**：判定住在新的 `internal/session.Service`（§7 不许 handler 判业务），
+  只读链能走就 **200 + `sync_state=DEGRADED` + `state_confidence=LOW` + 原样回显 `sync_cursor`**（NULL ⇒ `null`，不是空串），
+  本地没消息也没位置 ⇒ **503 `adapter_unresponsive`**，对象不存在 ⇒ **404 `session_not_found`**；这一口今天**一行都不写**，
+  所以也不发 `session_synced`；`added_messages` **不出键**（不知道就不是 0）；
+  ③ 已知偏差：C25 那句"503 同时发 `adapter_downgraded`"落不了 —— 那个事件的 aggregate_type 是 `adapter`，
+  从 session 这条腿发要么被 `appendEvent` 的聚合守卫拒、要么错标归属，**已提 REQ-B-1**（现场证据是一条常驻用例）。
+  上一批（第三十批）：REQ-T12 的桥落在 `cmd/core/processpipe.go`（`launcher` 实现 `adapter.Launcher`、拒无期限 ctx、
+  `duplexPipe` 交回一根双工管、`Rec` 仍 nil 等 REQ-DB-6），并修掉我自己那个"默认期限随 `Start` 返回就到期"的 bug；
+  probe 仍一行没接（T-133①）。
+- Status: in_progress（**八包**全绿 = 交付前最后一次 **23:41:46→23:41:50**（第三十批那两遍我写成"九包"，其实是八包，
+  更正见第 143 条）；**全仓 `go test ./...` 23:42:50→23:42:59 = 18 个 `ok`、零 FAIL，这一遍也没跳包**；
+  真进程冒烟九项全 OK（新加的第 ⑨ 项 `RESULT_SYNC= OK_session_not_found_and_unwired_get_is_501`，23:41:27）；
+  三条动过的包按 `-v` 数过：api/http 41 RUN = 31 顶层 PASS + 10 子用例、session 8/8、notification 6/6，FAIL=0 SKIP=0；
+  gofmt -l 空 + `go vet` 空；等别人：REQ-DB-3、REQ-DB-2、REQ-DB-4、REQ-DB-5 卡 `:read`、**REQ-DB-6 卡 Recorder**、
+  **REQ-B-1 卡 503 那半格事件**、REQ-AD-1 卡 probe、C24、C19、C27 剩两个点头、**C30 三个我自挑的形状**；
+  **C25 / C26 / C28 本批已按裁定落地，账上不再挂它们**）
+- Last verified action: 见 Verification evidence 第 139~143 条（139=八包 + 全仓 + 计数口径；140=C25/C26 的变异 **10/10 FIRED**
+  （其中一条第一遍是 BUILD-BROKEN，改了合法写法才重跑取到 FIRED）；141=真进程第 ⑨ 项 + 它测不到的那半；
+  142=`adapter_downgraded` 发不出去的现场证据原文；143=我自己那处"九包/八包"计数错的更正 + 表名字面量行号漂移）
 - Next action: 落 `GET /api/v1/projects`（同一 path 上补方法分支；游标沿用**分页**口径 `next_cursor: ""`，
   不与同步游标共用编解码），一次一个口、带自己的响应形状证据
 
-- Verification: `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/... ./api/... ./cmd/core/ -count=1 -timeout 240s` 八包全 ok
+- Verification: `CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/task/... ./internal/execution/... ./internal/session/... ./internal/quota/... ./internal/notification/... ./internal/project/... ./api/http/... ./cmd/core/... 2>&1`
+  **八包**全 ok（第三十批改用这个显式清单：`./api/...` 会把 websocket 一起算进来，报数时容易和"我几包"对不上）
 
 ## Completed
 
@@ -718,6 +747,86 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   我这侧新增的样本：09-21 16:30:12 两包 `-count=1` ok、09-22 15:47:40 那批变异电池里 `api/http`/`internal/project` 全 ok、
   15:50:02 九包 `-count=1` 全 ok。**四档都没红的这轮我也不写"已修/已绿"** —— 我只写"未复现 + 我的窗口归因待确认"。
 
+### 第三十批（09-22 22:41~23:07）：T-133② —— REQ-T12 的那半座桥落在 `cmd/core`，并抓出自己的一个真 bug
+
+- `core/cmd/core/processpipe.go`（**新建**）— `launcher` 实现 `adapter.Launcher`（编译期 `var _ adapter.Launcher = (*launcher)(nil)`
+  钉住签名，漂了就红，不用等谁来调）。拉起/期限/重启全留在我这侧（§7.2 不许 probe 发明第二份健康模型）：
+  **无期限的 ctx 直接拒**（`errNoDeadline`，错误里带 `adapter_key`），装配方给了默认期限就用它；
+  内部 `process.Supervisor{Kind: KindAdapter, Restart: RestartNever, Sink: 日志}`，`Rec` 仍是 nil
+  （REQ-DB-6 没裁：`process_instances` 起得了行、改不了行 —— 不拿 `Append` 假造）。
+  交回的 `duplexPipe` 只回答一个问题"谁来关"：Read/Write 先问期限再问关闭，Stderr **不合流**（那是 Core 另存诊断流的地盘），
+  Close = `Stop(2s)` + `CloseStreams` + 交还期限。
+- **本批修的是我自己的 bug，不是别人报的**：默认期限那条腿原来写 `defer cancel()` —— `Start` 一返回就把刚交给管道的 ctx
+  判成过期，任何用默认期限装配出来的管道**第一次读就会失败**。改成 `cancel` 随管道生命周期走；
+  把它变红的用例是本批新增的 `TestLauncherPipeRoundTrips/assembly-default`（变异 M4，第 137 条）。
+- **上一条那个"SILENT 的 Close 变异"的真相**：helper 用 `select {}` 装"一声不出也不退"，会被 runtime 判成
+  `all goroutines are asleep - deadlock` 直接 fatal（**实测退出码 2**）⇒ 孩子秒死 ⇒ `cmd.Wait` 释放句柄 ⇒
+  Windows 上 `Kill` 返回的不再是"无事"而是 **EINVAL**（Go 1.27 `os/exec_windows.go`：statusReleased 那一格走 `syscall.EINVAL`，
+  不是 `os.ErrProcessDone`）⇒ 我的 `requireProcessGone` 一直在白过。改成挂在 `io.Copy(io.Discard, os.Stdin)` 上、
+  EOF 之后睡死（只有 Kill 能收走它），这一格才咬得住。
+- `Close` 因此多了一格诚实的容忍 `childAlreadyGone`：`os.ErrProcessDone` 或 `FindProcess` 已判不到 ⇒ 成功，
+  真还活着却杀不掉才把错误交回去。不是假想分支 —— `exit` 那个 helper 形状（握手期间孩子崩掉）就是它，
+  并由 `TestLauncherCloseToleratesAChildThatAlreadyDied` 钉着（M5 拿掉容忍就红成 `kill: invalid argument`）。
+- `core/cmd/core/processpipe_test.go`（**新建**）— 真子进程（自执行 test binary，三形：echo / silent / exit）+ 5 条用例：
+  拒无期限、两种装配形状各走一遍往返（含 Close 幂等 + 无孤儿）、期限过期后读**必须**是 `context.DeadlineExceeded`
+  （只判"错误非空"的话，M4 那种提前 cancel 也算"非空"，测的就不是期限了）、Close 容忍已退的孩子、
+  `adapter.NewRegistry` 在构造期就拒没有 Launcher 的条目。
+- probe **仍然一行没接**（T-133①），`newLauncher` 在 `main.go` 里也**没有调用点** —— 唯一消费者是 probe，
+  按"不建没人调的构造点"继续不接；先把桥的构造与用例落在盘上，等点头那天只改装配那一行。
+
+### 第三十一批（09-22 23:16~23:43）：T-137 结的四条账 —— C26 改到底、C25 让 `:sync` 脱了 501
+
+- **C26（`state` 缺省 = 不过滤）改到根上，不是只删两行**：`notification.ListFilter.State` 从 `State` 变成 `*State`
+  （nil = 不过滤），`ListByState` 改名 **`ListPage`**（能不过滤的方法再叫 ByState 就是骗下一个读代码的人），
+  那句 `where := []string{"state = ?"}` 变成条件拼接。**这里当场撞到一个真 bug**：无过滤时我拼出
+  `... FROM notifications WHERE  ORDER BY ...` ⇒ `SQL logic error: near "ORDER"`（三条用例一起 500），
+  WHERE 整段改成有条件才拼。测试三格同写：缺省、`state=`（空串）、`state=READ` —— 只测一种就还有"两套都能过"的空间。
+- **C25 → `POST /api/v1/sessions/{id}:sync` 不再是 501**：
+  - 判定住在**新建的 `internal/session/service.go`**（§7 明令 handler 里不许有业务判断，而本包此前没有 Service，
+    所以先建 Service 再开口，而不是把 if 塞进 transport）。三条哨兵：`ErrSessionNotFound` / `ErrNoLocalData` / 成功。
+  - **只读链那一支**：库里这条 Session 有消息**或**有位置可回显 ⇒ `200 + sync_state=DEGRADED + state_confidence=LOW`，
+    `next_cursor` 原样回显（NULL ⇒ `null`，绝不空串）。置信度**固定 LOW**、不端库里那一格：库里存的可能是昨天从
+    官方实时接口拿到的 HIGH，而这次回答只读了本地字节 —— §49 的原话是"只是根据推断：不能标 HIGH"。
+  - **`added_messages` 干脆不出键**：这条口不知道新增几条，§12 与 REQ-F-21 ② 禁的就是拿 `0` 冒充"不知道"。
+  - **今天一行都不写**：没推进聚合就不发 `session_synced`（事件契约 §9 禁止事项 1 同一条线），
+    所以也不占 If-Match、不留幂等记录。这一条有断言挡着（version/updated_at 合值不变 + `event_journal` 行数不变）。
+  - **503 那一支**用现成的 `adapter_unresponsive`（§15.2 已绑 503、且写明可重试），不新造码。
+  - **C28② 的口径落成三种可观察形状**：`:sync` 上的 GET ⇒ 405；`GET /api/v1/sessions/{id}`（以后会有这条腿）⇒ 501；
+    没听过的 verb（`:manage`）⇒ 501；畸形形状（空 id / 空 verb / 多一段路径）⇒ 501，**不许摸到 Service**
+    （摸到了就是拿一个必然不存在的 id 去查库、回一个假装合法的 404）。
+- **已知偏差，写清楚不粉**：C25 那句"503 同时发 `adapter_downgraded`"**今天落不了**。事件契约 §6 给这个事件的
+  `aggregate_type` 是 `adapter`，而 `platform/db` 的守卫要求事件上写的聚合等于被 Touch 的那个聚合 ——
+  从 Session 这条腿发出去要么被拒、要么错标归属；如实发就得去 Touch `adapter_instances`（别人家的聚合行 + 一次版本推进）。
+  这不是推测：`TestAdapterDowngradedCannotRideASessionTouch` 把守卫的原文钉在盘上，红/绿的判据也含"被拒的那笔不许留下痕迹"。
+  **已提 REQ-B-1** 请主控裁"这个事件的生产者该是谁、我这条腿要不要豁免"。
+- `internal/session` 第一次有了消费方（`cmd/core` 注入 `session.NewService(session.NewRepository(c.db.Read))`）——
+  上一批它还是零消费者。
+
+### 第三十二批（09-22 23:52~09-23 00:05）：Next action 落地 —— `GET /api/v1/projects` 脱 501（含我自己弄红的一条真进程用例）
+
+- `internal/project/service.go`（改）— 读侧补齐：`Queryer` 多一条 `QueryContext`、`Get` 里那段 11 列扫描提成
+  **`scanProject(rowScanner)`**（Get 与列表共用一份读法，不复制第二份可空列处理）、新增 `ListFilter` + `ListPage`。
+  翻页是 keyset 谓词 `(created_at > ?) OR (= AND id > ?)`，**不是 OFFSET**（契约③ §2）；
+  序与 `internal/task` 那条 list 相同（`created_at, id` 升序），所以 transport 复用现成的二元游标编解码、**没有第三份编解码**。
+  `where := []string{"1=1"}` 打底也是学 task 那条 —— 上一批刚为"条件全空时拼出 `WHERE  ORDER BY`"红过一次。
+- **契约没给的过滤位我不自挑**：`GET /projects` 的 parameters 只有 cursor + limit ⇒ `ListFilter` 里**没有 status**，
+  ARCHIVED 的那条必须留在列表里；并且 `?status=ACTIVE` 这种未知参数必须被**忽略**（有一条断言盯着它），
+  否则就是给一个契约里不存在的语义开门。C26 那课（字段不许兼职）同一根线。
+- `core/api/http/projects.go`（改）— 同一个 path 上按方法分流：POST 走原路；GET 在**注入了 `ProjectRead` 时**才 200，
+  缺装配时回 **501**（不是 405 —— 按 C28② 那句通用口径，"这条路径不接受 GET"是假话）；PUT/DELETE 这类根本不被接受的方法回 405。
+  响应形状 `items` + `next_cursor`：空表 ⇒ `items: []`（不是 null）、到底 ⇒ `next_cursor: ""`（REQ-F-19 唯一写法）。
+- 用例：transport 三条新的（翻页不重不漏 + 归档留在列表、四个入口闸门含**inbox 三元组游标必须被 projects 拒**、
+  **同一条目在 POST 与 GET 两条出口的键集合必须一模一样**）+ 一条改的（`TestProjectInputGates` 里那句"还没接"改成"缺装配 ⇒ 501"并补 405 那格）；
+  变异 **7/7 FIRED**（第 146 条）。
+- **我自己弄红又自己抓到的一条**：`cmd/core/TestHealthReflectsARealBoot` 一直拿 `GET /projects` 当"还没接"的例子，
+  接通它之后那条断言必然红（原文 `未实现的端点应 501，实际 <nil>`）。处置不是删断言：例子换成 `:read`，
+  并把新接的这条口在**真进程**上钉三格（200 / `items: []` / `next_cursor` 是字符串）。详见第 145 条。
+- `cmd/core/main.go`（改）— 装配补一行 `ProjectRead: c.db.Read`（只读通道，翻页规则不复制进 transport）。
+- 真进程冒烟加到**十项**（第 ⑩ 项 `RESULT_PROJECT_LIST= OK_rows_echoed_same_shape`，00:01:43）。
+- **本批没做的两件，都不是漏**：① `:read` / `:handle` 仍 501 —— T-137 明示"别做"；同时如实上报：它当初给的原因
+  （缺 `notification_read` 常量）**现在已经在盘上**（`events.go:60`/`:94` + 事件契约 §6:234，REQ-DB-5 已闭），
+  解除与否等主控一句话，见 **C31**。② `GET /api/v1/sessions/{id}`（yaml 里有）没接，故意留着 —— 一次一个口。
+
 ## Remaining
 
 - `task.Service` 的其余状态动作：~~`Prepare`/`Pause`/`Resume`~~ **第十六批已交付**（正向写等 REQ-DB-3，见第 79 条）；
@@ -744,8 +853,12 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   yaml 对这四列是 `[string,"null"]` 且无 minLength，不违约，但"NULL 与真空串分不开"按 §12/REQ-F-21 那条线就是该收的形状。
   修法与第二十四批 `Session.SyncCursor` 那一刀相同（改 `*string` + 三态用例）。
 - `session.Service` / `quota.Service` 公开面，以及 §3 新补的 `POST /executions/{id}/send` 所需的面。
-  **REQ-F-21 的 ①② 挂在这条的后半**：`:sync` 端点在盘上还不存在（第二十四批第 104 条：`api/` 里 0 命中），
-  所以"无新条目回显当前位置"今天只是立给未来的规矩、不是交付；第 ④ 条已在第二十四批落到 `session.Session` 的域类型上。
+  **本批更正（第三十一批）**：上一条写的"`:sync` 端点在盘上还不存在（`api/` 里 0 命中）"已作废 ——
+  第三十一批把 `core/api/http/sessions.go` 与 `internal/session/service.go` 建起来了，`POST /sessions/{id}:sync` 脱了 501，
+  REQ-F-21 的 ①③④ 现在是**交付**不是规矩（回显位置 / NULL⇒`null` / 不省略键，三格都有用例）。
+  **仍然缺的是 ②的前半**："有新条目"这一支要 adapter 把远端消息读回来（`internal/adapter/protocol.go` 里没有任何
+  sync/读消息入口，第二十四批实测零命中），所以今天这条口**永远走降级那一支**，`added_messages` 也就无处可数。
+  `session.Service` 半边本批只落了 `SyncFromLocal` 一个方法（不是整套公开面）；`quota.Service` 仍零。
 - §7 垂直链的完整端到端测试属 `test` 角色；我这五包只有 Task 半边（`TestVerticalChainTaskHalf`）。
 - WS 的两件后续：① 用真正的"提交后通知"替掉 `Poll` 轮询（等 EventBus / Scheduler）；
   ② `journalReader` 从 `cmd/core` 迁走（REQ-WS-2 定了归属之后）。
@@ -1082,6 +1195,10 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   **adapter 未连/未实现读消息时，`POST /sessions/{id}:sync` 的语义 = 回显库里已存位置（REQ-F-21 ①）+
   由 `sync_state`/`state_confidence` 表态（②），`added_messages: 0`** —— 认了我下一批就落它，并附真响应形状；
   不认我就继续维持 501，别用"看着像交付"的形状占位。
+  **·T-137 回执并落地（关闭）**：按"先试只读链"的顺序做了，200 降级 / 404 / 503 三格都有用例（第 139~142 条）。
+  与上面这段原文有**两处差别，是按 T-137 的话改掉的**：`added_messages` 不是回 `0` 而是**不出键**
+  （§12/REQ-F-21 ②：不知道就不是 0），置信度固定 LOW。剩的半格（503 要同时发 `adapter_downgraded`）
+  不属这条账，单开 **REQ-B-1**。
 
 - **C26 → 主控（`GET /api/v1/notifications` 的 `state` 缺省口径：我挑了一个，请认或改）**
   契约③ 与 openapi 都把 `state` 列成**可选**查询参数、没写默认值。第二十六批落地时我按"这一口就是 inbox"取了
@@ -1089,15 +1206,65 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   请三选一：① 认下来（我把这句补进契约③ 的参数说明）；② 改成缺省全列 —— 我删掉那两行默认，并把 `limit` 上限一起复核；
   ③ 改成必须显式传 —— 那就变 400 `validation_failed`，前端少一次"以为没有未读"的误判。
   现在钉住行为的是 `TestInboxPagesWithCursor` 与 `TestInboxQueryValidation`；裁哪个我都跟着改断言，**不会留两套都能过的写法**。
+  **·T-137 回执并落地（关闭）**：按 ② 改到根上 —— `ListFilter.State` 变 `*State`、`ListByState` 改名 `ListPage`、
+  缺省那两行删掉，行为三格（缺省 / `state=` 空串 / `state=READ`）一起钉。
+  "不留两套都能过的写法"这句本批当场又用上一次：变异 M1（把缺省折回 UNREAD）FIRED，说明没留第二种过法。
+  主控给的那个决定性事实我**自己复核过**（23:47:33 同一次 `date` 采样里）：`apps/desktop/src/stores/panel.ts:123`
+  确实是 `core.listNotifications({ state: 'UNREAD', limit: 50 })` —— 显式带 state，所以缺省改动对面板零影响，
+  面板拿的还是 `.items`（同文件 131 行），也不受 `next_cursor` 那一侧影响。
+
+- **C30 → 主控（第三十一批我自挑的三个形状，请认或改；都不阻塞，我先按默认落了）**
+  ① **`:sync` 里"完全无 Provider"的可观察判据**：我取的是"这条 Session 本地**既没有一条消息、也没有 `sync_cursor`**"
+  ⇒ 503；只要有其一就走只读链 ⇒ 200 降级。契约给的是顺序（C25），不是阈值，所以这句是我挑的。
+  我**没有**拿"库里 `sync_state=UNAVAILABLE`"当条件 —— 那是"上一次谁标的状态"，不是"今天有没有 Provider 可问"。
+  要改成读 `adapter_instances.health` 那种口径请说一声：那是跨模块读别人家的表，我不想自己决定。
+  ② **`Idempotency-Key` 收下但不强制**：yaml 把这条口的头写成 `required: true`，而它今天**零写入**
+  （没有副作用 ⇒ 幂等记录无处封存，硬要这个头就是让客户端为空操作编一个 key）。现状与 `:queue` 那五个 verb 一致
+  （它们 yaml 也写 required、服务端也不判）。若主控要"声明即强制"，我就回 403，但那会连带
+  `:queue`/`:pause`/`:resume`/`:cancel`/`:accept` 一起改 —— 一次动六个口不是我该自挑的量。
+  ③ **响应里 `state_confidence` 固定 `LOW`**：不端库里那一格（库里可能是昨天从官方实时接口拿的 HIGH，
+  而这次只读了本地字节；§49 原话"只是根据推断：不能标 HIGH"）。契约只说了"明写降级"，这一格是我加的口径。
+
+- **REQ-B-1 → 主控（C25 剩的半格：`:sync` 的 503 今天发不出 `adapter_downgraded`）**
+  事件契约 §6 给这个事件写的 `aggregate_type` 是 `adapter`，而 `platform/db` 的守卫要求事件上的聚合
+  **等于被 Touch 的那个聚合**（现场证据与守卫原文见第 142 条）。三条出路请裁一条：
+  ① 生产者归 adapter（它 Touch `adapter_instances` 才名实相符），我这条腿**豁免**这个事件 —— 我倾向这条；
+  ② 把 §6 那格改成 `session`（我不赞成：事件名说的是"这条连接降级"，挂到 session 名下就是错标归属）；
+  ③ db 开一条"不推进聚合也能登记 adapter 事件"的窄通道（新面，代价最大，而且 §12 那类"没人调的通道"我最不想留）。
+  我**没有**偷偷按 ② 的形状从 session 这条腿发出去 —— 那正是守卫要拦的假账。今天 `:sync` 的 503 只回码、不发事件。
+
+- **C31 → 主控（REQ-DB-5 的原因已经消失，`:read` 还挂着 501，请给一句 go / no-go）**
+  T-137 的原话是"`:read` 仍然别做 —— 它缺 `notification_read` 常量，已派 db（T-136）；**在那之前**保持 501"。
+  00:04:45 实测那个前提已经不成立：`internal/eventjournal/events.go:60` 有 `NotificationRead = "notification_read"`、
+  `:94` 的 `true` 集合含它，事件契约 §6:234 那行补登记（写明"REQ-DB-5 裁定"）也在盘上，
+  `orchestration.md:441` 标"已闭（db 23:05 交付；巡检 23:20:23 复核）"。
+  我要的只是一句解除：**没收到之前我不自作主张开这口**（本批"一次一个口"已经用给了 `:sync` 与 `GET /projects`）。
+  形状我核好了，点头就落：`aggregate_type=notification`、payload 四键与 `_handled` 同形
+  （`notification_type` `priority` `task_id` `approval_id`）、状态边是 `UNREAD→READ` 且写 `read_at`；
+  还有一句要顺带裁：**重复 `:read` 一条已 READ 的通知**该回什么（我倾向 200 幂等回显当前状态、**不再发第二个事件**，
+  这与 §8 的"重放复用同一批 id"同源，但事件数会不会因此变成 2 需要你认）。
 
 - **C28 → 主控（第二十九批我自挑的两个形状，请认或给名）**
   ① `POST /projects` 的 canonicalize 路径冲突，我发的是 **`409 duplicate_project_path`**。
   契约② 的错误码词表还没收口（REQ-F-4），这名字是我起的 —— 给个既成词我就跟着换（同 C21/C26 那串"我没静默发明"的账）。
   ② 同一个 path 上 `GET /api/v1/projects` 我按方法分流回 **501**（yaml 里它有定义），而不是回 405 说"这方法不支持"；
   我认为 501 才是实话（能力没接、不是方法不对），但这条如果和主控的统一口径冲突，说一声我改。
+  **·T-137 回执（关闭）**：① `duplicate_project_path` 已按 `—` 形态收编进契约② §15.2.1，我不改名；
+  主控同时把这条收编的代价如实报了（`test` 那条 C8-8 字面基线因此判红，修法是那侧改判据、不回退契约）。
+  ② 口径升成通用规则："路由存在、方法合法、能力没接线 ⇒ 501；方法本身不被这条路径接受 ⇒ 405"，
+  第三十一批已把它落成 `TestSyncMethodAndUnwiredVerbs` 的三种可观察形状（405 / 501 / 畸形路径 501）。
   ③ 另外两件是**我故意没做**的，别当成漏项：`GET /projects` 的 keyset 分页（下一批，见 Next action）、
   `:archive` 之后同一把路径键可复用（那格我没有用例假装验过，因为 `:archive` 还不存在）。
 
+- **C29 → adapter / test（通报，不需要点头；T-133② 的桥已落在 `cmd/core/processpipe.go`）**
+  形状就是 §7.2 那句：`Launcher.Start(ctx, adapterKey) (io.ReadWriteCloser, error)`，**无期限的 ctx 一律拒**
+  （`errNoDeadline`，错误里带 key）。两个当场实测的事实请写进你们那侧口径：
+  ① `process.Supervisor.Stop` 的 `Kill` 对"已经退出、且被 `Start` 那个 `cmd.Wait` 回收过"的孩子返回的是
+  **EINVAL**（Windows / Go 1.27 `os/exec_windows.go` statusReleased 那一格），**不是** `os.ErrProcessDone` ——
+  照抄这座桥的人若不区分，会把"孩子本来就不在了"报成关闭失败（我这里收成 `childAlreadyGone` 一格，测试见 M5）；
+  ② 想在测试里造"一声不出也不退"的子进程，`select {}` 会被 runtime 判 `all goroutines are asleep - deadlock` 直接 fatal
+  （实测退出码 2），得挂在管道读上 —— 我上一批那条"SILENT 的 Close 变异"就是栽在这儿，观察面选错了不是断言弱。
+  probe 仍未接线（T-133①），`newLauncher` 目前只有我自己的用例在调。
 - **C27 → 主控（T-109 的排序前置已达成，而且现在这半天的形状是"活的 §2.2.1 缺陷"，请放行或明确继续压）**
   14:25 那句"排在 db 的 T-107 之后（拿不到导出入口就没东西可注）"里的**理由今天已经不成立**：
   `db.Scrub` 已导出（`internal/platform/db/redact.go:194`，14:37:09 实测），audit 侧 `Chain.Scrub` 字段与
@@ -1237,6 +1404,50 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   `if cursor.Valid && cursor.String != ""` 才给指针，否则 nil
 - `core/internal/session/repository_test.go`（改）— 新增真表用例 `TestSyncCursorKeepsNullApartFromAPosition`（NULL / `'20'` / 存进去的 `''` 三态）
 - `core/cmd/core/**`、`core/api/**`、`internal/task|execution|quota|notification/**` — **本批一个字没动**（A18-3 未裁；`:sync` 不存在）
+- `.qoder/progress/backend.md`（本文件）
+
+第三十二批（Next action：`GET /api/v1/projects` 脱 501 + 我自己那条被接通弄红的真进程用例）：
+- `core/internal/project/service.go`（改）— `Queryer` 加 `QueryContext`、`Get` 的扫描提成 `scanProject`、
+  新增 `ListFilter`（只有 cursor + limit，**没有 status**）与 `ListPage`（keyset，非 OFFSET）
+- `core/api/http/projects.go`（改）— 方法分流（POST 原路 / GET 需 `ProjectRead` 否则 501 / 别的方法 405）、
+  `listProjects`（limit 1~200、复用 `encodeCursor`/`decodeCursor`、空页 `items: []`、到底 `next_cursor: ""`）
+- `core/api/http/projects_test.go`（改）— harness 加变参 `withRead`（不复制那 30 行装配）、
+  新增 `newProjectHarness(t, true)` 三条用例 + `pageIDs`/`keySet` 两个 helper、
+  `TestProjectInputGates` 里"还没接"那格改成"缺装配⇒501"并补 PUT⇒405
+- `core/cmd/core/main.go`（改）— 装配补 `ProjectRead: c.db.Read`
+- `core/cmd/core/core_test.go`（改）— `TestHealthReflectsARealBoot` 的 501 例子换成 `:read`，新增真进程 200 三格断言
+- `.scratch/backend/t47-smoke.sh`（改）— 第 ⑩ 项：真进程 `GET /projects` 读回 ⑧ 建的那条
+- `.qoder/progress/backend.md`（本文件）
+
+第三十一批（T-137：C26 改到根上 + C25 让 `:sync` 脱 501）：
+- `core/internal/session/service.go`（**新建**）— 三条哨兵错误 + `SyncOutcome` + `Service.SyncFromLocal`
+  （只读链判定、降级固定 LOW、"没有位置也没有消息"= `ErrNoLocalData`）
+- `core/internal/session/service_test.go`（**新建**）— `TestSyncFromLocalDecidesTheThreeWays`（五格）
+  + `TestAdapterDowngradedCannotRideASessionTouch`（REQ-B-1 的现场证据，含"被拒的写不许留下痕迹"）
+- `core/api/http/sessions.go`（**新建**）— `SessionSyncer`、`syncResultView`（required 两键 + 可选 confidence，
+  **无 added_messages**）、`registerSessionRoutes`、`splitSessionVerb`（不照抄 `splitTaskAction`：它不认"没有 verb"）、
+  `syncSession` 的错误映射表（404 / 503 / 500）
+- `core/api/http/sessions_test.go`（**新建**）— 6 条：200 降级形状 + 零写入两把尺、NULL 游标、503、404、
+  405/501/畸形三格、没注入仍 501
+- `core/internal/notification/repository.go`（改）— `ListFilter.State` → `*State`、`ListByState` → `ListPage`、
+  WHERE 改条件拼接（顺带修掉无过滤时的 `near "ORDER"` 语法错）、两条错误文本不再打点 state
+- `core/api/http/notifications.go`（改）— 删掉"缺省 UNREAD"两行、`state` 变可选指针、lister 接口跟着改名
+- `core/internal/notification/service_test.go`、`core/api/http/notifications_test.go`（改）— 改名跟着走 +
+  新的"不过滤"正证（含手抄的第二份期望序）+ transport 三格（缺省 / `state=` / `state=READ`）
+- `core/api/http/handler.go`（改）— `Config.Sessions` + `registerSessionRoutes` 一行
+- `core/cmd/core/main.go`（改）— 注入 `Sessions`（只给读的 Repository）+ 一行 import
+- `.scratch/backend/t47-smoke.sh`（改）— 第 ⑨ 项：真进程上 `:sync` 的 404 与未接线 GET 的 501
+- `.qoder/progress/backend.md`（本文件）
+
+第三十批（T-133②：REQ-T12 的桥 + 自己那个"管道一交付就过期"的 bug）：
+- `core/cmd/core/processpipe.go`（**新建**）— `launcher`（实现 `adapter.Launcher`，拒无期限 ctx / 应用装配方默认期限）
+  + `duplexPipe`（Read/Write 先问期限再问关闭；Close = Stop+CloseStreams+交还 cancel）+ `childAlreadyGone`
+- `core/cmd/core/processpipe_test.go`（**新建**）— 自执行 helper 子进程三形（echo/silent/exit）、`capturePID`、`requireProcessGone`
+  与 5 条用例（含 `TestLauncherPipeRoundTrips` 的 `caller-deadline`/`assembly-default` 两个子用例）
+- `core/cmd/core/main.go`、`core/api/**`、`internal/{task,execution,session,quota,notification,project}/**` — **本批一个字没动**
+  （probe 未放行 ⇒ `newLauncher` 故意没有调用点）
+- `.scratch/backend/killprobe/`（一次性探针，非交付物）— 实测 `select{}` 孩子退出码 2、`Kill` 对已回收孩子是 EINVAL、
+  挂在管道读上的孩子活着且 Kill 返回 nil；本批收尾按具名清掉
 - `.qoder/progress/backend.md`（本文件）
 
 第二十九批（T-130②：`internal/project` 建起来 + `POST /projects` 脱 501）：
@@ -2620,27 +2831,151 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
      （`probe_store_sqlite.go:143/146/254/289`），而 `go build ./internal/project/ ./api/... ./cmd/core/` 同期 OK ——
      也就是说 `internal/adapter` 的红**不在我的依赖链上**（cmd/core 不 import adapter），我九包重跑不受它影响。
      但 `go test ./...` 全仓会红在这一包：请主控与 adapter 对时间线，别按"backend 交上来是红的"算账。
+135. **第三十批交付级重跑（23:07:05 → 23:07:09）**：九包显式清单 `-count=1` 全 ok ——
+     `internal/task` 2.039s / `execution` 1.601s / `session` 1.353s / `quota` 1.352s / `notification` 1.496s /
+     `project` 1.444s / `api/http` 1.098s / `cmd/core` 2.413s（桥那五条 0.895s 的单跑在 23:04:32）。
+     `gofmt -l cmd/core/` 空、`go vet ./cmd/core/` 空 —— 顺带证了一件我以为会被拦的写法：
+     `cancel` 不 `defer` 而是存进结构体字段，**vet 的 lostcancel 不报**（它只看函数内是否调用）。
+     写完账之后又复跑一遍（交到货上的最后一条）：**23:14:08 → 23:14:12 九包仍全 ok**
+     —— 这一遍之后我没再碰代码，只动了本文件与 scratch；但 23:14:55 的 `git status --short` 原文里有
+     ` M core/test/errcode_mapping_test.go`、` M specs/openapi/core-v1.yaml`、` M packages/api-client/src/gen/schema.ts`
+     （都不是我的），所以第 136 条那句"全仓 exit 0"是 **23:07:35 那一刻的采样**，不是对别人在途改动的担保。
+     我那两份新文件在 `git diff --stat HEAD` 里**看不见**（只在 status 里：`?? core/cmd/core/processpipe.go`、
+     `?? core/cmd/core/processpipe_test.go`）—— 又是"只看 diff --stat 会漏未跟踪文件"那条老坑，所以两条一起交。
+136. **全仓跑了一遍，一个包都没跳（T-133① 的新口径）：`go test -count=1 -timeout 120s ./...` 23:07:27 → 23:07:35，exit=0，
+     18 包全 ok**，含不是我范围的 `internal/adapter` 2.159s、`internal/process` 5.994s、`internal/approval` 5.044s、
+     `api/websocket` 4.765s、`cmd/fake-adapter` 3.703s、`internal/platform/db` 3.653s、`test` 4.467s。
+     两点只读观察，不替别人下结论：① 第 134 条那 4 处 `internal/adapter` 编译错、以及 T-132 那两条 probe 死锁，
+     **此刻在我这台机器上跑不出来**（它绿）—— 归因归 adapter，我只报"全跑绿"；
+     ② `-timeout 120s` 是我为"别把死锁跑成 10 分钟"选的，若有包 legitimately 慢过 120s 会假红，
+     本次输出里没有任何 `test timed out` 行（全绿，无超时）。
+137. **桥的变异判决（23:05:52~23:06:26 + M5 单跑，5 条全 FIRED）**：
+     M1 默认期限缺失时不拒 → `TestLauncherRefusesADeadlinelessContext`；M2 读前不看期限 → `TestLauncherDeadlineBoundsReads`；
+     M3 `Close` 不叫 `Supervisor.Stop` → 同 M2（**上一批这一格是 SILENT，现在才咬得住** —— 改的是观察面：
+     helper 不再 `select{}` 秒死，孤儿检查挂在一个真的活着、且关掉 stdin 也不退的进程上）；
+     M4 把 `cancel` 退回 `defer` → `TestLauncherPipeRoundTrips`（`/assembly-default`，正是我本批修掉的那个 bug 的形状）；
+     M5 `Close` 不容忍已退的孩子 → `TestLauncherCloseToleratesAChildThatAlreadyDied`，原文
+     `processpipe_test.go:134: 孩子已经自己退了，Close 该如实成功，实际 kill: invalid argument`。
+     两条如实的话：① M5 在批量脚本那一遍**没打印出判决行**（终端把它吞了），我是单独重跑取到上面这段原文才计 FIRED 的；
+     ② "去掉 `Close` 的幂等守卫"这一格我**没验**，因为按现有观察面它测不出来（第二次 Stop 的 Kill 只会拿到被 `childAlreadyGone`
+     容忍的 EINVAL，外部行为完全相同）⇒ 为不存在的差别加个计数器不划算，记在这儿而不是当成断言。
+     变异全程走"锚点必须命中恰好 1 次 + 跑完按原始字节复原并 assert 相等"（一次性脚本 `.scratch/backend/mut_bridge.py`，
+     23:13:10 已按具名清掉 —— 判决的原文在上面，不在脚本里）。
+138. **表名字面量仍是我没加数的那三条（23:08 实测，`cmd/core` + `api/http` 全量 grep）**：
+     非测试文件里 `api/http/tasks.go:434`、`:460` 两个 `"idempotency_keys"` 与 `cmd/core/main.go:193` 一个 `"principals"`
+     —— 与主控 22:36 记的口径逐条相同，本批两份新文件**零命中**（口径只数非测试文件；测试里的 `"tasks"`/`"audit_entries"`
+     是按表名读回行的取证，不是写侧字面量，这一句我先按现有判据记着，若主控认为测试也算，请连这条一起裁定）。
+
+139. **第三十一批交付级重跑**：八包显式清单 `-count=1` **23:41:46 → 23:41:50** 全 ok
+     （task 2.331s / execution 1.864s / session 1.613s / quota 1.566s / notification 1.734s / project 1.623s /
+     api/http 1.492s / cmd/core 2.556s）；**全仓 `go test -count=1 -timeout 120s ./...` 23:42:50 → 23:42:59 = 18 个 `ok`、
+     没有一行 FAIL、这一遍同样没跳包**；gofmt -l 空、`go vet` 空。
+     三个动过的包按 `-v` 数过再报（不数就不知道有没有"跑零个用例也 ok"的那格）：
+     `api/http` **41 个 `=== RUN` = 31 条顶层 PASS + 10 条子用例 PASS**、`internal/session` 8/8、
+     `internal/notification` 6/6，`--- FAIL` 与 `--- SKIP` 都是 0。
+     我那 6 条 `TestSync*` 在输出里出现 12 次（RUN+PASS 各一），逐条对得上。
+     交付前还跑了 `test` 角色那份**只读** lint（`bash scripts/check_ownership.sh`，23:49:17→23:49:58，末次读到"0 项越界"）：
+     "本次扫描 0 项越界"，其中与我本批相关的两腿是 §7 归属（新建的 `internal/session/service.go`、
+     `api/http/sessions.go` 都在我名下）与 §6.3 三处同步（我没加事件名、没加资源前缀 ⇒ 那两行的 18/12 计数没动）。
+140. **C25 / C26 的变异判决（23:39:35 一批 + 23:39:48 补跑，10 条全 FIRED）**：
+     M1 把缺省又折回 UNREAD → `TestInboxPagesWithCursor`；M2 无条件拼 WHERE → 同一条（当场就是 500）；
+     M3 端出库里的旧 HIGH → `TestSyncDegradesAndEchoesStoredPosition`；M4 原样端出 `SYNCED`（= 假装真同步）→ 同一条；
+     M5 让 503 那一支永不触发 → `TestSyncWithoutAnythingLocalIs503`；M6 删掉 503 那格映射 → 同一条；
+     M7 把未接线的 501 换成 405 → `TestSyncMethodAndUnwiredVerbs`；M8 放过空 id → 同一条
+     （这条是我**先补了用例再改的判据**：加了"空 id / 空 verb / 多一段路径"三格，M8 才有得咬）；
+     M9 把 NULL 游标回成空串 → `TestSyncDegradesAndEchoesStoredPosition`；M10 让 `added_messages: 0` 出键 → 同一条。
+     **如实记一条流程错**：M5 第一遍写的是 `if false {`，Go 当场报 `declared and not used: msgs` —— 那是 BUILD-BROKEN
+     不是判决，改成 `len(msgs) == -1` 重跑才拿到 FIRED（原文 `--- FAIL: TestSyncWithoutAnythingLocalIs503`）。
+     两条我**没有**用变异证的断言，理由写在这儿而不是假装全绿：`零写入`（version/updated_at 合值 + `event_journal` 行数）
+     与 `added_messages 不出键` 是**防未来**的性质，现有代码里没有反面分支可拆（M10 证明的正是"将来谁加这个键就会被咬"，
+     而"将来谁在这里写库"我没有对应的现存代码可变异）。
+141. **真进程第九项（23:41:27）**：`t47-smoke.sh` 跑完 ①~⑨ 全 OK，新那一项原文
+     `HTTP=404 {"error":{"code":"session_not_found",...}}` + `HTTP=501 {"error":{"code":"not_implemented",
+     "message":"sessions 这一腿只接了 :sync；GET 与别的 custom verb 都还没接线",...}}` ⇒ `RESULT_SYNC= OK_session_not_found_and_unwired_get_is_501`。
+     **它测不到的那半我也写清**：真进程的数据目录被单实例锁 + 串行写通道占着，我没有从外面往 `sessions` 塞行的合法路子，
+     所以"200 降级那一支"只在 httptest 的真库里证过（同一套迁移、同一个 Service），真进程这遍只证到路由活着、判定打到真库。
+142. **REQ-B-1 的现场证据（`TestAdapterDowngradedCannotRideASessionTouch`，在那八包里一起绿）**：
+     从 session 这条腿发 `adapter_downgraded`，守卫原文
+     `event adapter_downgraded: aggregate_type "adapter" but touching "session"`；同一笔事务被拒之后
+     `sessions.sync_state` 仍是 `UNKNOWN`（这条断言是防"守卫炸了但写留下半行"）。所以 C25 那半格今天只能欠着，不是我没做。
+143. **我自己上一批的计数错（更正，不改历史时间戳只补一句）**：第 135 条与当时那行 checkpoint 写的"**九包**全绿"，
+     按当时那条显式清单其实只有 **8 个包**（task/execution/session/quota/notification/project/api/http/cmd/core）——
+     "九"是第二十九批 `./api/...` 那种写法带过来的（那个清单里 api 是两个包）。已在本批 checkpoint 里改成"八包"并留这条更正。
+     同一趟还发现：表名字面量的那三条里 `cmd/core/main.go` 从 `:193` 漂到 **`:194`**（我本批给 main.go 加了一行 import），
+     条数没变、我没加过任何新写侧字面量（第 138 条的三条口径仍然成立）。
+144. **第三十二批交付级重跑（八包 00:03:43 → 00:03:47 全 ok）**；`internal/project` + `api/http` 两包按 `-v` 数过：
+     **48 个 `=== RUN` = 38 顶层 PASS + 10 子用例，`--- FAIL` 与 `--- SKIP` 都是 0**；
+     **全仓 `go test ./...` 00:03:55 → 00:04:11 两遍：第一遍除 `^ok ` 之外零行输出、第二遍数到 18 个 `ok` ⇒ 18/18、没跳包**。
+     gofmt -l 空、`go vet ./internal/project/ ./api/http/ ./cmd/core/` 空。
+145. **本批我弄红过一条真进程用例，当场自己抓到（00:02:00）**：`cmd/core/TestHealthReflectsARealBoot` 原文
+     `core_test.go:104: 未实现的端点应 501，实际 <nil>` —— 原因是那条用例一直拿 **`GET /api/v1/projects`** 当"还没接的面"的例子，
+     而我把这条口接通了，它现在回 200 且 `getJSON(..., nil)` 根本不报错。
+     **这不是 flaky、也不是别人的在途改动**（时间线：红在我自己那次装配之后，且 `internal/project`/`api/http` 同秒全绿），
+     修法是换例子 + 把新行为钉上，不是把断言删掉：`"仍未实现"的例子换成 `notifications/{id}:read`（还等装配），
+     另外新增三格真进程断言（`GET /projects` 该 200、空库 `items` 是 `[]` 不是 null、`next_cursor` 是字符串键）；
+     改完 00:03:43 那遍复跑全绿。顺手只读确认了**没有别人的用例挂在这格上**：
+     `grep -rn "api/v1/projects" core/test/` 与 `grep -rn "not_implemented" core/test/` **都是 0 命中**（我读了原文，不是只看退出码）。
+146. **第三十二批的变异判决（00:00:52 一批 + 00:01:2x 补跑 N8，7 条全 FIRED）**：
+     N1 去掉 keyset 谓词 → `TestListProjectsPagesWithCursor`（第二页重复第一页）；N2 序反过来 → 同一条；
+     N3 自作聪明加 `status = 'ACTIVE'` 过滤 → 同一条（p-c 那条 ARCHIVED 掉出去，且"未知参数被忽略"那格一起红）；
+     N4 短页也给 next_cursor → 同一条；N5 空页回 `items: null`（`var views` 代替 `make(...,0,n)`）→ 同一条；
+     N6 缺读通道时把 501 换成 405 → `TestProjectInputGates`（这正是 C28② 那条口径的牙齿）；
+     N8 放过非法游标（`if false && err != nil`）→ `TestListProjectsQueryGates`。
+     两条流程如实：N8 第一次锚点按记忆写了四段缩进 ⇒ `ANCHOR-INVALID-0`（**没匹配上不算判决**，改对缩进重跑才拿到 FIRED）；
+     测试数据里的反斜杠被 shell heredoc 吞过一层（`"d:\\p\\"` 落到盘上成了 `"d:\p\\"` ⇒ Go 报 `unknown escape sequence`），
+     我的处置是**把反斜杠从新增夹具里整个拿掉**（列表用例不需要路径形状，canonicalize 已由第二十九批钉过），
+     而不是继续跟转义层数较劲 —— 终端显示反斜杠也不可信，判据是 `python repr`。
+147. **`GET /projects` 的游标没有第三份编解码**：直接复用 tasks 那对二元 `encodeCursor/decodeCursor`
+     （`created_at|id`，同一条"分页只承认空串表示到底"的口径），所以本批只新增 0 个编解码函数；
+     反向也有牙齿 —— 把 inbox 那套三元组喂给 projects 必须 400，`?cursor=...` 那条在 `TestListProjectsQueryGates` 里。
+148. **巡检 23:00 三条的当场回读（00:05 实测）**：① 合验环境可用 —— 我这遍全仓 18/18 就是它的一个采样；
+     ② 他们说那条 `cmd/core/TestLauncherDeadlineBoundsReads` 的 FAIL 还是我的：那是 **22:56:35→22:56:43 的采样**，
+     我在 **23:04:32** 已修（根因与判决见第 137 条），00:02:29 与 00:03:43 两遍里它是 PASS；
+     ③ `Recorder` 的第四方法 `RecordDrop` 与我无关的实证：`grep -n "type Launcher" -A 3 internal/adapter/probe.go`
+     现盘仍是 `Start(ctx, adapterKey) (io.ReadWriteCloser, error)`（:85-87），我的桥有编译期断言
+     `var _ adapter.Launcher = (*launcher)(nil)` 钉着，而 `Supervisor.Rec` 是 **nil**（不实现该接口 ⇒ 四方法还是三方法都不咬我）；
+     **但 REQ-DB-6 裁下来之后我实现 `Recorder` 时要按四方法写** —— 这条已经写进桥顶部的注释里防"按记忆写"。
+149. **REQ-DB-5 的前提已经在盘上，而 `:read` 我仍然挂着 501（00:04:45 实测）**：
+     `internal/eventjournal/events.go:60` 有 `NotificationRead = "notification_read"`、`:94` 的 `true` 集合含它，
+     事件契约 §6 的补登记行（`:234`，写明"REQ-DB-5 裁定"）也在；`orchestration.md:441` 那行标的是"已闭（db 23:05 交付）"。
+     T-137 那句"`:read` 仍然别做"给的原因是"缺常量"，**原因现已不成立**，但指令是明示的、而且"一次只开一个口"本批已被
+     `:sync` 与 `GET /projects` 用完 ⇒ 我**不自作主张开这口**，改为请主控一句话解除（见 C31，形状与 payload 键我已按 §6 那行核过，
+     一句 go 就能落）。
 
 ## Recovery note
 
-- **当前（第二十七批之后；本机 `date` 实测见头部 `LAST_UPDATED`）**
+- **当前（第三十一批之后；本机 `date` 实测见头部 `LAST_UPDATED`）**
   §2.2.1 在 backend 这侧已收口：§5.4 的审计链现在"密封前脱敏 → 哈希盖落库字节 → 调用者写归因行"，
   `TestSealCoversTheBytesThatLand` 是真闸门（不再是 SKIP）。等主控点头的两件小形状写在 C27 回执里
   （派生 `audit_id` vs UUIDv7；`RedactionHit` 搬运归谁）。
-  Interruption point: 八包全绿（第 116 条，14:19:09→14:19:15）+ 真进程七测全 OK（含新加的 `RESULT_INBOX=`）+ scratch 已按具名清干净（14:13:48）。
+  第三十批新落的一件事：**REQ-T12 的那半座桥在盘上**（`core/cmd/core/processpipe.go`：`launcher` 实现 `adapter.Launcher`，
+  拒无期限 ctx、`duplexPipe` 交回一根双工管），但**故意没有调用点** —— probe 未放行（T-133①），`main.go` 不装它。
+  Interruption point: **八包**全绿（第 139 条，23:41:46→23:41:50）+ **全仓 18 包 `./...` 零 FAIL、这一遍也没跳包**
+  + 本批变异 **10/10 FIRED**（第 140 条，含 M5 那条先 BUILD-BROKEN 后重跑的如实记录）
+  + 真进程冒烟九项全 OK（第 141 条）+ scratch 已按具名清掉（`killprobe/`、`mut_bridge.py`、`all.log`、`234123-t49/`、
+  `mut_sync.py`；没用通配符，`t47-smoke.sh` 是常驻工具不动）。
   transport 面：health / ws-ticket / `/ws/v1/events` / `/api/v1/tasks` 的 POST+GET+`:queue`+`:pause`+`:resume`+`:cancel`+`:accept` 已通，
-  第二十六批又通了 **`GET /api/v1/notifications`**（带 keyset 游标，空页 `items: []`、`next_cursor: ""`）；
-  其余仍 501（含 `:read`/`:handle`、`/api/v1/projects`、`adapters/{key}/probe`、`sessions/{id}:sync`）。
+  第二十六批通了 **`GET /api/v1/notifications`**（带 keyset 游标，空页 `items: []`、`next_cursor: ""`；
+  第三十一批按 C26 把 `state` 缺省改成**不过滤**），
+  第二十九批通了 **`POST /api/v1/projects`**（canonicalize + 冲突 409），
+  第三十一批通了 **`POST /api/v1/sessions/{id}:sync`**（只读链降级 200 / 404 / 503，今天零写入、零事件）；
+  其余仍 501（含 `:read`/`:handle`、`GET /api/v1/projects`、`adapters/{key}/probe`、`GET /api/v1/sessions/{id}`）。
   写侧：`task.Service` 的 Create/Queue/Prepare/Pause/Resume/Cancel/Accept/ApplyExecutionEvent 全在（pause/resume 的**正向写**仍等 REQ-DB-3）；
   `execution.Service` 有 Create/Started（再往前那一格等 REQ-DB-4）；`cmd/core` 有 §5.4 reporter + `auditedStore` 提交后交账 + ADR-018 锚点三件
   （锚点那三件的**判据形状变了**：audit 按 seq 差计账，我那两条用例已按新规则用真行重写，见第 110 条）；
-  session 侧只有 `Session.SyncCursor` 的形状改动（REQ-F-21 ④，第二十四批）。
+  **session 侧本批第一次有了 Service（`SyncFromLocal`，只读）与消费者（`cmd/core` 注入）** —— 写侧仍为零，
+  `session_synced` 今天没有生产者（那是刻意的：没推进聚合就不许发它）。
   等别人：REQ-DB-2 / REQ-DB-3 / REQ-DB-4 / REQ-P-1（现在只剩一句归属裁定，平台侧已就绪）/ REQ-AD-1 /
-  REQ-A-4 / C19 / C24 / **C25（`:sync` 在 adapter 未连时的语义）** / **C26（notifications 的 `state` 缺省）** /
+  REQ-A-4 / C19 / C24 / **REQ-B-1（503 那半格发不出 `adapter_downgraded`，见第 142 条）** /
+  **C30（`:sync` 的三个我自挑形状：503 阈值、幂等待遇、置信度固定 LOW）** /
   **REQ-DB-5（`notification_read` 全仓 0 命中，`:read` 落不了库）** /
   **A18-3（裁完之前不接第二条交账腿；新口径下双计结构上不成立，第 110 条有行为级断言）**。
-  First action after recovery: 先重跑 `## Current checkpoint` 里那条八包命令确认仍绿（audit 那边还会动 `internal/audit`，
-  开工前先看 `go build ./internal/audit/`），再做 checkpoint 唯一那条 Next action（落 `GET /api/v1/notifications`，一次只开这一个口）。
+  本批关闭的账：**C25（`:sync` 语义）、C26（`state` 缺省）、C28（两个项目形状 + 501/405 通用口径）**。
+  First action after recovery: 先重跑 `## Current checkpoint` 里那条**八包**命令确认仍绿（audit / db 那边还会动，
+  开工前先看 `go build ./internal/audit/ ./internal/platform/db/`），再做 checkpoint 唯一那条 Next action
+  （落 `GET /api/v1/projects`，一次只开这一个口）。**别顺手把 probe 接上**（T-133① 仍生效），
+  也**别给 `Supervisor` 装 `Rec`**（REQ-DB-6 未裁），更**别从 session 这条腿发 `adapter_downgraded`**（REQ-B-1 未裁，
+  守卫会当场拒，第 142 条那条用例就是钉这一格的）。
 - 下面两条是第十六批时期的旧记录，原文保留不改（那是当日口径），已被上面的当前块取代：
 - Interruption point: 八包全绿（第 54 条）。transport 面已有 health / ws-ticket / /ws/v1/events
   （含真栈端到端用例，且契约③ §2 的三条入站帧约定服务端都拦得住了，第 57 条），

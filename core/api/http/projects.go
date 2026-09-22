@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/SadCat18/lucero/core/internal/platform/db"
@@ -70,20 +71,75 @@ func projectViewOf(p project.Project) (projectView, error) {
 		ArchivedAt: nullableMillis(p.ArchivedAt)}, nil
 }
 
-// registerProjectRoutes：POST 已通，GET 还晚一批 —— 同一个 path 上按方法分流，
-// 没实现的那一半**明确 501**，不返回半套面也不假装 405（yaml 里 GET 是有定义的）。
+// registerProjectRoutes：POST 与 GET 两条腿按 C28② 那句通用口径分流 ——
+// **路由存在、方法合法、能力没接线 ⇒ 501；方法本身不被这条路径接受 ⇒ 405**。
+// 所以：注入了读通道之前 GET 回 501（不是 405，"这条路径不接受 GET"是假话），
+// 而 PUT/DELETE 这类路径根本不收的方法回 405。
 func registerProjectRoutes(mux *http.ServeMux, c Config) {
 	if c.Projects == nil || c.Store == nil {
 		return
 	}
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"GET /api/v1/projects 这一腿还没接；POST 已可用", true)
+		switch r.Method {
+		case http.MethodPost:
+			createProject(w, r, c)
+		case http.MethodGet:
+			if c.ProjectRead == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"GET /api/v1/projects 这一腿还没装配读通道；POST 已可用", true)
+				return
+			}
+			listProjects(w, r, c)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				"/api/v1/projects 只接受 GET 与 POST", false)
+		}
+	})
+}
+
+// listProjects 只做解析/校验/投影：翻页与排序规则住在 project.ListPage（契约③ §7）。
+// 游标沿用**分页**那一套（`next_cursor: ""` 是"没有下一页"的唯一写法，REQ-F-19），
+// 与 tasks 的编解码同形，所以直接复用 encodeCursor/decodeCursor —— 第三份编解码只能给同步游标。
+func listProjects(w http.ResponseWriter, r *http.Request, c Config) {
+	q := r.URL.Query()
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 200 {
+			writeError(w, http.StatusBadRequest, "validation_failed", "limit 必须是 1~200", false)
 			return
 		}
-		createProject(w, r, c)
-	})
+		limit = n
+	}
+	f := project.ListFilter{Limit: limit}
+	if cur := q.Get("cursor"); cur != "" {
+		at, id, err := decodeCursor(cur)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "validation_failed", "cursor 不合法", false)
+			return
+		}
+		f.AfterCreatedAt, f.AfterID = at, id
+	}
+	items, err := project.ListPage(r.Context(), c.ProjectRead, f)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	views := make([]projectView, 0, len(items))
+	for _, p := range items {
+		v, err := projectViewOf(p)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		views = append(views, v)
+	}
+	next := ""
+	if len(items) == limit && len(items) > 0 {
+		last := items[len(items)-1]
+		next = encodeCursor(last.CreatedAt, last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
 }
 
 func createProject(w http.ResponseWriter, r *http.Request, c Config) {

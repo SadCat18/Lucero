@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SadCat18/lucero/core/internal/project"
 )
 
 // Health 是 GET /api/v1/health 的响应体（契约③ §3 的四字段）。
@@ -109,6 +111,11 @@ type Config struct {
 
 	// Projects + Store 都在时才挂 POST /api/v1/projects（写侧要事务通道）。
 	Projects ProjectService
+	// ProjectRead 在时才挂 GET /api/v1/projects；缺它就回 501 而不是 405（C28② 的口径）。
+	ProjectRead project.Queryer
+
+	// 注入时才挂 POST /api/v1/sessions/{id}:sync（今天只有只读链这一格能力）。
+	Sessions SessionSyncer
 }
 
 // NewHandler 装出 /api/v1 面：除 /health 外全部要求 Bearer；带 Origin 的外部请求 403；
@@ -118,6 +125,7 @@ func NewHandler(c Config) http.Handler {
 	registerTaskRoutes(mux, c)
 	registerNotificationRoutes(mux, c)
 	registerProjectRoutes(mux, c)
+	registerSessionRoutes(mux, c)
 
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

@@ -3,8 +3,17 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-22T23:09:14+08:00（T-139 轮；交付前最后一次全量重跑 **23:08:53**、五步 exit 全 0。
-基线 `2297a8d`。上一轮 T-127/T-128（15:37:42，基线 `4f7fb43`）已入库，其"最后一次重跑"口径继续按那段读，别拿本轮数字覆它）
+LAST_UPDATED: 2026-09-22T23:45:26+08:00（T-144 子轮：§6 词干按契约字面改成"第一个全名" + 歧义守门 E/F；
+闸门 **23:42:43** 五步全 exit=0（`gates-t144.txt`）；T-140 的 live **23:37:11 16 passed / 0 skip** 仍指当前代码：
+23:37:11 之后只有 `gen/schema.ts`（codegen 自写）与 `validate-openapi.mjs`（23:42:21）被动过，运行时代码与 yaml 未变。
+基线读到 `a1b8664`→`e4b214b`。更早各轮（T-139 23:08:53 / T-127+T-128 15:37:42）的"最后一次重跑"口径按原段读，别拿本轮数字覆它们）
+
+> **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
+> 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
+> ①集合对拍 + ②喂合成反例给同一个判定函数。我这台的形状已经是两条腿：
+> ① `EventType enum ↔ §6 目录双向相等 62 类`；② 探针 C（孤儿 `_xxx` 必须报错）/ D（词干展开出的是哪个名字）/
+> E（两个全名词干不同 + 有简写 ⇒ 停下来）/ F（整行写全的行必须放行，别误杀约定④）。
+> 今天 §15.2 的行没被那次编辑动到，所以守门没有受在途改写影响（23:42 与 23:44 两次解析都是 30 行 = 17 + 13）。
 
 ## Objective
 
@@ -616,3 +625,147 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
   （补掉 09-21 那条"10/10 只有台账、无原始输出"的缺口）。期间不动契约文件；阻塞前提一旦消失当轮改这行并附 grep 证据（T-80）。
 - Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
   （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`；退出码一律在无管道处取）
+
+## T-140 轮（§4 第一格接真 Core + §6 目录解析器补上）· 本机 date 2026-09-22T23:37:54+08:00
+
+### 先按 T-80 反查了那句过期阻塞，结论：巡检说的对
+现场读码（不是我转述）：`core/api/http/handler.go:120` 有 `registerProjectRoutes(mux, c)`；
+`projects.go:79` 那个 `mux.HandleFunc("/api/v1/projects", …)` 里 `if r.Method != http.MethodPost` 才回 501，
+文案逐字是"GET /api/v1/projects 这一腿还没接；POST 已可用"。
+⇒ **POST 通了、GET 仍 501**，我那句"等三个端点脱 501"确实过期一半，已改（见文末 checkpoint）。
+`:sync` 与 `probe` 两格仍 skipped，没拿它们凑绿。
+
+### ① 面板第一格真跑通了（live 16 passed / **0 skipped**）
+`live-core.test.ts` 新增 6 条（`describe.skipIf(!live)`，与旧面共用同一把锁）：
+- 建项目 **201** + `Project` 必填字段齐、`created_at` 是 Unix 毫秒（断 `> 1.7e12`，防"秒/毫秒"这类静默错）
+  → 原文 `项目已建：id=01a0c9c3-… status=ACTIVE version=1`
+- **同一 Idempotency-Key 重放** → 同 id、同 created_at、`version` 仍是 1（副作用不重复）
+- 不带 Idempotency-Key → **403 `idempotency_key_required`**（T-139 刚收编的那条码线上真出现）
+- 同一 canonical_path 换一种拼写（`d:\…\\dup\` 对 `D:/…/dup`）→ **409 `duplicate_project_path`**、`retryable:false`，
+  原文 `冲突如实回 409：首个项目 …，未被第二条请求改写` ⇒ **词干式 canonicalize 折叠是真的在做**
+- **C28② 的线上实证**：同一 path 未接线的 GET 回 **501 不是 405**（断言消息里写了为什么要紧）
+- **垂直切片**：先换票建连拿到游标 → 再 `POST /projects` → WS 真收到 `project_created`
+  → `data.seen.add(ev.event_type)` → `stepDone(CHAIN[0]) === true`，原文 `切片成立：seq=6 project_created → 第一格 ok，面板无一处自造状态`。
+  这条是唯一能证"面板第一格不是我自己点亮"的形态：**先建连再写**（反过来就只测了个空窗口）
+- 起法与收尾：`.scratch/frontend/run-t140.sh` → 自属二进制 `core-t140.exe`（23:25 由 `core/cmd/core` 现建，
+  旧的 `core-t72.exe` 是 09-20 的，隔了 31 小时不能用）+ 独立数据目录 `coredata-t140`，
+  `PID=804 → alive=False`、目录我自己删掉；`kill`(SIGTERM) 后 `core.lock` 仍在 —— 那就是 **OBS-F-1** 那条，归 backend，我不在这儿复述结论。
+- **顺带闭掉 09-21 那条证据缺口**：原文已进 `.qoder/evidence/frontend/live-t140.txt`（+ `live-t140-head.txt` 记计数），
+  当时能复核的最强数字从"9/9"变成"**16 passed (16)、0 skip**"。
+
+### ② §6 目录解析器补上，当场量出我那份手抄少 3 条
+巡检②说约定已落文（`event-contract-v0.1.md` mtime **23:18**、①~⑤ 五条）。我按它写了 `parseEventCatalog()`，
+第一次跑就报：**`policy_created`、`policy_updated`、`notification_read`** 三条目录里有、我 enum 里没有
+（前两条 **09-19 就在目录里** —— 我 09-21 那份原型解析只解出 35 行，正是因为合并族行没被接受，而我当时把这件事读成"§6 不能机械解析"）。
+⇒ **认账**："解析会猜错"从来不是留快照的理由；约定⑤（孤儿 `_xxx` 必须报错、不许静默跳过）存在的目的就是把"猜错"变成"停下来"。
+补齐后 `EventType enum ↔ §6 目录` **双向相等，62 类**；`§7 链 22 类 ⊆ 目录 62`；codegen 后生成物 `EventType` 62 条、三条新增逐个核到。
+探针加了两组：**C 组**（孤儿 `_orphan_read` / §6 标题改名 / 每行都不再像表格 ⇒ 三条全"当场拒判"）+
+**D 组**（假想 `probe_alpha_beta / _failed` ⇒ 必须展开成 `probe_alpha_failed`，**不是**按第一个 `_` 读出的 `probe_failed`）—— D 组是拿约定③那句"最后一个 `_`"当判据，不靠我记。
+
+### ③ 本轮我自己抓出来的一条**假绿**（重要，比前面都重要）
+实现侧扫描我顺手加严了一件事：不只比"码出现过"，还比 `writeError` 用的 `http.StatusXxx` 与 §15.2『状态』是否一致。
+第一版我把 node `STATUS_CODES` 的反查表键写成 `'Status'+名字`，而正则取的是**去掉前缀的后缀**（`NotFound`）
+⇒ **15 个码全部"反查不到、跳过"**，而屏幕上那行 ok 写的是 **"逐条核过 … 一致"** —— **零条比对，报的却是绿**。
+两处一起修：① 键改成不带前缀；② 加了一条守卫"比对数=0 ⇒ 直接判红，不许说一致"。
+并用 **M5** 证明这条守卫会红：把键改回那个错法 → `FAIL 状态一条都没比对上（15 个常量名全部反查不到数字）⇒ 扫描/反查器坏了，不许报"一致"`、`exit=1`；
+回滚 `diff` **0 差异**、`grep -rn 'MUT-T140'` **0 命中**（`.scratch/frontend/m5.txt`、`validator-t140.bak`、`m5-insert.mjs`）。
+修完之后：`HTTP 状态逐条核过：15/15 条比对一致`（这才叫核过）。
+
+### ④ 新发现的口径问题 → 登记 **REQ-F-23**（不改文档，等主控裁）
+扫描面这轮从 12 码/6 文件涨到 **15 码/7 文件**，其中两个是 Core 直接发的：
+`session_not_found@sessions.go:75`（`session.ErrSessionNotFound`，域错误，不经 Adapter）、
+`adapter_unresponsive@sessions.go:78`（**C25/T-120② 那支**：完全无可用 Provider ⇒ 503 用现成码，明令不许新造）。
+代码没错，**问题在 §15.2『来自』那一列的语义**：它今天等于"这个 HTTP 响应是把 Adapter 的失败翻译出来的"，
+而这两行现在是**两个生产者**（Adapter 会发、Core 域层也会发）。三对"同 HTTP 码不同名"讲的是不同名字，
+这一条讲的是**同一个名字两个来源**，是新的形状。请裁：把那两个『来自』写成 `SESSION_NOT_FOUND` / —（双源）还是加一列"生产者"。
+我在 validator 里让它**只打印不判红**（`待裁（不算红）：…`），等裁定再收。
+
+### 证形（基线 `git log -1 --format=%h` = `a1b8664`，链条跑完后又有人提交到 `e4b214b`）
+- `git status --porcelain -- apps packages specs/openapi` → ` M` 三个：`validate-openapi.mjs`、`gen/schema.ts`、`core-v1.yaml`（142+/20−）
+- **要说清的一条**：我这轮改的 `live-core.test.ts` **不在这份 diff 里** —— 它被 `5ea5172`（23:28 那次 snapshot 提交）扫进去了
+  （`git show HEAD:…live-core.test.ts | grep -c "§4 第一格"` → 2）。我**没做任何 git 写操作**，这是别人提交我文件的结果；
+  教训照旧：**`git diff` 只能证"哪些文件我没动"，不能当交付清单**，本轮真实清单是这 4 个文件。
+- 五步链（交付前最后一次全量重跑，**23:37:30 +0800**，`.qoder/evidence/frontend/gates-t140.txt`）：
+  `validate` 全部通过 exit=0 → `codegen` exit=0（EventType 62 / ErrorCode 30）→
+  `vitest` **26 passed | 16 skipped (42)**（无 Core 时 live 整份 skipped）→ F20-4 表内原命令 **1 passed | 41 skipped** →
+  `build`（vue-tsc + vite + `check:no-secret`）exit=0。
+  `find`（排除生成物）在链条起点之后 → **0 个**；生成物由 codegen 自写，已用"重跑 codegen 输出逐字节相同"证幂等。
+- live 那次跑在 **23:37:11**（早于五步链 19 秒），代码状态与链条一致：链条之后 `find` 为 0 个，所以两份绿指向同一份源码。
+
+## 当前 checkpoint（覆盖此前所有同名段）
+- Stage：**§4 第一格已在真 Core 上点亮**（REST 写 → journal → WS → 面板投影，16/16 live 0 skip）；
+  §6 目录解析器补上、手抄少收的 3 条已补齐（enum 62 与目录双向相等）；自抓一条"零比对报 ok"的假绿并加了守卫 + M5 证明
+- Status：in_progress（还剩 `:sync` 与 `probe` 两格，另有 REQ-F-23 等裁）
+- Last verified action：23:37:30 五步链全 exit=0；live 23:37:11 `16 passed (16)`；M5 变异先红后 `diff`=0 还原
+- 待主控/待别人：① **REQ-F-23**（同码双生产者的『来自』列语义，见上面 ④）；② backend 把
+  `POST /sessions/{id}:sync` 与 `adapters/{key}/probe` 脱 501（`GET /projects` 那一腿按 `projects.go:81` 是它自己的 Next action）
+- Next action：等 `:sync` 与 `probe` 脱 501 → 接 §4 第二~四格（discover → manage → sync），
+  用 `run-t140.sh` 那套起法把链逐跳 ok/blocked 落 `.qoder/evidence/frontend/`；**不空等 `GET /projects`**（它不在 §4 链上，面板自己分页就够）。
+  期间不动契约文件；阻塞前提一旦消失当轮改这行并附读码证据（T-80/T-140 两次都是这一条）。
+- Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+  （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`；退出码一律在无管道处取）
+
+## T-144 子轮（§6 展开约定的正式版到了：核对我的实现，改一处 + 报一处分歧）· 本机 date 2026-09-22T23:42:43+08:00
+
+巡检 23:22 那句"§6 约定已落文"我在 23:37 那轮就照着实现了，T-144 是同一件事的正式版（带提交号 `3a71ea7` 与①~⑤全文），
+**没有重做**，只做了两件事：
+
+1. **对③的字面口径改了一处**：契约正文写"词干 = 本行**第一个**全名里最后一个 `_` 及其之前"，
+   我 23:37 那版是"每遇到一个全名就更新词干"（= **最近**一个）。两种读法在今天的 §6 上结果相同（62 类、双向相等，两次都过），
+   但在形如 `probe_alpha_beta` / `probe_x_y` / `_failed` 的行上会各自展开成 `probe_alpha_failed` 与 `probe_x_failed`。
+   ⇒ 改成**按契约字面取第一个全名**，并加一条"遇到分歧就停下来"的守门：
+   同一行有两个以上词干不同的全名、且行内还有简写 ⇒ `broken()`，**我不替契约与 db 挑一个读法**。
+   探针：**E**（歧义行必须停）与 **F**（整行写全、无简写的多全名行照常放行，别误杀约定④）两条都 ok。
+2. **纠正 T-144 正文里两处过期前提**（都当场取证，不是推断；引用一律用符号，行号只是当时刻度、23:41 实读）：
+   - "③…与 `db` 的 `eventTypesIn` 现实现一致" —— **不一致**：`eventTypesIn` 的 `default:`（全名）分支里
+     `if i := strings.LastIndexByte(name, '_'); i >= 0 { stem = name[:i+1] }` 是**每个全名都重写一次 `stem`** ⇒ 取的是"最近一个"；
+     契约③正文写的是"第一个"。今天零分歧（§6 里没有"两全名词干不同 + 有简写"的行），
+     但这句话作为"对齐依据"是错的，**要么改契约措辞、要么改 db 的实现**，两边各改各的就会在将来某天分歧（正是契约自己钉③的理由）。
+   - "它那边第⑤条今天还是静默跳过（T-142 待改）" —— 现盘上**已经会报错**：同一个 `eventTypesIn` 的
+     `case strings.HasPrefix(name, "_"):` 分支里 `if stem == "" { return nil, fmt.Errorf("row %q starts with the shorthand %q before any full name; …") }`，
+     文件 mtime **23:26**（晚于 T-142 派发）。⇒ T-142 那半件按现状可判"已落"，不必再派。
+
+### 证形（闸门 23:42:43 五步全 exit=0，`.qoder/evidence/frontend/gates-t144.txt`）
+`validate` 全部通过（C×3 + D + E + F 六条探针全 ok；`EventType ↔ §6 双向相等 62 类`；`HTTP 状态 15/15 比对一致`）→
+`codegen` exit=0 → `vitest` **26 passed | 16 skipped (42)** → F20-4 表内原命令 **1 passed** → `build` exit=0。
+`find`（排除生成物）在 23:42:45 之后 → **0 个**。
+**live 未重跑，且这不是"我以为不用"**：改动只落在 `apps/desktop/scripts/validate-openapi.mjs`（23:42:21），
+`find packages/api-client/src/{client,events}.ts …/stores …/components …/__tests__ specs/openapi -newermt "2026-09-22 23:37:11"` →
+只剩 `gen/schema.ts`（codegen 自写、yaml 未变）⇒ 23:37:11 那次 **16 passed / 0 skip** 描述的就是当前运行时代码。
+本轮台账/记忆文件在链条之后修改，不进构建输入。
+
+## T-150 子轮（两条裁定落地：③b 取消歧义、§15.2.2 关掉 REQ-F-23）· 本机 date 2026-09-23T00:03:26+08:00
+
+主控 23:5x 把我报上去的两件事都裁了，两条都**改变了我代码里的判据**，不是"知道了"就完：
+
+1. **③ 词干取法改回"最近一个全名"**（按 db 的实际语义定边），并把 ③b 落成守门：
+   合并格只许"全部写全名"或"一个全名打头 + 若干简写"；`多全名 + 简写` = 表格形状坏了 ⇒ `broken()`。
+   这条的价值在**取消歧义**而不是裁决：混排非法之后，"第一个 vs 最近一个"再也没有能区分它们的输入。
+   探针跟着改：**E**（`probe_alpha_beta / probe_x_y / _failed` 必须停，理由归 ③b）、
+   **G**（`全名 / 简写 / 全名` 这种"简写之后又来全名"是同一条 ③b，不能只看行首）、
+   **F**（`probe_alpha_beta / probe_x_y` 两个全名、**词干不同**、无简写 ⇒ 必须放行，别误杀约定④）。
+   两条都 ok，且 **D**（`_failed` 在 `probe_alpha_beta` 之后 ⇒ 展开成 `probe_alpha_failed`，不是 `probe_failed`）继续钉住"最后一个 `_`"。
+2. **归因这条我自己差点写错**：③b 第一版我写成 `fulls.length !== 1`，于是 `fulls.length === 0` 的**孤儿简写**
+   被抢去报成"③b 混排（0 个全名 + 1 个简写）"——那句读起来就像废话，而且**下次真改规则时没人知道该看哪条**。
+   改成 ③b 只管 `fulls.length > 1`、孤儿留给 ⑤，并加一条**归因自证**：孤儿必须报在 ⑤ 名下且消息里不许出现 ③b。
+   （两条规则抢归因 = 两边都不报错的那个洞的前兆，跟"零比对报 ok"同族。）
+3. **REQ-F-23 关闭**（§15.2.2）：『来自』只答"这个名字属于哪套词汇"，不答"哪个包发的" ⇒ Core 直接用 Adapter 词汇名合法，
+   我那条"待裁（不算红）"的打印改成**报现场事实**：`6 个码由 2 个以上文件发`（`method_not_allowed×5`、`not_implemented×4`、
+   `validation_failed×3`、`idempotency_key_required×2`、`idempotency_replay×2`、`idempotency_mismatch×2`）。
+   **巡检那句我照收并且已经不改口**：`method_not_allowed` 现盘是 **5 个文件**（backend 正在往 `sessions.go` 加第 5 个），
+   主控量到的 4 在他量时是对的。我这条是**当场数**的，所以数字自己会跟着盘走 —— 这也是为什么把它做成打印而不是写进正文。
+   yaml 侧同步：`ErrorCode.description` 加了一句"§15.2.2：那列不答生产者，客户端判据只看 `error.code` 这个名字，别去猜哪个包发的"。
+
+### 证形（`00:03:26` 五步链，`.qoder/evidence/frontend/gates-t150.txt`）
+`validate` 全部通过 exit=0（探针 A×4 / B×2 / C×3 / D / E / G / F / 归因 共 **14 条自证**全 ok；
+`EventType ↔ §6 双向相等 62 类`；`Core 实测 15 码 ∈ §15.2 左列`；`HTTP 状态 15/15 比对一致`）→ `codegen` exit=0 →
+`vitest` **26 passed | 16 skipped (42)** → F20-4 表内原命令 **1 passed | 41 skipped** → `build` exit=0。
+`find`（排除生成物）在 `00:03:28` 之后 → **0 个**。
+**live 未重跑，判据是同一条 find**（花括号那种简写在 bash 以外不成立，这里写实际跑过的形式）：
+`find packages/api-client/src/client.ts packages/api-client/src/events.ts apps/desktop/src/stores apps/desktop/src/components apps/desktop/src/__tests__ -newermt "2026-09-22 23:37:11" -type f` → **空输出**
+⇒ 23:37:11 那次 **16 passed / 0 skip** 描述的就是当前运行时代码；本轮改的只有校验脚本、yaml 的 description 与生成物注释。
+
+### 台账纠正（T-43 式：不回头改历史，加作废注）
+- 上一段（T-144 子轮）写的"改成**按契约字面取第一个全名**"**自 00:03 起作废**：主控 23:5x 把 ③ 定稿为"最近一个全名"并加 ③b。
+  历史行留着是为了记"我当时按当时正文实现"，**现在生效的是 T-150 这一段的形状**。
+- 上一段那条"探针 E 现在有了契约依据，不用自己扛"由主控 23:5x 落文（③b 就在 `event-contract` 里），已核对在盘。

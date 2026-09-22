@@ -96,10 +96,10 @@ func TestNotifyWritesOneRowAndOneEvent(t *testing.T) {
 	if typ := countRows(t, d, `SELECT count(*) FROM event_journal WHERE event_type = 'notification_created'`); typ != 1 {
 		t.Errorf("事件类型应为 §6 登记的 notification_created，实际 %d", typ)
 	}
-	list, _, err := notification.NewRepository(d.Read).ListByState(ctx,
-		notification.ListFilter{State: notification.StateUnread, Limit: 10})
+	list, _, err := notification.NewRepository(d.Read).ListPage(ctx,
+		notification.ListFilter{State: statePtr(notification.StateUnread), Limit: 10})
 	if err != nil || len(list) != 1 || list[0].ID != "n-1" {
-		t.Errorf("ListByState(UNREAD) = %v %v", list, err)
+		t.Errorf("ListPage(UNREAD) = %v %v", list, err)
 	}
 }
 
@@ -127,12 +127,12 @@ func seedInbox(t *testing.T, d *db.DB) {
 	}
 }
 
-// TestListByStatePagesWithKeysetCursor 钉契约③ §2 的"翻页只用 keyset、不许 offset"：
+// TestListPagePagesWithKeysetCursor 钉契约③ §2 的"翻页只用 keyset、不许 offset"：
 // 翻三页拼起来的序列必须等于手写的全量序（不重、不漏、不串 state），
 // 并且每页带回来的位置能直接当下一页的入参 —— 这就是 handler 将来要编进 next_cursor 的东西。
 // 期望序是**手抄的第二份**（CRITICAL>HIGH>MEDIUM>LOW，同档 created_at 倒序，同刻 id 正序），
 // 与 repository 里那句 SQL CASE 各自独立，任何一边漂了这条就红。
-func TestListByStatePagesWithKeysetCursor(t *testing.T) {
+func TestListPagePagesWithKeysetCursor(t *testing.T) {
 	ctx := context.Background()
 	d := openDB(t)
 	seedInbox(t, d)
@@ -145,8 +145,8 @@ func TestListByStatePagesWithKeysetCursor(t *testing.T) {
 		pages int
 	)
 	for pages < 5 {
-		rows, last, err := repo.ListByState(ctx, notification.ListFilter{
-			State: notification.StateUnread, After: after, Limit: 3})
+		rows, last, err := repo.ListPage(ctx, notification.ListFilter{
+			State: statePtr(notification.StateUnread), After: after, Limit: 3})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,8 +171,8 @@ func TestListByStatePagesWithKeysetCursor(t *testing.T) {
 	}
 	// 位置里的 Rank 由 SQL 算出：第一页末行是 b1（HIGH → 档 1）。
 	// 断言它是因为 handler 只会把这一串三元组编码进 next_cursor，Rank 错了下一页就跳档。
-	_, firstPageLast, err := repo.ListByState(ctx, notification.ListFilter{
-		State: notification.StateUnread, Limit: 3})
+	_, firstPageLast, err := repo.ListPage(ctx, notification.ListFilter{
+		State: statePtr(notification.StateUnread), Limit: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +180,8 @@ func TestListByStatePagesWithKeysetCursor(t *testing.T) {
 		t.Errorf("第一页末行位置不对: %+v", firstPageLast)
 	}
 	// 越界游标（比最后一行还靠后）必须是空页，而不是回绕到第一页。
-	rows, _, err := repo.ListByState(ctx, notification.ListFilter{
-		State: notification.StateUnread,
+	rows, _, err := repo.ListPage(ctx, notification.ListFilter{
+		State: statePtr(notification.StateUnread),
 		After: &notification.ListPosition{Rank: 3, CreatedAt: 100, ID: "d2"}, Limit: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +190,38 @@ func TestListByStatePagesWithKeysetCursor(t *testing.T) {
 		t.Errorf("末行之后的游标应回空页，实际 %d 行", len(rows))
 	}
 }
+
+// TestListPageWithoutStateFilterKeepsEveryState 是 C26 裁定 ② 的正证：`State == nil` 就是"不过滤"，
+// READ 那一行（夹具里的 e1）必须在结果里，而且**照样按档位序排**（它档最高 ⇒ 排头，不是被追加到尾部）。
+// 这条用例同时也是那条被删掉的"缺省 UNREAD"的反证：把 nil 当成 UNREAD 处理，这里就少一行。
+func TestListPageWithoutStateFilterKeepsEveryState(t *testing.T) {
+	ctx := context.Background()
+	d := openDB(t)
+	seedInbox(t, d)
+
+	rows, last, err := notification.NewRepository(d.Read).ListPage(ctx, notification.ListFilter{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, n := range rows {
+		got = append(got, n.ID)
+	}
+	want := []string{"e1", "a2", "a1", "b1", "c1", "c2", "d1", "d2"} // 手抄的第二份：与上面 SQL 的 CASE 各自独立
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("不过滤时的序/内容不对:\n 实际 %v\n 期望 %v", got, want)
+	}
+	// READ 行带着自己的 state 原样回来，没有被折叠成 UNREAD。
+	if rows[0].State != notification.StateRead {
+		t.Errorf("首行该是那条 READ 的 e1，实际 %q", rows[0].State)
+	}
+	if last != (notification.ListPosition{Rank: 3, CreatedAt: 100, ID: "d2"}) {
+		t.Errorf("末行位置不对（LOW 档、created_at 100）: %+v", last)
+	}
+}
+
+// statePtr 只服务 ListFilter.State 那一格指针语义（nil = 不过滤）；测试里不想为每个值都开一个变量。
+func statePtr(s notification.State) *notification.State { return &s }
 
 // 三个外键列必须写 NULL 而不是空串：” 是非 NULL，会直接撞 approval_id / task_id 的外键。
 func TestNotifyLeavesAbsentForeignKeysNull(t *testing.T) {

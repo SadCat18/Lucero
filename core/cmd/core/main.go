@@ -32,6 +32,7 @@ import (
 	"github.com/SadCat18/lucero/core/internal/notification"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/project"
+	"github.com/SadCat18/lucero/core/internal/session"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
 
@@ -218,6 +219,10 @@ func (c *Core) handler() http.Handler {
 		// 建项目这条口只要一个 Service（canonicalize 与冲突判定都在 internal/project 里）；
 		// 时钟与 §5.4/审计那两处共用同一个 nowMillis，别在业务包里各取一次时间。
 		Projects: project.NewService(nil),
+		// GET /projects 只要一条读通道：翻页规则住在 internal/project，这里不复制。
+		ProjectRead: c.db.Read,
+		// :sync 今天只有只读链这一格能力（C25）：Service 里一行都不写，所以只给它一把读的 Repository。
+		Sessions: session.NewService(session.NewRepository(c.db.Read)),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{

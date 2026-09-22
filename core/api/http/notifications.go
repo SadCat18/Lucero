@@ -14,7 +14,7 @@ import (
 // NotificationLister 是 GET /api/v1/notifications 需要的读面，由 internal/notification 的
 // *Repository 直接满足（依赖方向合法：transport → 业务包）。这里只做解析/校验/状态码。
 type NotificationLister interface {
-	ListByState(ctx context.Context, f notification.ListFilter) ([]notification.Notification, notification.ListPosition, error)
+	ListPage(ctx context.Context, f notification.ListFilter) ([]notification.Notification, notification.ListPosition, error)
 }
 
 // notificationView 的必填六字段来自 core-v1.yaml 的 Notification.required；
@@ -71,16 +71,17 @@ func registerNotificationRoutes(mux *http.ServeMux, c Config) {
 
 func listNotifications(w http.ResponseWriter, r *http.Request, c Config) {
 	q := r.URL.Query()
-	state := notification.State(strings.ToUpper(q.Get("state")))
-	if state == "" {
-		// 契约里 state 是可选参数、没给默认。inbox 就是"未读"这一视图，所以缺省取 UNREAD，
-		// 而不是"不带过滤扫全表"（那是另一种语义）。口径差已提 C26 请主控认或改。
-		state = notification.StateUnread
-	}
-	if !state.Valid() {
-		writeError(w, http.StatusBadRequest, "validation_failed",
-			"state 不在 notifications 的六态里: "+string(state), false)
-		return
+	// C26 裁定 ②：**不传 state = 不过滤**。原来那两行"缺省取 UNREAD"已删 —— 一个字段不许兼职两种语义，
+	// 否则面板就再也表达不出"我要全部"；而面板的 inbox 调用本来就显式带 state（主控核过），缺省零收益。
+	var state *notification.State
+	if v := strings.ToUpper(q.Get("state")); v != "" {
+		s := notification.State(v)
+		if !s.Valid() {
+			writeError(w, http.StatusBadRequest, "validation_failed",
+				"state 不在 notifications 的六态里: "+v, false)
+			return
+		}
+		state = &s
 	}
 	limit := 50
 	if v := q.Get("limit"); v != "" {
@@ -100,7 +101,7 @@ func listNotifications(w http.ResponseWriter, r *http.Request, c Config) {
 		}
 		f.After = &pos
 	}
-	items, last, err := c.Notifications.ListByState(r.Context(), f)
+	items, last, err := c.Notifications.ListPage(r.Context(), f)
 	if err != nil {
 		serverError(w, r, err)
 		return

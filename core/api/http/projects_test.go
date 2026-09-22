@@ -10,16 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"encoding/base64"
 	httpapi "github.com/SadCat18/lucero/core/api/http"
 	"github.com/SadCat18/lucero/core/internal/notification"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/project"
 	"github.com/SadCat18/lucero/core/internal/task"
+	"sort"
 )
 
 // newProjectHarness 真库真表 + 真 project.Service：这条口最有价值的证据是
 // "canonicalize 后冲突判 409" 与"首次响应等于库里那一行"，两条都得跑真写路径。
-func newProjectHarness(t *testing.T) (*httptest.Server, *db.DB) {
+// newProjectHarness 默认**不**注入 ProjectRead（那正是第二十九批钉的"缺装配⇒GET 501"那一格）；
+// 传 withRead 才挂上读通道。用变参而不是复制整个 harness：那 30 行装配重复两份迟早会漂。
+func newProjectHarness(t *testing.T, withRead ...bool) (*httptest.Server, *db.DB) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "lucero.db"))
 	if err != nil {
@@ -38,7 +42,7 @@ func newProjectHarness(t *testing.T) (*httptest.Server, *db.DB) {
 			t.Fatal(err)
 		}
 	}
-	srv := httptest.NewServer(httpapi.NewHandler(httpapi.Config{
+	cfg := httpapi.Config{
 		Token: testToken, Version: "test-1", State: func() string { return httpapi.StateReady },
 		MigrationVersion: func() int64 { return 2 },
 		Tickets:          httpapi.NewTickets(30*time.Second, nil),
@@ -47,7 +51,11 @@ func newProjectHarness(t *testing.T) (*httptest.Server, *db.DB) {
 		Store:            d,
 		Notifications:    notification.NewRepository(d.Read),
 		Projects:         project.NewService(nil),
-	}))
+	}
+	if len(withRead) > 0 && withRead[0] {
+		cfg.ProjectRead = d.Read
+	}
+	srv := httptest.NewServer(httpapi.NewHandler(cfg))
 	t.Cleanup(srv.Close)
 	return srv, d
 }
@@ -168,7 +176,13 @@ func TestProjectInputGates(t *testing.T) {
 	}
 	if c, b := call(t, srv, http.MethodGet, "/api/v1/projects", "", "", ""); c != http.StatusNotImplemented ||
 		codeOf(t, b) != "not_implemented" {
-		t.Errorf("GET /projects 还没接，应 501 not_implemented，实际 %d %s", c, b)
+		// 这个 harness 故意**不注入** ProjectRead：证的是 C28② 那一格 —— 装配缺件时 GET 回 501，
+		// 而不是回 405 说"这条路径不接受 GET"（那是假话，下面 TestListProjectsOverHTTP 就让它 200）。
+		t.Errorf("没装配读通道的 GET /projects 应 501 not_implemented，实际 %d %s", c, b)
+	}
+	if c, b := call(t, srv, http.MethodPut, "/api/v1/projects", "local-user", "", ""); c != http.StatusMethodNotAllowed ||
+		codeOf(t, b) != "method_not_allowed" {
+		t.Errorf("PUT /projects 该 405（这条路径根本不接受它），实际 %d %s", c, b)
 	}
 }
 
@@ -217,4 +231,155 @@ func countQuery(t *testing.T, d *db.DB, q string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// seedProjectRows 直插五行：created_at 1~5 定序，p-c 是 ARCHIVED（契约没给 status 过滤位，
+// 所以它必须**留在列表里** —— 这条断言看着"不像 bug"，但把 status 过滤偷偷加回来正是下一个人的顺手活）。
+func seedProjectRows(t *testing.T, d *db.DB) {
+	t.Helper()
+	for i, id := range []string{"p-a", "p-b", "p-c", "p-d", "p-e"} {
+		status, archived := "ACTIVE", any(nil)
+		if id == "p-c" {
+			status, archived = "ARCHIVED", i+100
+		}
+		if _, err := d.Read.Exec(`INSERT INTO projects (id, name, canonical_path, project_type, status,
+			metadata_json, created_at, updated_at, archived_at)
+			VALUES (?, ?, ?, 'CODE', ?, '{}', ?, ?, ?)`, id, "项目"+id, "path-"+id, status, i+1, i+1, archived); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func listProjectsGet(t *testing.T, srv *httptest.Server, q string) (int, map[string]any, string) {
+	t.Helper()
+	code, body := call(t, srv, "GET", "/api/v1/projects"+q, "", "", "")
+	if code != 200 {
+		return code, nil, body
+	}
+	return code, mustParseMap(t, body), body
+}
+
+func pageIDs(items []any) []string {
+	out := []string{}
+	for _, it := range items {
+		if m, ok := it.(map[string]any); ok {
+			id, _ := m["id"].(string)
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// TestListProjectsPagesWithCursor 钉 GET 那一腿的三件事：keyset 翻页不重不漏、
+// 短页/到底只回空串（REQ-F-19），以及**归档的那行不被过滤掉**。
+func TestListProjectsPagesWithCursor(t *testing.T) {
+	srv, d := newProjectHarness(t, true)
+	defer srv.Close()
+
+	// 空表：items 必须是 []，不是 null（同一份"两种表示法"的禁令）。
+	_, m, body := listProjectsGet(t, srv, "")
+	if items, ok := m["items"].([]any); !ok || items == nil {
+		t.Fatalf("空表应回 items: []，实际 %s", body)
+	}
+	if m["next_cursor"] != "" {
+		t.Errorf("空表不该有游标: %s", body)
+	}
+
+	seedProjectRows(t, d)
+	var (
+		got    []string
+		cursor string
+		pages  int
+	)
+	for pages < 5 {
+		q := "?limit=2"
+		if cursor != "" {
+			q += "&cursor=" + cursor
+		}
+		code, m, body := listProjectsGet(t, srv, q)
+		if code != 200 {
+			t.Fatalf("第 %d 页应 200，实际 %d %s", pages+1, code, body)
+		}
+		nc, ok := m["next_cursor"].(string)
+		if !ok {
+			t.Fatalf("next_cursor 必须是字符串键: %s", body)
+		}
+		page := m["items"].([]any)
+		pages++
+		got = append(got, pageIDs(page)...)
+		if len(page) < 2 {
+			if nc != "" {
+				t.Errorf("短页却给了非空 next_cursor: %q", nc)
+			}
+			break
+		}
+		if nc == "" {
+			t.Fatalf("第 %d 页取满了却没有游标，翻不动了: %s", pages, body)
+		}
+		cursor = nc
+	}
+	if strings.Join(got, ",") != "p-a,p-b,p-c,p-d,p-e" {
+		t.Errorf("翻页拼起来不对: %v", got)
+	}
+}
+
+// TestListProjectsQueryGates 钉入口的有界检查，含**跨出口的游标互不吃**：
+// inbox 那套三元组游标喂给 projects 必须 400（它比 tasks 的二元多吃一段）。
+func TestListProjectsQueryGates(t *testing.T) {
+	srv, d := newProjectHarness(t, true)
+	defer srv.Close()
+	seedProjectRows(t, d)
+
+	for _, q := range []string{"?limit=0", "?limit=201", "?limit=abc", "?cursor=not-base64!!",
+		"?cursor=" + base64.RawURLEncoding.EncodeToString([]byte("1|400|n-1"))} {
+		code, _, body := listProjectsGet(t, srv, q)
+		if code != 400 || codeOf(t, body) != "validation_failed" {
+			t.Errorf("%s 应 400 validation_failed，实际 %d %s", q, code, body)
+		}
+	}
+	// status 不是这条口的参数（契约只给 cursor/limit）：传了必须被**忽略**而不是被当成过滤，
+	// 否则就是给一个契约里没有的语义开门。
+	_, m, body := listProjectsGet(t, srv, "?status=ACTIVE&limit=10")
+	if len(m["items"].([]any)) != 5 {
+		t.Errorf("未知参数 status 不该改变结果（应仍是五行）: %s", body)
+	}
+}
+
+// TestProjectViewKeysMatchBetweenLegs 是 §12/C28 那条"同一件事不许两种写法"的行为级版本：
+// 同一个项目经 POST 读回与经 GET 列表读出，键集合必须一模一样。
+func TestProjectViewKeysMatchBetweenLegs(t *testing.T) {
+	srv, _ := newProjectHarness(t, true)
+	defer srv.Close()
+
+	code, created := post(t, srv, "idem-proj-list", `{"name":"对形状的项目"}`)
+	if code != 201 {
+		t.Fatalf("POST 建项目应 201，实际 %d %s", code, created)
+	}
+	_, list, body := listProjectsGet(t, srv, "")
+	item := map[string]any{}
+	for _, it := range list["items"].([]any) {
+		m := it.(map[string]any)
+		if m["name"] == "对形状的项目" {
+			item = m
+		}
+	}
+	if item["id"] == nil {
+		t.Fatalf("列表里没找到刚建的那条: %s", body)
+	}
+	postKeys, listKeys := keySet(mustParseMap(t, created)), keySet(item)
+	if postKeys != listKeys {
+		t.Errorf("同一项目的两条出口键集合不一样：POST=%s GET=%s", postKeys, listKeys)
+	}
+	if item["canonical_path"] != nil {
+		t.Errorf("同一条目在两条出口都应显式出 null：%#v", item["canonical_path"])
+	}
+}
+
+func keySet(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
 }

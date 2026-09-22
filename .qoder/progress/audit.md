@@ -3,7 +3,7 @@ TASK_ID: audit-permission
 STATUS: in_progress
 SCOPE: 权限判定、Approval 聚合与裁决、Temporary Grant、Audit 哈希链与敏感规则集、§9 绕审批门禁；不实现脱敏执行点，approvals/temporary_grants 的 SQL 只准出现在 internal/approval
 EVIDENCE_DIR: .qoder/evidence/audit/
-LAST_UPDATED: 2026-09-21T15:53+08:00
+LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致，见第 126 条；判据一律挂命令与输出）
 
 ## Objective
 
@@ -61,9 +61,12 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
 - Status: idle（有意状态）—— §2.2.1 三件里归我的两件 + 装配半边（REQ-A12）全部落地，**不再被 db 或 backend 阻塞**；
   REQ-A8 / A18-1②③ / 链健康三态对账 / §5.4 见证用例都已交付，账上无待办
 - Next action（唯一一条，有触发条件）：**REQ-A12 已落（15:35 现盘 `rejections.go:44` 挂了 `Scrub: auditScrub`），
-  我这边计划的最后一件也做完了**（§5.4 形状两条顶层见证用例 + M9 三条独立红）。因此**当前无待办**，
-  只剩两个明确的外部触发条件：① 谁再改 `Chain`/`Scrub`/`redactionHits` 任一侧 ⇒ 我重放 M8/M9 两批变异；
-  ② `signature`/检查点签名"Head 存哪儿、谁签"裁定下来 ⇒ 我再实现那一半。
+  我这边计划的最后一件也做完了**（§5.4 形状两条顶层见证用例 + M9 三条独立红）。因此**当前无待办**。
+  **只剩一个真触发条件**：谁再改 `Chain`/`Scrub`/`redactionHits` 任一侧 ⇒ 我重放 M8/M9 两批变异。
+  〔16:1x 更正：这里原先还挂着第二条"等 `signature`/检查点签名裁定 ⇒ 我实现那一半"，**那是个不会到来的事件**——
+  巡检 T-121 指出后我自己读了 `docs/adr/README.md`：标题（:26）就是"审计链头锚点在库外文件，**v0.1 不签名**"，
+  正文（:204）"「`audit_entries.signature` 保持空串，`Head` 结构不增密钥字段」，Phase 6 另开 ADR"，
+  状态 `accepted 2026-09-20`。⇒ 签名**已裁完、v0.1 明确不做**，不是待裁项；我把它写成待办会让下一轮继续等。〕
   在此之前我不制造新工作。（另记一条**未实测、只是我读 §7 顺序时留下的疑问**：垂直链要求 `execution_started`
   先于任何审批，而这需要 seed 策略或改默认档——编排归属决定，我既没测也没权定，故不写进待办。）
   第 17 轮核销掉的那两件接线仍然成立（命令 `grep -rn "reportAuditChain|audit\.Check\(" cmd/core`）：
@@ -861,9 +864,15 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
 - `internal/permission/source_sqlite.go`：`Source` 的实现（**下一步唯一动作**，纯读，无阻塞）。
   `EmergencyStopped` 读 `settings` 的一个键还是新列，需要 db/主控一句话：`settings` 表有 key/value，
   我倾向 `key='emergency_stop'`，不新增迁移。
-- ~~`internal/audit/append.go` 接 `audit_entries` 读写~~ 已完成（第 3 轮）。仍缺 `signature` 列的
-  checkpoint 签名：ADR-012 要 hash chain **+ checkpoint signature**，而签名密钥归 vault/DPAPI（First Sprint 只留接口）。
-  现状是能验链完整性、不能防"整库被换掉"——`Head{Seq,Hash}` 需要有人长期保管，否则尾部删除仍检不出。
+- ~~`internal/audit/append.go` 接 `audit_entries` 读写~~ 已完成（第 3 轮）。
+  〔**16:1x 更正这一条的老写法**：它原先写成"仍缺 `signature` 列的 checkpoint 签名……否则尾部删除仍检不出"，
+  把两件事混成了"待办"。实际：① 签名**已裁、v0.1 明确不做**（`docs/adr/README.md:204`：`signature` 保持空串、
+  `Head` 不加密钥字段，Phase 6 另开 ADR，状态 `accepted 2026-09-20`），所以它不是我的待裁项；
+  ② 尾部删除的检出不靠签名，靠 **ADR-018 的库外锚点 `audit.head`**——第 20 轮 `真库里删掉尾部被检出` 已实测：
+  锚点记到 seq 5、库里被删到 2 ⇒ `Check` 回 `UNVERIFIED`。〕
+  **还成立的诚实边界**（照 ADR-018 原文，别夸大也别缩小）：**最后一次检查点之后**的行不在锚点覆盖内，
+  且"能写该目录的人可以连 `audit.head` 一起删"本来就不在本机制承诺范围——真要覆盖那一步需要外部可验证锚点
+  （签名/时间戳），而那是 Phase 6 的另一张 ADR。
 - §9 门禁的**执行点接线**：`CheckAdapterArgs` 已在 permission，但真正拦在启动路径上要由
   `internal/adapter`/`internal/process` 调（非我可写）+ 落 `audit_entries(outcome=DENIED)`。见 REQ-A5。
 - 事件 payload 形状与 `Idempotency-Key` 的对接（`approval_resolved` 属 §8 高风险写）。
@@ -1118,9 +1127,50 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
     `go test -count=1 ./internal/platform/db/` → **ok 2.308s**，db 那半已经自愈。
     所以本轮结束时**全仓无红点归我**，也不再有我引用的别人的红；引状态一律现取现用（T-68 的"几分钟寿命的假红"今天又应验一次）。
 
-## Changed files
+### 第 24 轮（2026-09-21，接巡检 T-121：把我那条"等不到的触发条件"从账上摘掉。
+**时刻两个读数都记**：派件抬头写 16:08，而我本轮末尾跑 `date` 得到 **23:18:54**（`internal/notification/repository.go`
+的 mtime 也是 09-21 23:18，对得上）——本机时钟在 15:53→23:18 之间跳过一大段，具体原因我不猜；
+本轮所有"几点"都只当读数用，排序一律靠命令与输出）
 
-全部为本角色独占路径下的新建/自改；**未读改任何他人文件的写入**：
+122. **巡检这条我认，而且是我自己该早发现的**：我 Next action 里写的第二个触发条件是
+    "`signature`/检查点签名'Head 存哪儿、谁签'裁定下来 ⇒ 我实现那一半"——**这不是一个会到来的事件**。
+    我自己读了原文才改：`docs/adr/README.md:26` 标题就是"审计链头锚点在库外文件，**v0.1 不签名**"，
+    `:204` 正文"`audit_entries.signature` 保持空串，`Head` 结构不增密钥字段"，Phase 6 引入设备密钥/外部时间戳时**另开 ADR**，
+    状态 `accepted 2026-09-20`。⇒ 签名是**已裁不做**，我把它挂成"等裁定"等于给下一轮留了个永远不亮的灯。
+123. **顺着这一条把我账上同源的四处过期断言一起改了**（都注明"16:1x 更正"、不静默删）：
+    - Current checkpoint 的 Next action：两个触发条件 → **只剩一个真的**（改 `Chain`/`Scrub`/`redactionHits` ⇒ 重放 M8/M9）。
+    - Remaining 里"仍缺 `signature` 列的 checkpoint 签名……否则尾部删除仍检不出"：
+      改成"签名已裁不做"，并指出**尾部删除今天检得出、靠的是 ADR-018 的库外锚点**，
+      我第 20 轮的 `真库里删掉尾部被检出` 就是证据（锚点记到 seq 5、库被删到 2 ⇒ `UNVERIFIED`）。
+    - Verification evidence 第 3 条那句"`Head{Seq,Hash}` 须由调用方存在链外（`audit_entries.signature` 或签名 checkpoint，见 Remaining）"：
+      那是**第 1 轮锚点还不存在时**写的。现已指明链外那个 Head 就是 `audit.head`，并补上仍然成立的两条限度：
+      **最后一次检查点之后**被删的尾巴检不出、能写数据目录的人可连锚点一起删（ADR-018 自己划的边界，不是实现缺口）。
+    - Recovery note 的"仍开：checkpoint 签名'Head 存哪儿/谁签'待裁"→ 已裁；
+      "不得推断其存在的事 ①"里那句"**没有它，尾部删除仍检不出**"→ 按实测改写成"链内自洽查不出截断，
+      但锚点查得出"，并把措辞红线原样留住（三词表、禁"已签名/signed/防篡改/tamper-proof"）。
+124. **这一轮没碰代码，只改账**：所以绿色数字沿用第 23 轮的最后一次重跑（15:53:03 逐包 audit 82 / permission 54 /
+    approval 80 / cmd/core 17，FAIL 0 / SKIP 0；15:52:08 全仓 17 包 ok、exit=0），我没有用"应该还是绿的"当结论。
+125. **本轮末尾又跑了一次（23:18:54 起）**，两件事如实分开：
+    - 我这四个包仍全绿：`go test -count=1 ./internal/{audit,permission,approval}/... ./cmd/core/` → 四行全 `ok`。
+    - 全仓这次是 **16 包 ok + `core/api/http` 两条红**（`TestInboxPagesWithCursor`、
+      `TestInboxItemShapeKeepsNullApartFromZero`，`notifications_test.go:118/:152` 拿到
+      `500 internal_error`）。**不是我造成的，三条证据**：① 15:52:08 我那次全仓还是 17/17 全绿；
+      ② `internal/notification/repository.go` mtime **09-21 23:18**、`service_test.go` **23:19**
+      —— 有人**正在改** inbox 那条查询；③ `grep -rln "inbox" internal/{audit,approval,permission}` **零命中**，
+      我的三个包里根本没有这个概念。按 T-68 这就是在途瞬时态，我不报成回归、更不去替谁修。
+    - 与第 24 轮标题里那条时钟跳变一起记：**同一次 `date` 从 15:53 跳到 23:18**，
+      所以"截至 HH:MM"这类话在本文件里只能当读数，不能当排序依据。
+126. **时钟这件事比我上面写的更严重，单独记一条免得下轮又拿时刻当证据**：
+    我 23:18:54 读 `%H:%M:%S` 得 23:18，几分钟后读完整 ISO 时间戳得的是 **`2026-09-22T20:05:05+08:00`**
+    ——也就是**连"今天几号"都不稳**（前面整批账都记在 09-21 名下）。
+    后果我自己承担并写明：本轮所有取证**只用"同一条命令里的 mtime 与 `date` 是否吻合"作相对判断**
+    （例如 `notification/repository.go` mtime 23:18 与我当次 `date` 23:18:54 吻合 ⇒ 那一刻刚被写过），
+    **不做跨轮的时刻排序、不据此判谁先谁后**。上一轮我在第 125 条把这件事写成"15:53→23:18 跳了一段"，
+    那是对当时读数的解释，现在看更像我把不同来源的时刻混在了一起——以本条为准。
+127. **交付前最后一次重跑（读数 `2026-09-22T23:20:44+08:00`，逐包单独取数）**：
+    `internal/audit` 82 PASS / `internal/permission` 54 / `internal/approval` 80 / `cmd/core` 26，
+    **四包 FAIL 全 0**（cmd/core 从上一轮的 17 涨到 26，是 backend 自己加了用例）；
+    `gofmt -l` 干净，`.scratch/audit/` = 0 项。本轮**零代码改动**，改的只有本文件。
 
 - 第 1 轮新建：`core/internal/audit/redaction.go`(127) `redaction_test.go`(313)、
   `core/internal/audit/hashchain.go` `hashchain_test.go`(177)、
@@ -1155,6 +1205,10 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
 - 第 23 轮：`internal/approval/chain_health_test.go`（§5.4 三键形状两条用例从子用例**提成顶层**
   `TestSection54ScrubbedReasonStaysVerifiable` / `TestSection54WithNothingScrubbedWritesNoRecord`，
   因为父体那句 `t.Fatal` 会把挂在后面的子用例整段吞掉）；`.qoder/progress/audit.md`
+- 第 24 轮：**只改账、未碰代码**——`.qoder/progress/audit.md` 四处过期断言（Next action 的假触发条件、
+  Remaining 的"缺签名所以检不出尾部删除"、Verification evidence 第 3 条的链外 Head 出处、
+  Recovery note 的"签名待裁"与"不得推断 ①"），依据全部是 `docs/adr/README.md:26/:204` 与第 20 轮那条实测用例。
+  （本条第一次写的时候我把上面那条第 23 轮整段覆盖掉了，读回才发现——两条现在都在。）
 - `.qoder/progress/audit.md`（本文件）
 - 合计 11 个 .go 文件 / 2441 行
 
@@ -1174,9 +1228,14 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
    `TestDeletionIsDetected`（删中间 3 处 + 删尾部 + 清空）、
    `TestOutOfOrderAppendIsRejected`（时间倒挂 / seq 重复 / seq 跳号 / 首条 previous_hash 伪造）。
    ⚠ 结构性结论：**哈希链自身无法发现「删掉最新若干条」**——截断后的链内部依然自洽。
-   因此 `VerifyChain(entries, head)` 强制带一个 `Head{Seq,Hash}` checkpoint，须由调用方存在链外（
-   `audit_entries.signature` 或签名 checkpoint，见 Remaining）。测试里显式写了「不带 checkpoint 时截断检不出、
-   带 checkpoint 才能检出」两条，避免后人误以为 hash chain 包打天下。
+   因此 `VerifyChain(entries, head)` 强制带一个 `Head{Seq,Hash}` checkpoint，须由调用方存在链外。
+   〔**16:1x 更新本条**：写它时（第 1 轮）链外那个 Head 还不存在，我当时的备选写的是
+   "`audit_entries.signature` 或签名 checkpoint，见 Remaining"。现在那个链外 Head 就是 **ADR-018 的
+   `audit.head` 锚点文件**，由 `internal/audit/anchor.go` 独占格式、`cmd/core` 传路径，
+   第 20 轮 `真库里删掉尾部被检出` 已把它钉成可跑判据。签名那条**已裁**：v0.1 不做（README:204）。〕
+   仍然成立的限度：**最后一次检查点之后**被删的尾巴检不出（锚点没覆盖到那儿），
+   以及能写数据目录的人可以连带删掉锚点文件——这两条是 ADR-018 自己划的边界，不是实现缺口。
+   测试里显式写了「不带 checkpoint 时截断检不出、带 checkpoint 才能检出」两条，避免后人误以为 hash chain 包打天下。
 4. **fail-closed**：`TestRulesValidateIsFailClosed` 注入 `([unclosed` → `Validate()` 报错且错误串点名该 pattern；
    Marker 空 / DenyKeys 空同样报错。测试同时证明出厂规则集本身可通过。
 5. **脱敏行为**：`TestDenyKeysAndVaultRefs`（deny key、大小写/连字符变体、嵌套 map/array、自由文本内嵌密钥）、
@@ -1273,7 +1332,8 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
   REQ-A4⑤（§3.1 裁定并已落地）、REQ-A7（Kind 字段已落，我这半已跟上）、B3（AggGrant + 000003）。
   **仍开**：REQ-A6① `Tx` 无事务内读（我的链头与三处"先读再改"靠单写串行化 + seq 自检兜，能错但会回滚）；
   REQ-A6② `principals` 不是聚合、没有 Create 路径（两份测试夹具因此直插）；
-  REQ-A5 §9 门禁的执行点（在 adapter/process 包，等它们接）；checkpoint 签名"Head 存哪儿/谁签"待裁；
+  REQ-A5 §9 门禁的执行点（在 adapter/process 包，等它们接）；checkpoint 签名**已裁、不待裁**
+  （ADR-018 `accepted 2026-09-20`：v0.1 不签名，`signature` 恒空串，Phase 6 另开 ADR——16:1x 我自己读原文改的）；
   REQ-A1 残余只是"摊平参数无类型约束"，生产接线已取 `audit.Rules()`。
 - **自述纪律（第 6 轮新增）**：本轮第一次出现"报告里有据可查的错话"（声称已删的变量其实还在）。
   规则改为：**凡是"我删掉了 / 我改过了"这类否定性声明，必须附一条 grep 或实跑输出**，没有就不写。
@@ -1312,9 +1372,15 @@ LAST_UPDATED: 2026-09-21T15:53+08:00
   `permission.Source` 读真库、垂直链切片、REQ-T3 带标签命中记录（两侧同形 + 跨包哨兵）。
 - 第 3 轮**已**有真库证据的事：`approvals`/`temporary_grants` 落库、`approval_requested`/`_resolved`/`_expired`
   事件与版本、`audit_entries` 哈希链持久化与校验、写入前脱敏 + 命中记录。
-- 仍**没有**证据、不得推断其存在的事：① `audit_entries.signature` 的 checkpoint 签名（未实现，且
-  "Head 存哪儿/谁签名"未裁定——**没有它，尾部删除仍检不出**，`VerifyChain` 只能证明链内自洽）；
+- 仍**没有**证据、不得推断其存在的事：① ~~`audit_entries.signature` 的 checkpoint 签名"未裁定"~~
+  **16:1x 改掉这句老断言**：签名是**已裁不做**（ADR-018 `accepted 2026-09-20`，README:204 原文
+  "`audit_entries.signature` 保持空串，`Head` 结构不增密钥字段"，Phase 6 另开 ADR），不是待办；
+  而且**尾部删除今天确实检得出**——靠 ADR-018 的库外锚点，第 20 轮 `真库里删掉尾部被检出` 实测
+  （锚点记到 seq 5、库删到 2 ⇒ `UNVERIFIED`）。当时那句"没有签名就检不出尾部删除"写于锚点还不存在的第 1 轮，
+  它把"链内自洽查不出"错写成了"什么都查不出"；
   ② §9 门禁在 adapter 启动路径上的实际拦截（我只交付判定与拒绝形状，执行点在别人包里）；
   ③ §5.4/§5.5 的投影与 UNKNOWN 行为（属 backend，我只交付了 outcome 常量与 details 键约定）；
   ④ `policy_rules` 的写路径（T-28③ 判不建，故策略表今天只能靠手工/夹具）。
-  任何"审计已防篡改"的说法在 ① 落地前都不成立。
+  **仍然成立的措辞红线**（ADR-018 原话）：链状态对外只有 `VERIFIED_LOCAL`/`UNVERIFIED`/`UNKNOWN` 三词，
+  **任何"已签名 / signed / 防篡改 / tamper-proof"都不许出现**；能写数据目录的人可以连 `audit.head` 一起删，
+  那本来不在本机制承诺范围内，而**最后一次检查点之后的行也不在锚点覆盖内**。

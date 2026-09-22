@@ -5,6 +5,7 @@ import SwaggerParser from '@apidevtools/swagger-parser';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
+import { STATUS_CODES } from 'node:http';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const yamlPath = path.join(root, 'specs', 'openapi', 'core-v1.yaml');
@@ -38,10 +39,64 @@ const CHAIN_CALLS = [
   'post /api/v1/approvals/{id}:resolve', 'post /api/v1/tasks/{id}:accept',
 ];
 
+/** 事件契约 §6 事件目录：按 2026-09-22 落文、23:5x 定稿的「合并行机械展开约定」①~⑤ + ③b 展开。
+ *  我之前拿"合并族行要猜前缀"当理由留了一份手抄投影 —— 那份手抄**当场量出少 3 条**
+ *  （`policy_created`/`policy_updated` 从 09-19 就在目录里，`notification_read` 是 09-22 补登记的）：
+ *  "解析会猜错"不是留快照的理由，⑤/③b 那两条"必须报错、不许静默跳过"正是把猜错变成停下来的东西。 */
+function parseEventCatalog(textOverride) {
+  let raw = textOverride;
+  if (raw === undefined) {
+    try {
+      raw = fs.readFileSync(EVENT_CONTRACT, 'utf8');
+    } catch (e) {
+      broken(`读不到事件契约：${EVENT_CONTRACT} —— ${e.message}`);
+    }
+  }
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const s6 = lines.findIndex((l) => /^## 6\. /.test(l));
+  const e6 = lines.findIndex((l, i) => i > s6 && /^## 7\. /.test(l));
+  if (s6 < 0 || e6 < 0) broken(`事件契约 §6 区间锚点没找准（§6=${s6 + 1}，§7=${e6 + 1}）`);
+  const types = [];
+  for (let i = s6; i < e6; i++) {
+    const line = lines[i];
+    if (!/^\| `/.test(line)) continue;
+    const m = line.match(/^\| `([a-z_]+)`((?: \/ `_[a-z]+`| \/ `[a-z_]+`)*) \|/);
+    if (!m) {
+      broken(`§6 第 ${i + 1} 行以反引号开头却没被接受（形状变了，静默跳过=白少收几个类型）：${line.slice(0, 70)}`);
+    }
+    // ①按 `/` 切 ②去反引号与空白
+    const toks = `${m[1]}${m[2]}`.split('/').map((x) => x.replace(/[`\s]/g, '')).filter(Boolean);
+    const fulls = toks.filter((t) => !t.startsWith('_'));
+    const shorts = toks.filter((t) => t.startsWith('_'));
+    // ③（09-22 23:5x 定稿）词干 = 该简写之前**最近一个**全名里最后一个 `_` 及其之前 —— 就是 db 的实际语义。
+    // ③b 把"多个全名 + 后面还跟简写"这种混排判为**表格坏了**：这一条把"第一个还是最近一个"的歧义
+    //    **取消**而不是裁决（混排非法 ⇒ 不存在能区分两种读法的输入）。探针 E 从此有契约依据，不用我自己扛。
+    if (shorts.length && fulls.length > 1) {
+      // ③b 只管"多全名 + 简写"；`fulls.length === 0` 那种留给 ⑤（孤儿简写），别让两条规则抢归因
+      broken(`§6 第 ${i + 1} 行是 ③b 禁止的混排形态（${fulls.length} 个全名 + ${shorts.length} 个简写）：${line.slice(0, 70)}`);
+    }
+    const stemOf = (t) => { const at = t.lastIndexOf('_'); return at >= 0 ? t.slice(0, at + 1) : null; };
+    let stem = null;                                  // 滚动更新 = "最近一个全名"
+    for (const t of toks) {
+      if (!t.startsWith('_')) {                       // ④ 全名原样收下
+        types.push(t);
+        stem = stemOf(t);
+        continue;
+      }
+      if (stem === null) {                            // ⑤ 孤儿 `_xxx`：本行还没有可用的全名词干
+        broken(`§6 第 ${i + 1} 行：孤儿 \`${t}\` 出现在本行还没有全名的位置（约定⑤ ⇒ 必须报错，不许静默跳过）`);
+      }
+      types.push(stem + t.slice(1));
+    }
+  }
+  if (!types.length) broken(`事件契约 §6 一个事件类型都没解出 ⇒ 解析器坏了`);
+  const dup = types.filter((t, k) => types.indexOf(t) !== k);
+  if (dup.length) broken(`§6 展开后出现重名（${[...new Set(dup)].join(', ')}）⇒ 要么目录真重登了，要么我的词干取法与约定不符`);
+  return types;
+}
+
 /** 事件契约 §7 垂直链：读围栏代码块里的全名，不再手抄 22 条。
- *  ⚠ §6 事件目录**故意不解析**：那张表有 `execution_cancelled / _failed / _succeeded` 这种合并族行，
- *  展开要靠"同前缀"推断，猜错就是一次静默的半张表 —— 那比快照更坏。EventType 仍是我手抄的投影，
- *  重核命令见 CHAIN 下面那条注释。 */
+ *  ⚠ §6 的合并族行现在有约定可依（见 parseEventCatalog），§7 只有全名、更简单。 */
 function parseChainEvents() {
   let raw;
   try {
@@ -131,7 +186,7 @@ function parseContract2(textOverride) {
   const named = rows.filter((r) => shape(r).startsWith('`'));
   const odd = rows.filter((r) => !shape(r).startsWith('—') && !shape(r).startsWith('`'));
   if (odd.length) broken(`§15.2 有 ${odd.length} 行『来自』两种形状都不像（${odd.map((r) => r.code).join(', ')}）`
-    + ' ⇒ "按形状豁免"这条判据本身失效了');
+    + ' ⇒ §15.2.2 明写只许两种合法形状（Adapter 码名 / 以 — 开头），第三种形状就是判据要防的那次误算');
   if (!dashed.length) broken('§15.2 解出 0 行带 — ⇒ HTTP 层专有码全消失，解析器静默空集');
   if (named.length + dashed.length !== rows.length) broken(`分区不闭合：${named.length} + ${dashed.length} ≠ ${rows.length}`);
   // 双向集合（契约② C8-1/C8-4 的形状；违反 = 契约自身不一致或我切错区间，两种都不许继续判 yaml）
@@ -146,7 +201,8 @@ function parseContract2(textOverride) {
 }
 
 /** Core 真发出来的 transport 码：现场扫 writeError 调用点，不抄 §15.2.1 正文那张表。
- *  ⚠ 采样面是**整个 `core/api/**` 递归**，不是某个文件 —— REQ-F-14 报成"4 条"就是因为只扫了 handler.go。 */
+ *  ⚠ 采样面是**整个 `core/api/**` 递归**，不是某个文件 —— REQ-F-14 报成"4 条"就是因为只扫了 handler.go。
+ *  连 HTTP 状态一起取：只比"码出现过的话"就漏了"码带错状态"这一整类漂移。 */
 function scanGoTransportCodes() {
   const dir = path.join(root, 'core', 'api');
   const files = [];
@@ -165,13 +221,32 @@ function scanGoTransportCodes() {
   };
   walk(dir);
   if (!files.length) return null;                     // 没有 core/ 源码的签出：这条不判，也不算绿
-  const set = new Set();
+  const hits = new Map();                             // code → { goName, at, files:Set }
   for (const f of files) {
     const t = fs.readFileSync(f, 'utf8').replace(/\r\n?/g, '\n');
-    for (const m of t.matchAll(/writeError\(w, http\.Status[A-Za-z]+, "([a-z_]+)"/g)) set.add(m[1]);
+    for (const m of t.matchAll(/writeError\(w, http\.Status([A-Za-z]+), "([a-z_]+)"/g)) {
+      const [, goName, code] = m;
+      const e = hits.get(code) ?? { goName, at: `${path.basename(f)}:${t.slice(0, m.index).split('\n').length}`, files: new Set() };
+      e.files.add(path.basename(f));
+      hits.set(code, e);
+    }
   }
-  return { files: files.length, codes: [...set].sort() };
+  return { files: files.length, hits };
 }
+
+/** Go 的 `http.StatusXxx` 后缀 → 数字。反查表来自 node 自己的 STATUS_CODES，不另抄一份映射快照；
+ *  对不上的（如 Go 用 StatusUnprocessableEntity 而 node 写 "Unprocessable Content"）一律返回 undefined，
+ *  由调用方**跳过并打印**，不判红 —— 猜不出来就不许装作判过。
+ *  ⚠ 这里曾经错过一次：正则取的是**去掉 `Status` 前缀**的后缀名，我拿带前缀的键去查 ⇒ 15 个全部"反查不到"，
+ *  而下面那句 ok 却写着"逐条核过 … 一致" —— **零条被真正比对过还报绿**，比不判更坏。所以现在加了一条
+ *  "比对数=0 就不许说核过"的判据。 */
+const GO_STATUS = (() => {
+  const m = new Map();
+  for (const [code, name] of Object.entries(STATUS_CODES)) {
+    m.set(String(name).replace(/[^A-Za-z]/g, ''), Number(code));
+  }
+  return m;
+})();
 
 // T-30 裁定：/health 的 state 词表，无 DEGRADED
 const HEALTH_STATES = ['BOOTING', 'READY', 'STOPPING', 'STOPPED', 'UNKNOWN'];
@@ -313,13 +388,32 @@ extraCodes.length ? bad('enum 里有契约之外的码（越权投影）：' + e
 const go = scanGoTransportCodes();
 if (!go) ok('本签出没有 core/api 源码 ⇒ 跳过实现侧对拍（跳过 ≠ 通过，这里明确记为未判）');
 else {
-  if (!go.codes.length) broken(`扫了 core/api 的 ${go.files} 个非测试 .go 却零命中 writeError ⇒ 扫描正则坏了，不能拿"没扫到"当"没有"`);
-  const dashedSet = new Set(c2.dashed.map((r) => r.code));
-  const goNotDoc = go.codes.filter((c) => !dashedSet.has(c));
-  const docNotGo = [...dashedSet].filter((c) => !go.codes.includes(c));
-  goNotDoc.length || docNotGo.length
-    ? bad(`实现侧与 §15.2 的 — 行不等：Core 真发而文档未列=[${goNotDoc.join(',')}]；文档列而 Core 不发=[${docNotGo.join(',')}]`)
-    : ok(`Core 实测 ${go.codes.length} 条 transport 码（扫 ${go.files} 个文件）与 §15.2 的 ${dashedSet.size} 行 — 逐字相等`);
+  if (!go.hits.size) broken(`扫了 core/api 的 ${go.files} 个非测试 .go 却零命中 writeError ⇒ 扫描正则坏了，不能拿"没扫到"当"没有"`);
+  // C8-11 的方向：Core 真发的每个字面码必须 ∈ §15.2 左列（这条才是会漏事的）
+  const doc = new Map(c2.rows.map((r) => [r.code, r]));
+  const notDoc = [...go.hits.keys()].filter((c) => !doc.has(c));
+  notDoc.length
+    ? bad(`Core 发出而 §15.2 没有行的码（新码必须同批改契约）：${notDoc.join(', ')}`)
+    : ok(`Core 实测 ${go.hits.size} 个字面码（扫 ${go.files} 个文件）全部 ∈ §15.2 左列`);
+  // 状态也要对得上：只比"码出现过"会漏掉"码带错状态"
+  const wrongStatus = [], unknownStatus = [];
+  for (const [code, h] of go.hits) {
+    const want = GO_STATUS.get(h.goName);
+    if (want === undefined) { unknownStatus.push(`${code}(${h.goName})`); continue; }
+    if (doc.get(code).status !== want) wrongStatus.push(`${code}：文档 ${doc.get(code).status} / 代码 ${want} @ ${h.at}`);
+  }
+  const compared = go.hits.size - unknownStatus.length;
+  if (wrongStatus.length) bad('HTTP 状态与 §15.2 不符：' + wrongStatus.join('；'));
+  else if (compared === 0) bad(`状态一条都没比对上（${go.hits.size} 个常量名全部反查不到数字）⇒ 扫描/反查器坏了，不许报"一致"`);
+  else ok(`HTTP 状态逐条核过：${compared}/${go.hits.size} 条比对一致`
+    + (unknownStatus.length ? `（另 ${unknownStatus.length} 条常量名反查不到数字，跳过不判红：${unknownStatus.join(', ')}）` : ''));
+  // §15.2.2 裁定（09-22 23:5x）：『来自』只答"这个名字属于哪套词汇"，不答"哪个包发的"
+  // ⇒ Core 直接发一个 Adapter 词汇名是**合法的**，这条只打印事实、不再当待裁项挂着。
+  const multi = [...go.hits].filter(([, h]) => h.files.size > 1);
+  const vocabFromCore = [...go.hits.keys()].filter((c) => !doc.get(c)?.from.trimStart().startsWith('—'));
+  ok(`多生产者事实（现场数，不引上一轮）：${multi.length} 个码由 2 个以上文件发`
+    + (multi.length ? `（${multi.map(([c, h]) => `${c}×${h.files.size}`).join('、')}）` : '')
+    + `；其中 ${vocabFromCore.length} 个用 Adapter 词汇名直接发（§15.2.2：合法，那列不答生产者）`);
 }
 (codes ?? []).every((c) => /^[a-z][a-z0-9_]*$/.test(c))
   ? ok('全部小写蛇形（RPC 面的大写形没混进来）') : bad('存在非小写蛇形码');
@@ -407,11 +501,73 @@ String(wf?.['cursor-authority']).includes('省略') && String(wf?.order).include
 Array.isArray(wf?.criteria) || String(wf?.criteria).match(/[①②③]/)
   ? ok('§5 三条判据随 yaml 一起落地（防后来者只断一边）')
   : bad('未投影 §5 判据 ①②③');
-// 事件契约 §7 链 ↔ yaml EventType 目录（链当场解析；目录侧仍是我的投影，见下面那条 note）
+// 事件契约 §7 链 ↔ yaml EventType 目录（链与目录都当场解析；yaml 侧是被判的那一个）
 const chainEvents = parseChainEvents();
-const miss = chainEvents.filter((e) => !S.EventType.enum.includes(e));
-miss.length ? bad('EventType 目录漏链事件：' + miss.join(', '))
-  : ok(`事件契约 §7 链的 ${chainEvents.length} 类事件全在目录内（目录 ${S.EventType.enum.length} 条）`);
+const catalog = parseEventCatalog();
+const catalogMissing = catalog.filter((t) => !(S.EventType.enum ?? []).includes(t));
+const catalogExtra = (S.EventType.enum ?? []).filter((t) => !catalog.includes(t));
+catalogMissing.length || catalogExtra.length
+  ? bad(`EventType enum 与事件契约 §6 目录不等：目录有而 enum 无=[${catalogMissing.join(',')}]；`
+      + `enum 有而目录无=[${catalogExtra.join(',')}]（目录外的 event_type 属 P0，两向都不许漂）`)
+  : ok(`EventType enum 与 §6 目录**双向相等**（当场按约定①~⑤展开 ${catalog.length} 类，含合并族行）`);
+const miss = chainEvents.filter((e) => !catalog.includes(e));
+miss.length ? bad(`§7 链上的事件不在 §6 目录里（契约自己不一致）：${miss.join(', ')}`)
+  : ok(`事件契约 §7 链的 ${chainEvents.length} 类事件全在目录内（目录 ${catalog.length} 条，两份都当场解析）`);
+// 目录解析器的探针：约定⑤ 与"词干取最后一个 _"都要有可执行的证据
+try {
+  const real = fs.readFileSync(EVENT_CONTRACT, 'utf8');
+  probing = true;
+  const catRun = (tweak) => {
+    try {
+      return { types: parseEventCatalog(tweak(real)), err: null };
+    } catch (e) {
+      return { types: null, err: e.message };
+    }
+  };
+  for (const [name, tweak] of [
+    ['孤儿 `_read` 出现在本行没有全名的位置（约定⑤）',
+      (t) => t.replace(/^\| `session_synced` \|/m, '| `_orphan_read` | notification | 探针行 | – |\n| `session_synced` |')],
+    ['§6 标题被改名（区间锚不到）', (t) => t.replace(/^## 6\. .*$/m, '## 6x 改名了')],
+    ['目录每一行都不再像表格（防静默空集）', (t) => t.replace(/^\| `([a-z_]+)`/gm, '| ($1) ')],
+  ]) {
+    const r = catRun(tweak);
+    r.err ? ok(`守门自证 C：${name} → 当场拒判（${r.err.slice(0, 28)}…）`)
+      : bad(`守门失效 C：${name} 竟被放行 ⇒ 约定⑤"必须报错、不许静默跳过"没落地`);
+  }
+  // 约定③ 的词干取法：`probe_alpha_beta / _failed` ⇒ 最后一个 `_` 之前 = `probe_alpha_` ⇒ probe_alpha_failed；
+  // 取"第一个 `_`"会展开成 probe_failed —— 两个结果不同，这条探针就是用来分辨这两种读法的。
+  const stemProbe = catRun((t) => t.replace(/^\| `session_synced` \|/m,
+    '| `probe_alpha_beta` / `_failed` | probe | 探针行 | – |\n| `session_synced` |'));
+  const got = stemProbe.types?.filter((x) => x.startsWith('probe_')) ?? [];
+  stemProbe.err ? bad(`词干探针行没能解析：${stemProbe.err.slice(0, 40)}`)
+    : got.includes('probe_alpha_failed') && !got.includes('probe_failed')
+      ? ok('守门自证 D：词干按**最后一个 `_`** 取（`_failed` → probe_alpha_failed，不是按第一个 `_` 的 probe_failed）')
+      : bad(`词干取法与约定③不符：解出 [${got.join(',')}]`);
+  // ③b：合并格只许"全写全名"或"一个全名打头 + 若干简写"。混排 = 表格形状坏了，必须报错。
+  // （探针 E 原来是我不替契约挑边而自设的守门；23:5x 定稿后它有契约依据了。）
+  const amb = catRun((t) => t.replace(/^\| `session_synced` \|/m,
+    '| `probe_alpha_beta` / `probe_x_y` / `_failed` | probe | 探针行 | – |\n| `session_synced` |'));
+  const mixedBack = catRun((t) => t.replace(/^\| `session_synced` \|/m,
+    '| `probe_alpha_beta` / `_short` / `probe_x_y` | probe | 探针行 | – |\n| `session_synced` |'));
+  const ambOk = catRun((t) => t.replace(/^\| `session_synced` \|/m,
+    '| `probe_alpha_beta` / `probe_x_y` | probe | 探针行 | – |\n| `session_synced` |'));
+  amb.err ? ok('守门自证 E：多全名 + 简写（混排）→ 当场拒判（③b，把"第一个/最近一个"的歧义取消）')
+    : bad('守门失效 E：混排行被放行 ⇒ 两种词干读法会各自展开出不同名字而无人报');
+  // 归因也要对：孤儿属⑤、混排属③b，两条规则不许互相抢（抢错的下一次就是谁都不报）
+  const orphan = catRun((t) => t.replace(/^\| `session_synced` \|/m,
+    '| `_only_short` | probe | 探针行 | – |\n| `session_synced` |'));
+  orphan.err && orphan.err.includes('⑤') && !orphan.err.includes('③b')
+    ? ok('归因自证：孤儿简写报在**⑤**名下（没被 ③b 抢走），fulls=0 时 ③b 不该开口')
+    : bad(`归因错乱：孤儿简写报成了 [${String(orphan.err).slice(0, 46)}]`);
+  mixedBack.err && mixedBack.err.includes('混排')
+    ? ok('守门自证 G：简写之后又出现全名 → 同一条 ③b 拒判（不只看行首）')
+    : bad(`守门漏角 G：全名出现在简写之后的混排没被 ③b 拦住（err=${String(mixedBack.err).slice(0, 40)}）`);
+  ambOk.err
+    ? bad(`③b 过敏：两个全名但**没有简写**的行也被拦（${ambOk.err.slice(0, 40)}）⇒ 契约④那种整行写全的形态会被误杀`)
+    : ok('守门自证 F：整行写全（无简写）的多全名行照常放行（约定④）');
+} finally {
+  probing = false;
+}
 
 for (const n of ['TaskStatus', 'ExecutionStatus', 'Confidence', 'SyncState', 'AdapterHealth',
   'ModelAvailability', 'RiskLevel', 'CapabilityHealth'])

@@ -1,41 +1,53 @@
 package test
 
-// §15.1 的码集合 ↔ §15.2 的『来自』列（契约② §15.2 末段："一致性判据不比行数，按码名集合双向比"，
-// 且**例外的判据是形状不是名字**：只有『来自』以 `—` 开头的行不参与，而不是点名放行 version_conflict）。
+// 本文件是契约② 判据表 C8-6 / C8-7 / C8-10 / C8-11 / C8-12 五条行的执行者。
+// 判据文本住在契约里，这里只留指针（REQ-T10）；两处口径若漂，以契约为准
+// （本文件与 lint 都只是它的执行者）。
 //
-// 为什么单独在 Go 里再来一遍（lint 的 check 8 早就比过这对集合）：
+// C8-6/C8-7 为什么单独在 Go 里再来一遍（lint 的 check 8 早就比过这对集合）：
 // 主控 09-22 指出 `grep -rn "15\.2" core/test/*.go` 零命中 —— 那条判据只在"有人跑我的 lint"时才活着，
 // 而 `go test ./test/...` 是所有人的默认入口。判据住在契约、执行者得在默认入口里。
-// 两处口径若漂，以契约② §15.2 为准（本文件与 lint 都只是它的两个执行者）。
 //
-// 三条都**不用 t.Fatal**：本文件是 T-124 那族错的整改对象 —— 嵌套子用例会整段被父级 `t.Fatal`
+// 全部用例**都不用 t.Fatal**：本文件是 T-124 那族错的整改对象 —— 嵌套子用例会整段被父级 `t.Fatal`
 // 静默吞掉（"包 ok"但它没跑）。所以每条都是独立顶层用例 + 只用 t.Errorf，
-// 解析器坏了也只是三条各自报红，不会互相遮掉。
+// 解析器坏了也只是各条各自报红，不会互相遮掉。
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// 解析出的三个数（09-22 15:22 实测盘上就是这个）：
-// §15.2 表 29 行 = 17 行『来自』带反引号码名 + 12 行以 `—` 开头；§15.1 码列 17 个。
-// 任何一个对不上 ⇒ 判解析器坏了（报数，不下"谁缺码"的结论）。
-const (
-	wantRows152      = 29
-	wantNamedRows152 = 17
-	wantDashRows152  = 12
-	wantCodes151     = 17
-)
-
 var codeNameRE = regexp.MustCompile(`^[A-Z][A-Z_]{3,}$`)
+
+// snakeLowerRE 是"看起来像一个小写码名/事件名"的形状（§15.2 左列与事件目录共用）。
+// 用它做闸门：解析出来的东西不符合形状 ⇒ 判自己坏了，不拿半张表去判人。
+var snakeLowerRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // contractPath 找适配器协议文档：不写死相对层数，向上找到仓库根再拼。
 func contractPath(t *testing.T) string {
+	t.Helper()
+	root := repoRoot(t)
+	if root == "" {
+		return ""
+	}
+	p := filepath.Join(root, "specs", "adapter-protocol", "adapter-protocol-v0.1.md")
+	if !fileExists(p) {
+		t.Errorf("%s 不在了（契约文档改名要回写判据表）", p)
+		return ""
+	}
+	return p
+}
+
+// repoRoot 从工作目录向上找同时含 `core/` 与 `specs/` 的那一层。
+// 为什么认两个目录而不是认 `.git`：判据读的是这两棵树，缺哪棵都说明锚点找错了地方。
+func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
@@ -43,16 +55,21 @@ func contractPath(t *testing.T) string {
 		return ""
 	}
 	for {
-		if p := filepath.Join(dir, "specs", "adapter-protocol", "adapter-protocol-v0.1.md"); fileExists(p) {
-			return p
+		if isDir(filepath.Join(dir, "core")) && isDir(filepath.Join(dir, "specs")) {
+			return dir
 		}
 		up := filepath.Dir(dir)
 		if up == dir {
-			t.Errorf("从 %s 往上找不到 specs/adapter-protocol/adapter-protocol-v0.1.md", dir)
+			t.Errorf("从 %s 往上找不到同时含 core/ 与 specs/ 的仓库根", dir)
 			return ""
 		}
 		dir = up
 	}
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 func fileExists(p string) bool {
@@ -89,57 +106,92 @@ func (e anchorError) Error() string { return string(e) }
 
 func errAnchor(s string) error { return anchorError(s) }
 
-// parseCodeTables 解析 §15.1 的码列与 §15.2 的『来自』列。
-func parseCodeTables(t *testing.T) (codes151 []string, named152 []string, dashRows int, rows152 int, err error) {
+// codeTables 是一次解析读到的全部东西。为什么用结构体而不是五个返回值：
+// C8-10 的形状判据比的是**行数**，而 C8-6/C8-7 的集合判据比的是**去重后的码名** ——
+// 同一列的两种数法必须分开带出来，混成一个数就会在"两行引用同一个码"那天假红。
+type codeTables struct {
+	codes151  []string // §15.1 码列（去重排序）
+	named     []string // §15.2『来自』列里的码名（去重排序）
+	namedRows int      // 『来自』带码名的行数（不去重）
+	dashRows  int      // 『来自』以 `—` 开头的行数
+	totalRows int      // §15.2 数据行总数
+	skipped   int      // 长得像表格行却一行都没计入的次数（C8-10 ① 的落点）
+	transport []string // §15.2 左列 = HTTP 面自己会发的码（去重排序，C8-11 的比对集）
+}
+
+// parseCodeTables 解析 §15.1 的码列与 §15.2 的两列。
+//
+// 一行"计没计入"必须自己说清楚：探针 M-C 那天我把某行的左列反引号拿掉，
+// 三个数（总行数 / 码名行 / `—` 行）同时少 1、彼此依旧闭合 ⇒ C8-10 ① 一声不响，
+// 只有 C8-11 因为"代码在发的那个码从表里消失了"才红。所以"看着像表格行却一行都没计入"
+// 必须单独计数并判红 —— 那才是 ① 想防的"第三种形状"，求和式自己碰不到它。
+func parseCodeTables(t *testing.T) (codeTables, error) {
 	t.Helper()
+	var ct codeTables
 	path := contractPath(t)
 	if path == "" {
-		return nil, nil, 0, 0, errAnchor("契约文档路径没找到")
+		return ct, errAnchor("契约文档路径没找到")
 	}
 	raw, e := os.ReadFile(path)
 	if e != nil {
-		return nil, nil, 0, 0, errAnchor(fmt.Sprintf("读 %s 失败: %v", path, e))
+		return ct, errAnchor(fmt.Sprintf("读 %s 失败: %v", path, e))
 	}
 	text := string(raw)
 	s151, e := sliceSection(text, "### 15.1 ", "#### 15.1.1")
 	if e != nil {
-		return nil, nil, 0, 0, e
+		return ct, e
 	}
 	s152, e := sliceSection(text, "### 15.2", "### 15.3")
 	if e != nil {
-		return nil, nil, 0, 0, e
+		return ct, e
 	}
 	for _, line := range s151 {
-		if c := firstCellCode(line); c != "" {
-			codes151 = append(codes151, c)
+		if c := firstCellMatch(line, codeNameRE); c != "" {
+			ct.codes151 = append(ct.codes151, c)
 		}
 	}
 	for _, line := range s152 {
 		cells := strings.Split(line, "|")
-		// 表格列的索引：split 出来的 cells[0] 是行首 `|` 之前的空串，所以 awk 的 $4 == cells[3]。
-		// （第一版按 awk 的习惯写了 cells[4]，结果第 1 行就撞上"第三种形状"守卫 —— 守卫是对的，索引是我错的。）
-		if len(cells) < 4 || !strings.HasPrefix(line, "| `") {
+		if !strings.HasPrefix(line, "| `") {
+			switch {
+			case !strings.HasPrefix(line, "|"), strings.HasPrefix(line, "|---"), strings.Contains(line, "HTTP 码"):
+				continue // 散文、分隔行、表头 —— 三种都不是数据行
+			default:
+				ct.skipped++ // 像表格行却不认识：静默少读一行，交给 C8-10 ① 判红
+				continue
+			}
+		}
+		if len(cells) < 4 {
+			ct.skipped++
 			continue
 		}
-		rows152++
+		ct.totalRows++
+		// 表格列的索引：split 出来的 cells[0] 是行首 `|` 之前的空串，所以 awk 的 $4 == cells[3]。
+		// （第一版按 awk 的习惯写了 cells[4]，结果第 1 行就撞上"第三种形状"守卫 —— 守卫是对的，索引是我错的。）
+		left := strings.NewReplacer(" ", "", "`", "").Replace(cells[1])
+		if !snakeLowerRE.MatchString(left) {
+			return ct, errAnchor(fmt.Sprintf("§15.2 第 %d 行的左列不像一个 HTTP 面码名：%q ⇒ 表形状变了", ct.totalRows, cells[1]))
+		}
+		ct.transport = append(ct.transport, left)
 		from := strings.NewReplacer(" ", "", "`", "").Replace(cells[3])
 		switch {
 		case strings.HasPrefix(from, "—"):
-			dashRows++
+			ct.dashRows++
 		case codeNameRE.MatchString(from):
-			named152 = append(named152, from)
+			ct.namedRows++
+			ct.named = append(ct.named, from)
 		default:
-			return nil, nil, 0, 0, errAnchor(fmt.Sprintf("§15.2 第 %d 行的『来自』既不是码名也不是 `—` 开头：%q ⇒ 解析形状变了", rows152, cells[3]))
+			return ct, errAnchor(fmt.Sprintf("§15.2 第 %d 行的『来自』既不是码名也不是 `—` 开头：%q ⇒ 解析形状变了", ct.totalRows, cells[3]))
 		}
 	}
-	sort.Strings(codes151)
-	codes151 = uniq(codes151)
-	sort.Strings(named152)
-	named152 = uniq(named152)
-	return codes151, named152, dashRows, rows152, nil
+	ct.codes151 = sortedUniq(ct.codes151)
+	ct.named = sortedUniq(ct.named)
+	ct.transport = sortedUniq(ct.transport)
+	return ct, nil
 }
 
-func firstCellCode(line string) string {
+// firstCellMatch 取表格行的首列，只有它整体符合 re 才认（首列不是码名的行是表头/分隔行）。
+func firstCellMatch(line string, re *regexp.Regexp) string {
 	if !strings.HasPrefix(line, "| `") {
 		return ""
 	}
@@ -148,13 +200,14 @@ func firstCellCode(line string) string {
 		return ""
 	}
 	c := strings.NewReplacer(" ", "", "`", "").Replace(cells[1])
-	if codeNameRE.MatchString(c) {
+	if re.MatchString(c) {
 		return c
 	}
 	return ""
 }
 
-func uniq(in []string) []string {
+func sortedUniq(in []string) []string {
+	sort.Strings(in)
 	var out []string
 	for i, s := range in {
 		if i == 0 || s != in[i-1] {
@@ -164,66 +217,94 @@ func uniq(in []string) []string {
 	return out
 }
 
-// TestErrorCodeContractTablesParse 只做一件事：证明解析器读到的形状与盘上一致。
-// 这一条红的时候，另外两条的结论都不可信 —— 所以它必须自己独立成一个顶层用例（不能被谁吞掉）。
+// TestErrorCodeContractTablesParse 执行 C8-10：**判形状、不判字面行数**。
+// 这一条红的时候，本文件其余各条的结论都不可信 —— 所以它必须自己独立成一个顶层用例（不能被谁吞掉）。
+// 为什么把 C8-8 那三条字面量废掉：09-22 主控自己往 §15.2 收了 `duplicate_project_path`，
+// 29/12 立刻红 —— 那是"把基线数字当判据"的代价，码表本来就该随功能长。
 func TestErrorCodeContractTablesParse(t *testing.T) {
-	codes, named, dash, rows, err := parseCodeTables(t)
+	ct, err := parseCodeTables(t)
 	if err != nil {
-		t.Errorf("解析器坏了（下面两条的结论此刻不可信）：%v", err)
+		t.Errorf("解析器坏了（本文件其余各条此刻不可信）：%v", err)
 		return
 	}
-	if len(codes) != wantCodes151 {
-		t.Errorf("§15.1 码列解析出 %d 个，期望 %d", len(codes), wantCodes151)
+	// ① 形状闭合：两种形状加起来必须等于总行数，且不许有"像表格行却一行都没计入"的行。
+	//    两边都用**行数**：拿"去重后的码名数"去比行数，两行引用同一个码就会假红。
+	if ct.namedRows+ct.dashRows != ct.totalRows {
+		t.Errorf("§15.2 码名行 %d + `—` 行 %d ≠ 总行数 %d ⇒ 有第三种形状混进来，解析器不能装看不见",
+			ct.namedRows, ct.dashRows, ct.totalRows)
 	}
-	if rows != wantRows152 {
-		t.Errorf("§15.2 解析出 %d 行，期望 %d", rows, wantRows152)
+	if ct.skipped > 0 {
+		t.Errorf("§15.2 里有 %d 行看着是表格行却没被计入任何一类 ⇒ 表形状变了，静默少读一行比读错一行更坏", ct.skipped)
 	}
-	if len(named) != wantNamedRows152 {
-		t.Errorf("§15.2 里『来自』带码名的行 %d 条，期望 %d", len(named), wantNamedRows152)
+	// ② 码名集合与 §15.1 双向相等。这里与 C8-6/C8-7 有意重叠：
+	//    那两条是"谁缺映射"的判据，本条是"解析器读到的确实是这两张表"的自证，重叠部分正是交叉验证。
+	var onlyIn152, onlyIn151 []string
+	for _, n := range ct.named {
+		if !containsStr(ct.codes151, n) {
+			onlyIn152 = append(onlyIn152, n)
+		}
 	}
-	if dash != wantDashRows152 {
-		t.Errorf("§15.2 里『来自』以 `—` 开头的行 %d 条，期望 %d", dash, wantDashRows152)
+	for _, c := range ct.codes151 {
+		if !containsStr(ct.named, c) {
+			onlyIn151 = append(onlyIn151, c)
+		}
 	}
-	if len(named)+dash != rows {
-		t.Errorf("两种形状加起来 %d ≠ 总行数 %d ⇒ 有第三种形状混进来了，解析器不能装看不见", len(named)+dash, rows)
+	if len(onlyIn152) > 0 {
+		t.Errorf("§15.2 的『来自』引用了 §15.1 没有的码：%v", onlyIn152)
 	}
-	t.Logf("解析器自证：§15.1=%d 码、§15.2=%d 行（码名 %d / `—` %d）", len(codes), rows, len(named), dash)
+	if len(onlyIn151) > 0 {
+		t.Errorf("§15.1 的码在 §15.2 没有映射行：%v", onlyIn151)
+	}
+	// ③ 防"锚点命中别处 ⇒ 静默空集"：只判下界，不判字面数。
+	if ct.dashRows < 1 {
+		t.Errorf("§15.2 里一条『来自』以 `—` 开头的行都没解析到 —— Core transport 自产的码不可能为零，判判据坏了")
+	}
+	if ct.totalRows < 20 {
+		t.Errorf("§15.2 只解析出 %d 行（下界 20）⇒ 区间被截断了，不许拿半张表去判人", ct.totalRows)
+	}
+	if len(ct.codes151) == 0 {
+		t.Errorf("§15.1 一个码都没解析到 ⇒ 判判据坏了")
+	}
+	// ④ 三个数字照常打印：漂移要看得见，但不咬人。
+	t.Logf("形状自证：§15.1=%d 码、§15.2=%d 行（码名行 %d / `—` %d，去重码名 %d），双向相等。数字只跟趋势",
+		len(ct.codes151), ct.totalRows, ct.namedRows, ct.dashRows, len(ct.named))
 }
 
-// TestHTTPErrorCodesComeFromAdapterset 正向：§15.2 每个带码名的『来自』都必须在 §15.1 里，
+// TestHTTPErrorCodesComeFromAdapterSet 执行 C8-6 正向：§15.2 每个带码名的『来自』都必须在 §15.1 里，
 // 否则 HTTP 面在转述一个 Adapter 协议没有的码。
 func TestHTTPErrorCodesComeFromAdapterSet(t *testing.T) {
-	codes, named, _, _, err := parseCodeTables(t)
+	ct, err := parseCodeTables(t)
 	if err != nil {
 		t.Errorf("解析器坏了，本条无从判断：%v", err)
 		return
 	}
-	for _, n := range named {
-		if !containsStr(codes, n) {
+	for _, n := range ct.named {
+		if !containsStr(ct.codes151, n) {
 			t.Errorf("§15.2 引用了码 %s，但 §15.1 的码列里没有它（新增码两处必须同改）", n)
 		}
 	}
-	t.Logf("§15.2 的 %d 个码名逐个在 §15.1 里找到了", len(named))
+	t.Logf("§15.2 的 %d 个码名逐个在 §15.1 里找到了", len(ct.named))
 }
 
-// TestAdapterCodesHaveHTTPMapping 反向：§15.1 每个码都要出现在 §15.2 的『来自』列。
-// 例外不点名放行 —— 判的是形状：只有『来自』以 `—` 开头的行不参与（那 12 行本来就是 Core transport 自产的）。
+// TestAdapterCodesHaveHTTPMapping 执行 C8-7 反向：§15.1 每个码都要出现在 §15.2 的『来自』列。
+// 例外不点名放行 —— 判的是形状：『来自』以 `—` 开头的行本来就是 Core transport 自产的，不参与这条。
 func TestAdapterCodesHaveHTTPMapping(t *testing.T) {
-	codes, named, _, _, err := parseCodeTables(t)
+	ct, err := parseCodeTables(t)
 	if err != nil {
 		t.Errorf("解析器坏了，本条无从判断：%v", err)
 		return
 	}
 	var missing []string
-	for _, c := range codes {
-		if !containsStr(named, c) {
+	for _, c := range ct.codes151 {
+		if !containsStr(ct.named, c) {
 			missing = append(missing, c)
 		}
 	}
 	if len(missing) > 0 {
 		t.Errorf("§15.1 有 %d 个码在 §15.2 没有映射行：%v —— 新增码必须同时改两张表", len(missing), missing)
 	}
-	t.Logf("反向也过：§15.1 的 %d 个码都有 HTTP 映射行；带 `—` 的那 12 行按形状不参与，不靠点名", len(codes))
+	t.Logf("反向也过：§15.1 的 %d 个码都有 HTTP 映射行；`—` 开头的 %d 行按形状不参与，不靠点名",
+		len(ct.codes151), ct.dashRows)
 }
 
 func containsStr(set []string, v string) bool {
@@ -233,4 +314,447 @@ func containsStr(set []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// diffSets 返回"在 a 里但不在 b 里"的元素（两侧都已排序去重）。
+func diffSets(a, b []string) []string {
+	var out []string
+	for _, s := range a {
+		if !containsStr(b, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// equalStrs 逐项比两个有序切片（展开规则自证要的是"顺序与个数都要对"）。
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------------------------------------------------------------- C8-11 ----
+
+// TestTransportCodesAreInContract 执行 C8-11：`core/api/http/**` 里每一个
+// `writeError(..., "<code>", ...)` 的字面码必须 ∈ 契约② §15.2 左列。
+//
+// 这条是三条腿里唯一"当场看得见新码"的那条：`duplicate_project_path` 是 backend 22:4x 落地
+// `projects.go` 时才出现的第 13 个 transport 码，§15.2 的收编按定义不可能早于它存在 ——
+// C8-6/C8-7/C8-10 都只比两张契约表，它们对"代码已经发了但表里没有"是盲的。
+//
+// 口径边界（写清楚，免得下次以为它管得更宽）：只判**字面量**码。码若改成常量或变量传进来，
+// 这条看不见 —— 所以非字面量的次数照常打印，不判红（超出契约加严是我今天栽过的错）。
+func TestTransportCodesAreInContract(t *testing.T) {
+	literals, nonLiteral, files := scanTransportCodes(t)
+	if files < 3 {
+		t.Errorf("core/api/http/** 只扫到 %d 个非测试 .go ⇒ 目录挪了或判据失效，不能判绿", files)
+	}
+	literals = sortedUniq(literals)
+	if len(literals) < 5 {
+		t.Errorf("只解析出 %d 个字面码：%v ⇒ 提取形状变了（今天盘上是 13 个），判判据自己坏了", len(literals), literals)
+	}
+	ct, err := parseCodeTables(t)
+	if err != nil {
+		t.Errorf("§15.2 解析坏了，本条无从判断：%v", err)
+		return
+	}
+	if len(ct.transport) < 20 {
+		t.Errorf("§15.2 左列只解析出 %d 个码（下界 20）⇒ 半张表不能当全集用", len(ct.transport))
+	}
+	for _, c := range literals {
+		if !containsStr(ct.transport, c) {
+			t.Errorf("代码会发的 transport 码 %s 不在契约② §15.2 左列 —— 要么补表（契约），要么改代码，两边都得动", c)
+		}
+	}
+	t.Logf("C8-11：扫 %d 个生产 .go、%d 个字面码全部在 §15.2 的 %d 个码里；非字面量传码 %d 处（这条腿看不见，只能靠打印留痕）",
+		files, len(literals), len(ct.transport), nonLiteral)
+}
+
+// scanTransportCodes 扫 core/api/http/** 的非测试 .go，取每次 writeError 调用第 3 个实参的字面码。
+// 三个不显然的地方：
+// ① 先去注释再找 —— 文档注释里出现的 `writeError(..., "xxx", ...)` 不是代码会发的码；
+//
+//	注释里的字面量当过我的证据一次，不再犯。
+//
+// ② `func writeError(...)` 定义行的形参表不是调用，不跳过的话每次扫都多一个假实参。
+// ③ 第 4 个实参是人话消息，贪婪匹配会把消息里的 ASCII 词当成码名（中文消息掩盖了这个 bug）。
+//
+//	所以按顶层逗号切参数、按下标取第 3 个，而不是拿一条正则整行去套。
+func scanTransportCodes(t *testing.T) (literals []string, nonLiteral int, files int) {
+	t.Helper()
+	root := repoRoot(t)
+	if root == "" {
+		return nil, 0, 0
+	}
+	dir := filepath.Join(root, "core", "api", "http")
+	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, e error) error {
+		if e != nil {
+			return e
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		raw, e := os.ReadFile(p)
+		if e != nil {
+			return e
+		}
+		files++
+		src := stripGoComments(string(raw))
+		for _, args := range callArgs(src, "writeError") {
+			if len(args) < 3 {
+				return errAnchor(fmt.Sprintf("%s 里有一处 writeError 只有 %d 个实参 ⇒ 签名变了，本条的取法不可信", filepath.Base(p), len(args)))
+			}
+			if s, ok := stringLiteral(args[2]); ok {
+				literals = append(literals, s)
+			} else {
+				nonLiteral++
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Errorf("扫 %s 失败: %v", dir, walkErr)
+	}
+	sort.Strings(literals)
+	return literals, nonLiteral, files
+}
+
+// stripGoComments 把 // 与 /* */ 注释换成单个空格，字符串/字符/原始串原样保留。
+// 不删换行以外的事务：这里只用来做形状匹配，行号一概不报（T-72）。
+func stripGoComments(src string) string {
+	var out []byte
+	for i := 0; i < len(src); {
+		switch c := src[i]; {
+		case c == '`' || c == '"' || c == '\'':
+			j := i + 1
+			for j < len(src) && src[j] != c {
+				if src[j] == '\\' && c != '`' {
+					j += 2
+					continue
+				}
+				j++
+			}
+			if j < len(src) {
+				j++
+			}
+			out = append(out, src[i:j]...)
+			i = j
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			out = append(out, ' ')
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			end := strings.Index(src[i+2:], "*/")
+			if end < 0 {
+				i = len(src)
+			} else {
+				i += end + 4
+			}
+			out = append(out, ' ')
+		default:
+			out = append(out, c)
+			i++
+		}
+	}
+	return string(out)
+}
+
+// callArgs 找出 src 里每次 `fn(` 调用的顶层实参（跳过函数定义、跳过括号没闭合的残文）。
+func callArgs(src, fn string) [][]string {
+	var calls [][]string
+	for from := 0; ; {
+		k := strings.Index(src[from:], fn+"(")
+		if k < 0 {
+			break
+		}
+		open := from + k + len(fn) + 1
+		from = open
+		if before := strings.TrimRight(src[:open-len(fn)-1], " \t\n\r"); strings.HasSuffix(before, "func") {
+			continue
+		}
+		args, closed := splitTopLevelArgs(src, open)
+		if !closed {
+			continue
+		}
+		calls = append(calls, args)
+	}
+	return calls
+}
+
+// splitTopLevelArgs 从开括号之后切实参：只有深度 0 的逗号算分隔，字符串内部的括号/逗号不算。
+func splitTopLevelArgs(src string, start int) ([]string, bool) {
+	var (
+		args  []string
+		depth int
+		cur   strings.Builder
+	)
+	for i := start; i < len(src); {
+		switch c := src[i]; c {
+		case '(', '[', '{':
+			depth++
+			cur.WriteByte(c)
+			i++
+		case ')', ']', '}':
+			if depth == 0 {
+				return append(args, cur.String()), true
+			}
+			depth--
+			cur.WriteByte(c)
+			i++
+		case ',':
+			if depth == 0 {
+				args = append(args, cur.String())
+				cur.Reset()
+			} else {
+				cur.WriteByte(c)
+			}
+			i++
+		case '"', '`', '\'':
+			j := i + 1
+			for j < len(src) && src[j] != c {
+				if src[j] == '\\' && c != '`' {
+					j += 2
+					continue
+				}
+				j++
+			}
+			if j < len(src) {
+				j++
+			}
+			cur.WriteString(src[i:j])
+			i = j
+		default:
+			cur.WriteByte(c)
+			i++
+		}
+	}
+	return args, false
+}
+
+func stringLiteral(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || !strings.HasPrefix(s, `"`) || !strings.HasSuffix(s, `"`) {
+		return "", false
+	}
+	v, err := strconv.Unquote(s)
+	if err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+// ---------------------------------------------------------------- C8-12 ----
+
+// TestEventCatalogMatchesJournalConstants 执行 C8-12：事件契约 §6 目录登记的事件类型集合，
+// 与 `core/internal/eventjournal` 的常量值集合**双向相等**。
+//
+// 与 C8-11 是一对：那条判"代码会发的码 ⊆ 契约"，本条判"契约登记的类型 ↔ 代码有的常量"，
+// 缺任何一边都得补（目录补了常量没补、或常量有了目录没登记，都是同一个洞的两半）。
+// 契约① §6 的那条引文（REQ-DB-5）明确把词表闭合判据派给 `test`，就是这一条。
+func TestEventCatalogMatchesJournalConstants(t *testing.T) {
+	// 先自证展开规则：契约① §6 的"合并行机械展开约定"（①按 / 切 ②去反引号与空白
+	// ③词干 = 该简写之前**最近一个**全名里最后一个 `_` 及其之前 ③b 合并格只许"全是全名"或
+	// "一个全名 + 若干简写"两种形态，混排必须报错 ④不带 `_` 前导的原样收 ⑤孤儿 `_xxx` 必须报错）。
+	// 两个解析器（`db` 的 eventTypesIn 与本函数）各猜一套就会在将来某天分歧，所以规则要钉在判据里。
+	expansion := []struct {
+		cell    string
+		want    []string
+		wantErr bool
+		why     string
+	}{
+		{" `notification_created` / `_handled` / `_read` ", []string{"notification_created", "notification_handled", "notification_read"}, false, "契约原文那一行就是这个形状（③b 形态二）"},
+		{" `execution_output_flushed` / `_failed` ", []string{"execution_output_flushed", "execution_output_failed"}, false, "③：词干取名字里最后一个 `_`，不是第一个（否则展开成 execution_failed）"},
+		{" `grant_issued` / `grant_revoked` ", []string{"grant_issued", "grant_revoked"}, false, "④/③b 形态一：整行都写全名也合法（守门不许顺手把这种行也拒掉）"},
+		{" `task_paused` ", []string{"task_paused"}, false, "④：单名行"},
+		{" `a_b` / `c_d` / `_e` ", nil, true, "③b：多个全名 + 简写的混排行 ⇒ 报错，不许在两个词干里挑一个"},
+		{" `a_b` / `_c` / `d_e` ", nil, true, "③b 的另一半：简写后面还跟全名"},
+		{" ` _orphan ", nil, true, "⑤：本行还没有全名 ⇒ 必须报错，不许静默少收一个类型"},
+		{" `NotAnEventName` ", nil, true, "形状不认识（大写）就报错，不猜"},
+	}
+	for _, e := range expansion {
+		got, err := expandEventCell(e.cell)
+		switch {
+		case e.wantErr && err == nil:
+			t.Errorf("展开规则自证：%s（%s）本该报错却返回了 %v", e.cell, e.why, got)
+		case !e.wantErr && err != nil:
+			t.Errorf("展开规则自证：%s（%s）本该展开成 %v 却报错：%v", e.cell, e.why, e.want, err)
+		case !e.wantErr && !equalStrs(got, e.want):
+			t.Errorf("展开规则自证：%s（%s）展开成 %v，期望 %v", e.cell, e.why, got, e.want)
+		}
+	}
+	catalog, err := parseEventCatalog(t)
+	if err != nil {
+		t.Errorf("事件目录解析坏了（本条无从判断）：%v", err)
+		return
+	}
+	constants, files, err := parseJournalEventConstants(t)
+	if err != nil {
+		t.Errorf("events.go 常量解析坏了（本条无从判断）：%v", err)
+		return
+	}
+	// 两条下界都是防"锚点/正则命中别处 ⇒ 静默空集"：空集比空集相等，是最坏的假绿。
+	if len(catalog) < 20 {
+		t.Errorf("§6 只解析出 %d 个事件类型（下界 20）⇒ 区间被截断了", len(catalog))
+	}
+	if len(constants) < 20 {
+		t.Errorf("eventjournal 只解析出 %d 个常量值（下界 20）⇒ 正则或文件位置变了", len(constants))
+	}
+	onlyCatalog := diffSets(catalog, constants)
+	onlyCode := diffSets(constants, catalog)
+	// 巡检 23:20 替 db 转的那条陷阱要**当场看得见**，不能只靠"62=62 恰好相等"推断：
+	// `notification_read` 这个字面量在契约① 里只出现 1 次、且那次是说明文字，§6 表格本体写的是
+	// 简写 `` `notification_created` / `_handled` / `_read` `` ⇒ 按字面名 grep §6 会把它判成未登记。
+	// 这三个名字**只能从合并行展开出来**（不是全名行），所以它们在册就是"展开真的做了"的直接证据。
+	for _, derived := range []string{"notification_read", "execution_failed", "process_crashed", "approval_resolved", "handoff_ready"} {
+		if !containsStr(catalog, derived) {
+			t.Errorf("简写展开少了 %s —— 它只存在于合并行里，缺它就是解析器按字面名读表（db 23:20 报的那条假红）", derived)
+		}
+	}
+	for _, e := range onlyCatalog {
+		t.Errorf("契约 §6 登记了 %s，但 eventjournal 没有对应常量 ⇒ 谁发的这条边没有合法类型可用（补常量那边）", e)
+	}
+	for _, e := range onlyCode {
+		t.Errorf("eventjournal 有常量 %s，但契约 §6 没登记 ⇒ 写它即 §9.1 P0（补目录那边）", e)
+	}
+	t.Logf("C8-12：目录 %d 类 / 常量 %d 个（扫 %d 个非测试 .go）；目录独有 %v、代码独有 %v",
+		len(catalog), len(constants), files, onlyCatalog, onlyCode)
+}
+
+// parseEventCatalog 解析契约① §6 的首列，并按契约自己的话把合并同族的行摊开成逐条类型
+// （"表中合并同族的行仍按逐条类型登记"+"③b 混排非法"，展开规则全在 expandEventCell 的注释里逐条对号）。
+func parseEventCatalog(t *testing.T) ([]string, error) {
+	t.Helper()
+	root := repoRoot(t)
+	if root == "" {
+		return nil, errAnchor("仓库根没找到")
+	}
+	path := filepath.Join(root, "specs", "events", "event-contract-v0.1.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errAnchor(fmt.Sprintf("读 %s 失败: %v", path, err))
+	}
+	sec, err := sliceSection(string(raw), "## 6. ", "## 7. ")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range sec {
+		if !strings.HasPrefix(line, "| `") {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 2 {
+			return nil, errAnchor(fmt.Sprintf("§6 有一行只有 %d 列：%q", len(cells), line))
+		}
+		names, err := expandEventCell(cells[1])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, names...)
+	}
+	return sortedUniq(out), nil
+}
+
+// expandEventCell 把目录首列拆成逐个事件类型；形状不认识就报，不猜。
+//
+// 规则是契约① §6 的"合并行机械展开约定"，逐条对号：
+// ① 按 `/` 切；② 去反引号与空白；③ 词干 = 该简写之前**最近一个**全名里最后一个 `_` 及其之前
+// （注意：主控 23:49 那版原文写的是"本行第一个全名"，我这份实现从第一天取的就是"最近一个"——
+// 那时 §6 没有能区分两种读法的行，所以零分歧；现在 ③b 直接把混排判非法，歧义类被取消，两种读法
+// 在任何合法输入上不可能再给出不同结果，所以这条注释跟着翻一次而不是猜一次）；
+// ③b 合并格只许两种形态：**全是全名**，或**一个全名打头 + 若干 `_xxx`** ⇒
+// 多个全名后面还跟简写、或简写后面还跟全名，都判表格形状坏了、**必须报错**（不许静默挑一个词干）；
+// ④ 不带 `_` 前导的 token 原样收下；⑤ 还没有全名就出现 `_xxx` ⇒ 报错。
+func expandEventCell(cell string) ([]string, error) {
+	var (
+		out      []string
+		stem     string
+		fullSeen int
+		sawShort bool
+	)
+	for _, part := range strings.Split(cell, "/") {
+		name := strings.NewReplacer("`", "", " ", "").Replace(part)
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, "_") {
+			switch {
+			case fullSeen == 0:
+				return nil, errAnchor(fmt.Sprintf("⑤ 目录首列 %q 里简写 %q 前面没有任何全名", cell, name))
+			case fullSeen > 1:
+				return nil, errAnchor(fmt.Sprintf("③b 混排行非法：简写 %q 跟在 %d 个全名之后（词干该取哪一个？契约要的是报错，不是挑一个）", name, fullSeen))
+			case stem == "":
+				return nil, errAnchor(fmt.Sprintf("③ 全名 %q 里没有 `_`，无法给简写 %q 取词干", cell, name))
+			}
+			sawShort = true
+			name = stem + name
+		} else {
+			if sawShort {
+				return nil, errAnchor(fmt.Sprintf("③b 混排行非法：全名 %q 出现在简写之后（合并格只许「全是全名」或「一个全名 + 若干简写」）", name))
+			}
+			fullSeen++
+			if i := strings.LastIndex(name, "_"); i > 0 {
+				stem = name[:i]
+			}
+		}
+		if !snakeLowerRE.MatchString(name) {
+			return nil, errAnchor(fmt.Sprintf("目录首列解析出不像事件名的 %q（原文 %q）", name, cell))
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, errAnchor(fmt.Sprintf("目录首列 %q 一个类型都没解析到", cell))
+	}
+	return out, nil
+}
+
+// journalConstRE 匹配 `Name = "value"` 形式的常量行（tab 缩进、值必须是小写蛇形）。
+var journalConstRE = regexp.MustCompile("(?m)^[ \\t]*([A-Z][A-Za-z0-9]*)[ \\t]+=[ \\t]+\"([a-z][a-z0-9_]*)\"[ \\t]*$")
+
+// parseJournalEventConstants 取 eventjournal 包里所有 `X = "x"` 常量的值集合。
+// 扫整个目录而不点名 events.go：常量挪到同包另一个文件是本包内部的正常演化，
+// 判据认"这个包的常量集合"，认具体文件名只会挪一次就假红。
+func parseJournalEventConstants(t *testing.T) ([]string, int, error) {
+	t.Helper()
+	root := repoRoot(t)
+	if root == "" {
+		return nil, 0, errAnchor("仓库根没找到")
+	}
+	dir := filepath.Join(root, "core", "internal", "eventjournal")
+	var (
+		vals  []string
+		files int
+	)
+	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, e error) error {
+		if e != nil {
+			return e
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		raw, e := os.ReadFile(p)
+		if e != nil {
+			return e
+		}
+		files++
+		for _, m := range journalConstRE.FindAllStringSubmatch(stripGoComments(string(raw)), -1) {
+			vals = append(vals, m[2])
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, files, errAnchor(fmt.Sprintf("扫 %s 失败: %v", dir, walkErr))
+	}
+	if files == 0 {
+		return nil, files, errAnchor(fmt.Sprintf("%s 里一个非测试 .go 都没有 ⇒ 包搬家了，判据不能对着空气判绿", dir))
+	}
+	return sortedUniq(vals), files, nil
 }

@@ -3,7 +3,7 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-22T23:29+08:00
+LAST_UPDATED: 2026-09-23T00:02+08:00
 
 ## Objective
 
@@ -32,17 +32,35 @@ LAST_UPDATED: 2026-09-22T23:29+08:00
 
 ## Current checkpoint
 
-- Stage: T-142 已修（解析器第 ⑤ 条改为报错 + 解析器直测），并实测证明只靠 parity 会绿着骗过去
+- Stage: T-149 ② 已落（③b 三种非法形状各自报错，取值逻辑未动），T-142 已闭单
 - Status: complete
-- Last verified action: `go vet` VET_OK；scoped 门禁 → 2 包 ok、`exit=0`；
-  收尾全仓 `go test ./internal/... -count=1` → **13 个包 ok、FAIL 行 0**；
-  变异标记 0 命中；基线现取 `650c06c`，`git diff --stat HEAD` 本角色范围**只有 `contract_parity_test.go`**，
-  `events.go`/`platform/db`/`core/migrations/` 均不在 diff 内 = 与基线逐字节相同
+- Last verified action: `go vet` VET_OK；scoped 门禁 → 2 包 ok；全仓 `go test ./internal/... -count=1`
+  → **13 个包 ok、FAIL 行 0**；变异标记 0 命中；基线现取 `82f01f6`，
+  `git diff --stat HEAD` 本角色范围**只有 `contract_parity_test.go` (+36/−24)**，
+  `events.go`、`platform/db/`、`core/migrations/` 均不在 diff 内 = 与基线逐字节相同
 - Next action: 无待办；账上无未闭合项
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-149 ② 已落（③b 混排必须报错）**：`eventTypesIn` 现在只认 §6 的两种合法形状
+  —— **全部写全名** 或 **一个全名打头 + 若干 `_xxx`**；三种非法形状各自报错：
+  ① 全名之前出现简写（孤儿，如 `_handled / _read`）；② 已有 ≥2 个全名后出现简写
+  （主控给的假想例 `a_b / c_d / _e`，旧实现会**静默展开成 `c_e`**）；③ 简写之后又出现全名
+  （`notification_created / _handled / task_queued`）。
+  **取值逻辑按令未改**（`default:` 分支仍取"最近一个全名"的词干）。
+  - `TestEventTypesInExpansion` 加了合成反例（含 `a_b / c_d / _e` 与 `task_created / grant_issued / _failed`），
+    合法侧同步加了 `execution_paused / execution_resumed`（两个全名并列，必须**不**报错）。
+  - **变异按主控说的做了并给出对照**：把守卫退回 ③b 之前的 `if stem == ""` →
+    两条混排合成例报 `returned no error`（用例红），**而同一次跑里 `TestCatalogMatchesContract` 仍 `ok`**
+    ⇒ 与主控那句完全一致：对拍看不见解析器少收/多收，只有直接喂合成反例的那条能看见。
+  - **真表零误报**：收紧后 §6 实际仍解析出 62 个类型、双向差集为空 ⇒ 现有合并行没有一条踩 ③b。
+  - **我自己的测试当场抓出一个我新引入的洞**：第一版把守卫写成 `fulls != 1`，
+    漏了"全名存在但没有词干"的情形（`x / _read` 会静默展开成裸 `read`）—— 是反例跑红暴露的，
+    已改成 `fulls != 1 || stem == ""`。另修一条断言措辞（原来只说 orphan，现在覆盖 ③b 全体）。
+  - scratch 备份 `.scratch/db/contract_parity_t149_before.go`，还原后 `grep T149MUT` 0 命中，
+    文件与目录都删净；`/tmp` 零接触。
+  - **T-142 闭单已收到**（巡检 23:44 / 主控 23:50 各自读码确认 `return nil, fmt.Errorf` 在位），无异议。
 - **T-142 已修（主控指出的真错，展开约定第 ⑤ 条）**：`eventTypesIn` 原先在 `stem == ""` 时 `continue`，
   孤儿简写被**静默丢掉**。现按契约 §6 的展开约定改成报错
   （`row ... starts with the shorthand "_handled" before any full name; the event contract §6 table or

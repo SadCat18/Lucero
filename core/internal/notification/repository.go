@@ -31,7 +31,7 @@ func (r *Repository) Get(ctx context.Context, id string) (Notification, error) {
 }
 
 // priorityRank 是 inbox 的档位序，**只有一个来源**：这一句 SQL。
-// Go 侧不抄第二份表 —— ListByState 把它 SELECT 出来回在 ListPosition 里，
+// Go 侧不抄第二份表 —— ListPage 把它 SELECT 出来回在 ListPosition 里，
 // 所以 transport 编码的游标与这里的定义不可能各说各话。
 const priorityRank = `CASE priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END`
 
@@ -42,24 +42,30 @@ type ListPosition struct {
 	ID        string
 }
 
-// ListFilter 是 GET /api/v1/notifications?state= 的条件；After 为 nil = 第一页。
+// ListFilter 是 inbox 那一页的条件。State 为 nil = **不按状态过滤**（C26 裁定 ②：
+// "不传"不许兼职成"只要 UNREAD"，否则面板再也表达不出"我要全部"）。After 为 nil = 第一页。
 type ListFilter struct {
-	State State
+	State *State
 	After *ListPosition
 	Limit int
 }
 
-// ListByState 按 inbox 序出一页，并带回**本页最后一行**的位置（handler 拿它编 next_cursor）。
+// ListPage 按 inbox 序出一页，并带回**本页最后一行**的位置（handler 拿它编 next_cursor）。
+// 原名 ListByState：C26 之后状态过滤是可选的，继续叫那个名字就是骗下一个读代码的人。
 // 契约③ §2 禁 offset，所以翻页是 keyset 谓词而不是 LIMIT/OFFSET；游标的编解码属 transport。
 // 零行时 last 是零值，handler 据此回 `next_cursor: ""` —— 那是**分页**口径（REQ-F-19：空串唯一表示
 // "没有下一页"）。REQ-F-21/22 的**同步**游标口径与它相反（空串非法、只有非空串或 null），两套不许共用编解码。
-func (r *Repository) ListByState(ctx context.Context, f ListFilter) ([]Notification, ListPosition, error) {
+func (r *Repository) ListPage(ctx context.Context, f ListFilter) ([]Notification, ListPosition, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	where := []string{"state = ?"}
-	args := []any{string(f.State)}
+	var where []string
+	var args []any
+	if f.State != nil {
+		where = append(where, "state = ?")
+		args = append(args, string(*f.State))
+	}
 	if f.After != nil {
 		// 展开成显式条件、不用行值比较：对齐 internal/task/repository.go 那条老决定。
 		where = append(where, "("+priorityRank+" > ?"+
@@ -70,12 +76,15 @@ func (r *Repository) ListByState(ctx context.Context, f ListFilter) ([]Notificat
 			f.After.Rank, f.After.CreatedAt, f.After.ID)
 	}
 	args = append(args, limit)
-	rows, err := r.q.QueryContext(ctx,
-		`SELECT `+priorityRank+` AS priority_rank, `+cols+` FROM notifications WHERE `+
-			strings.Join(where, " AND ")+
-			` ORDER BY priority_rank, created_at DESC, id LIMIT ?`, args...)
+	// WHERE 整段是可省的：不过滤时拼出 "WHERE  ORDER BY" 就是语法错（第一次跑就是这么红的）。
+	query := `SELECT ` + priorityRank + ` AS priority_rank, ` + cols + ` FROM notifications`
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, " AND ")
+	}
+	query += ` ORDER BY priority_rank, created_at DESC, id LIMIT ?`
+	rows, err := r.q.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, ListPosition{}, fmt.Errorf("notification: list %s: %w", f.State, err)
+		return nil, ListPosition{}, fmt.Errorf("notification: list page: %w", err)
 	}
 	defer rows.Close()
 	var out []Notification
@@ -86,7 +95,7 @@ func (r *Repository) ListByState(ctx context.Context, f ListFilter) ([]Notificat
 		var rank int
 		n, err := scan(rows, &rank)
 		if err != nil {
-			return nil, ListPosition{}, fmt.Errorf("notification: list %s scan: %w", f.State, err)
+			return nil, ListPosition{}, fmt.Errorf("notification: list page scan: %w", err)
 		}
 		out = append(out, n)
 		last = ListPosition{Rank: rank, CreatedAt: n.CreatedAt, ID: n.ID}

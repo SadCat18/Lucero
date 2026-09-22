@@ -97,7 +97,8 @@ func getInbox(t *testing.T, srv *httptest.Server, query string) (int, inboxPage,
 	return code, p, body
 }
 
-// TestInboxPagesWithCursor 是这条口的正证：默认 state=UNREAD、按 (档, created_at DESC, id) 出页，
+// TestInboxPagesWithCursor 是这条口的正证：**不传 state = 不过滤**（C26 裁定 ②，所以 READ 那行 i6 也在结果里、
+// 且按档位序排在最前）、按 (档, created_at DESC, id) 出页，
 // 翻页只靠 next_cursor（REQ-F-19：它是字符串，空串是唯一合法的"没有下一页"，键不许消失）。
 func TestInboxPagesWithCursor(t *testing.T) {
 	srv, d := newInboxHarness(t)
@@ -136,18 +137,20 @@ func TestInboxPagesWithCursor(t *testing.T) {
 		}
 		cursor = *p.NextCursor
 	}
-	if strings.Join(got, ",") != "i1,i2,i3,i4,i5" {
-		t.Fatalf("三页拼起来不对（序或翻页有问题）: %v", got)
+	if strings.Join(got, ",") != "i6,i1,i2,i3,i4,i5" {
+		t.Fatalf("三页拼起来不对（序、翻页或 state 缺省有问题）: %v", got)
 	}
 }
 
 // TestInboxItemShapeKeepsNullApartFromZero 钉响应形状里最容易糊的一层：
 // 必填六键必须在；三个可空时间戳必须是 null 而不是 0（§12"不许用 0 表示不知道"）。
+// 这里**显式带 state=UNREAD**（面板真实调用就是这么发的）：C26 之后不带就是"全都要"，
+// 那样 i6 会挤掉五行里的一行，这条形状用例就在测别的东西了。
 func TestInboxItemShapeKeepsNullApartFromZero(t *testing.T) {
 	srv, d := newInboxHarness(t)
 	seedInboxRows(t, d)
 
-	code, p, body := getInbox(t, srv, "?limit=5")
+	code, p, body := getInbox(t, srv, "?state=UNREAD&limit=5")
 	if code != 200 {
 		t.Fatal(body)
 	}
@@ -206,6 +209,27 @@ func TestInboxQueryValidation(t *testing.T) {
 	// 状态大小写不敏感（前端可能传小写），但值必须在词表里。
 	if code, _, body := getInbox(t, srv, "?state=read"); code != 200 {
 		t.Errorf("小写 state=read 应被接受，实际 %d %s", code, body)
+	}
+	// C26 裁定 ② 的 transport 侧：`state` 缺省**不再等于 UNREAD**，空串等价于不传（都不过滤）。
+	// 这三格是同一句话的三种写法，缺一个就还有"两套都能过"的空间。
+	for _, q := range []string{"", "?state=", "?state=READ"} {
+		code, p, body := getInbox(t, srv, q)
+		var sawRead bool
+		for _, item := range p.Items {
+			if item["id"] == "i6" {
+				sawRead = true
+			}
+		}
+		switch q {
+		case "?state=READ":
+			if code != 200 || !sawRead || len(p.Items) != 1 {
+				t.Errorf("?state=READ 该只回 i6，实际 %d %d 行 %s", code, len(p.Items), body)
+			}
+		default:
+			if code != 200 || !sawRead {
+				t.Errorf("%q 该按\"不过滤\"处理、结果里要有 READ 那行 i6，实际 %d %s", q, code, body)
+			}
+		}
 	}
 }
 

@@ -99,9 +99,21 @@ func TestHealthReflectsARealBoot(t *testing.T) {
 	if items, ok := listed["items"].([]any); !ok || len(items) != 0 {
 		t.Errorf("空库的 tasks 列表应为空数组，实际 %v", listed)
 	}
-	// 还没接的面仍然 501，不许假成功。
-	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/projects", ep.Token, nil); !isStatus(err, "501") {
+	// 第三十二批把 GET /api/v1/projects 接通了，所以"仍未实现"的例子换成 `:read`（它还等 REQ-DB-5）。
+	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/notifications/n-none:read", ep.Token, nil); !isStatus(err, "501") {
 		t.Errorf("未实现的端点应 501，实际 %v", err)
+	}
+	// 而 /projects 这条现在必须在真进程的装配里真的能用 —— 顺带把新接的读通道钉到真二进制上：
+	// 空库 ⇒ items 是空数组（不是 null）、next_cursor 是字符串（REQ-F-19 只承认空串这一种"没有"）。
+	var projects map[string]any
+	if err := getJSON(t, "http://"+core.endpoint+"/api/v1/projects", ep.Token, &projects); err != nil {
+		t.Fatalf("GET /api/v1/projects 已经接了，应 200，实际 %v", err)
+	}
+	if items, ok := projects["items"].([]any); !ok || len(items) != 0 {
+		t.Errorf("空库的 projects 列表应为空数组，实际 %v", projects)
+	}
+	if _, ok := projects["next_cursor"].(string); !ok {
+		t.Errorf(`next_cursor 该是字符串键，实际 %#v`, projects["next_cursor"])
 	}
 }
 

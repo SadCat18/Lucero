@@ -57,18 +57,17 @@ func contractCatalog(t *testing.T) map[string]bool {
 	return out
 }
 
-// eventTypesIn expands the contract §6 shorthand, following the mechanical
-// convention written into the contract itself: split on "/", strip backticks and
-// spaces, the stem is everything up to and including the last "_" of the row's
-// first full name, a "_xxx" token expands to stem + xxx, and a token without a
-// leading "_" is a full name.
-//
-// A "_xxx" appearing before the row has any full name means the table or this
-// parser is broken, so it is reported rather than skipped: silently dropping it
-// would make the parity check see one fewer type on both sides and still pass.
+// A merged cell may take exactly two shapes (contract §6 rule ③b): every token a
+// full name, or one full name followed by only "_xxx" shorthands. Anything else
+// — a shorthand with no full name before it, a shorthand after two or more full
+// names, or a full name after a shorthand — means the table or this parser is
+// broken, so it is reported rather than skipped: silently dropping a token would
+// make the parity check see one fewer type on both sides and still pass.
 func eventTypesIn(cell string) ([]string, error) {
 	var out []string
 	stem := ""
+	fulls := 0
+	sawShort := false
 	for _, tok := range strings.Split(cell, "/") {
 		tok = strings.TrimSpace(tok)
 		if tok == "" || strings.Contains(tok, "同上") {
@@ -82,22 +81,30 @@ func eventTypesIn(cell string) ([]string, error) {
 			name = name[:i]
 		}
 		name = strings.TrimSpace(name)
-		switch {
-		case name == "":
+		if name == "" {
 			continue
-		case strings.HasPrefix(name, "_"):
-			if stem == "" {
-				return nil, fmt.Errorf("row %q starts with the shorthand %q before any full name; "+
-					"the event contract §6 table or this parser has lost its shape", cell, name)
+		}
+		if strings.HasPrefix(name, "_") {
+			if fulls != 1 || stem == "" {
+				return nil, fmt.Errorf("row %q has the shorthand %q with %d full name(s) and stem %q; "+
+					"§6 rule ③b allows only all-full or one-full-then-shorthands, and a shorthand needs "+
+					"a domain_action stem to attach to, so the table or this parser has lost its shape",
+					cell, name, fulls, stem)
 			}
 			out = append(out, stem+name[1:])
-		default:
-			out = append(out, name)
-			if i := strings.LastIndexByte(name, '_'); i >= 0 {
-				stem = name[:i+1]
-			} else {
-				stem = ""
-			}
+			sawShort = true
+			continue
+		}
+		if sawShort {
+			return nil, fmt.Errorf("row %q has the full name %q after a shorthand; §6 rule ③b allows "+
+				"only all-full or one-full-then-shorthands", cell, name)
+		}
+		out = append(out, name)
+		fulls++
+		if i := strings.LastIndexByte(name, '_'); i >= 0 {
+			stem = name[:i+1]
+		} else {
+			stem = ""
 		}
 	}
 	return out, nil
@@ -125,10 +132,15 @@ func TestEventTypesInExpansion(t *testing.T) {
 		}
 	}
 
-	bad := []string{" `_handled` / `_read` ", " `x` / `_read` "}
+	// Rule ③b: only the two shapes are legal. These are the mixed forms §6 says
+	// must be treated as a broken table, including the one that used to expand
+	// silently to "c_e" using the nearest-stem rule.
+	bad := []string{" `_handled` / `_read` ", " `x` / `_read` ",
+		" `task_created` / `grant_issued` / `_failed` ", " `a_b` / `c_d` / `_e` ",
+		" `notification_created` / `_handled` / `task_queued` "}
 	for _, cell := range bad {
 		if _, err := eventTypesIn(cell); err == nil {
-			t.Errorf("eventTypesIn(%q) returned no error; an orphan shorthand must be reported", cell)
+			t.Errorf("eventTypesIn(%q) returned no error; §6 rule ③b says this row shape must be reported", cell)
 		} else {
 			t.Logf("%q correctly reported: %v", cell, err)
 		}

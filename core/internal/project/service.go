@@ -111,6 +111,7 @@ func isUniqueOnPath(err error) bool {
 // Queryer 是本包读侧用到的最小接口（同 internal/session 的理由：只声明自己要的那两条）。
 type Queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 const projectCols = `id, trust_domain_id, name, canonical_path, project_type, status,
@@ -118,6 +119,62 @@ const projectCols = `id, trust_domain_id, name, canonical_path, project_type, st
 
 // Get 读回真那一行。C18 裁定 ② 要求"首次响应也回读库"，所以 transport 建完必须走它。
 func Get(ctx context.Context, q Queryer, id string) (Project, error) {
+	p, err := scanProject(q.QueryRowContext(ctx,
+		`SELECT `+projectCols+` FROM projects WHERE id = ?`, id))
+	if err != nil {
+		return Project{}, fmt.Errorf("project: get %s: %w", id, err)
+	}
+	return p, nil
+}
+
+// ListFilter 是 GET /api/v1/projects 的条件。契约（yaml 那条 get 的 parameters）只给了 cursor + limit，
+// 所以这里**没有** status 过滤位，归档的也在列表里 —— 要过滤得等契约开口，不在我这边自挑（C26 同一课）。
+type ListFilter struct {
+	AfterCreatedAt int64
+	AfterID        string
+	Limit          int
+}
+
+// ListPage 按 (created_at, id) 升序出一页。这个序与 internal/task 那条 list 相同，
+// 游标也是同一个二元形状，所以 transport 复用 encodeCursor/decodeCursor，不再造第三份编解码
+// （同步游标那套口径相反，见 api/http/tasks.go 末尾那一句）。
+// 翻页是 keyset 谓词而不是 OFFSET（契约③ §2 禁 offset）；返回值的最后一行就是下一页游标的原料。
+func ListPage(ctx context.Context, q Queryer, f ListFilter) ([]Project, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	// "1=1" 打底是 internal/task 那条 list 的写法：条件全空时也不会拼出 `WHERE  ORDER BY`
+	// （notification 那口今天刚为此红过一次，见第 139 条）。
+	where := []string{"1=1"}
+	args := []any{}
+	if f.AfterID != "" {
+		where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
+		args = append(args, f.AfterCreatedAt, f.AfterCreatedAt, f.AfterID)
+	}
+	args = append(args, limit)
+	rows, err := q.QueryContext(ctx, `SELECT `+projectCols+` FROM projects WHERE `+
+		strings.Join(where, " AND ")+` ORDER BY created_at, id LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("project: list: %w", err)
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, fmt.Errorf("project: list scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+// scanProject 是 Get 与 ListPage 共用的那份读法（可空列一律走 Null*，不在这儿折成空串——
+// 折不折得开是 transport 那一层显式出 null 的事，见 api/http/projects.go 的 nullableString）。
+func scanProject(row rowScanner) (Project, error) {
 	var (
 		p                         Project
 		trust, path               sql.NullString
@@ -126,13 +183,12 @@ func Get(ctx context.Context, q Queryer, id string) (Project, error) {
 		metadata, typeName        string
 		created, updated, version int64
 	)
-	err := q.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE id = ?`, id).
-		Scan(&p.ID, &trust, &p.Name, &path, &typeName, &status, &metadata, &created, &updated, &archived, &version)
-	if err != nil {
-		return Project{}, fmt.Errorf("project: get %s: %w", id, err)
+	if err := row.Scan(&p.ID, &trust, &p.Name, &path, &typeName, &status, &metadata,
+		&created, &updated, &archived, &version); err != nil {
+		return Project{}, err
 	}
 	if !Status(status).Valid() {
-		return Project{}, fmt.Errorf("project: get %s: status %q 不在 §7 词表里", id, status)
+		return Project{}, fmt.Errorf("project: %s: status %q 不在 §7 词表里", p.ID, status)
 	}
 	p.TrustDomainID, p.CanonicalPath, p.Type, p.Status = trust.String, path.String, typeName, Status(status)
 	p.MetadataJSON, p.CreatedAt, p.UpdatedAt, p.ArchivedAt, p.Version = metadata, created, updated, archived.Int64, version

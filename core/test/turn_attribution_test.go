@@ -1,24 +1,21 @@
 package test
 
-// §4.2 裁定 ① 的交叉校验腿（T-98 件②，把 T84-6 从"等注入面"变成实测）。
+// 判据文本住在**契约② §4.2 判据表 T84**（T84-6 = 交叉校验两腿、T84-7 = 丢弃那一半的 Audit），
+// 这里只留指针 + 实现理由（REQ-T10：别再造第二份文本）。
 //
-// 判据（契约② §4.2 裁定 ①，12:4x）：`turn_ref` 一律必带；`claimed`/`dispatched` 额外带 `execution_id`，
-// 那是**可交叉验证的冗余、不是第二真相源**；两者同时在场而不一致 ⇒ Core **丢弃**（沿用 §6 规则 5 的处置）。
-//
-// | ID     | 断言（两侧都断）                                                                       | 当场命令                                                                        | 状态 |
-// |--------|----------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|------|
-// | T84-6a | 绑定与帧内 `execution_id` **一致** ⇒ 收下：tracker 由空推到 RUNNING，per-ref 游标前移     | `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestTurnRefCrossCheck ./test/...` | 现存 |
-// | T84-6b | **不一致** ⇒ 丢弃：两个 execution 的 tracker 都不推进，per-ref 游标停在 0（"丢弃"=不推进，不是"收下但忽略"）| 同上 | 现存 |
-//
-// 为什么不需要向 adapter 索要任何注入面（这条本来被我列成 blocked，主控 13:3x 指出路径存在，实测对）：
+// 为什么不需要向 adapter 索要任何注入面（T84-6 这条本来被我列成 blocked，主控 13:3x 指出路径存在，实测对）：
 // `Supervisor` 的字段全导出、`Launch` 就是一个 `func() (*exec.Cmd, error)`，
 // 而 FakeAdapter 的 `evidence()` 照 `session/send` 参数里的 `execution_id` **原样回显**。
 // 于是"不一致"只要让 `CallTurn` 绑 exec-B、参数里写 exec-EVIL 就自然产生 —— 用的是协议本来的形状。
 // 全程不碰 `process` 的未导出成员，也不需要导出 `Connection`（REQ-T9 那条教训还在这儿）。
+//
+// 全文件不用父级 `t.Fatal` 卡前置条件（T-124 那族错）：需要子进程的两条各自在**子用例内** Skip，
+// 所以 `-v` 里每条都有自己的 `--- SKIP` 行，一条都不会静默消失。
 
 import (
 	"context"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +26,12 @@ import (
 // startSupervisedFake 起真 FakeAdapter 并握手。旗标关闭时整条 Skip —— 那是"要不要花一次 build"的开关，
 // 不是"依赖没落地"：交付前必须开着跑（判据表命令里就写着它）。
 func startSupervisedFake(t *testing.T) (*process.Supervisor, *process.Connection, context.Context) {
+	return startSupervisedFakeOpt(t, nil)
+}
+
+// startSupervisedFakeOpt 多一个 Rec：T84-7 要看的正是"丢弃这个决定有没有到达接缝"。
+// Rec 传 nil 就是原来那条路（§14 那条注释写着 nil-safe，今天的树上确实没人实现 Recorder）。
+func startSupervisedFakeOpt(t *testing.T, rec process.Recorder) (*process.Supervisor, *process.Connection, context.Context) {
 	t.Helper()
 	if ok, why := fakeAdapterEnabled(); !ok {
 		t.Skipf("blocked: %s", why)
@@ -40,6 +43,7 @@ func startSupervisedFake(t *testing.T) (*process.Supervisor, *process.Connection
 	sup := &process.Supervisor{
 		Kind:   process.KindAdapter,
 		Sink:   func(process.Event) {},
+		Rec:    rec,
 		Launch: func() (*exec.Cmd, error) { return exec.Command(exe), nil },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -144,4 +148,121 @@ func waitUntil(budget time.Duration, ok func() bool) bool {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// dropRecorder 是 T84-7 的观察面：一个只记账的 process.Recorder 实现。
+//
+// 为什么我自己实现、而不是整条等 backend（账本 T-141 把 T84-7 拆成三段归属）：
+// 接缝（`Recorder` 的第四个方法 `RecordDrop` + `connection.recordDrop`）adapter 22:5x 已经交出来了，
+// 所以"丢弃这个决定到没到接缝、带什么字段"今天就能判；
+// 而"到了接缝之后落成一行审计、且 `event_journal` 零新增"才是 backend 在写的第二段。
+// **把两段混成一条 blocked，等于让已经能判的那半也一起躺着。**
+type dropRecorder struct {
+	mu    sync.Mutex
+	drops []process.DroppedEvent
+	life  int // 生命周期三方法的调用次数：只打印不判（判它就是拿实现的注释当契约）
+}
+
+func (r *dropRecorder) RecordStart(process.Event) { r.bump() }
+func (r *dropRecorder) RecordExit(process.Event)  { r.bump() }
+func (r *dropRecorder) RecordCrash(process.Event) { r.bump() }
+
+func (r *dropRecorder) RecordDrop(ev process.DroppedEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.drops = append(r.drops, ev)
+}
+
+func (r *dropRecorder) bump() {
+	r.mu.Lock()
+	r.life++
+	r.mu.Unlock()
+}
+
+func (r *dropRecorder) snapshot() ([]process.DroppedEvent, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]process.DroppedEvent(nil), r.drops...), r.life
+}
+
+// 编译期钉子：接缝的形状（四个方法、void 返回、不递行句柄）一旦动，本文件先编不过，
+// 而不是等到跑起来才发现我在观察一个已经不存在的接口。
+var _ process.Recorder = (*dropRecorder)(nil)
+
+// TestDroppedFrameReachesAuditSeam 执行契约② 判据表 T84-7 的两段：
+// 第一段（现存）= 一次丢弃必须到接缝，带齐"帧里的 id / 票号绑的 id / 票号"三个字段；
+// 第二段（SKIP blocked）= 到了接缝那一发必须落成一行审计、且 `event_journal` 零新增。
+func TestDroppedFrameReachesAuditSeam(t *testing.T) {
+	t.Run("T84-7a 丢弃到达接缝，且收下的帧不误报", func(t *testing.T) {
+		rec := &dropRecorder{}
+		_, conn, ctx := startSupervisedFakeOpt(t, rec)
+		// 反例先做：一致的那一发不许留下任何"丢弃"记录（只判正例会漏掉"逢帧就记一行"这种假审计）。
+		if _, err := conn.CallTurn(ctx, "exec-t847-ok", "session/send",
+			sendParams("exec-t847-ok", "ik-t847-ok", "start_now")); err != nil {
+			t.Fatalf("session/send（一致那一发）: %v", err)
+		}
+		if !waitUntil(3*time.Second, func() bool {
+			return conn.Turn("exec-t847-ok").State() == adapter.TurnRunning
+		}) {
+			t.Fatalf("前提没成立：一致那一发都没推到 RUNNING，正例反例都无从谈起")
+		}
+		if drops, _ := rec.snapshot(); len(drops) != 0 {
+			t.Errorf("收下的一发留下了 %d 条丢弃记录（%v）—— 接缝上多记一行，审计面就多一行假事实", len(drops), drops)
+		}
+		// 正例：票号绑 B、帧里写 EVIL ⇒ 两帧都该被丢，且每一发都要留下名字对不上的那两个 id。
+		const bound, lying = "exec-t847-bound", "exec-t847-evil"
+		reply, err := conn.CallTurn(ctx, bound, "session/send", sendParams(lying, "ik-t847-b", "start_now"))
+		if err != nil {
+			t.Fatalf("session/send（矛盾那一发）: %v", err)
+		}
+		ref := reply.ID
+		var drops []process.DroppedEvent
+		waitUntil(2*time.Second, func() bool {
+			drops, _ = rec.snapshot()
+			return len(drops) > 0
+		})
+		drops, life := rec.snapshot()
+		if len(drops) == 0 {
+			t.Fatalf("矛盾帧被丢掉了（tracker 停在 %q/%q），但接缝一条记录都没收到 —— §4.2 的处置是「丢弃 + Audit」，不是静默丢弃",
+				bound, conn.Turn(bound).State())
+		}
+		var methods []string
+		for _, d := range drops {
+			methods = append(methods, d.Method)
+			if d.FrameExecutionID != lying {
+				t.Errorf("丢弃记录里帧内 id 是 %q，应当原样是 %q —— 审计要记「帧自己写了什么」，不是记纠正后的值", d.FrameExecutionID, lying)
+			}
+			if d.BoundExecutionID != bound {
+				t.Errorf("丢弃记录里票号绑定的 id 是 %q，期望 %q —— 两个真相源必须同时在场，否则事后无法复盘是谁在说谎",
+					d.BoundExecutionID, bound)
+			}
+			if d.TurnRef != ref {
+				t.Errorf("丢弃记录里的 turn_ref 是 %q，本轮票号是 %q —— 没有票号这行审计找不到发起方", d.TurnRef, ref)
+			}
+			if d.Reason == "" {
+				t.Errorf("丢弃记录没带理由（method=%s）—— 只记「丢了」等于什么都没记", d.Method)
+			}
+			if d.Kind != process.KindAdapter {
+				t.Errorf("丢弃记录的 Kind=%v，期望 %v", d.Kind, process.KindAdapter)
+			}
+		}
+		t.Logf("T84-7a：%d 条丢弃记录（method=%v），帧内 id=%q / 票号绑定 id=%q 两个都在；生命周期三方法被调 %d 次（只留痕不判）",
+			len(drops), methods, lying, bound, life)
+	})
+
+	t.Run("T84-7b 一行审计且 event_journal 零新增", func(t *testing.T) {
+		// 判据形状已经写在这里，只差被测的那一段落地 —— 前提不成立时显式 SKIP，不静默消失（T-124）。
+		//
+		// 要断的三件事（契约② T84-7 那一格 + §12"UNKNOWN 不许显示成确定值"在本层的落点）：
+		// ① 接缝收到 N 条丢弃 ⇒ `audit_entries` 恰好新增 N 行（多一行是伪造事实，少一行是静默丢弃）；
+		// ② `event_journal` 新增 0 行 —— 丢弃是审计事实，不是域事件，发出去就等于把矛盾下游化；
+		// ③ 审计行里帧内 id 与票号绑定 id 逐字保留（脱敏之后仍是两个都在，REQ-A10/A11 那条顺序）。
+		//
+		// 阻塞点（点名，不含糊）：`Recorder` 的实现方在 `cmd/core/processpipe.go`（账本 T-141 第二段，
+		// backend 23:0x 在途）。它没落地之前，②③ 两条在真链路上没有任何被测物；
+		// 而我**不能**拿 `internal/process` 自己的 stubRecorder 去判这三条 —— 那是在判替身，
+		// 判到的绿与产品行为无关（T-29：判决必须落在被测层自己的返回值或直接产物上）。
+		t.Skipf("blocked（REQ-T12 第二段，归 backend）：等 cmd/core 里出现真正的 process.Recorder 实现，" +
+			"本用例改成起真 Core + 造一次矛盾帧 + 数 audit_entries/event_journal 两张表的行数差")
+	})
 }

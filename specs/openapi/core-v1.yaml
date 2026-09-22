@@ -792,6 +792,9 @@ components:
         三对"同 HTTP 码、不同名字"是 §15.2.1 故意保留、不许合并：`unauthorized`/`auth_required`(401)、
         `not_found`/`session_not_found`(404)、`internal_error`/`internal`(500)；
         区别在**生产者**：客户端要能分清"这请求在 Core 里就没过"还是"过 Core 到了 Provider 才挂"。
+        **§15.2.2 裁定（09-22）**：契约②『来自』那一列只回答"这个名字属于哪套词汇"，**不回答"哪个包发的"**，
+        所以同一个码有多个生产点是合法的（例：`session_not_found`/`adapter_unresponsive` 也会被 Core 域层直接发）；
+        客户端判据只看 `error.code` 这个名字，别去猜它是哪个包发的。
         **501 与 405 不许互换（C28② 裁定）**：路由存在、方法合法、但能力没接线 ⇒ 501 `not_implemented`；
         方法本身不被这条路径接受 ⇒ 405 `method_not_allowed`。客户端据此决定的是"等实现"还是"换方法"，
         把前者回成 405 等于让客户去试一条同样没接线的路径。

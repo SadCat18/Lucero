@@ -614,7 +614,7 @@ check_8() {
   c1="$(sed -n '/^### 15\.1/,/^#### 15\.1\.1/p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$2); print $2}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
   c2="$(sed -n '/^### 15\.2/,/^### 15\.3/p' "$SPEC2" | awk -F'|' '/^\| `/ {gsub(/[ `]/,"",$4); print $4}' | grep -E '^[A-Z][A-Z_]{3,}$' | sort -u)"
   n1="$(printf '%s\n' $c1 | grep -c .)"; n2="$(printf '%s\n' $c2 | grep -c .)"
-  info "§15.1 = $n1 码，§15.2 来自列 = $n2 码（唯一例外 version_conflict 右列写 — 天然不进集合）"
+  info "§15.1 = $n1 码，§15.2 来自列 = $n2 码（『来自』以 — 开头的行按形状天然不进集合，C8-7 不点名放行）"
   (( n1 >= 8 && n2 >= 8 )) || { bad "码集合提取异常（$n1/$n2，期望各 >=8）—— 判据会空转，先修 lint"; return; }
   only1="$(comm -23 <(printf '%s\n' $c1) <(printf '%s\n' $c2))"
   only2="$(comm -13 <(printf '%s\n' $c1) <(printf '%s\n' $c2))"

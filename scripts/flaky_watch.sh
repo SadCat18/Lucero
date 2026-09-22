@@ -223,12 +223,15 @@ for art in core.lock core.endpoint audit.head; do
   printf '  %-16s 引用处（非测试）：\n' "$art"
   grep -rn "$art" cmd/core/*.go internal/adapter/*.go 2>/dev/null | grep -v '_test\.go' | sed 's/^/      /' | head -2
 done
-printf '  没用 t.TempDir() 的 cmd/core 测试（DataDir 计数少于 Config{ 计数 = 有测试吃了默认目录）：\n'
+printf '  cmd/core 测试里 Config/DataDir/TempDir 三个计数（**只证形状、不证结论**）：\n'
 for f in cmd/core/*_test.go; do
   a="$(grep -c 'Config{' "$f")"; b="$(grep -c 'DataDir:' "$f")"
   t="$(grep -c 't.TempDir()' "$f")"
-  if (( a > b )); then printf '      %-40s Config{=%s DataDir:=%s TempDir=%s  ← 需人工看\n' "$f" "$a" "$b" "$t"; fi
-  (( a == 0 )) && printf '      %-40s 没构造 Config（TempDir=%s）\n' "$f" "$t"
+  # a>b 才是真候选：构造了 Config 却没给 DataDir ⇒ 吃 defaultDataDir()，那才是跨包抢锁的形状。
+  if (( a > b )); then printf '      %-40s Config{=%s DataDir:=%s TempDir=%s  ← 需人工看（构造了 Config 却没给 DataDir）\n' "$f" "$a" "$b" "$t"; fi
+  # a==0 不算证据：这个包可能用 helper 或小写结构体构造配置，"文件里没有 Config{ 字面量"
+  # 与"有测试吃了默认目录"是两回事。上一版把这行印成后者，差点对 backend 报一条不存在的风险。
+  (( a == 0 )) && printf '      %-40s 无 Config{ 字面量（TempDir=%s）—— 不构成证据，只是这一档扫不到\n' "$f" "$t"
 done
 printf '\n'
 

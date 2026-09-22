@@ -774,6 +774,9 @@ export interface components {
          *     三对"同 HTTP 码、不同名字"是 §15.2.1 故意保留、不许合并：`unauthorized`/`auth_required`(401)、
          *     `not_found`/`session_not_found`(404)、`internal_error`/`internal`(500)；
          *     区别在**生产者**：客户端要能分清"这请求在 Core 里就没过"还是"过 Core 到了 Provider 才挂"。
+         *     **§15.2.2 裁定（09-22）**：契约②『来自』那一列只回答"这个名字属于哪套词汇"，**不回答"哪个包发的"**，
+         *     所以同一个码有多个生产点是合法的（例：`session_not_found`/`adapter_unresponsive` 也会被 Core 域层直接发）；
+         *     客户端判据只看 `error.code` 这个名字，别去猜它是哪个包发的。
          *     **501 与 405 不许互换（C28② 裁定）**：路由存在、方法合法、但能力没接线 ⇒ 501 `not_implemented`；
          *     方法本身不被这条路径接受 ⇒ 405 `method_not_allowed`。客户端据此决定的是"等实现"还是"换方法"，
          *     把前者回成 405 等于让客户去试一条同样没接线的路径。
@@ -836,7 +839,7 @@ export interface components {
          * @description 事件契约 §6 事件目录 v0.1 的完整投影。目录外的 event_type 属 P0（禁止事项 1）。
          * @enum {string}
          */
-        EventType: "project_created" | "project_archived" | "adapter_registered" | "adapter_health_changed" | "adapter_downgraded" | "adapter_restart_exhausted" | "adapter_capability_verified" | "model_discovered" | "session_discovered" | "session_managed" | "session_synced" | "message_recorded" | "task_created" | "task_queued" | "task_preparing" | "task_running" | "task_waiting_approval" | "task_agent_completed" | "task_verifying" | "task_waiting_acceptance" | "task_accepted" | "task_failed" | "task_cancelled" | "task_interrupted" | "task_paused" | "task_blocked" | "task_resumed" | "task_transferring" | "task_state_corrected" | "execution_created" | "execution_started" | "execution_output_flushed" | "execution_paused" | "execution_resumed" | "execution_approval_requested" | "execution_approval_resolved" | "execution_cancelled" | "execution_failed" | "execution_succeeded" | "execution_interrupted" | "approval_requested" | "approval_resolved" | "approval_expired" | "approval_cancelled" | "grant_issued" | "grant_revoked" | "grant_expired" | "quota_observed" | "notification_created" | "notification_handled" | "handoff_created" | "handoff_ready" | "handoff_completed" | "handoff_failed" | "process_started" | "process_exited" | "process_crashed" | "core_ready" | "core_shutdown";
+        EventType: "project_created" | "project_archived" | "adapter_registered" | "adapter_health_changed" | "adapter_downgraded" | "adapter_restart_exhausted" | "adapter_capability_verified" | "model_discovered" | "session_discovered" | "session_managed" | "session_synced" | "message_recorded" | "task_created" | "task_queued" | "task_preparing" | "task_running" | "task_waiting_approval" | "task_agent_completed" | "task_verifying" | "task_waiting_acceptance" | "task_accepted" | "task_failed" | "task_cancelled" | "task_interrupted" | "task_paused" | "task_blocked" | "task_resumed" | "task_transferring" | "task_state_corrected" | "execution_created" | "execution_started" | "execution_output_flushed" | "execution_paused" | "execution_resumed" | "execution_approval_requested" | "execution_approval_resolved" | "execution_cancelled" | "execution_failed" | "execution_succeeded" | "execution_interrupted" | "approval_requested" | "approval_resolved" | "approval_expired" | "approval_cancelled" | "grant_issued" | "grant_revoked" | "grant_expired" | "policy_created" | "policy_updated" | "quota_observed" | "notification_created" | "notification_handled" | "notification_read" | "handoff_created" | "handoff_ready" | "handoff_completed" | "handoff_failed" | "process_started" | "process_exited" | "process_crashed" | "core_ready" | "core_shutdown";
         Health: {
             /**
              * @description T-30 裁定词表，闭集；没有 DEGRADED（降级属于 adapter/能力面，不是 Core 生命周期）。migration 失败时 Core 不得进入 READY。
