@@ -28,6 +28,9 @@ const (
 	TaskAccepted               = "task_accepted"
 	TaskFailed                 = "task_failed"
 	TaskCancelled              = "task_cancelled"
+	TaskPaused                 = "task_paused"
+	TaskBlocked                = "task_blocked"
+	TaskResumed                = "task_resumed"
 	TaskInterrupted            = "task_interrupted"
 	TaskTransferring           = "task_transferring"
 	TaskStateCorrected         = "task_state_corrected"
@@ -40,6 +43,8 @@ const (
 	ExecutionFailed            = "execution_failed"
 	ExecutionSucceeded         = "execution_succeeded"
 	ExecutionInterrupted       = "execution_interrupted"
+	ExecutionPaused            = "execution_paused"
+	ExecutionResumed           = "execution_resumed"
 	ApprovalRequested          = "approval_requested"
 	ApprovalResolved           = "approval_resolved"
 	ApprovalExpired            = "approval_expired"
@@ -52,6 +57,7 @@ const (
 	QuotaObserved              = "quota_observed"
 	NotificationCreated        = "notification_created"
 	NotificationHandled        = "notification_handled"
+	NotificationRead           = "notification_read"
 	HandoffCreated             = "handoff_created"
 	HandoffReady               = "handoff_ready"
 	HandoffCompleted           = "handoff_completed"
@@ -74,17 +80,18 @@ var catalog = map[string]bool{
 	TaskWaitingApproval: true, TaskAgentCompleted: true, TaskVerifying: true,
 	TaskWaitingAcceptance: true, TaskAccepted: true, TaskFailed: true,
 	TaskCancelled: true, TaskInterrupted: true, TaskTransferring: true,
+	TaskPaused: true, TaskBlocked: true, TaskResumed: true,
 	TaskStateCorrected: true,
 	ExecutionCreated:   true, ExecutionStarted: true, ExecutionOutputFlushed: true,
 	ExecutionApprovalRequested: true, ExecutionApprovalResolved: true,
 	ExecutionCancelled: true, ExecutionFailed: true, ExecutionSucceeded: true,
-	ExecutionInterrupted: true,
-	ApprovalRequested:    true, ApprovalResolved: true, ApprovalExpired: true,
+	ExecutionInterrupted: true, ExecutionPaused: true, ExecutionResumed: true,
+	ApprovalRequested: true, ApprovalResolved: true, ApprovalExpired: true,
 	ApprovalCancelled: true,
 	GrantIssued:       true, GrantRevoked: true, GrantExpired: true,
 	PolicyCreated: true, PolicyUpdated: true,
 	QuotaObserved:       true,
-	NotificationCreated: true, NotificationHandled: true,
+	NotificationCreated: true, NotificationHandled: true, NotificationRead: true,
 	HandoffCreated: true, HandoffReady: true, HandoffCompleted: true, HandoffFailed: true,
 	ProcessStarted: true, ProcessExited: true, ProcessCrashed: true,
 	CoreReady: true, CoreShutdown: true,
