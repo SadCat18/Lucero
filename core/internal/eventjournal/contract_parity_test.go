@@ -1,6 +1,7 @@
 package eventjournal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,7 +40,12 @@ func contractCatalog(t *testing.T) map[string]bool {
 		if len(cells) < 2 {
 			continue
 		}
-		names := eventTypesIn(cells[1])
+		names, err := eventTypesIn(cells[1])
+		if err != nil {
+			// Report and keep going: t.Errorf lists every broken row instead of
+			// stopping at the first, and the set-difference below still runs.
+			t.Errorf("event contract §6 row unparseable: %v", err)
+		}
 		for _, n := range names {
 			out[n] = true
 		}
@@ -51,18 +57,24 @@ func contractCatalog(t *testing.T) map[string]bool {
 	return out
 }
 
-// eventTypesIn expands the contract's shorthand row form, e.g.
-// `execution_cancelled` / `_failed` / `_succeeded`  ->  three full names.
-func eventTypesIn(cell string) []string {
+// eventTypesIn expands the contract §6 shorthand, following the mechanical
+// convention written into the contract itself: split on "/", strip backticks and
+// spaces, the stem is everything up to and including the last "_" of the row's
+// first full name, a "_xxx" token expands to stem + xxx, and a token without a
+// leading "_" is a full name.
+//
+// A "_xxx" appearing before the row has any full name means the table or this
+// parser is broken, so it is reported rather than skipped: silently dropping it
+// would make the parity check see one fewer type on both sides and still pass.
+func eventTypesIn(cell string) ([]string, error) {
 	var out []string
-	prefix := ""
+	stem := ""
 	for _, tok := range strings.Split(cell, "/") {
 		tok = strings.TrimSpace(tok)
 		if tok == "" || strings.Contains(tok, "同上") {
 			continue
 		}
 		if !strings.Contains(tok, "`") {
-			prefix = ""
 			continue
 		}
 		name := tok[strings.Index(tok, "`")+1:]
@@ -71,22 +83,56 @@ func eventTypesIn(cell string) []string {
 		}
 		name = strings.TrimSpace(name)
 		switch {
-		case name == "" || !strings.Contains(name, "_"):
-			prefix = ""
+		case name == "":
+			continue
 		case strings.HasPrefix(name, "_"):
-			if prefix != "" {
-				out = append(out, prefix+name[1:])
+			if stem == "" {
+				return nil, fmt.Errorf("row %q starts with the shorthand %q before any full name; "+
+					"the event contract §6 table or this parser has lost its shape", cell, name)
 			}
+			out = append(out, stem+name[1:])
 		default:
 			out = append(out, name)
 			if i := strings.LastIndexByte(name, '_'); i >= 0 {
-				prefix = name[:i+1]
+				stem = name[:i+1]
 			} else {
-				prefix = ""
+				stem = ""
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+// The expansion convention is asserted against the parser directly, in both
+// directions: a malformed row must be reported, and legitimate row shapes must
+// not be flagged.
+func TestEventTypesInExpansion(t *testing.T) {
+	ok := []struct{ cell, want string }{
+		{" `notification_created` / `_handled` / `_read` ", "notification_created,notification_handled,notification_read"},
+		{" `execution_cancelled` / `_failed` / `_succeeded` ", "execution_cancelled,execution_failed,execution_succeeded"},
+		{" `grant_issued` / `grant_revoked` / `grant_expired` ", "grant_issued,grant_revoked,grant_expired"},
+		{" `task_accepted` ", "task_accepted"},
+		{" `execution_paused` / `execution_resumed` ", "execution_paused,execution_resumed"},
+	}
+	for _, tc := range ok {
+		got, err := eventTypesIn(tc.cell)
+		if err != nil {
+			t.Errorf("legitimate row %q reported as broken: %v", tc.cell, err)
+			continue
+		}
+		if joined := strings.Join(got, ","); joined != tc.want {
+			t.Errorf("eventTypesIn(%q) = %q; want %q", tc.cell, joined, tc.want)
+		}
+	}
+
+	bad := []string{" `_handled` / `_read` ", " `x` / `_read` "}
+	for _, cell := range bad {
+		if _, err := eventTypesIn(cell); err == nil {
+			t.Errorf("eventTypesIn(%q) returned no error; an orphan shorthand must be reported", cell)
+		} else {
+			t.Logf("%q correctly reported: %v", cell, err)
+		}
+	}
 }
 
 func setKeys(m map[string]bool) []string {

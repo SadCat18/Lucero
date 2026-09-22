@@ -3,7 +3,7 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-21T15:24+08:00
+LAST_UPDATED: 2026-09-22T23:29+08:00
 
 ## Objective
 
@@ -32,16 +32,71 @@ LAST_UPDATED: 2026-09-21T15:24+08:00
 
 ## Current checkpoint
 
-- Stage: T-115 两侧一次改完（Scrub 带 hits + audit_entries 二扫丢弃型收集器），三用例 + 双变异各打各层
+- Stage: T-142 已修（解析器第 ⑤ 条改为报错 + 解析器直测），并实测证明只靠 parity 会绿着骗过去
 - Status: complete
-- Last verified action: `go build ./...` exit 0；`go vet` VET_OK；
-  **收尾全仓 `go test ./internal/... -count=1` → 12 个包全 ok**；变异标记 0 命中；
-  `git status --short` 本角色范围 = 2 个 M + 2 个新测试文件，无越界
-- Next action: 无待办；vault 豁免那族一致性隐患按主控令留待单独一轮，不阻塞本角色
+- Last verified action: `go vet` VET_OK；scoped 门禁 → 2 包 ok、`exit=0`；
+  收尾全仓 `go test ./internal/... -count=1` → **13 个包 ok、FAIL 行 0**；
+  变异标记 0 命中；基线现取 `650c06c`，`git diff --stat HEAD` 本角色范围**只有 `contract_parity_test.go`**，
+  `events.go`/`platform/db`/`core/migrations/` 均不在 diff 内 = 与基线逐字节相同
+- Next action: 无待办；账上无未闭合项
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-142 已修（主控指出的真错，展开约定第 ⑤ 条）**：`eventTypesIn` 原先在 `stem == ""` 时 `continue`，
+  孤儿简写被**静默丢掉**。现按契约 §6 的展开约定改成报错
+  （`row ... starts with the shorthand "_handled" before any full name; the event contract §6 table or
+  this parser has lost its shape`），且 `contractCatalog` 用 `t.Errorf` **逐行报、不早退、继续跑完差集**。
+  ①~④ 与约定逐字对齐（词干 = 最后一个 `_` 及其之前；无 `_` 前导的 token 原样收下），未改其行为。
+  新增 `TestEventTypesInExpansion` **两侧都测**：5 种合法行形状必须**不报错**（含
+  `` `notification_created` / `_handled` / `_read` ``、整行写全的 `grant_*`、单名行、
+  两个全名并列的 `execution_paused` / `execution_resumed`），2 种畸形行必须报错。
+  - **把 ⑤ 改回静默跳过去做变异，测出一条比"我的用例会红"更值钱的结论**：
+    ```
+    --- FAIL: TestEventTypesInExpansion  （两条 orphan 各报 returned no error）
+    --- PASS: TestCatalogMatchesContract  contract §6 and the catalogue agree on 62 event types
+    ```
+    ⇒ **对拍自己确实会绿着骗过去**，主控说的后果是实打实的；只有 parity 不够，
+    必须另有一条直接打在解析器上的用例——这条我此前确实没有。
+  - 还原后 `grep T142MUT` 0 命中。备份落在 `.scratch/db/contract_parity_test.go.t142`（绝对路径），
+    用完连文件带目录删净，`/tmp` 零接触；**scratch 文件名从此带角色+编号**，
+    因为上一轮我几乎把两个 mutant 存成同名互相覆盖。
+  - 三处自纠：删上个 sink 时顺手删掉的 `fmt` import 让本轮第一次编译就失败（实测逼出来的，不是想出来的）；
+    头两版"畸形行"反例我误把**合法**形状当成畸形来断言，也是跑出来才发现。
+- **T-125 采纳：REQ-A2 那条"同口径"前提不成立，未改任何代码**。主控逐字读的结果我复核认同：
+  `platform/db` 里**没有 `details_json` 字面量**（非测试码零命中；`--include=*.go` 会连 `_test.go` 一起算，
+  我这边的 5 处命中全在 `attribution_test.go` 与 `scrub_test.go` 两条 §2.2.1 用例里——
+  **巡检补的那条口径提醒成立，我复采时也看到 5 而非 0**，结论不变）；
+  主控指的分支在 `internal/audit/append.go` 的一排纯列映射，无豁免语义；
+  db 的 `vault://` 判断在 `redact.go` 且是**值级**。两类东西确实没有口径要对齐。
+  **收下同一课的第二遍**：否定性结论必须标口径（排除测试与否）并贴原文，不能只贴计数。
+- **T-136 重复投递（23:00 再收到一次）**：本条已在 23:05 那一轮交付完，本轮**未改任何代码**，
+  只复采确认现状：`events.go:60` 有 `NotificationRead = "notification_read"`、`:94` 的 `true` 集合含它、
+  `TestNotificationReadIsUsable` 与 `TestCatalogMatchesContract` 均 PASS。
+  巡检 22:58:46 那次实测（"只有 Created/Handled"）是我落笔**之前**的盘，不是没做。
+  **两条顺带查出来的、会影响别人判定的事实**：
+  ① **给 `test`（C8-12 判据）**：事件契约里字面量 `notification_read` 只出现 **1 次，且那 1 次是第 214 行的说明文字**，
+     §6 表格本体（第 207 行）写的是简写 `` `notification_created` / `_handled` / `_read` ``。
+     ⇒ 若 C8-12 用字面名去 grep §6，会把这条**已登记**的类型判成未登记（假红）；解析器必须展开 `_x` 简写
+     （我这边的 `eventTypesIn` 已处理，写法可参考 `contract_parity_test.go`）。这与今天
+     `不再累计 / 不得再累计` 那次是同一种"口径没标就误判"。
+  ② **给 backend/主控（别让这一行被当成端点已通）**：`core/api/http/notifications.go:57` 仍按"依赖没注入就 501"，
+     且 `notifications_test.go:253` 正**钉着** `:read`/`:handle` 返回 501。所以事件面已备好，
+     但 `POST /notifications/{id}:read` 不会因我这行自动转绿——还差 backend 注服务 + 翻那条断言。
+     `grep -rn "NotificationRead\|notification_read" --include=*.go core/`（排除 `internal/eventjournal`）当前**零命中**，与此一致。
+- **T-136 / REQ-DB-5 原交付（23:05 那轮，无迁移，`core/migrations/` 与基线零 diff）**：
+  ① `eventjournal` 补 `NotificationRead = "notification_read"` 常量并写进 catalog map（`Registered()` 的真身）。
+  ② 新增 `contract_parity_test.go`：**现场解析**事件契约 §6 表格（含 `x_y / _z` 简写展开），
+     与 catalog 做**双向差集**，两个方向各钉一次；另有一条"解析到 <40 种即报错"的守门，
+     防止解析器与文档漂移后这测试悄悄变成空过。**不在测试里存契约名单副本**——存了就会继续绿着漏。
+  **这条用例第一次跑就抓到 5 个真实缺口**：契约 §6 第 191–196 行登记了
+  `task_paused` / `task_blocked` / `task_resumed` / `execution_paused` / `execution_resumed`，
+  而 catalog 里没有——与 T-7② 那两个 `adapter_*` 完全同型（backend 一旦暂停/阻塞任务就会撞墙）。
+  已一并补齐（常量 + map 各 5 条）。现在两侧一致，用例自己报数：
+  `contract §6 and the catalogue agree on 62 event types`，常量数 `grep` 复核 = **62**。
+  变异验证两侧各打一次：删 `NotificationRead: true` → 第一方向红（首轮已实测）；
+  塞一个 `notification_bogus` 进 map → `the catalogue registers [notification_bogus] which event contract §6 never registered`。
+  还原后 `grep notification_bogus` **0 命中**，`.scratch/db/` 连目录清掉，`/tmp` 零接触。
 - **T-115 / REQ-A11 已交付（两侧一次改完，不留半截）**：
   1. `Scrub` 现按契约定稿返回 **`([]any, []RedactionHit, error)`** —— 收集器不再被丢弃，
      audit 在密封前就拿到归因。实现仍是把 `Tx.scrubArgs` 与 `Scrub` 共同委托到
