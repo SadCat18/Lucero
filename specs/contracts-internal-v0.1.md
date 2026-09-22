@@ -367,11 +367,39 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       （"有名字无生产者"）；**等真有生产者再登记**，那时按同一条规矩连带登记它的 `owner_id` 指向哪张表。
     - **为什么是实例 id 而不是 `adapter_key`**：与 T-204 那条 `{id}` 裁定同一形状，且 `sessions.adapter_instance_id`
       已经 `REFERENCES adapter_instances(id)`——归属列跨表可比才有用，写 key 就Join不上。
-    - **NULL 保留给"建行时还不知道归属"**（`RecordStart` 现在就是这个状态：它的 `Append` 连这两列都没写）。
-      要把归属补上，走第 17 条的 `TouchTransition`（`guardCol` 用 `status`）**或**在 `RecordStart` 之前就把 id 备齐；
-      **不许**为这两格再开一条 `Append` 之外的裸写通道。
+    - **NULL 保留给"建行时还不知道归属"**。**（09-23 05:18 更正：这一句原本写着"`RecordStart` 现在就是这个状态：
+      它的 `Append` 连这两列都没写"——那是幽灵引用。盘上 `RecordStart` 自 T-168（01:11）起**只出声、不写库**，
+      函数体里没有 `tx.Append`；所以"建行时"在 REQ-DB-2 落地之前根本不存在。）**
+      要把归属补上，走第 17 条的 `CreateVersionless`（建行时一起给）**或**落地后再改一次 `status` 腿的
+      `TouchTransition`；**不许**为这两格开任何 `Append` 之外的裸写通道。
     - **key → id 的反查已有现成件**：`cmd/core/discoverassembly.go` 开头那句
       `SELECT adapter_key FROM adapter_instances WHERE id = ?` 是同一条查询的反方向，**复用那条 SQL 的形状、别新造第三份查找**。
+
+19. **REQ-L-1 裁定（09-23 05:23）：单实例锁的"持有者还活着"不能由 pid 判 —— 这是 Wave-2 闸门上的产品缺陷，不是测试噪声。**
+    来源：`test` 05:14~05:16 的定档（**单跑 63 次红 3、整包两趟 1 红 ⇒ 4/65 ≈ 6%**；现场三同形 05:08:10 / 05:09:52 / 05:11:18，
+    第二代子进程 stderr 明写"已有 Core 在跑同一个数据目录"）。它**没开 SKIP、没放宽 25s、没重试到绿**，只把读数交上来 —— 这个处置我认。
+    - **代码自己早就招了**：`cmd/core/lock.go` 的包注释有一条 `ponytail:`——
+      "已知上限是 pid 复用会误判成'还活着'；真撞上再换 LockFileEx 或让端口当锁"。**这次就是"真撞上"那一次**，
+      所以下面两个方向都算它预留过的路，不算新开设计。
+    - **判活为什么错（把机理写清，别让下一个人再猜）**：`holderIsDead` 走 `os.FindProcess(pid)`，
+      而 Windows 上 `FindProcess` 是 `OpenProcess`——**进程对象在任一句柄关闭前一直存在**，
+      所以"已退"与"`OpenProcess` 失败"不是同一件事；父方还持有子进程句柄（测试就是父方）、或 pid 被复用，
+      都会被判成"还活着" ⇒ 死锁接管不触发 ⇒ 第二代 Core 直接 `ErrAlreadyRunning` 退出、`core.endpoint` 不换。
+      **那条"进程已退就报错"的注释只写了 error 分支，结论写过头了。**
+    - **修法（选一个，别混）**：**(a) 端口当锁**（`lock.go` 注释里我自己列的备选、也是最小的一种）：
+      绑不上就是真有活的 Core，绑上了就证明前一个必已死 —— **把判活交给 OS，不再做任何 pid 启发式**，
+      `-take-over-lock` 那格随之变成不必要；唯一要补的是诚实处置：绑不上时对该端口发一次 `/health`，
+      答得上来才报 `ErrAlreadyRunning`，答不上来就是"端口被别人占了"，**不许复用那句假原因**。
+      **(b) boot-id + 新鲜度**：锁文件写 `pid` + 本次启动随机标识 + 心跳时刻，判活要"心跳在时限内新鲜"**且** pid 对得上 —— 更重，多一个后台写文件的活。
+      **v0.1 我倾向 (a)**（更少机器、更权威），但**实现方（backend）有权在交账前换 (b) 并说明理由**。
+    - **验收判据两条都要**（这是关键：**间歇缺陷不能只靠"再跑 100 次不红"来关**）：
+      ① **确定性那条**：造一个"pid 可 `OpenProcess` 成功、但那其实不是活 Core"的锁文件，`holderIsDead`（或替代物）
+      必须判**死**并让接管发生 —— 只有真数据能红的不算闭上（§1.1 第 16 条同族）；
+      ② **量级那条**：按契约② FL 表 **FL-1 那一行的命令形状**（`flaky_watch.sh` 带用例名与主包）把 `-n` 提到 **100**，
+      对 `TestCrashRestartSameDataDir` 采样 ⇒ **单跑 100 次 0 红**（今天的基线是 4/65 ≈ 6%），两批之间不许改测试预算。
+      **具体那一行由 `test` 写进 FL 表并自证能跑通**（本契约只登记"要跑到什么量级"，不代它抄一条没验过的命令行）。
+      **在两条都绿之前，Wave-2 那道"真子进程 + 崩溃注入"的门每 ≈15 次合验会真红一次 ⇒ 合验结论里必须写明这一格未闭。**
+    - **归属**：`core/cmd/core/**` 归 `backend`（§7）；`scripts/flaky_watch.sh` 归 `test`（它只管采样与定档，不改产品）。
 
 
 

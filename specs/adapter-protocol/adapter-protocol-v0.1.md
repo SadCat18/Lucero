@@ -235,7 +235,7 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
 
 | ID | 断言 | 当场命令 | 状态 / 归属 |
 |---|---|---|---|
-| FL-1 | 只有 `parallel` 红、`isolated` 全绿 ⇒ 判 **FLAKY（跨包并发）**，带两次采样时刻 | `bash scripts/flaky_watch.sh -run <用例名> -p <包> -n 2` | 现存（分类器由 `--selftest` 反向验，不靠真红一次）/ test |
+| FL-1 | 只有 `parallel` 红、`isolated` 全绿 ⇒ 判 **FLAKY（跨包并发）**，带两次采样时刻 | `bash scripts/flaky_watch.sh -r <用例名> -p <包> -n 2`（**09-23 05:26 更正：这一列原先写的是 `-run <用例名>`，那是假命令行** —— 实测 `getopts` 串是 `r:`，`-run Foo` 会让 `RE="un"` 并在 `OPTIND=2` 处停住，后面的 `-p`/`-n` 全落到位置参数 ⇒ `go test` 拿到的 `-run` 是 `'^un$'`、包列表里混进 `-n 2`；正确写法是 `-r`。脚本自己的 usage（第 19 与 50 行）同样错，**那一处归 `test` 改**） | 现存（分类器由 `--selftest` 反向验，不靠真红一次）/ test |
 | FL-2 | `single` 也红 ⇒ 判 **REGRESSION**（稳定复现），派归属角色，**不许标成 flaky** | 同上 | 现存 / test |
 | FL-3 | `shuffle` 红而 `single` 绿 ⇒ **FLAKY（同二进制并发）**：同包内共享的东西（包级变量、临时资源计数）才是方向，跨包端口不是 | 同上；最小复现手段 = 同包 `-shuffle=on` + `-count=2` | 现存（09-21 16:10:54 第一次由实测落地：`cmd/core` 两跑全红、无 flag 绿，见账本 09-21 16:10 段）/ test |
 | FL-4 | `parallel` 与 `isolated` **都红** ⇒ **FLAKY（未定维度）**：不是"一起跑"造成的，方向要回到共享面枚举 | 同上 | 现存 / test |
