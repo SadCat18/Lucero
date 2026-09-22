@@ -204,12 +204,20 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `grant_issued` / `grant_revoked` / `grant_expired` | permission | `scope_type` `scope_id` `action` `expires_at` | ✓ |
 | `policy_created` / `policy_updated` | permission | `scope_type` `scope_id` `action_pattern` `effect` | ✓ |
 | `quota_observed` | quota | `quota_account_id` `quota_key` `observation_kind` `confidence` | – |
-| `notification_created` / `_handled` | notification | `notification_type` `priority` `task_id` `approval_id` | – |
+| `notification_created` / `_handled` / `_read` | notification | `notification_type` `priority` `task_id` `approval_id` | – |
 | `handoff_created` / `_ready` / `_completed` / `_failed` | handoff | `source_execution_id` `target_adapter_instance_id` `package_sha256` | – |
 | `process_started` / `_exited` / `_crashed` | process | `process_type` `pid` `exit_code` `owner_type` `owner_id` | ✓(crashed) |
 | `core_ready` / `core_shutdown` | core | `version` `migration_version` | ✓ |
 
 （表中合并同族的行仍按逐条类型登记，实现时不得把多个类型压成一个。）
+
+> **`notification_read` 是 2026-09-22 补登记的（REQ-DB-5 裁定）**：`notifications.state` 从 `000001` 起就有
+> `UNREAD→READ` 这条边、也有 `read_at` 列，`internal/notification` 侧要落这条边就必须发事件，可目录里只有
+> `_created`/`_handled` ⇒ backend 的 `POST /notifications/{id}:read` 今天**没有合法事件可发**，只能挂 501。
+> 这与下面那条"已登记 ≠ 有生产路径"是**同一个洞的相反方向**：那条防"登记了没人发"，这条是"有人发却没登记"。
+> 补登记的同时要补常量：`internal/eventjournal/events.go` 现有 `NotificationCreated`/`NotificationHandled` 两个，
+> 缺 `NotificationRead`（归 `db`）。**词表闭合判据归 `test`**：目录里的类型集合 ⊇/⊆ `events.go` 的常量集合，
+> 双向差集任一非空即红——这条今天还没有，见契约② 判据表 C8-11 同族的 T-135。
 
 > **「已登记 ≠ 有生产路径」**：登记进本目录只是允许该事件类型存在，不代表有代码会发它。
 > v0.1 已知有名字无生产者的两条：`policy_created` / `policy_updated`

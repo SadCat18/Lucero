@@ -473,7 +473,10 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 | C8-5 | `CANCELLED` 不作为 JSON-RPC `error` 出现（只走结果帧） | 对 FakeAdapter 的 `$/cancel` 路径断言响应里**没有** `error` 字段；同时 `grep -rn '"CANCELLED"' core/cmd/fake-adapter/` 不得出现在构造 error 帧的位置 | 违反即红 |
 | C8-6 | 正向：§15.2『来自』列每个反引号码名都必须 ∈ §15.1 码列 | `go test -count=1 -v -run TestHTTPErrorCodesComeFromAdapterSet ./test/...` | 现存（PASS）/ test |
 | C8-7 | 反向：§15.1 每个码都要有 HTTP 映射行；**例外按形状判**——只有『来自』以 `—` 开头的行不参与，不点名放行 `version_conflict` | `go test -count=1 -v -run TestAdapterCodesHaveHTTPMapping ./test/...` | 现存（PASS）/ test |
-| C8-8 | **解析器自证**：§15.2 必须解析出 29 行 = 17 带码名 + 12 以 `—` 开头，且两者之和 = 总行数；§15.1 码列 17 个。任一不符 ⇒ 判判据自己坏了（红），**不许拿半张表去判人**。锚点用标题文本（`### 15.1 `→`#### 15.1.1`、`### 15.2`→`### 15.3`），锚点找不到或区间没有终点也报同一种红 | `go test -count=1 -v -run TestErrorCodeContractTablesParse ./test/...` | 现存（守门已咬过一次：`test` 第一版把列索引写错，三条当场全红）|
+| C8-8 | **解析器自证**：§15.2 必须解析出 29 行 = 17 带码名 + 12 以 `—` 开头，且两者之和 = 总行数；§15.1 码列 17 个。任一不符 ⇒ 判判据自己坏了（红），**不许拿半张表去判人**。锚点用标题文本（`### 15.1 `→`#### 15.1.1`、`### 15.2`→`### 15.3`），锚点找不到或区间没有终点也报同一种红 | `go test -count=1 -v -run TestErrorCodeContractTablesParse ./test/...` | **现存但今日红（主控 22:5x 自己弄的）**：C28① 收编 `duplicate_project_path` 之后 §15.2 是 30 行 / `—` 13 行，而本行把 29/12 写成了字面量 ⇒ **这正是"把基线数字当判据"的代价**，请 `test` 按 C8-10 的方案改成判形状（T-135）|
+| C8-10 | **闸门判形状、不判字面行数**：①总行数 = 码名数 + `—` 数；②码名集合与 §15.1 码列**双向相等**；③`—` 数 ≥ 1 且总行数 ≥ 20（防解析器静默空集，同 C8-8 想防的那件事）；④三个数字照常打印，漂移看得见但不咬人 | `go test -count=1 -v -run TestErrorCodeContractTablesParse ./test/...` | **待建** / test（T-135 本轮派发；落地后 C8-8 的字面数一并废掉，本行取代它而不是并列） |
+| C8-11 | **线格式 ↔ 契约的另一条腿**：`core/api/http/**` 里每一个 `writeError(..., "<code>", ...)` 的字面码必须 ∈ §15.2 左列（排除 `_test.go`）。**这一条才是真正会漏事的**：`duplicate_project_path` 是 backend 22:4x 落地 `projects.go` 时才出现的第 13 个 transport 码，我 15:1x 那次收编按定义不可能预见到它——**只有这条判据能让它当天就红，而不是等主控下一轮人肉 grep** | `bash -c` 不用；解析与比对都落在 Go 用例里 | **待建** / test（T-135 同轮；用例名暂定 `TestTransportCodesAreInContract`，改名要回写本行） |
+| C8-12 | **同一族第三条腿**：事件契约 §6 目录里登记的 `event_type` 集合，与 `core/internal/eventjournal/events.go` 导出的常量集合**双向相等**（缺哪边就补哪边，不许一边兼职）。今天两侧的差集是**真实存在的**：目录刚补登记的 `notification_read` 在 `events.go` 里还没有常量（REQ-DB-5，归 `db`）。**方向说明**：C8-11 判"代码会发的码 ⊆ 契约"，本行判"契约登记的类型 ⊆ 代码有的常量"，两条合起来才是词表闭合 | `go test -count=1 -v -run TestEventCatalogMatchesJournalConstants ./test/...` | **待建** / test（T-135 同轮；用例名暂定，改名要回写本行。落地前 `db` 要先补常量，否则本行第一天就红在正确的地方） |
 | C8-9 | 契约③ §7.2 那句"`api/http`/`cmd/core` 出现 `adapter_instances`/`adapter_capabilities` 的表名字面量写调用即 W13-2 红"由 **W13-2 的运行时表全集**覆盖（`biz_tables()` 从迁移解析，两张都在里面），不另立判据 | `bash scripts/check_ownership.sh`（2b 段逐行印 `[W13-2] <表>: n`） | 现存（09-22 22:36 主控复跑：`core/api`+`core/cmd` 非测试码的表名字面量写恰为 `idempotency_keys`×2 + `principals`×1，聚合表 0 命中）/ test |
 
 **用例落点**：C8-6~C8-8 在 `core/test/errcode_mapping_test.go`（三个独立顶层用例、全程只用 `t.Errorf`，
@@ -538,6 +541,11 @@ grep -rhoE 'writeError\(w, http\.Status[A-Za-z]+, "[a-z_]+"' core/api/http/*.go 
 | `illegal_transition` | 409 | —（Core transport：状态机拒绝该迁移，来自各 Service 而非 Adapter） |
 | `not_implemented` | 501 | —（Core transport：端点尚未接线，走 catch-all；**不得**用假 200 代替） |
 | `internal_error` | 500 | —（Core transport：兜底；与 Adapter 的 `internal` 同 HTTP 码、不同生产者） |
+| `duplicate_project_path` | 409 | —（Core transport：`POST /projects` 的 canonicalize 后路径撞车，契约③ §3 明写要 409。C28① 裁定收编，2026-09-22 22:4x） |
+
+**501 与 405 不许互换（C28② 裁定，同一轮）**：**路由存在、方法合法、但能力没接线 ⇒ 501 `not_implemented`**；
+**方法本身不被这条路径接受 ⇒ 405 `method_not_allowed`**。`GET /api/v1/projects` 属于前者（yaml 里有这个操作，
+只是 Core 还没实现），回 405 是在说"这个路径不接受 GET"——那是假话，而且会让客户端把它当成"改用 POST"而不是"等实现"。
 
 **三对"同 HTTP 码、不同名字"是故意的，不许合并**：`unauthorized`/`auth_required`（401）、
 `not_found`/`session_not_found`（404）、`internal_error`/`internal`（500）。
@@ -551,8 +559,11 @@ grep -rhoE 'writeError\(w, http\.Status[A-Za-z]+, "[a-z_]+"' core/api/http/*.go 
 **例外的判据是形状、不是名字**：『来自』列以 `—` 开头的行 = HTTP 层专有、天然不进 §15.1，
 所以它从①的集合里排除、也不受②约束。**别把例外写成 `version_conflict` 这个名字**——
 15.2.1 之前只有 1 行是 `—`，之前那句"唯一例外"就因此是错的（写死名字 ⇒ 收编后判据自相矛盾）。
-当前基线：§15.1 = **17** 码，§15.2 = **29** 行（原 18 + 15.2.1 收编 11），其中『来自』为 `—` 的 **12** 行
-（11 条新收编 + 原有 `version_conflict`）、带反引码名的 **17** 行。`17 + 12 = 29`，两个数都要对上才算解析没坏。
+当前基线：§15.1 = **17** 码，§15.2 = **30** 行（原 18 + 15.2.1 收编 11 + C28① 的 `duplicate_project_path`），
+其中『来自』为 `—` 的 **13** 行（12 条收编 + 原有 `version_conflict`）、带反引码名的 **17** 行。`17 + 13 = 30`。
+**这些数字只是报给人看的，不是判据**——把它写成硬断言的判据会在每一次合法扩列时变红，
+从而训练人去"改数字"而不是"读结果"；闸门应该判**形状**（总数 = 码名数 + `—` 数、码名集合与 §15.1 双向相等、
+`—` 数 ≥ 1 以防解析器静默空集），详见判据表 C8-8 与 C8-10。
 
 ### 15.3 数字码（JSON-RPC `error.code`）——**本节 12:4x 重写，撤回我上一版的越权裁定**
 

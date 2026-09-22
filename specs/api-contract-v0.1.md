@@ -111,6 +111,15 @@ GET  /api/v1/approvals?state=PENDING     → 待决审批；GET /api/v1/approval
                                          ；POST /api/v1/approvals/{id}:resolve
 GET  /api/v1/quota?adapter=              → 观测值 + observation_kind + confidence（UNKNOWN≠0）
 GET  /api/v1/notifications?state=&cursor=; POST /api/v1/notifications/{id}:read|handle
+                                       → **C26 裁定（2026-09-22 22:5x）：`state` 缺省 = 不过滤（六态全列），不是缺省 UNREAD。**
+                                         理由不是"哪种更常用"，是**一个字段不许兼职两种语义**：若"不传"等于"只要 UNREAD"，
+                                         面板就再也无法表达"我要全部"（除非再开一个参数，那才是真脏）。
+                                         **决定性事实我核过**：`apps/desktop/src/stores/panel.ts` 的 inbox 调用**本来就显式带
+                                         `state: 'UNREAD'`** ⇒ 这个默认值对面板零收益、纯留隐患，backend 那两行默认直接删。
+                                         与 REQ-F-21（同步游标不许用空串兼职"没有位置"）、§12（UNKNOWN 不许显示成 0）同一条线。
+                                         **`:read` 今天仍落不了库**：它要发的 `notification_read` 我刚补登记进事件契约 §6，
+                                         但 `internal/eventjournal/events.go` 里还没这个常量（REQ-DB-5，归 `db`）——
+                                         **在那之前 `:read` 保持 501，别发一个不登记的事件**（事件契约 §9 禁止事项 1）。
 GET  /api/v1/search?q=&scope=messages,tasks   → FTS5；返回命中 + 片段 + 上下文 id
 GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、ping）
                                            # ⚠ 这个 query 参数只在"客户端根本没发 hello"时才生效；
