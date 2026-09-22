@@ -98,6 +98,79 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
 
 ## Completed
 
+- **09-23 01:26~01:31 轮（T-170：合成用例照 §7.1 写成"同一张表的成对判决"）**：
+  - **巡检点 1 我复核成立**：`git show HEAD:core/cmd/core/dropaudit.go`（HEAD=`d814572` 01:13）里
+    `:18` 那句带引号的注释原文**还在**，`:66` 的真写也还在 ⇒ 被裁的那次改写在**工作区、从未入库**
+    （`git diff --stat HEAD -- 该文件` = 14+/36-，含 T-168 的代码改动）。所以成对判决就地可复现，
+    不必跨到 `2529d5b`——我 01:14 那份 `2529d5b` 复证仍然有效，但**下一个人照 HEAD 跑更省事**。
+  - **判决由出厂实现算，不由我的副本算**：新脚本把 `W13_RE` / `strip_comments` / `w13_hits` 三段
+    用 `sed` 从 `check_ownership.sh` 里抽出来 `source` 之后再跑（**不另写一份匹配器**——
+    那证明的是副本，不是交付物）。结果：原始 grep 命中行号 = **18 21 66**，经出厂 `w13_hits` 之后
+    **只剩 `:66`**。原文冻在 `.qoder/evidence/test/w13-head-dropaudit-pair.txt`（含取样时刻与 HEAD 短码）。
+    **交账里写清用的是哪一份**（T-170 点 2 要的就是这个）：**成对判决 = HEAD 版**；工作区版上
+    `:66` 已被 T-168 拿走 ⇒ 只剩"注释不红"这一半可判。
+  - **合成用例改成 §7.1 的字面口径**：`comment.go` 现在同时装 `Append("tasks"` 与 `Append("audit_entries"`
+    两种注释复述，而 `agg.go` 里是**同一张表 `tasks` 的真写** ⇒ "同表两角色"成对：真写判红、注释不红。
+    再加 `trailing.go`（行内注释之后的真写⇒红）防"剥过头"。三条子断言 + 一条成功时也打印的
+    `[W13 注释自证·成对]` 行。**反向验**（01:28:48）：把 strip 管道换回 `cat` ⇒ `rc 0→2`，
+    喊出 `命中 4 处，期望 2` 与 `只在注释里出现的 Append("tasks" / Append("audit_entries" 被 W13 判成写调用`；
+    还原后 `rc=0`、`MUT` 残留 0。
+  - **T-170 那句"不要因为 backend 复原注释再调整匹配器"我照做**：修的是**匹配器**（跳过注释），
+    不是任何人的注释。所以 backend 恢复 `:18/:21` 之后这条腿的行为不变——上面那份 HEAD 版判决就是证据
+    （HEAD 里注释是原文，匹配器只报 `:66`）。
+- **09-23 01:19~01:22 后续（T-166 正式投递到达时我已做完；这条绿不是我把信号弄哑）**：
+  - 巡检在投递里补的那句"前提漂移"我自己先撞上了：01:14 我想拿当前工作区复现那条假红，
+    `grep audit_entries` 已经 **0 命中**（backend 01:06:08 用改注释消掉了字面量）——所以我才去
+    `git show 2529d5b:` 取恢复版做复证。**同一条规矩第二次成立：报别人红之前先用 mtime 判在途**，
+    这次反过来也成立：**我自己复现别人的断言，也要先判它是不是已经被改掉了**。
+  - **01:19:52 backend 按 T-168 改了代码**：`RecordStart` 现在是
+    `r.logf("REQ-DB-2 未落：生命周期那格没建行 …")`，与 `RecordExit`/`RecordCrash` 同一形状（喊、不写）。
+    ⇒ `process_instances` 那处真越界**离开树了**，我的 lint 因此 **exit=0**、`[W13-2] process_instances: 0`。
+  - **这条绿要能被反查，我不留口头账**，三条证据链：
+    ① 修完 strip 之后、代码改动之前，01:12:44 实跑仍是 exit=1、3 条 VIOLATION 全部只关于
+      `Append("process_instances")`（原文在 `.qoder/evidence/test/ownership-lint-final.txt` 的上一版里，
+      判决行抄在 Verification 01:17 那条）；
+    ② 01:14:25 对恢复版（`git show 2529d5b`）跑同一条管道：原始 3 命中 → **剥注释后剩 `:66` 一处**
+      （`.qoder/evidence/test/w13-restored-dropaudit.txt`）；
+    ③ selftest 的合成反例常驻：`[W13 注释自证] 合成树 2 处命中 = agg.go(真写) + trailing.go(行内注释之后的真写)；
+      comment.go(注释里复述本规则) 不红`，且把 strip 摘掉后 selftest rc 0→2 会精确喊出那两条（01:11:12 实测）。
+    ⇒ **如果有人 checkout `HEAD=d814572` 跑我的 lint，它会红**（那一版的 `:66` 还在），这是预期行为。
+  - 顺手复采：`go test ./cmd/core/` 01:22:44 **ok（2.555s）**、`go test ./...` 01:22:53 **18/18 ok**
+    ⇒ backend 那一改是自洽的（他们的 `dropaudit_test.go` 没有硬要求那行落库）。
+- **09-23 00:5x~01:1x 轮（T-163 观察面裁定 → T84-7b 的门；T-166 一真一假两个 W13 越界）**：
+  - **T-163 裁定照办**：`Recorder` 不给导出、留在 `package main`；T84-7b 走**黑盒**（起真 Core + 数
+    `audit_entries`/`event_journal` 两张表的行数差）。我把那格从"等人回话才翻"改成**门自己判**：
+    `dropRecorderMounted(root)` 扫 `cmd/core` 的**生产码**（排除 `_test.go`、排除注释、排除 `func ` 定义行）
+    找 `newDropRecorder(` 的调用点；没挂上 ⇒ SKIP 并点名三段前提，挂上了 ⇒ **仍然 SKIP，但理由换成
+    "①已满足、还差②活连接与③注入面"** —— 一条会随别人进度自己改口的 SKIP，比一条要我重新想起来改的注释强。
+    **两个分支都当场证过**（01:00:42 双向对照）：真实树判"①装配点未接（7 个生产 .go 里 0 处调用点）"；
+    把 `dir` 临时指向 `.scratch` 里一份合成"已装配"文件 ⇒ 判"①已满足（找到调用点
+    `return newDropRecorder(store, "codex", now, logf)`）"。跑完 `MUT-GATE` 残留 0、gofmt 干净。
+  - **我自己在这条门上重犯了一次同族错**：第一版把**定义行** `func newDropRecorder(...)` 当成了调用点，
+    门当场报了个假"①已满足"。这正是我在 C8-11（`writeError`）专门为它写过的守卫 ——
+    **同族错误第二次，且第二次犯在"新写的提取器没复用已有那条规矩"上**。已加 `strings.HasPrefix(trimmed,"func ")` 跳过，
+    并把这件事写进函数注释。
+  - **T-166（一真一假）修的正是我自己的一条腿**：`audit_entries` 那条来自
+    `dropaudit.go:18` 的**注释**（"这里出现 `Tx.Append(\"audit_entries\"` 字面量即 W13-2 红"）——
+    代码在用注释复述本规则，被规则本身判成违反。根因不是 strip_comments 坏了，是
+    **`w13_hits` 这条腿根本没接它**（同一文件里 check_2 / C8-5 / 常量腿都接了，只有 W13 没接）。
+    修：`w13_hits` 现在 `| strip_comments | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$'`（后半道是防"整行都是注释"
+    留下空文本行，被下游判成"命中却解析不出表名"的另一种假红）。
+  - **T-166 要的"两个判决都打出来"落地了**：`--selftest` 里喂三种形状
+    （`agg.go` 真写 ⇒ 红、`trailing.go` 行内注释之后的真写 ⇒ 红、`comment.go` 注释里复述规则 ⇒ 不红），
+    计数断言 `wn == 2` + 两条子断言，另加一条**成功时也打印**的 INFO 行，免得"没输出"又被读成"没判"。
+    **反向验**（01:11:12）：临时把 strip 管道换回 `cat` ⇒ selftest **rc=2** 并精确喊出
+    `[SELFTEST FAIL] W13 模式命中 3 处，期望 2` 与 `只在注释里出现的 Append("audit_entries" 被 W13 判成写调用`；
+    还原后 rc=0、`MUT` 残留 0。
+    （中途一次我用 python 子进程跑 selftest 看到 rc=1 就以为"证明成立了"，其实是 **python 自己的
+    gbk 编码在 print 中文时崩了** —— 判决要落在被验对象自己的产物上，不能落在包装脚本的退出码上。）
+  - **T-169 那半件事我也跟着验了**：backend 被要求把 `:18`/`:21` 两行注释恢复原样，我从
+    `git show 2529d5b:core/cmd/core/dropaudit.go` 取**恢复版**跑匹配器：原始命中 3 处
+    （`:18` `:21` `:66`）⇒ 剥注释后只剩 **`:66` 一处**（`tx.Append("process_instances"`）。
+    原文与时刻在 `.qoder/evidence/test/w13-restored-dropaudit.txt`。**结论：他们恢复注释我不会再误报。**
+  - **lint 今天 exit=1 是有意的，不是坏了**：三条 VIOLATION 全部只关于 `process_instances`
+    （`:66` 真写调用，归 T-168/backend）。`audit_entries` 那条假红已经消失、且不会靠"叫 backend 删注释"消失。
+    在我把这条写进账本之前，主控验收时请照这个口径看：**绿了才说明我把真信号弄哑了。**
 - **09-23 00:1x 轮（T-153：第 15 条是通用口径，先回照我自己）**：主控把"命令要 `^全名$` + 显式包路径"
   升级成**契约① §1.1 第 15 条**，所以第一件事是查**我自己**写的命令有没有违规，而不是等着别人来提。
   - **实测把这条的"为什么"钉死**（00:12:22）：`go test -count=1 -v -run TestDroppedFrameReaches ./test/ ./internal/process/`
@@ -890,6 +963,21 @@ LAST_UPDATED: 2026-09-22T15:45+08:00（本机 date 实取；T-131 的四条验�
   - **一个要主控裁的口径（不裁我就按现状留着）**：C8-11 只判**字面量**码。哪天有人把码改成常量或变量传进来，
     这条腿就看不见（用例已经把次数打印出来留痕：今天 0 处）。要不要升成红，是契约的决定，
     我不在自己的判据里替契约加严（今天已经为这件事红过一次自己的口径）。
+- **REQ-T16（新，两问，都关于"摘 SKIP 的触发条件"到底算什么）**：
+  - **①触发条件的口径对不上，请主控定一句**。T-163 说"backend 的 `RecordDrop` 一进 `cmd/core` 你就摘 SKIP"，
+    T-168② 又说"你的 `RecordDrop` 一入册（`753900f`）就是 `test` 摘 SKIP 的触发条件"——
+    按这个口径**触发已经发生了**（实现确实在 `753900f` 里）。但我 01:11 实测：`cmd/core` 的**生产码里没有一处
+    `newDropRecorder(` 的调用点**（`processpipe.go` 里 `Rec` 仍是 nil，backend 自己的注释写着"等 probe 落地，
+    装配点就是下面这一格"）。**"实现入册"≠"挂上桥"**，我今天把门建在后者上。请确认这个口径，
+    否则下一轮会出现"主控以为我该翻了、我以为还不能翻"的对不上。
+  - **②真黑盒还缺一个注入面**：就算 `Rec` 挂上、probe 落地（Core 有了活连接），
+    我也**无法从外部造出"票号说 B、帧里写 EVIL"那一发** —— 绑定关系是 Core 自己持有的，
+    FakeAdapter 只回显 Core 给它的 `execution_id`。要能让真链路上出现矛盾帧，需要 adapter 侧给一个
+    门控开关（`debug/*` 或 `LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID=1` 之类）。
+    这条我不自己发明（那是别人的包），请主控派给 adapter 或直接裁定"T84-7b 只到 7a 为止"。
+  - 附带一条现状（不是请求）：`DroppedEvent.ProcessRole` 已被 T-155 删掉，而契约③ 的字段清单里还写着它
+    —— 代码注释自己标成"契约侧待办"。我 7a 当初**没有**断这个字段（依据只在 adapter 的注释里，不在契约里），
+    所以删字段没让我红；但如果哪天有人按契约③ 补回来，7a 的字段清单要跟着看一眼。
 - **REQ-T12 → 我不再拿它当整条阻塞（T-141 的三段归属我照做了）**：第一段（`adapter` 的 `RecordDrop` +
   `DroppedEvent`）22:5x 已落地，所以"丢弃到没到接缝"这半今天就有判据（T84-7a，已跑通）；
   第二段（`backend` 在 `cmd/core` 注实现）我**不替它伪造**，落成显式 SKIP 的 T84-7b。
@@ -1012,6 +1100,43 @@ C8-11 / C8-12）与 T84-7a/7b；我这三个文件只是执行者：`core/test/e
 
 ## Verification evidence
 
+- **09-23 01:29:37~01:30:57（本机 `date`）T-170 结案复采**：默认面 `./test/...` ⇒ 顶层 `=== RUN` 53 =
+  结果 53 = 声明 53，**39 PASS / 14 SKIP / 0 FAIL**；开旗标 **44 / 9 / 0**；`go test ./...` **18/18 ok**；
+  `check_ownership.sh` **exit=0**、`--selftest` **exit=0**（含新加的 `[W13 注释自证·成对]` 打印行）、
+  `flaky_watch --selftest` exit 0、`crash_recovery` exit 0。
+  证形：`git status --porcelain -- core/test scripts` ⇒ 只有 `check_ownership.sh`、`crash_recovery.sh`、
+  `flaky_watch.sh` 三行 ` M`、**无 `??`**；本轮 Go 侧零改动（改动全在脚本 + 账本），
+  所以 01:23 与 01:30 两次 Go 数字一致（53/39/14/0）不是巧合而是同一棵树。
+  新增证据文件：`.qoder/evidence/test/w13-head-dropaudit-pair.txt`
+  （原始命中 `18 21 66` → 出厂 `w13_hits` 之后只剩 `:66`，取样 01:28:01、HEAD=d814572）。
+- **09-23 01:23:0x~01:23:5x（本机 `date`）T-166 结案复采（树在 01:19 被别人改动过，所以重测一遍而不是沿用 01:17）**：
+  默认面 `./test/...` ⇒ 顶层 `=== RUN` 53 = 结果 53 = 声明 53，**39 PASS / 14 SKIP / 0 FAIL**；
+  开旗标 ⇒ **44 / 9 / 0**；`check_ownership.sh` **exit=0、VIOLATION 0 条**；`--selftest`、
+  `flaky_watch --selftest`、`crash_recovery` 各 exit 0；账本 11 个标题。
+  **绿的来历要说清，别让它读起来像"test 把 lint 修绿了"**：越界本身被 backend 从树里拿掉了
+  （`RecordStart` 改成 `logf("REQ-DB-2 未落：生命周期那格没建行 …")`，01:19:52），
+  而**不是**我把那条腿弄哑——三条反查证据见上一条 Completed。判据面仍写着
+  `[W13-2] process_instances: 0`、`命中 3 处：白名单 3 / 表越界 0`。
+  同一时刻 `go test ./cmd/core/` ok（2.555s）、`go test ./...` 18/18 ok ⇒ 他们那一改自洽。
+  **checkout `HEAD=d814572` 跑我的 lint 会红**（那一版 `:66` 还在）——这是预期，不是我引用了旧事实。
+- **09-23 01:17:06~01:18:15（本机 `date`）T-166 + T84-7b 门那轮的最后一次重跑**：
+  默认面 `./test/...` ⇒ `=== RUN` 顶层 53 = 顶层结果 53 = 声明 53，**39 PASS / 14 SKIP / 0 FAIL**；
+  开旗标 ⇒ **44 PASS / 9 SKIP / 0 FAIL**；`go test ./...` ⇒ **18/18 包 ok**（`core` 这一个 Go 模块，
+  01:01 那次 `cmd/core` 的 FAIL 到 01:11 已自行消失，是 backend 在途编辑，不是我要判的东西）；
+  `flaky_watch --selftest`、`crash_recovery` 各 exit 0。
+  **`check_ownership.sh` 这轮 exit=1、3 条 VIOLATION，全部只关于 `Append("process_instances")`
+  （`cmd/core/dropaudit.go:66`，T-168/backend）——这条红是判据该有的行为，不是我的缺陷**：
+  01:00 之前它是"两条真 + 一条假"，假的那条（`:18` 注释里复述本规则）已修；
+  **如果它现在变绿，才说明我把真信号弄哑了**。逐条原文与判决在
+  `.qoder/evidence/test/ownership-lint-final.txt`；恢复版注释的复证在
+  `.qoder/evidence/test/w13-restored-dropaudit.txt`（原始 3 命中 → 剥注释后只剩 `:66` 一处）。
+  反向验：selftest 里那条 `wn == 2` 在把 strip 管道换回 `cat` 后当场变 rc=2 并喊出两条精确 FAIL（01:11:12），
+  还原后 rc=0、`MUT` 残留 0。
+  证形三句（01:18:15 复采）：基线 `d814572`（01:13:44）；
+  `git diff --stat HEAD -- core/test scripts` ⇒ `check_ownership.sh | 19 ++++++++++--`、
+  `crash_recovery.sh | 5 ++++-`、`flaky_watch.sh | 14 ++++--`，合计 `3 files changed, 31 insertions(+), 7 deletions(-)`；
+  `git status --porcelain -- core/test scripts` ⇒ 只有那三行 ` M`、**无 `??`**
+  （本轮的 Go 改动已被主控随 `753900f` 入册，故第三命令 `--no-index` 不适用）。
 - **09-23 00:07:28~00:08:27（本机 `date`）③b 那轮交付前最后一次重跑**，四条全部 exit 0：
   默认面 `./test/...` ⇒ `=== RUN` 顶层 53 = 顶层结果 53 = 声明 53，**39 PASS / 14 SKIP / 0 FAIL**；
   开旗标 ⇒ **44 PASS / 9 SKIP / 0 FAIL**；`go test ./...` ⇒ **18/18 包 ok、0 FAIL、0 "no test files"**

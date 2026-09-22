@@ -57,6 +57,7 @@ function parseEventCatalog(textOverride) {
   const e6 = lines.findIndex((l, i) => i > s6 && /^## 7\. /.test(l));
   if (s6 < 0 || e6 < 0) broken(`事件契约 §6 区间锚点没找准（§6=${s6 + 1}，§7=${e6 + 1}）`);
   const types = [];
+  const lineAt = [];          // 与 types 同下标；重名要能点名到行
   for (let i = s6; i < e6; i++) {
     const line = lines[i];
     if (!/^\| `/.test(line)) continue;
@@ -79,20 +80,30 @@ function parseEventCatalog(textOverride) {
     let stem = null;                                  // 滚动更新 = "最近一个全名"
     for (const t of toks) {
       if (!t.startsWith('_')) {                       // ④ 全名原样收下
-        types.push(t);
+        types.push(t); lineAt.push(i + 1);
         stem = stemOf(t);
         continue;
       }
       if (stem === null) {                            // ⑤ 孤儿 `_xxx`：本行还没有可用的全名词干
         broken(`§6 第 ${i + 1} 行：孤儿 \`${t}\` 出现在本行还没有全名的位置（约定⑤ ⇒ 必须报错，不许静默跳过）`);
       }
-      types.push(stem + t.slice(1));
+      types.push(stem + t.slice(1)); lineAt.push(i + 1);
     }
   }
   if (!types.length) broken(`事件契约 §6 一个事件类型都没解出 ⇒ 解析器坏了`);
-  const dup = types.filter((t, k) => types.indexOf(t) !== k);
-  if (dup.length) broken(`§6 展开后出现重名（${[...new Set(dup)].join(', ')}）⇒ 要么目录真重登了，要么我的词干取法与约定不符`);
-  return types;
+  // 重名**不是"我这台仪器坏了"**：集合并集仍然定义良好，所以我照常去重继续判 yaml，
+  // 同时把重名交回调用方报**红**（点名 + 行号）。
+  // 为什么不在这里 exit 2：停在这里会让后面那 14 条断言全部失明，而 T-165 要的恰恰是
+  // "enum ↔ 目录 双向相等"这条**能跑到并自己抓到缺员** ——  blanket stop 反而把它挡在后面。
+  const first = new Map();
+  const dups = [];
+  const uniq = [];
+  types.forEach((t, k) => {
+    if (first.has(t)) { dups.push({ type: t, firstLine: first.get(t), againLine: lineAt[k] }); return; }
+    first.set(t, lineAt[k]);
+    uniq.push(t);
+  });
+  return { types: uniq, dups };
 }
 
 /** 事件契约 §7 垂直链：读围栏代码块里的全名，不再手抄 22 条。
@@ -180,7 +191,10 @@ function parseContract2(textOverride) {
       broken(`§15.2 区间里有一行以反引号开头却没被解出（第 ${i + 1} 行）：${lines[i].slice(0, 70)} ⇒ 合并族行/少列都会在这里静默漏`);
   }
   if (!rows.length) broken(`§15.2 区间 ${s2 + 1}..${e2 + 1} 解出 0 行表格（区间里有 ${e2 - s2} 行文本）⇒ 判据不可用`);
-  if (new Set(rows.map((r) => r.code)).size !== rows.length) broken('§15.2 左列有重码 ⇒ 集合运算不可信');
+  // §15.2 的重码与 §6 的重名**处置不同，是有理由的**：这里『状态』列正是我要拿去比对的东西，
+  // 同一个码两行、状态不同就没有"哪个是判据"可言 ⇒ 仪器真的无法决定，只能停（§6 的重名不污染集合判断，所以那边是报红继续）。
+  const dupCode = rows.map((r) => r.code).filter((c, k) => rows.map((r) => r.code).indexOf(c) !== k);
+  if (dupCode.length) broken(`§15.2 左列有重码（${[...new Set(dupCode)].join(', ')}）⇒ 同一码两行时『状态』判据没有唯一答案`);
   const shape = (r) => r.from.trimStart();
   const dashed = rows.filter((r) => shape(r).startsWith('—'));
   const named = rows.filter((r) => shape(r).startsWith('`'));
@@ -503,7 +517,12 @@ Array.isArray(wf?.criteria) || String(wf?.criteria).match(/[①②③]/)
   : bad('未投影 §5 判据 ①②③');
 // 事件契约 §7 链 ↔ yaml EventType 目录（链与目录都当场解析；yaml 侧是被判的那一个）
 const chainEvents = parseChainEvents();
-const catalog = parseEventCatalog();
+const { types: catalog, dups: catalogDups } = parseEventCatalog();
+catalogDups.length
+  ? bad(`事件契约 §6 有 ${catalogDups.length} 个类型被登记了两次（去重后 ${catalog.length} 类）：`
+    + catalogDups.map((d) => `${d.type}（第 ${d.firstLine} 行 + 第 ${d.againLine} 行）`).join('；')
+    + ' ⇒ 我不改 §6（那是主控该同步的那格），但这条红留着：重名两行的 payload 列哪天漂了，集合对拍看不见')
+  : ok(`§6 目录展开无重名（${catalog.length} 类）`);
 const catalogMissing = catalog.filter((t) => !(S.EventType.enum ?? []).includes(t));
 const catalogExtra = (S.EventType.enum ?? []).filter((t) => !catalog.includes(t));
 catalogMissing.length || catalogExtra.length
@@ -519,7 +538,8 @@ try {
   probing = true;
   const catRun = (tweak) => {
     try {
-      return { types: parseEventCatalog(tweak(real)), err: null };
+      const r = parseEventCatalog(tweak(real));
+      return { types: r.types, dups: r.dups, err: null };
     } catch (e) {
       return { types: null, err: e.message };
     }
@@ -565,7 +585,14 @@ try {
   ambOk.err
     ? bad(`③b 过敏：两个全名但**没有简写**的行也被拦（${ambOk.err.slice(0, 40)}）⇒ 契约④那种整行写全的形态会被误杀`)
     : ok('守门自证 F：整行写全（无简写）的多全名行照常放行（约定④）');
-} finally {
+  // 重名的处置：报红**并继续**（T-165 的实际形状：§6 把 project_archived 登了两次）。
+  // 停在这里会让后面 14 条断言集体失明，而"enum ↔ 目录"正是该自己抓到缺员的那条。
+  const dupProbe = catRun((t) => t.replace(/^\| `session_synced` \|/m,
+    '| `session_managed` | session | 探针重复行 | – |\n| `session_synced` |'));
+  dupProbe.err ? bad(`重名被当成"仪器坏了"停掉了（${dupProbe.err.slice(0, 40)}）⇒ 后面的集合判据再也跑不到`)
+    : dupProbe.dups?.length === catalogDups.length + 1
+      ? ok(`守门自证 H：重复登记的类型 → 去重继续判 + 交回调用方报红（不 blanket stop；基线本有 ${catalogDups.length} 条重复）`)
+      : bad(`重名没被数出来（dups=${dupProbe.dups?.length}，基线=${catalogDups.length}+1）⇒ 那条红是空的`);} finally {
   probing = false;
 }
 

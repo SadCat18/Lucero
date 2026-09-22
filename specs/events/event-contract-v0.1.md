@@ -164,7 +164,8 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 
 | event_type | 触发者（包） | payload 关键字段 | Audit |
 |---|---|---|---|
-| `project_created` / `project_updated` / `project_archived` | project | created：`name` `canonical_path`；**updated：`name` `metadata`**；archived：`reason` | – |
+| `project_created` | project | `name` `canonical_path` | – |
+| `project_updated` | project | `name` `metadata` | – |
 | `project_archived` | project | `reason` | – |
 | `adapter_registered` | adapter | `adapter_key` `protocol_version` | – |
 | `adapter_health_changed` | adapter | `from` `to` `confidence` | – |
@@ -223,6 +224,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > ⇒ 取的是**最近一个**）不是一回事，而 §6 今天没有能区分两者的行 ⇒ **零分歧、但那句"与现实现一致"是误导**。
 > 现按 `db` 的实际语义定边，并加 ③b 关掉歧义类。`frontend` 已在自己那侧加了"歧义行必须停"的守门（探针 E），
 > **它不替契约挑边、只把冲突报上来，这是对的做法** —— ③b 就是给它的那个守门的契约依据。）
+> **③c 合并只许用于"payload 关键字段相同"的同族行（09-23 01:3x 补，起因是我自己造的那次重名）**：上面 `project_created` / `project_updated` / `project_archived` 三条**各自的 payload 都不一样**，所以它们**必须各占一行** —— 我 09-22 为了"少一行"把它们塞进一格，就得在 payload 列里写 "created：… updated：… archived：…"这种带前缀的表意，**那正是"这一格其实是三件事"的信号**。我当时还漏删了原来那行 `project_archived` ⇒ 展开后重名，`frontend` 的守门"重名即停"**先于**它要抓的 `enum ↔ 目录` 触发，`npm run validate` exit=2 —— **一个为了省行的合并，把别人的判据挡在了自己前面**。判据：**payload 不同 ⇒ 不合并；要合并先确认三个 payload 写出来是同一串。**
 > ④ 不带 `_` 前导的 token 就是全名，原样收下（`grant_issued` / `grant_revoked` 那种整行写全的形态合法）；
 > ⑤ **`_xxx` 出现在"本行还没有全名"的位置 ⇒ 判表格或解析器坏了、必须报错**，
 > **不许静默跳过**（静默少收一个类型，正是这类解析器最坏的失效方式：它一直报绿）。

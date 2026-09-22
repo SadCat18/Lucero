@@ -22,9 +22,9 @@ import (
 //     期限的正主是 adapter（它会补默认值），但那一半没落地之前，这道闸在我这边先合上。
 //   - **`process_instances` 的改行今天仍没有通道**（§1.1 第 13 条 09-23 裁定：`process_instances` 不进
 //     `narrowTables`，因为那条入口"不取版本、不写事件"；真正的洞是 **REQ-DB-2**，主控写明"不算 backend 欠账"），
-//     所以这里 `Rec` 仍是 nil。第三十四/三十六批已有 `process.Recorder` 的实现（`dropaudit.go`：
-//     `RecordDrop` 写审计行；`RecordStart` 按 §1.1 第 12 条走 `Append` 建行；退出/崩溃那两格按 REQ-DB-2 未落
-//     处理成"出声但不写"），但**不挂在这座桥上** —— 今天没有任何调用方会走到丢弃分支
+//     所以这里 `Rec` 仍是 nil。第三十四~三十七批已有 `process.Recorder` 的实现（`dropaudit.go`：`RecordDrop` 写审计行；
+//     生命周期那三格按 T-168 一律"出声但不写" —— 拿 `Append` 建行会丢掉已登记的 `process_started`，
+//     正是 §1.1 第 13 条禁止的那个形状），但**不挂在这座桥上** —— 今天没有任何调用方会走到丢弃分支
 //     （probe 未接 ⇒ 没有跑着的连接），挂上去就是给一个空转的东西记账。
 //     probe 落地那天要做的两件事：给 `launcher` 补一把写通道（`auditedStore`）与一个 `now`，
 //     然后在 `Supervisor{…}` 里加 `Rec: newDropRecorder(store, adapterKey, now, logf)`。

@@ -3,10 +3,11 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-22T23:45:26+08:00（T-144 子轮：§6 词干按契约字面改成"第一个全名" + 歧义守门 E/F；
-闸门 **23:42:43** 五步全 exit=0（`gates-t144.txt`）；T-140 的 live **23:37:11 16 passed / 0 skip** 仍指当前代码：
-23:37:11 之后只有 `gen/schema.ts`（codegen 自写）与 `validate-openapi.mjs`（23:42:21）被动过，运行时代码与 yaml 未变。
-基线读到 `a1b8664`→`e4b214b`。更早各轮（T-139 23:08:53 / T-127+T-128 15:37:42）的"最后一次重跑"口径按原段读，别拿本轮数字覆它们）
+LAST_UPDATED: 2026-09-23T01:19:08+08:00（T-165 子轮：补 `project_updated` ⇒ `EventType` **63 条**、
+§6 重名的处置由"停"改成"报红继续 + 点名到行"（新探针 H）。链条 01:16:27：`codegen`/`vitest`(26+16skip)/`build` 全 exit=0，
+**`validate` 剩 1 条红，在 `specs/events/event-contract-v0.1.md` §6 第 167+168 行（`project_archived` 重复登记）——
+那格不属我写范围，按 T-165"别顺手改 §6"只报不改**。前面各轮口径按原段读：T-150 00:03:26 / T-144 23:42:43 /
+T-140 23:37:30（live 23:37:11 **16 passed / 0 skip**，find 证运行时此后零改动）/ T-139 23:08:53 / T-127+128 15:37:42）
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -204,7 +205,7 @@ WsClientHello / client_frames / order / known-gap）、`packages/api-client/src/
 我不去动它们，也不删我自己那三个 —— 按"谁都不许碰 /tmp"的字面，我不再对该目录做任何操作，
 清理由用户或各角色自己在 `.scratch/` 侧负责。
 
-以后我的做法（写进收尾协议）：一次性产物与变异备份一律落 `D:\Project\Lucero\.scratch\frontend\`；
+以后我的做法（写进收尾协议）：一次性产物与变异备份一律落 `D:\Project\Lucero\.scratch\frontend`；
 删除只删自己建的具体文件名；永不对 `/tmp`、`%TEMP%`、`$env:TEMP` 做通配删除或"清理"。
 本轮唯一保留在 /tmp 的操作是只读的 `ls`（取证用）。
 
@@ -579,7 +580,7 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
 ### ② 改法：把"数字"降级成打印，把"不自洽"升级成判据
 - **删掉** `C2_BASELINE = {rows:29,named:17,dashed:12}`，改成形状判据（全部当场算，没有一个字面规模）：
   零行 / 重码 / `named + dashed ≠ rows` / 『来自』两种形状都不像 / 带 `—` 的为零（静默空集）/
-  **near-miss**（`| \``… 开头却不被主正则接受 ⇒ 表格一旦长出合并族行就停，不再静默丢行）/
+  **near-miss**（以"竖线紧跟反引号"开头、却不被主正则接受的行 ⇒ 表格一旦长出合并族行就停，不再静默丢行）/
   **§15.1 ↔ §15.2 码名双向集合不等**（要么契约自己缺一条，要么我把区间切错 —— 两种都不配继续判 yaml）
 - 现在的行数只出现在一行 `ok(...)` 里，给人看
 - enum 补 `duplicate_project_path` ⇒ **30 条**，与 §15.2 左列双向相等；codegen 重跑后生成物联合 30 条、该码在列
@@ -641,7 +642,7 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
   → 原文 `项目已建：id=01a0c9c3-… status=ACTIVE version=1`
 - **同一 Idempotency-Key 重放** → 同 id、同 created_at、`version` 仍是 1（副作用不重复）
 - 不带 Idempotency-Key → **403 `idempotency_key_required`**（T-139 刚收编的那条码线上真出现）
-- 同一 canonical_path 换一种拼写（`d:\…\\dup\` 对 `D:/…/dup`）→ **409 `duplicate_project_path`**、`retryable:false`，
+- 同一 canonical_path 换一种拼写（`d:\…\\dup` 对 `D:/…/dup`）→ **409 `duplicate_project_path`**、`retryable:false`，
   原文 `冲突如实回 409：首个项目 …，未被第二条请求改写` ⇒ **词干式 canonicalize 折叠是真的在做**
 - **C28② 的线上实证**：同一 path 未接线的 GET 回 **501 不是 405**（断言消息里写了为什么要紧）
 - **垂直切片**：先换票建连拿到游标 → 再 `POST /projects` → WS 真收到 `project_created`
@@ -769,3 +770,47 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
 - 上一段（T-144 子轮）写的"改成**按契约字面取第一个全名**"**自 00:03 起作废**：主控 23:5x 把 ③ 定稿为"最近一个全名"并加 ③b。
   历史行留着是为了记"我当时按当时正文实现"，**现在生效的是 T-150 这一段的形状**。
 - 上一段那条"探针 E 现在有了契约依据，不用自己扛"由主控 23:5x 落文（③b 就在 `event-contract` 里），已核对在盘。
+
+## T-165 子轮（`project_updated` 第三半在我名下：补枚举 + 改重名处置）· 本机 date 2026-09-23T01:16:27+08:00
+
+### 先复测前提（投前 01:11:17 现场，不引巡检的数）
+`grep -c project_updated specs/openapi/core-v1.yaml` = **0**、`gen/schema.ts` = **0**、事件契约 §6 = **1**（第 167 行，
+`| `project_created` / `project_updated` / `project_archived` | project | … |`，mtime 00:39）⇒ 派发不过期，我确实少一条。
+
+### 但预告的红**没有按预告的方式出现**——这条差别重要
+主控说"下一跑 `npm run validate` 会真红在 enum ↔ 目录那条双向相等上"。我修之前先跑了一次取证：
+**`exit=2`、打印的是"解析器坏了：§6 展开后出现重名（project_archived）"** —— 因为 §6 第 167 行的合并行把 `project_archived`
+又列了一遍，而第 **168** 行那条独立 `project_archived` 还在。也就是说：**先撞到的是我那条"重名即停"，
+而主控要我该抓缺员的那条集合断言根本没跑到。** 补完枚举之后如果不动处置，这条守门仍然会在集合比对之前停下——
+"谁醒了才炸"的潜伏红换了个地方潜伏。
+
+### 处置变更（不对称是有判据的，不是图省事）
+- **§6 重名 ⇒ 去重继续判 + 交回调用方报红并点名到行**（`project_archived（第 167 行 + 第 168 行）`）。
+  理由：并集仍然定义良好，重名**不污染**我用来判 yaml 的那个集合；停在这里会让后面 14 条断言集体失明。
+- **§15.2 重码 ⇒ 仍然 `exit 2` 停**。理由：那里的『状态』列正是我要拿去和 `writeError` 逐个比对的量，
+  同一个码两行就没有"哪个是判据"的唯一答案 —— 那才是"仪器不能决定"。
+  两条差别写进代码注释了，避免下一个人把它们当成同一件事合并掉。
+- 新探针 **H** 钉这个行为（合成一行重复登记 ⇒ 必须是"报红继续"而不是停）。
+
+### 我这一轮自己的一个错（被真实数据打的）
+H 第一版我断 `dups.length === 1` —— **当场 FAIL**：基线本来就有 1 条重复（§6 那次编辑留下的），我合成一行之后是 2。
+判据写成 `dups.length === catalogDups.length + 1`（**基线相对**）才对。
+**教训：探针不许假设契约文档是干净的**——它现在不干净，将来也会不时不干净。
+
+### 落到的绿与不绿
+- yaml `EventType` 补 `project_updated` → **63** 条；`npm run codegen` exit=0，生成物 `EventType` **63 条**、`project_updated` 在列；
+  `EventType enum 与 §6 目录双向相等（按①~⑤展开 63 类）` 现在 **ok**。
+- **`validate` 今天取不到绿，我不粉饰**：还剩 **1 条红**，内容是 §6 第 167+168 行重复登记 `project_archived`，
+  那格在 `specs/` 里，按 T-165"别顺手改 §6 —— 那是主控该同步的"我**只报不改**。主控删掉 168 那一行（或把合并行的第三个 token 去掉）即可转绿，
+  我这边不需要再动任何东西。
+- 链条（`01:16:27`，`.qoder/evidence/frontend/gates-t165.txt`）：`validate` exit=**1**（就上面那条红）→ `codegen` 0 →
+  `vitest` **26 passed | 16 skipped (42)** → F20-4 表内原命令 **1 passed | 41 skipped** → `build` 0；
+  `find`（排除生成物）在 `01:16:50` 之后 → **0 行**。live 未重跑：`client.ts`/`events.ts`/stores/components/tests 自 09-22 23:37:11 起零改动（find 实证）。
+- 证形：`git status --porcelain -- apps packages specs` → ` M` 三个（`validate-openapi.mjs`、`gen/schema.ts`、`core-v1.yaml`）。
+  注：上一段还看到的 `specs/adapter-protocol/**`、`specs/contracts-internal-v0.1.md` 两个 ` M` 已被别人提交掉了，不是我改的。
+
+### 一条请主控定的结构性问题（不自作主张）
+我的守门**只在有人跑 `npm run validate` 时才响**：T-139 那次是主控自己跑的、这次是巡检跑出来的，两轮都是"谁醒了才炸"。
+最省事的做法是把 `validate` 挂进 `apps/desktop/package.json` 的 `build` 前置（验收命令本来就是 `npm run build`），
+**但我没有单方面做**：那会让别人的 `npm run build` 因为**别人那一格文档**的漂移而失败，属于跨角色的闸门接线，归你裁。
+要就一句话，我这侧一行改动。

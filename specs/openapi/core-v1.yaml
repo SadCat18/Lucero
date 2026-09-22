@@ -858,7 +858,7 @@ components:
       type: string
       description: 事件契约 §6 事件目录 v0.1 的完整投影。目录外的 event_type 属 P0（禁止事项 1）。
       enum: [
-        project_created, project_archived,
+        project_created, project_updated, project_archived,
         adapter_registered, adapter_health_changed, adapter_downgraded, adapter_restart_exhausted,
         adapter_capability_verified,
         model_discovered,

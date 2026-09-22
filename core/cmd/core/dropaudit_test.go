@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -116,8 +117,9 @@ func TestRecordDropRefusesToBlameNobody(t *testing.T) {
 	}
 }
 
-// TestLifecycleMethodsShoutInsteadOfSilentlyPassing 钉 REQ-DB-6 未裁那三格的行为：
-// 一行库都不写（写了就是假账），但每格都要在日志里留下"没落库"这句话。
+// TestLifecycleMethodsShoutInsteadOfSilentlyPassing 钉生命周期三格在 T-168 之后的行为：
+// **一格都不写库**（`Append` 建行 = 行写了、已登记的 `process_started` 静默丢掉，那正是 §1.1 第 13 条禁的形状），
+// 但每格都要在日志里留下"等的是 REQ-DB-2 + 没建/没改 + 是哪个 adapter"这三样。
 func TestLifecycleMethodsShoutInsteadOfSilentlyPassing(t *testing.T) {
 	core, err := boot(context.Background(), testConfig(t))
 	if err != nil {
@@ -127,18 +129,22 @@ func TestLifecycleMethodsShoutInsteadOfSilentlyPassing(t *testing.T) {
 
 	var logged []string
 	rec := newDropRecorder(core.store, "codex", func() int64 { return 1 },
-		func(f string, _ ...any) { logged = append(logged, f) })
-	rec.RecordStart(process.Event{Kind: process.EventStarted, PID: 41})
+		func(f string, args ...any) { logged = append(logged, fmt.Sprintf(f, args...)) })
+	rec.RecordStart(process.Event{Kind: process.EventStarted, PID: 40, Status: process.StatusStarting})
 	rec.RecordExit(process.Event{Kind: process.EventExited, PID: 41, ExitCode: 0})
 	rec.RecordCrash(process.Event{Kind: process.EventCrashed, PID: 42, ExitCode: 1, Crashes: 3})
 
 	if len(logged) != 3 {
-		t.Fatalf("三格各该喊一次，实际 %d 条: %v", len(logged), logged)
+		t.Fatalf("生命周期三格各该喊一次，实际 %d 条: %v", len(logged), logged)
 	}
 	for _, line := range logged {
-		if !strings.Contains(line, "REQ-DB-6") || !strings.Contains(line, "没落库") {
-			t.Errorf("喊的话要说清是没落库： %q", line)
+		// 三件都要在：等的是哪条（REQ-DB-2）、没落什么（建行/改行）、是谁的进程（身份不许因为没落库就丢）。
+		if !strings.Contains(line, "REQ-DB-2") || !strings.Contains(line, "没") || !strings.Contains(line, "codex") {
+			t.Errorf("喊的话要说清等的是哪条、没落哪一格、是谁的进程： %q", line)
 		}
+	}
+	if n := countRowsBy(t, core, `SELECT count(*) FROM process_instances`); n != 0 {
+		t.Errorf("T-168：`Append` 建行会丢 `process_started`，这张表今天一格都不许写： %d 行", n)
 	}
 	if n := countRowsBy(t, core, `SELECT count(*) FROM audit_entries`); n != 0 {
 		t.Errorf("生命周期那三格今天无权写任何东西，实际 %d 行审计", n)

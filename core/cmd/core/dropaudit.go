@@ -13,15 +13,17 @@ import (
 
 // 这里补上 T84-7b 等的那半格：`process.Recorder` 在装配侧的实现（契约③ §7.2 第一次把四方法形状写进契约）。
 //
-// 今天四格里两格能真写（RecordDrop + RecordStart），两格只能出声（RecordExit / RecordCrash）—— 依据都在下面。
+// 今天四格里只有一格能真写（RecordDrop），生命周期那三格只能出声（依据见 RecordStart 的注释与 T-168）。
 //   - **RecordDrop** 落一行审计，走 `audit` 自己的出口，`event_journal` 零新增（§7.2:310~311 断的就是这一对；
 //     这里出现 `Tx.Append("audit_entries"` 字面量即 W13-2 红）。
 //
-// 那三个生命周期方法里，今天只有 `RecordStart` 能真写：§1.1 第 12 条把 `process_instances` 列进
-// "故意不发事件的可变表"，写它的正解就是 `Append`（`cmd/core` 里 `tx.Append("principals", …)` 是同一条通道上的既成先例）；
-// 退出/崩溃那两格要**改**同一行，而 §1.1 第 13 条 09-23 的裁定是"不进 `narrowTables`"（那条入口不取版本也不写事件），
-// 真正的通道挂在 **REQ-DB-2** 上（"无版本、但要发事件"的表没有写路径）—— 主控明写"不算 backend 欠账"。
-// 那两格是 void 的（T-62 冻的形状，契约③ §7.2 今天照抄了它），写不进去**没法向上报失败**，
+// 生命周期那三格今天**一格都不写**：§1.1 第 12 条把 `process_instances` 列进"故意不发事件的可变表"，
+// 但那是"**除** `process_started`/`process_exited`/`process_crashed` 三个外"—— 排除，不是包含（T-168 收回 T-162①，
+// 我 01:0x 把它读反过一次）。这三件是要发事件的事实，而 `Append` 与 `cmd/core/main.go` 里
+// `tx.Append("principals", …)` 那条通道一样**不写事件**（判据 U13-4），拿它建行 = 行写了、事件静默丢掉，
+// 正是 §1.1 第 13 条 00:41 裁死的形状；退出/崩溃那两格还要**改**同一行，而第 13 条裁定它不进 `narrowTables`。
+// 真正的通道挂在 **REQ-DB-2** 上（"无版本、但要发事件"的表没有写路径，与 `core_ready` 同源）—— 主控明写"不算 backend 欠账"。
+// 那三格是 void 的（T-62 冻的形状，契约③ §7.2 今天照抄了它），写不进去**没法向上报失败**，
 // 所以这里把"这格没落库"喊到日志里，而不是静默 no-op —— 静默归因正是 §2.2.1/REQ-A11 在终结的那种假账。
 
 // dropRecorder 一个 adapter 一个（`cmd/core` 的构造点认识 adapter_key，`DroppedEvent` 里没有任何身份字段：
@@ -29,49 +31,27 @@ import (
 type dropRecorder struct {
 	store      auditedStore
 	adapterKey string
-	// processType 是 `process_instances.process_type` 的那六个值之一；这座桥只起 adapter。
-	processType string
-	now         func() int64
-	logf        func(format string, args ...any)
+	now        func() int64
+	logf       func(format string, args ...any)
 }
 
 func newDropRecorder(store auditedStore, adapterKey string, now func() int64, logf func(string, ...any)) *dropRecorder {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &dropRecorder{store: store, adapterKey: adapterKey, processType: "ADAPTER", now: now, logf: logf}
+	return &dropRecorder{store: store, adapterKey: adapterKey, now: now, logf: logf}
 }
 
-// RecordStart 给"一个进程实例"建一行（T84-7 的判据①就是"行数 = 启动次数"）。
+// RecordStart 今天**只出声、不写库**（T-168 收回了 T-162① 那句"`RecordStart` 走 `Append` 不受影响"）。
 //
-// 三件刻意的事：
-//   - **不进 journal**：§12 明说那三个 `process_*` 事实不逐条进事件簿，所以这里没有"改了行、丢了事件"的洞可担心。
-//   - `status` 写 `STARTING` 而不是 `RUNNING`：Supervisor 在这格只观察到"进程起来了"，
-//     还没经过任何一次握手/心跳，替它标 RUNNING 就是拿推断冒充事实。
-//   - `owner_type` / `owner_id` **留 NULL**：这张表里"归属"该填哪套词表（`adapter_instances` 的 id？还是 `adapter_key`？）
-//     不是我能自挑的，已提 C34 请主控给词表；`adapter_key` 先落在 `metadata_json` 里，身份不丢但不冒充词表。
+// 我 01:0x 那版读错了 §1.1 第 12 条：那句是"`process_instances` 属故意不发事件的可变表，
+// **除** `process_started`/`process_exited`/`process_crashed` 三个外" —— "除…外"是**排除**，
+// 也就是这三件是**要发事件的事实**，而 `Append` 恰恰不写事件（判据 U13-4 同一形状）。
+// 所以拿 `Append` 建行 = 行写了、`process_started` 静默丢掉 ⇒ 正是 §1.1 第 13 条禁止的那个形状。
+// 三格从今天起同形：等 REQ-DB-2 那条"无版本、但要发事件"的通道，一起走它。
+// 要改成真写需要的是**一条说清"这张表的写归谁"的 REQ**，不是白名单例外，也不是口头豁免（§7.1 尾句）。
 func (r *dropRecorder) RecordStart(ev process.Event) {
-	id, err := newAuditID() // 与审计行同一把现编法：启动不是一条命令的重放，没有可复用的上游 id
-	if err != nil {
-		r.logf("进程实例行没建出来（id 都编不出）: %v", err)
-		return
-	}
-	now := r.now()
-	meta, err := json.Marshal(map[string]any{"adapter_key": r.adapterKey, "restart_policy": "NEVER"})
-	if err != nil {
-		r.logf("进程实例行的 metadata 编不出来，这一行没写: %v", err)
-		return
-	}
-	err = r.store.Write(context.Background(), func(tx *db.Tx) error {
-		_, err := tx.Append("process_instances",
-			[]string{"id", "process_type", "pid", "status", "restart_policy",
-				"started_at", "metadata_json", "created_at", "updated_at"},
-			[]any{id, r.processType, ev.PID, "STARTING", "NEVER", now, string(meta), now, now})
-		return err
-	})
-	if err != nil {
-		r.logf("进程实例行没落库（void 接口报不上去，只能喊）: pid=%d %v", ev.PID, err)
-	}
+	r.logf("REQ-DB-2 未落：生命周期那格没建行 action=started adapter_key=%q pid=%d", r.adapterKey, ev.PID)
 }
 
 func (r *dropRecorder) RecordExit(ev process.Event) {
