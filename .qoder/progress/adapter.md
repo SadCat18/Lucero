@@ -5,7 +5,7 @@ SCOPE: Core↔Adapter 协议实现（帧编解码/握手/capability/三态/流�
 EVIDENCE_DIR: .qoder/progress/adapter.md（本轮为纯单测证据，不落 .qoder/evidence/）
 SCRATCH_DIR: D:\Project\Lucero\.scratch\adapter\（T-47：一次性产物只准落这里，仓库已 ignore；
              永不碰 /tmp、%TEMP%、$env:TEMP 的通配删除；只删自己建的具体文件名）
-LAST_UPDATED: 2026-09-22T22:57:41+08:00
+LAST_UPDATED: 2026-09-22T23:24:56+08:00  # `date` 实读
    # 自纠两处（T-43）：① 本行上一度写成 `14:36:20`，那**不是** `date` 读出来的、是估的（当时最后一次实读是
    # 14:31:49）；② 09-21 11:11 我用一条 `\S+` 的正则改这行，把 `LAST_UPDATED:` 前缀 itself 吃掉了，
    # 当场用 Edit 修回 —— 记账本自己的教训：**改标头行必须锚全文，不能用 `^KEY: \S+` 这种吞前缀的写法**。
@@ -1200,6 +1200,18 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - `core/internal/adapter/stream.go` — §4.2 的两处结论落地：`CarriesTurnRef` 只含四条、
   `turn/dispatched` 放开 Provider 句柄（CO-13）、跟踪器同口径；注释与 §4.2 载荷表对齐
 ## Verification evidence
+- **T-143（23:2x 主控点的口子）已堵并证过**：`purity_test.go` 的允许集从一张平表改成两层
+  ——`storeAllowed`（`probe_store_sqlite.go` 生产可用：`platform/db` + `eventjournal`）与
+  `testOnlyAllowed`（只有 `*_test.go` 可加：`audit`，因为 `InitRedaction` 的规则只能来自
+  `audit.Rules()`，而那条约束的是产品码不是测试引导），判定收进一个函数
+  `importAllowedFor(file, path)`，**层间关系现在是被代码强制的，不再是注释里的一句话**。
+  判决方式不是"我说改好了"：把 `internal/audit` 真加进 `probe_store_sqlite.go`（带一处使用让它能编译）当变异
+  **y1**，`TestOnlyStdlibImports` 报
+  `probe_store_sqlite.go: github.com/SadCat18/lucero/core/internal/audit` ⇒ **FIRED**；还原后
+  `identical=True`、`grep -rn ZMUT internal/adapter/` = **0**，`internal/adapter` 与 `internal/process` 两包
+  23:24:30 重跑仍 ok。改前那样的写法会让这条 import 直接放过 —— 口子是真的，只是当时还没人踩。
+  主控同时核过两处为真：§6 规则 4「Adapter 不写 DB、不发事件」是原文（不是我实现自证）、
+  以及"收窄而不删除 + 按测试自己那句话办 + allow-list 里的文件必须存在"三条做法对。
 - **第 10 轮 4 条变异 `mut-r10.py`，最终全部 FIRED、not-fired: none**（`probe.go`/`connection.go` 批后
   `identical=True`、`marker_hits=0`）：
   | # | 变异 | 判据 | 结果 |

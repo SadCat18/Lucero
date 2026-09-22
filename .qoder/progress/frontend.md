@@ -3,9 +3,8 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-22T15:38:23+08:00（T-127/T-128 轮；四道闸门 15:37:42 全绿、F20-4 命令 15:37:45 单跑 1 passed；
-本轮基线已换：`git log -1 --format=%h` = `4f7fb43`。上一轮 T-96 的"最后一次重跑 09-21 13:37:09 + 此后源码零改动（find -newermt 反查为空）"
-那套证据继续有效，别拿本轮数字去覆它）
+LAST_UPDATED: 2026-09-22T23:09:14+08:00（T-139 轮；交付前最后一次全量重跑 **23:08:53**、五步 exit 全 0。
+基线 `2297a8d`。上一轮 T-127/T-128（15:37:42，基线 `4f7fb43`）已入库，其"最后一次重跑"口径继续按那段读，别拿本轮数字覆它）
 
 ## Objective
 
@@ -548,3 +547,72 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
   （补掉 09-21 那条"10/10 只有台账、无原始输出"的缺口）。期间不动契约文件；阻塞前提一旦消失当轮改这行并附 grep 证据（T-80）。
 - Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
   （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`）
+
+## T-139 轮（守门第一次真响：C28① 把 §15.2 扩到 30 行）· 本机 date 2026-09-22T23:09:14+08:00
+
+### 先记下这一响值在哪
+我 09-22 那道守门（29 = 17 + 12 写死）在 23:01 真把主控拦下了一次 —— 但它拦的**不是"半张表"，是"合法扩列"**：
+主控 22:4x 把 C28① 的 `duplicate_project_path` 收编进去，行数变 30/13，我的字面基线当场过期。
+**同一份代码里对的那一半**是"锚点 + 不自洽即停"（`^### 15\.2 ` 行首锚点确实排除了 `#### 15.2.1`）；
+**错的那一半**是把**内容规模**当判据 —— 主控给 `test` 的 T-135 那句话同样是对我说的，我照收：
+字面基线每合法扩列红一次，就训练人去改数字而不是读结果。**这次红如果留着，下一次大家就跳过它了。**
+
+### ① 核新表：三方仍然自洽，而且实现侧先动了一步
+- §15.2 区间现在第 492..568 行 = **30 行（17 带 §15.1 码名 + 13 带 —）**；§15.1 码列 17 个；**双向集合相等**（两个方向差集都空，C8-1/C8-4 的形状）
+- `duplicate_project_path` = 409、『来自』是 `—`（HTTP 层专有），契约③ §3 明写要 409 —— 与 yaml 侧无冲突，我没有异议
+- **C28② 的"501/405 不许互换"我核了 yaml**：`grep -n "405" specs/openapi/core-v1.yaml` 只有我新写的那三行说明，
+  **没有任何端点把"未接线"声明成 405**（未接线的都走 `not_implemented`）。这条口径我原文投影进 `ErrorCode.description`，
+  并写了为什么对客户重要：**501 = 等实现，405 = 换方法**，把前者回成 405 是叫客户去试一条同样没接线的路径
+- **顺带一条主控没提的事实**：Core 实测侧已经**跟着动了** —— 扫 `core/api/**` 递归得到 **13 个码 / 6 个文件**（第 6 个文件是
+  `projects.go`，backend 22:4x 落地的），与 §15.2 那 13 行 `—` 逐字相等。也就是 C8-11 想防的那件事，
+  这台扫描器今天已经能自己看见，不用等人肉 grep
+
+### ② 改法：把"数字"降级成打印，把"不自洽"升级成判据
+- **删掉** `C2_BASELINE = {rows:29,named:17,dashed:12}`，改成形状判据（全部当场算，没有一个字面规模）：
+  零行 / 重码 / `named + dashed ≠ rows` / 『来自』两种形状都不像 / 带 `—` 的为零（静默空集）/
+  **near-miss**（`| \``… 开头却不被主正则接受 ⇒ 表格一旦长出合并族行就停，不再静默丢行）/
+  **§15.1 ↔ §15.2 码名双向集合不等**（要么契约自己缺一条，要么我把区间切错 —— 两种都不配继续判 yaml）
+- 现在的行数只出现在一行 `ok(...)` 里，给人看
+- enum 补 `duplicate_project_path` ⇒ **30 条**，与 §15.2 左列双向相等；codegen 重跑后生成物联合 30 条、该码在列
+- 探针从 3 条扩成**两组 6 条**，两组都是内存改文本、绝不落盘动 `specs/`（别人的写范围）：
+  **A 组"不自洽必须停"**：标题改名 / 『来自』写成散文 / 出现合并族行 / §15.1 那半张表整个没了 ⇒ 四条全 `ok 当场拒判`
+  **B 组"合法变化必须放行"**：新收编一行（就是 22:4x 那个形状）/ 删掉一行 ⇒ 两条全 `ok 放行（判据交给集合对拍）`
+  B 组是这次的**新加的那半**：只跑 A 组会养成一个一惊一乍的守门，而 22:5x 那次假红恰恰是 B 组缺失造成的
+
+### 当场证据（都进 `.qoder/evidence/frontend/gates-t139.txt`）
+- 交付前最后一次全量重跑 **23:08:53 +0800**，五步同一条链：`validate` 全部通过 exit=0 → `codegen` exit=0 →
+  `vitest` **26 passed | 10 skipped (36)** → F20-4 表内原命令 **1 passed | 35 skipped** → `build`（vue-tsc + vite + `check:no-secret`）exit=0
+- "这份绿是最后一次重跑"的证法（不靠记忆，也别拿含混输出当结论）：
+  `ls --time-style` 实读 —— validator `23:06:28`、yaml `23:08:38`（M4 回滚那次拷贝）都**早于**链条起点 `23:08:53`；
+  `packages/api-client/src/gen/schema.ts` 是 `23:08:54`，**它是链条里 codegen 自己写的**，不是后来有人改 ——
+  证法：再跑一次 `npm run codegen` 后 `diff` 前后两份生成物 → **逐字节相同**（幂等），且
+  `find specs/openapi apps/desktop/src apps/desktop/scripts -newermt "2026-09-22 23:08:54"` → **0 个**（生成物排除在外）。
+  上一版这里我写的是"find 全源码目录 → 空输出"，那句**不准**：`gen/` 必然出现在结果里（codegen 排在判定之前也挡不住同秒写入），
+  要写成"非生成物 0 个 + 生成物重跑幂等"两句才立得住。
+- **M4 磁盘变异（在新代码上重做，不拿旧结论充当）**：enum 拿掉 `duplicate_project_path` ⇒ `exit=1`、
+  `FAIL §15.2 有、enum 里没有（1 条）：duplicate_project_path` + `FAIL enum 里有契约之外的码`（两个方向一起红）；
+  备份 `.scratch/frontend/yaml-t139.bak`，回滚 `diff` → **0 差异**，`grep -rn 'MUT-T139'` 四目录 → **0 命中**
+  （原始输出 `.scratch/frontend/m4.txt`）
+- 证形：基线 `git log -1 --format=%h` = `2297a8d`（又被推进，T-127/T-128 那批已入库），`git diff --stat HEAD` →
+  3 files +87/−34：`validate-openapi.mjs` 111、`gen/schema.ts` 5、`core-v1.yaml` 5；`git status --porcelain` 无 `??`
+- 一处我自己要防的坑（主控同轮踩到、我这类命令里也常见）：**管道会掩码 exit code** ——
+  `npm run validate | tail` 的 `$?` 是 `tail` 的。本轮所有退出码都在**没有管道**的情况下取（`{ … } > 文件` 整链），
+  需要展示时才 `grep` 那个文件；另有一次用 `${PIPESTATUS[0]}` 显式取管道首段。
+
+### 没做的 / 留着的
+- live 那 10 条本轮仍未重跑：改动只在 yaml enum + 校验脚本，`client.ts`/`events.ts`/`panel.ts` 零改动（`git diff` 里就没有这三个文件）。
+- 事件契约 §6 目录那份手抄投影**依然没解析**，理由同上（合并族行要猜前缀）；
+  **但本轮补了一条真正的兜底**：§15.2 侧的 near-miss 判据就是同一族形状的第一道警报，
+  若 §6 哪天也要机械解析，缺的是"合并族行怎么展开"这一句约定，请主控给落点（重复登记，不催）。
+
+## 当前 checkpoint（覆盖此前所有同名段）
+- Stage：T-127/T-128 入库后，T-139 把守门从"字面基线"改成"判形状 + 打印"，enum 30 条三方对拍通过
+- Status：in_progress（阻塞在别人的端点，不在我）
+- Last verified action：23:08:53 五步链全 exit=0 + M4 变异先红后回滚 `diff`=0；守门探针 A 组 4 条停、B 组 2 条放行
+- 留给主控的两句话（登记，不是催）：① §6 事件目录要机械解析还缺"合并族行怎么展开"一句约定；
+  ② 判据表 **C8-8 那一行本身仍写着字面 29/12**（契约② 里，归 `test` 按 T-135/C8-10 改形状）—— 我这边已经改完，别拿我这台的绿去推那台
+- Next action：等 backend 让 `POST /projects`、`adapters/{key}/probe`、`POST /sessions/{id}:sync` 脱 501 ——
+  到位即用面板跑 §4 的 11 步真链，逐跳 ok/blocked 落 `.qoder/evidence/frontend/`，同一次重跑 live 全量并补 `live-t96.txt`
+  （补掉 09-21 那条"10/10 只有台账、无原始输出"的缺口）。期间不动契约文件；阻塞前提一旦消失当轮改这行并附 grep 证据（T-80）。
+- Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+  （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`；退出码一律在无管道处取）

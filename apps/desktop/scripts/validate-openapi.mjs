@@ -74,10 +74,8 @@ const PRINCIPAL_EXEMPT = ['/api/v1/ws-ticket'];
    路径不绝对化→换 cwd 就静默读不到；解析空集不当错→拿半张表判人。 */
 const CONTRACT2 = path.join(root, 'specs', 'adapter-protocol', 'adapter-protocol-v0.1.md');
 const EVENT_CONTRACT = path.join(root, 'specs', 'events', 'event-contract-v0.1.md');
-/** 基线会随契约加词漂移；漂移时**先改这里的期望再改判据**，不许让解析器"降级通过" */
-const C2_BASELINE = { rows: 29, named: 17, dashed: 12 };
 
-/** 解析器坏了就停。`probing` 时改成 throw，好让下面那两条"自破坏探针"能就地验证守门真的会拦。 */
+/** 判据不可用就停（exit 2）。`probing` 时改成 throw，好让下面那组"自破坏探针"就地验守门真的会拦。 */
 let probing = false;
 function broken(msg) {
   if (probing) throw new Error(msg);
@@ -85,8 +83,11 @@ function broken(msg) {
   console.error('  ⇒ 判据不可用。宁可 exit 2 停在这里，也不拿半张表去判 yaml（半张表会判出假的"缺码"）。');
   process.exit(2);
 }
-
-function parseHttpCodes(textOverride) {
+/** 闸门判**形状**，不写字面行数（T-139 建议；契约② §15.2.1 末尾同一条：数字只报给人看）。
+ *  字面基线每合法扩列一次就红一次，久了训练人去"改数字"而不是读结果 —— 22:5x 那次就是数字过期。
+ *  仍然"即停"的条件全部是**不自洽**：锚点歧义 / 区间没有终点 / 零行 / 重码 /
+ *  长得像表格却被我的正则丢掉（near-miss）/ 『来自』两种形状都不像 / §15.1↔§15.2 码名集合双向不等。 */
+function parseContract2(textOverride) {
   let raw = textOverride;
   if (raw === undefined) {
     try {
@@ -97,24 +98,51 @@ function parseHttpCodes(textOverride) {
   }
   const lines = raw.replace(/\r\n?/g, '\n').split('\n');
   const hits = (re) => lines.map((l, i) => (re.test(l) ? i : -1)).filter((i) => i >= 0);
-  const from = hits(/^### 15\.2 /);       // 行首 + 尾随空格：排除 `#### 15.2.1`
-  const to = hits(/^### 15\.3/);
-  if (from.length !== 1) broken(`§15.2 标题锚点命中 ${from.length} 次（要恰好 1 次），命中处 1-based 行号=[${from.map((i) => i + 1)}]`);
-  if (!to.some((i) => i > from[0])) broken('找不到 §15.2 之后的 §15.3 标题 ⇒ 区间无法闭合，硬取文件尾会把别的表读进来');
-  const end = to.find((i) => i > from[0]);
+  const anchored = (re, name, after) => {
+    const at = hits(re);
+    if (at.length !== 1) broken(`${name} 标题锚点命中 ${at.length} 次（要恰好 1 次），命中处 1-based 行号=[${at.map((i) => i + 1)}]`);
+    const stop = hits(after).find((i) => i > at[0]);
+    if (stop === undefined) broken(`${name} 之后找不到区间终点（锚点 ${after}）⇒ 硬取文件尾会把别的表读进来`);
+    return [at[0], stop];
+  };
+  // §15.1 的码列（拿来做双向集合，兼当"我切错区间"的探针）
+  const [a1, b1] = anchored(/^### 15\.1 /, '§15.1', /^#### 15\.1\.1/);
+  const codes151 = [];
+  for (let i = a1; i < b1; i++) {
+    const m = lines[i].match(/^\| `([A-Z][A-Z0-9_]+)` \|/);
+    if (m) codes151.push(m[1]);
+    else if (/^\| `[^`]+` \|/.test(lines[i]) && !/^\|[-\s|]+\|$/.test(lines[i]))
+      broken(`§15.1 区间里有一行长得像码表却没被解出（第 ${i + 1} 行）：${lines[i].slice(0, 70)} ⇒ 表格形状变了，静默丢行=半张表`);
+  }
+  if (!codes151.length) broken(`§15.1 区间 ${a1 + 1}..${b1 + 1} 一个码都没解出 ⇒ 解析器坏了`);
+  // §15.2 的左列（区间含 §15.2.1 收编的那张表，两张一起读）
+  const [s2, e2] = anchored(/^### 15\.2 /, '§15.2', /^### 15\.3/);
   const rows = [];
-  for (let i = from[0]; i < end; i++) {
+  for (let i = s2; i < e2; i++) {
     const m = lines[i].match(/^\| `([a-z_]+)` \| (\d{3}) \| (.*) \|$/);
     if (m) rows.push({ code: m[1], status: Number(m[2]), from: m[3] });
+    else if (/^\| `/.test(lines[i]))
+      broken(`§15.2 区间里有一行以反引号开头却没被解出（第 ${i + 1} 行）：${lines[i].slice(0, 70)} ⇒ 合并族行/少列都会在这里静默漏`);
   }
-  const dashed = rows.filter((r) => r.from.trimStart().startsWith('—'));
-  const named = rows.filter((r) => !r.from.trimStart().startsWith('—'));
-  if (!rows.length) broken(`区间 ${from[0] + 1}..${end + 1} 解出 0 行表格（区间里有 ${end - from[0]} 行文本，却没一行匹配）`);
-  if (rows.length !== C2_BASELINE.rows || named.length !== C2_BASELINE.named || dashed.length !== C2_BASELINE.dashed)
-    broken(`§15.2 解出 ${rows.length} 行（${named.length} 带 §15.1 码名 / ${dashed.length} 带 —），`
-      + `基线是 ${C2_BASELINE.rows} = ${C2_BASELINE.named} + ${C2_BASELINE.dashed} ⇒ 表格形状变了，先核对新表再动判据`);
+  if (!rows.length) broken(`§15.2 区间 ${s2 + 1}..${e2 + 1} 解出 0 行表格（区间里有 ${e2 - s2} 行文本）⇒ 判据不可用`);
   if (new Set(rows.map((r) => r.code)).size !== rows.length) broken('§15.2 左列有重码 ⇒ 集合运算不可信');
-  return { rows, named, dashed, range: `${from[0] + 1}..${end + 1}` };
+  const shape = (r) => r.from.trimStart();
+  const dashed = rows.filter((r) => shape(r).startsWith('—'));
+  const named = rows.filter((r) => shape(r).startsWith('`'));
+  const odd = rows.filter((r) => !shape(r).startsWith('—') && !shape(r).startsWith('`'));
+  if (odd.length) broken(`§15.2 有 ${odd.length} 行『来自』两种形状都不像（${odd.map((r) => r.code).join(', ')}）`
+    + ' ⇒ "按形状豁免"这条判据本身失效了');
+  if (!dashed.length) broken('§15.2 解出 0 行带 — ⇒ HTTP 层专有码全消失，解析器静默空集');
+  if (named.length + dashed.length !== rows.length) broken(`分区不闭合：${named.length} + ${dashed.length} ≠ ${rows.length}`);
+  // 双向集合（契约② C8-1/C8-4 的形状；违反 = 契约自身不一致或我切错区间，两种都不许继续判 yaml）
+  const upper = named.map((r) => (shape(r).match(/^`([A-Z][A-Z0-9_]+)`/)?.[1]) ?? '?');
+  if (upper.includes('?')) broken('有行的『来自』以反引号开头却抽不出大写码名 ⇒ 我的正则跟不上表格措辞');
+  const notIn151 = [...new Set(upper)].filter((n) => !codes151.includes(n));
+  const notIn152 = codes151.filter((n) => !upper.includes(n));
+  if (notIn151.length || notIn152.length)
+    broken(`§15.1 ↔ §15.2『来自』双向不等：只在 15.2=[${notIn151}]；只在 15.1=[${notIn152}]`
+      + ' ⇒ 要么契约自己缺一条（新增码要同批改两表），要么我把区间切错；都不许拿这份表判 yaml');
+  return { rows, named, dashed, codes151, range: `${s2 + 1}..${e2 + 1}` };
 }
 
 /** Core 真发出来的 transport 码：现场扫 writeError 调用点，不抄 §15.2.1 正文那张表。
@@ -228,26 +256,45 @@ offsetParams.length ? bad('出现 offset 分页（§2 明令禁止）') : ok('�
 const S = api.components.schemas;
 // 契约② §15.2 三方对拍：**当场解析的契约表** ↔ yaml enum ↔ Core 真发出来的码。
 // 判据按 §15.2.1 的形状走（『来自』以 — 开头 = HTTP 层专有），不按名字写死 version_conflict。
-const c2 = parseHttpCodes();
-ok(`契约② §15.2 现场解析（第 ${c2.range} 行区间）= ${c2.rows.length} 行：${c2.named.length} 带 §15.1 码名 + ${c2.dashed.length} 带 —`);
-// 守门的自破坏探针（T-66④）：在**内存里**把契约改坏三种，守门必须每种都自己报"坏了"。
-// 不动 specs/ 那个文件 —— 它在别人的写范围里，中途被第三方读到或写到都会串味。
+const c2 = parseContract2();
+// 数字只**打印**（T-139：字面基线一合法扩列就红，久了训练人改数字；契约② §15.2.1 末尾同一条）
+ok(`契约② 现场解析：§15.2 第 ${c2.range} 行区间 = ${c2.rows.length} 行`
+  + `（${c2.named.length} 带 §15.1 码名 + ${c2.dashed.length} 带 —，两者之和 = 总数已判）；§15.1 码列 ${c2.codes151.length} 个`);
+/* 守门的自破坏探针（T-66④ + T-139）：**内存里**改文本，绝不落盘动 specs/（那是别人的写范围）。
+   两组都要跑：A 组"不自洽必须停"，B 组"合法内容变化必须放行"—— 只跑 A 组会养成一个一惊一乍的守门，
+   而 22:5x 那次红恰恰是 B 组的缺失造成的（行数写死 ⇒ 扩列即红）。 */
 try {
   const real = fs.readFileSync(CONTRACT2, 'utf8');
   probing = true;
-  for (const [name, tweak] of [
-    ['少一行（拿掉 validation_failed）', (t) => t.replace(/^\| `validation_failed` .*$/m, '')],
-    ['把 — 改成码名（"按形状豁免"失效）', (t) => t.replace('| `not_found` | 404 | —', '| `not_found` | 404 | `NOT_FOUND`')],
-    ['§15.2 标题被改名（区间锚不到）', (t) => t.replace(/^### 15\.2 .*$/m, '### 15.2x 改名了')],
-  ]) {
-    let caught = null;
+  const run = (tweak) => {
     try {
-      parseHttpCodes(tweak(real));
+      parseContract2(tweak(real));
+      return null;
     } catch (e) {
-      caught = e.message;
+      return e.message;
     }
-    caught ? ok(`守门自证：${name} → 当场拒判（"半张表"过不去）`)
-      : bad(`守门失效：${name} 竟被放行 ⇒ 那条 29=17+12 的守门是装饰品`);
+  };
+  for (const [name, tweak] of [
+    ['§15.2 标题被改名（区间锚不到）', (t) => t.replace(/^### 15\.2 .*$/m, '### 15.2x 改名了')],
+    ['『来自』写成散文（两种形状都不像）', (t) => t.replace('| `not_found` | 404 | —', '| `not_found` | 404 | 见说明')],
+    ['出现合并族行（长得像表格、会被静默丢掉）',
+      (t) => t.replace(/^\| `timeout` \| 504 \| .*$/m, '| `timeout` / `provider_error` | 504 | —（合并族） |')],
+    ['§15.1 那半张表整个没了（双向集合失去对照）', (t) => t.replace(/^### 15\.1 .*$/m, '### 15.1x 没了')],
+  ]) {
+    const caught = run(tweak);
+    caught ? ok(`守门自证 A：${name} → 当场拒判（不拿半张表判 yaml）`)
+      : bad(`守门失效 A：${name} 竟被放行 ⇒ 那道"不自洽即停"是装饰品`);
+  }
+  for (const [name, tweak] of [
+    // 合法扩列（22:4x 的 duplicate_project_path 就是这个形状）：放行，缺码由 enum 对拍去红
+    ['新收编一行 transport 码',
+      (t) => t.replace(/^\| `internal_error` \| 500 \| .*$/m,
+        (x) => `${x}\n| \`probe_unsupported\` | 501 | —（Core transport：探针不支持该能力） |`)],
+    ['删掉一行（内容变化不是解析器坏了）', (t) => t.replace(/^\| `idempotency_replay` \| 409 \| .*$/m, '')],
+  ]) {
+    const caught = run(tweak);
+    caught ? bad(`守门过敏 B：${name} 被判成"解析器坏了"（${caught.slice(0, 60)}）⇒ 合法扩列也会停，等于逼人改判据`)
+      : ok(`守门自证 B：${name} → 放行（判据交给集合对拍，不交给行数）`);
   }
 } finally {
   probing = false;

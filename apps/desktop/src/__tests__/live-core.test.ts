@@ -5,7 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createCoreClient, CoreError } from '@lucero/api-client/client';
-import { openEventStream, type WsFrame } from '@lucero/api-client/events';
+import { openEventStream, type EventEntry, type WsFrame } from '@lucero/api-client/events';
+import { CHAIN, data, stepDone } from '../stores/panel';
 
 const FILE = process.env.LUCERO_CORE_ENDPOINT_FILE ?? '';
 const live = !!FILE;
@@ -157,4 +158,97 @@ describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面', () => {
     s.close();
     console.log(`  换票建连：state=${state} 游标抬到 ${cursor}`);
   });
+});
+
+/* ── §4 第一格：POST /projects ───────────────────────────────────────────────
+   T-140 现场核过（不是转述）：`handler.go:120` 调 `registerProjectRoutes`，
+   `projects.go:79` 在同一个 path 上按方法分流 —— POST 已接、GET 仍明确 501。
+   所以这一格今天就能真跑；`:sync` 与 `probe` 那两格继续 skipped，不拿它凑绿。 */
+describe.skipIf(!live)('真 Core 联调 · §4 第一格（POST /projects，T-140）', () => {
+  const uniq = `t140-${Date.now()}`;
+  const pathOf = (leaf: string) => `D:/Project/Lucero/.scratch/frontend/proj-${uniq}/${leaf}`;
+  const post = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/v1/projects`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'x-lucero-principal': 'local-user',
+        'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  it('建项目 → 201，Project 的必填字段一个不少、created_at 是 Unix 毫秒', async () => {
+    const created = await core().createProject({ name: `p-${uniq}`, canonical_path: pathOf('a') });
+    expect(created.id).toBeTruthy();
+    expect(created.name).toBe(`p-${uniq}`);
+    expect(created.status).toBe('ACTIVE');          // 000001 的初始态，不是面板自己推断的
+    expect(created.version).toBe(1);
+    expect(typeof created.created_at).toBe('number');
+    expect(created.created_at).toBeGreaterThan(1_700_000_000_000);   // 毫秒，不是秒
+    console.log(`  项目已建：id=${created.id} status=${created.status} version=${created.version}`);
+  });
+
+  it('同一 Idempotency-Key 重放 → 原样回首次响应，且不产生第二个项目', async () => {
+    const key = `idem-${uniq}`;
+    const body = { name: `r-${uniq}`, canonical_path: pathOf('r') };
+    const a = await core().createProject(body, key);
+    const b = await core().createProject(body, key);
+    expect(b.id).toBe(a.id);                        // id 由 handler 生成、重试复用同一个
+    expect(b.created_at).toBe(a.created_at);
+    expect(b.version).toBe(1);                      // 重放不推进版本、不再落一行副作用
+  });
+
+  it('不带 Idempotency-Key → 403 idempotency_key_required（T-139 收编的那条码在线上真出现）', async () => {
+    const res = await post({ name: `k-${uniq}` }, { 'idempotency-key': '' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('idempotency_key_required');
+  });
+
+  it('canonicalize 后同路径撞车 → 409 duplicate_project_path（两种拼写算同一个）', async () => {
+    const p = pathOf('dup');
+    const first = await core().createProject({ name: `d1-${uniq}`, canonical_path: p });
+    // 换个写法：斜杠 + 大小写盘符 + 多余分隔符，canonicalize 之后必须与上一条同一路径
+    const same = `d:\\Project\\Lucero\\.scratch\\frontend\\proj-${uniq}\\dup\\`;
+    const res = await post({ name: `d2-${uniq}`, canonical_path: same }, { 'idempotency-key': `dup-${uniq}` });
+    expect(res.status).toBe(409);
+    const err = (await res.json()).error;
+    expect(err.code).toBe('duplicate_project_path');
+    expect(err.retryable).toBe(false);
+    console.log(`  冲突如实回 409：首个项目 ${first.id}，未被第二条请求改写`);
+  });
+
+  it('C28② 线上实证：同一 path 未接线的 GET 回 501 not_implemented，不是 405', async () => {
+    const res = await fetch(`${base}/api/v1/projects`, { headers: { authorization: `Bearer ${token}` } });
+    expect(res.status, '未接线 ≠ 方法不接受（回 405 会让客户去试同样没接线的方法）').toBe(501);
+    const err = (await res.json()).error;
+    expect(err.code).toBe('not_implemented');
+    expect(err.retryable).toBe(true);
+  });
+
+  it('垂直切片：先建连 → 建项目 → WS 真收到 project_created → 面板第一格点亮', async () => {
+    let state = '';
+    const got: EventEntry[] = [];
+    const s = openEventStream({
+      url: async (fromSeq) => {
+        const { ticket } = await core().wsTicket();
+        return `${wsBase}/ws/v1/events?ticket=${ticket}` + (fromSeq === null ? '' : `&from_seq=${fromSeq}`);
+      },
+      fromSeq: null,
+      onEvent: (e) => got.push(e),
+      onResync: () => {},
+      onState: (x) => { state = x; },
+    });
+    await new Promise((r) => setTimeout(r, 800));
+    expect(state).toBe('live');                     // 还没就绪就写，等于测了个空窗口
+    const created = await core().createProject({ name: `v-${uniq}`, canonical_path: pathOf('v') });
+    for (let i = 0; i < 40 && !got.some((e) => e.event_type === 'project_created'); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const ev = got.find((e) => e.event_type === 'project_created');
+    expect(ev, 'REST 写进去的东西必须能从事件面看见，否则面板只能猜').toBeDefined();
+    expect(ev!.aggregate_id).toBe(created.id);      // 事件说的是同一个聚合
+    // 面板第一格：只由"这个事件出现过"判定，不在 UI 里算状态机（硬约束 1）
+    data.seen.add(ev!.event_type);
+    expect(stepDone(CHAIN[0])).toBe(true);
+    s.close();
+    console.log(`  切片成立：seq=${ev!.seq} ${ev!.event_type} → 第一格 ok，面板无一处自造状态`);
+  }, 20_000);
 });

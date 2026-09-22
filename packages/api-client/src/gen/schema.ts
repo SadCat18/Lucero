@@ -774,9 +774,12 @@ export interface components {
          *     三对"同 HTTP 码、不同名字"是 §15.2.1 故意保留、不许合并：`unauthorized`/`auth_required`(401)、
          *     `not_found`/`session_not_found`(404)、`internal_error`/`internal`(500)；
          *     区别在**生产者**：客户端要能分清"这请求在 Core 里就没过"还是"过 Core 到了 Provider 才挂"。
+         *     **501 与 405 不许互换（C28② 裁定）**：路由存在、方法合法、但能力没接线 ⇒ 501 `not_implemented`；
+         *     方法本身不被这条路径接受 ⇒ 405 `method_not_allowed`。客户端据此决定的是"等实现"还是"换方法"，
+         *     把前者回成 405 等于让客户去试一条同样没接线的路径。
          * @enum {string}
          */
-        ErrorCode: "protocol_not_initialized" | "protocol_version_mismatch" | "capability_unavailable" | "write_entry_none" | "delivery_mode_unsupported" | "local_data_unavailable" | "session_not_found" | "auth_required" | "rate_limited" | "dangerous_flag_refused" | "cancelled" | "timeout" | "provider_error" | "internal" | "read_only" | "adapter_unresponsive" | "execution_state_unknown" | "version_conflict" | "validation_failed" | "unauthorized" | "origin_not_allowed" | "idempotency_key_required" | "not_found" | "method_not_allowed" | "idempotency_replay" | "idempotency_mismatch" | "illegal_transition" | "not_implemented" | "internal_error";
+        ErrorCode: "protocol_not_initialized" | "protocol_version_mismatch" | "capability_unavailable" | "write_entry_none" | "delivery_mode_unsupported" | "local_data_unavailable" | "session_not_found" | "auth_required" | "rate_limited" | "dangerous_flag_refused" | "cancelled" | "timeout" | "provider_error" | "internal" | "read_only" | "adapter_unresponsive" | "execution_state_unknown" | "version_conflict" | "validation_failed" | "unauthorized" | "origin_not_allowed" | "idempotency_key_required" | "not_found" | "method_not_allowed" | "idempotency_replay" | "idempotency_mismatch" | "illegal_transition" | "not_implemented" | "internal_error" | "duplicate_project_path";
         CursorPage: {
             /** @description T-80 / REQ-F-19 裁定：空串是"没有下一页"的唯一合法表示。分页出口只在取满一页且非空时才写 encodeCursor（其结果永不为空串），所以"空"与"有值"不可能撞。null 与"字段整个省略"都不许成为第二种表示 —— 同一件事两种写法会让生成客户端判两次。 */
             next_cursor: string;

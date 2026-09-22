@@ -39,17 +39,32 @@ var denied = map[string]bool{
 //     note pins probe to an injected Launcher, so importing the process layer buys
 //     nothing and reverses the direction internal/process's package comment depends on.
 var (
-	storeFiles          = map[string]bool{"probe_store_sqlite.go": true}
-	allowedStoreImports = map[string]bool{
+	storeFiles = map[string]bool{"probe_store_sqlite.go": true}
+
+	// storeAllowed is what the store file may reach for in production.
+	storeAllowed = map[string]bool{
 		"github.com/SadCat18/lucero/core/internal/platform/db":  true,
 		"github.com/SadCat18/lucero/core/internal/eventjournal": true,
-		// audit.Rules() is the only legal source of the redaction rule set (REQ-A1: the
-		// rules must be the ones audit exports, not a second hand-written list), and
-		// platform/db refuses every write until InitRedaction has run - so the store's
-		// test has to import it. Test files only; the store file itself stays without it.
+	}
+	// testOnlyAllowed is the extra layer a _test.go gets, and nothing else:
+	// platform/db fails closed until InitRedaction has been called with audit's own rule
+	// set (REQ-A1: the rules must be the ones audit exports, not a second hand-written
+	// list). That reason constrains test bootstrap, not the product - so the flat set
+	// this used to be is exactly the hole T-143 pointed at: the comment said "test files
+	// only" while the code let the store file import audit too.
+	testOnlyAllowed = map[string]bool{
 		"github.com/SadCat18/lucero/core/internal/audit": true,
 	}
 )
+
+// importAllowedFor is the two-layer decision, written as one function so the layering is
+// the thing under test rather than a comment about it.
+func importAllowedFor(file, path string) bool {
+	if strings.HasSuffix(file, "_test.go") {
+		return storeAllowed[path] || testOnlyAllowed[path]
+	}
+	return storeFiles[file] && storeAllowed[path]
+}
 
 // A non-stdlib import is one whose first path segment contains a dot.
 func TestOnlyStdlibImports(t *testing.T) {
@@ -78,8 +93,8 @@ func TestOnlyStdlibImports(t *testing.T) {
 				}
 				continue
 			}
-			if allowedStoreImports[path] && (storeFiles[e.Name()] || strings.HasSuffix(e.Name(), "_test.go")) {
-				continue // sanctioned by contract ③ §7.2; a test may build a real store
+			if importAllowedFor(e.Name(), path) {
+				continue // sanctioned by contract ③ §7.2; see importAllowedFor for the layers
 			}
 			found = append(found, e.Name()+": "+path)
 		}
