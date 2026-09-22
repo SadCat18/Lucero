@@ -3,143 +3,460 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-20T12:10+08:00
+LAST_UPDATED: 2026-09-21T13:42:31+08:00（四道闸门最后一次全量重跑 13:37:09 全绿；13:42:04 只单独重跑过
+cursor-shape 一份 = 6 passed。此后仅改本文件与 `.qoder/evidence/frontend/`、`.scratch/frontend/` 下的文本，
+源码零改动 —— 用 `find … -newermt "2026-09-21 13:37:09"` 反查为空，不是"我记得没动"）
 
 ## Objective
 
-把契约③ 投影成机器可读的 `specs/openapi/core-v1.yaml`，建立「yaml → TS 类型」的 codegen 链路，
-并搭出只能靠 REST/WS 渲染契约① §7 那条 11 步垂直链的 Vite + Vue 3 + TS 面板骨架；
-UNKNOWN 在任何分支下都渲染成「未知」，不得折成 0 / Offline / Failed。
+契约③ → `specs/openapi/core-v1.yaml` 的机器可读投影 + 「yaml → TS 类型」codegen 链路 +
+只能靠 REST/WS 渲染契约① §7 那条 11 步垂直链的 Vite + Vue3 + TS 观察面板；UNKNOWN 任何分支都显示「未知」。
 
 ## Completion criteria
 
-- [x] `cd /d/Project/Lucero/apps/desktop && npm.cmd run build` 无错无类型报错（12:08 重跑 exit 0）
-- [x] yaml 与 18:03 版 §3/§4 逐字对齐：36 path / 40 operation，validator 双向校验（缺一条报 FAIL、多一条也报 FAIL）
-- [x] TS 类型全部由 yaml 生成（本轮又抓出并修掉一处我自己手写的帧联合类型，见 Completed-9）
-- [x] 断言 17 条全绿 + 四次变异验证证明会咬人
-- [ ] 真浏览器跑完 §4 的 11 步链 — **blocked**（B-F1 正在解除：backend 交 health + ws-ticket 最小骨架后可跑）
-- [ ] Wave-3 补 PNG（主控决定，当前只交文本证据）
+- [x] `cd /d/Project/Lucero/apps/desktop && npm.cmd run build` 无类型错误（**12:52:25 最后一次重跑 ✓ built in 390ms**）
+- [x] yaml 与 18:03 版 §3/§4 + §2.1 + F-9/F-16/F-17 裁定一致（36 path / 41 operation，validator 双向判 + §4 交叉判）
+- [x] TS 类型全来自生成物（本轮又清掉一处手写帧联合类型）
+- [x] 断言 19 绿 + 变异验证累计 6 次全咬人（**补记 09-21T13:42：现为 25 passed | 10 skipped；本轮那次磁盘变异没咬人，
+  已还原并改用进程内变异 —— 见下文 T-96 段与 `t96-mutation.txt`，"累计全咬人"这句当时是对的、现在读要小心**）
+- [x] **真 Core REST 面联调 5/5 绿**（12:46:16，`live-core.txt`）+ 真浏览器被真 Core 驱动（`browser-live-core.txt`）
+- [x] WS 面正向证据 — **已解除**（原记 blocked 于 REQ-F-17）：09-21 **11:22** `live-t76.txt` 里
+  `Test Files 1 passed (1) / Tests 9 passed (9)`、**0 skip**，三条 WS 断言（hello_ack 抬游标 / 票单次使用被拒 / F-9 三径）都是正向帧证据。
+  默认无 Core 时整份 skip，skip 不计入通过。
+  **一处证据缺口，如实标**：T-80 轮台账写的是"加分页断言后 `Tests 10 passed (10)`（11:56:46）"，但那次**没有单独留 evidence 文件**
+  （`grep -rn "10 passed" .qoder/evidence/frontend/` → 零命中）。所以"10/10"目前只有台账可引、无原始输出可查；
+  下一次跑 live 时随链补一份 `live-t96.txt` 并在此回填路径 —— 现在这份证据文件里可查到的最强数字是 **9/9**。
+- [ ] §4 的 11 步链 —— **blocked**：除 health/ws-ticket 外全部 501 not_implemented（实测确认）
 
 ## Scope boundaries
 
-- In scope: 契约③ §7 的三行 —— `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`；本角色的 progress / evidence / `.scratch/frontend/**`
-- Out of scope: 契约其余文件与 `docs/**`、`core/**`、Tauri/Rust、五家真实软件、git 写操作、PATH/全局安装
+- In scope：§7 那三行 + 本角色 progress/evidence/.scratch
+- Out of scope：契约其余文件与 docs、`core/**`（本轮只读源码取证，未改一行）、Tauri/Rust、五家真实软件、git 写、PATH/全局
 
 ## Current checkpoint
 
-- Stage: T-26 八条回复全部落地（F-1/3/4/5/6/8/9/10/11）；联调侧已就绪，等 backend 的最小 core 骨架
+- Stage: T-30 四条裁定 + F-16/F-17 归因全部落地；REST 面真联调绿，WS 面等 backend 一行修复
 - Status: in_progress
-- Last verified action: 本机时间 **2026-09-20 12:08:08 +0800** 四道闸门一次性重跑全绿（validate 全部通过 / codegen 80.9ms / vitest 17 passed / build ✓ built in 630ms）；
-  12:0x 真浏览器 DOM 实测（`browser-batch7.txt`）确认短票换连失败诚实降级 + bootError 上屏。此后只改了本进度文件。
-- Next action: 等 backend 的 `GET /health` + `POST /ws-ticket` 一落地 → 设 `LUCERO_CORE_ORIGIN` 指到真实端口，
-  在真浏览器验证「换票 → hello_ack 抬游标 → 实时事件」，再按 §4 逐步推 11 步链（REST 半边仍会 501，届时如实记 blocked）
+- Last verified action: 本机时间 **2026-09-20 12:52:25 +0800** 四道闸门重跑全绿（validate 全部通过 / codegen 69.9ms /
+  vitest 19 passed + 8 skipped / build ✓），是在「F-16 变异 → 2 红 → 绝对路径回滚 → diff 干净」之后跑的；此后只改了本文件
+- Next action: 等 REQ-F-17 修好 → 跑 `LUCERO_CORE_ENDPOINT_FILE=… LUCERO_WS_READY=1 npx vitest run src/__tests__/live-core.test.ts`
+  取 WS 面正向证据（客户端 hello、票单次使用、hello_ack 抬游标三条已写好）
 - Verification: `cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
 
 ## Completed
 
-### 第一轮（至 17:34）
-`core-v1.yaml` 首版投影（§2 游标/幂等/If-Match/principal/错误体/Unix 毫秒/provider_raw；§5 四帧用 `x-websocket-frames`；
-契约① §6 → `EventType` 59 条；契约② §5/§7 → `DeliveryMode`、`QuotaResponse`）；`packages/api-client`
-（client / events / unknown 三件，13 个查询参数类型全取 `operations[...]`）；`apps/desktop` 面板骨架（8 组件 + store，
-无 pinia、无 UI 框架）；断言 + 变异验证；真浏览器（无 Core）实测 UNKNOWN 全分支。
+### 第一至三轮（17:34 / 17:56 / 12:10 三次报绿，细节见旧版历史）
+yaml 首版投影（§2/§3/§4/§5 + 契约① §6/§7 + 契约② §5/§7）；api-client（client/events/unknown）；面板骨架 8 组件 + store；
+§2.1 短票（每次重连换一张）；discover 改 adapter 侧；`packages/toolchain` 按裁定删除并入 desktop；
+F-1 send body 逐字（删我自造的 model_id、补 attachments）；F-8 三个读端点 + runChain 改用 `GET /tasks/{id}`；
+F-9 `hello_ack`；F-11 幂等豁免集合相等断言；F-3 bootError 诊断位；§4 交叉核对断言。
 
-### 第二轮（T-17，至 17:56）
-§2.1 短票落地（yaml `POST /api/v1/ws-ticket` + `WsTicket`；`openEventStream.url` 改可异步 → **每次重连换一张票**；
-换票失败按退避如实报 `reconnecting` 不谎报 live）；§3 discover 改 `POST /api/v1/adapters/{id}/sessions:discover` +
-`:manage`/`:sync`；`packages/toolchain` 按裁定删除并并入 `apps/desktop`；SCOPE 行改回 §7 原文。
+### 第四轮（T-30 + F-16/F-17，本轮）
+1. **§15.2 错误码闭集**：`ErrorCode` 从「枚举+pattern 兜底」改成**纯闭集 19 条** = §15.2 左列 15 条 + Core transport 自有 4 条
+   （`unauthorized/origin_not_allowed/method_not_allowed/not_implemented`，实测自 `api/http/handler.go` 的 writeError）。
+   顺带删掉我原先自造的 `illegal_transition`、`aggregate_not_found`（§15.2 里没有 → 不该存在）。
+   validator 五条断言：闭集无兜底、15 条全在、多出的必须属于 transport 四条、全小写蛇形、`error.code` 指向它。
+2. **§2.1/T-30 短票三条**：yaml 里 ws-ticket **免 Principal**（去掉该参数）+ 仍要求 Bearer + 成功码 **200（实测）**；
+   validator 加了「免 Principal 集合相等」+「200 在位」+「ws-ticket 不许吃 Idempotency-Key」三向断言；
+   client 加 `noPrincipal` 通道，只对这一条不发该头。
+3. **`Health` 词表**：`state` 闭集 `BOOTING/READY/STOPPING/STOPPED/UNKNOWN`（**无 DEGRADED**）+ `ready` 与 `state==READY` 的关系写明；
+   StatusHeader 改走 `statusText()`，真 Core 若在 boot 期漏 DEGRADED，面板也不会替它圆场。
+4. **F-16 归我**：`openEventStream` 在 `onopen` 里**先发 client hello**（无游标 → `{"type":"hello"}`；有游标 → 带 `from_seq`），
+   yaml 新增 `WsClientHello` + `x-websocket-frames.client_frames/order`，`known-gap` 显式记 F-17；
+   两条新断言钉住发送形态。`migration_version` 按实测改 integer|null。
+5. **REQ-F-17 的客户端防御**：`hello_ack.server_seq` 只在**大于**当前游标时才抬（源码里那句"低于游标就不抬"的判断我第一轮已经写对了，本轮补断言）。
+6. **live-core.test.ts（真联调面）**：`describe.skipIf(!live)` + WS 半边另加 `LUCERO_WS_READY` 锁 ——
+   没跑过就记 skipped，绝不记 passed。**实测 5/5 绿**：health 真值 / 无口令 401 `unauthorized` / 未实现端点 501 `not_implemented` retryable=true /
+   回环 origin 放行 + 非回环 403 `origin_not_allowed` / 两次换票得到两张不同票且 `expires_in=30`。票值全程掩码。
+7. **真浏览器 + 真 Core**：面板头部显示 `Core READY v0.1.0-dev / mig 3`（进程真值），`data.bootError=""`；
+   无口令时 `POST /ws-ticket` 被真 Core 拒（"缺少或错误的共享口令"），面板如实显示换票失败并退避，**没有假装连上**；
+   顺带暴露 **REQ-F-18**（见 Coordination）。我为不阻塞联调加了一条 dev 期入口 `?core_token=`（不落 storage、不进日志、源码里注明等裁定），
+   没有发明鉴权方案。
+8. **归因取证**（不是我猜的）：探针显示握手 101 成功（票被接受）→ 我方 hello 已发 → 服务端 4 秒零帧 → close 1006；
+   `grep -rn hello_ack core/api/websocket/*.go` **零命中** ⇒ F-16 的"不带游标回 hello_ack"与 F-17 的空 journal 分支都还没实现。
+   所以 WS 三条保持 skipped 而不是硬凑绿。
 
-### 第三轮（T-26 八条回复）
-1. **F-1**：§3 已补 send → 复核确认 yaml 的 `post /api/v1/executions/{id}/send` 与 §3/§4 一致；
-   并把 §3 的 body 逐字对齐：**去掉我原先自造的 `model_id`**，补 `attachments`（数组）。
-2. **F-4**：`error.code` 从 free string 改成 `ErrorCode` —— 已登记枚举
-   `[version_conflict, illegal_transition, aggregate_not_found, delivery_mode_unsupported]` + `pattern ^[a-z][a-z0-9_]*$`
-   两段式（枚举没写全前不把集合钉死，但命名必须是 HTTP 层小写蛇形）。validator 三条断言：两段式在位、
-   pattern 正确、枚举里不许混进大写蛇形（RPC 面的码）。
-3. **F-8**：补 `GET /api/v1/tasks/{id}`、`GET /api/v1/approvals/{id}`、`GET /api/v1/sessions?project=`；
-   client 加 `getTask`/`getApproval`，`runChain` 的 accept 前不再用「列表 + find」而是 `GET /tasks/{id}` 取最新 version。
-4. **F-9**：新增 `WsHelloAck{type,server_seq}` 帧并纳入 `WsFrame`；`events.ts` 处理：不带 from_seq 时首帧
-   `hello_ack` → **把游标抬到 server_seq**（不抬就会永远落在旧位置），带 from_seq 的 `hello` 只是回显、不动游标；
-   两者都不进时间线、不算事件。控制帧不回退游标（只前进）。`x-websocket-frames.cursor-default` 写明禁「缺省即全量重放」。
-5. **F-11**：反向断言升级为**豁免集相等**断言 —— yaml 里带豁免的端点集合必须与 §2 表逐字相等
-   （现在恰好只有 `post /api/v1/ws-ticket`；将来谁偷偷加豁免，这里直接红）。
-6. **F-3**：dev proxy 维持「只转发不注入凭据」（与 17:35 否掉的那件事不是一回事，已按新口径确认）；
-   补了诊断位：REST 首跳失败原因上屏（`data.bootError`），403 时直接提示「Origin 不在 LUCERO_DEV_ORIGIN 白名单内」。
-7. **F-5 / F-6 / F-10**：F-5 无需改动（面板本来就是 flush 批次粒度，不做假节奏流式）；F-6 把 `JsonMap` 说明改成裁定口径
-   （Core 边界解一次，UI 不再解第二遍）；F-10 不动（链判据归 `test`）。
-8. **validator 加了 §4 交叉核对**：把 §4「客户端调用」列的 REST 半边写成 `CHAIN_CALLS` 逐条断言在位
-   （9 条全 ok），这样「35/36 path 是否和 §3+§4 一致」是机器判的，不是我肉眼说对的。
-9. **自纠两处**：
-   - 我一开始在 `events.ts` 手写了 `WsFrame = WsHello | WsEventFrame | ...` 联合类型 —— 这是第二套接口定义，
-     违反硬约束 2，且正因为重写所以 hello_ack 进来时 TS 报 `Type '"hello_ack"' is not comparable`。改成取生成物 `S['WsFrame']`。
-     **这个错是 build 抓的，不是我抓的。**
-   - 我用 `String.prototype.replace` 插 ErrorCode 时，替换串里的 `$'` 被当成「把匹配之后的全文插到这里」，
-     于是 yaml 尾部被复制了 601 行（`Health:`/`TaskList:` 等都出现两份），并把同批另两处改动吞进了那份副本里。
-     已定位、按锚点删除重复段、把丢掉的 send/WsFrame 改动重新落地。以后脚本里替换串一律用函数形式 `() => text`。
-10. **工具教训**：本会话里 Edit/Write 的「updated code」回显与 `take_snapshot` 的 a11y 快照**多次是陈旧内容**
-    （快照一度显示旧握手文案，而同一时刻 DOM innerText 与页面内模块实时值都是新的）。
-    本轮起所有断言落地都靠 `grep` / `evaluate_script` 读真值复核；已写进 `browser-batch7.txt` 供 test 角色避坑。
+### 环境/流程事实（供其它角色复用）
+- 起 Core：`cd /d/Project/Lucero/core && D:/DevTools/go/bin/go.exe run ./cmd/core -data-dir ../.scratch/frontend/coredata -migrations migrations`
+- `core.endpoint` 实测是 **JSON** `{"host_port","token","version"}`，不是 key=value 行（我照 backend 文档写的解析器当场报错，已改）
+- `timeout` 到期是 SIGTERM（bash 报 exit 143），Core 的关停日志会走完；见 OBS-F-1 的残留观察
 
 ## Remaining
 
-- 等 backend 最小骨架 → 真浏览器联调（换票、hello_ack、实时事件、11 步链）
-- 等契约文本回写（见下面 4 条 lag）后，按 §6.3 三处同步核一遍
+- WS 面正向证据（等 F-17）；§4 的 11 步链（等业务端点脱掉 501）
+- REQ-F-14/17/18 与 LAG-1/LAG-2 的契约文本回写
 
 ## Blockers
 
-- **B-F1（正在解除）**：`core/api/**` 仍不存在。backend 将先交 `GET /health` + `POST /api/v1/ws-ticket`（其余 501）。
-  我的联调侧已备好：换票建连、`hello_ack` 抬游标、`resync_required` 回落 REST、501/404/非错误体一律记 blocked 不记 ok。
-  **在拿到真响应之前不主张任何联调结论。**
-- ~~B-F2~~ 已关：PNG 推 Wave-3。
+- **B-F1（半解除）**：REST 面已通（health + ws-ticket 真值；其余 501 实测确认）→ 11 步链仍跑不了。
+  解除条件：projects/adapters/sessions/tasks/executions/approvals 端点实现。
+- **B-F3（新）** WS 面控制帧：Core 不回 `hello_ack`（源码 grep 零命中 + 探针 4 秒零帧）。
+  我的 live 测试已写好，`LUCERO_WS_READY=1` 一开即验。解除条件 = backend 修 F-17。
+- ~~B-F2~~ PNG 推 Wave-3。
 
 ## Coordination
 
-已闭：F-2（短票）、F-7（discover 改形）、F-11（幂等豁免，反向断言 + 豁免集相等断言已钉）、F-5、F-6、F-8、F-9、F-10、F-1、F-3（口径已确认）。
+已闭：F-1、F-2、F-3（口径）、F-4、F-5、F-6、F-7、F-8、F-9、F-10、F-11、F-16（我的错，已修）。
 
-**契约文本滞后（我按裁定实现了，但文件里还没写；§6.3 要求三处同步，故列入）**：
+> **补记（2026-09-21T13:38:36+08:00，T-96 轮）**：下面 F-17 / F-18 两条是**当时的原始记录，已不是当前状态** ——
+> F-17 由 T-76 轮在自属实例上实测解除（A/B 对照，见 11:23 段）、F-18 由 T-53 轮交付；
+> F-19 / F-20 / F-21 / F-22 全部关闭（F-22 见本轮段）。原始行不删不改（T-43），别再拿它们当阻塞读。
+> 当前待裁项只剩 **REQ-F-14**（ErrorCode 四条传输层码收编进 §15.2）、**LAG-1**、**LAG-2**、**OBS-F-1**。
 
-- **LAG-1（F-8）**：§3 仍未写 `GET /api/v1/tasks/{id}`、`GET /api/v1/approvals/{id}`、`GET /api/v1/sessions?project=`
-  （消息里批了，文件里没有）。yaml 已按批准的补，validator 的 REQUIRED 清单含这三条。
-- **LAG-2（F-9）**：§5 仍只有 `hello`/`resync_required`/`ping`，没有 `hello_ack`，也没写「不带 from_seq = 只收此后新事件」
-  与「禁缺省全量重放」。yaml + 客户端已按裁定实现。契约① §2/§8 同样滞后。
-- **REQ-F-12（新，F-4 的边角）**：§3 的 send 行写「不支持时返回 `DELIVERY_MODE_UNSUPPORTED`」—— 大写蛇形是 RPC 面的形状，
-  与刚裁定的「HTTP 层小写蛇形」在这同一行里打架。我在 `ErrorCode` 里登记的是 `delivery_mode_unsupported`，
-  并把「枚举里不许出现大写形」写成断言。请主控把 §3 那一行的 HTTP 面拼写改掉，或说明 HTTP 层就是要透传 RPC 原码。
-- **REQ-F-13（新）**：§3 的 send body 有 `attachments?`，但 §3 没有任何上传/读取附件（`attachments`/`blobs` 表）的端点。
-  我按「附件 id 字符串数组」投影，面板 v0.1 不做附件 UI。若 Wave-3 要附件，需要先补端点。
-- 契约②「错误码集合」一节等主控补；补完我扩 `ErrorCode` 枚举并重生成。
+- **REQ-F-14（要裁）**：`ErrorCode` 闭集必须覆盖线上真会出现的码，故我在 §15.2 的 15 条之外并进了
+  `unauthorized / origin_not_allowed / method_not_allowed / not_implemented`（全部实测自 Core 的 writeError）。
+  请把它们按 version_conflict 那种"HTTP 层专有、不经 Adapter"的形态收编进 §15.2，或指出别的落点。
+- **REQ-F-17（等 backend）**：空 journal 时服务端不出任何控制帧；且 `api/websocket/` 里根本没有 `hello_ack` 写入点
+  （grep 零命中），即 F-16 的"不带游标 → hello_ack{server_seq}"也未实现。修好我这边一个 env flag 就出证据。
+- **REQ-F-18（要裁）**：F-3 定了"凭据由 client 自己走 Bearer/ticket、dev proxy 不代持"，但浏览器读不到 `core.endpoint`，
+  ⇒ 面板没有任何**正式**途径拿到 core-token 给 `/api/v1/*` 用（真 Core 已实测拒绝）。
+  需要一条正式口径（短时 REST 票？dev 期显式 `?core_token=`？桌面端注入？）。我暂时用后者解阻塞，并在源码注明是临时件。
+- **LAG-1**：§3 仍无 F-8 批准的两个详情读与 `?project=`（yaml 已按批准补，validator 钉着）。
+- **LAG-2**：§5 仍无 `hello_ack` 与"客户端先报游标"的表述（F-16 修正已下发但 §5 文本我看到的还是旧歧义句）；契约① §2/§8 同滞后。
+- **OBS-F-1（交 backend/主控，不属我所有权）**：`timeout 400 go run …` 到期发 SIGTERM（`exit status 143`）后，
+  数据目录里 `core.endpoint`（内容仍是本轮 `127.0.0.1:64487`，故非上一轮垃圾）与 `core.lock` **都还在**，
+  与"异常退出后不再残留"的说法不符。但 `timeout → go run → core.exe` 的信号转发在 Windows 上不等价于真 Ctrl-C，
+  **不能据此判它有问题**，需要 backend 自己用可观察的 SIGTERM/Ctrl-C 复测一次。我把命令与现象留在 `browser-live-core.txt`。
 
 ## Changed files
 
-第三轮：`specs/openapi/core-v1.yaml`（ws-ticket/hello_ack/ErrorCode/send body/F-8 三端点/cursor-default/JsonMap 口径）、
-`apps/desktop/scripts/validate-openapi.mjs`（§4 交叉核对 + 短票与幂等豁免断言 + 错误码断言）、
-`packages/api-client/src/{client.ts,events.ts}`、`packages/api-client/src/gen/schema.ts`（重生成）、
-`apps/desktop/src/{stores/panel.ts,components/StatusHeader.vue}`、`src/__tests__/chain.test.ts`。
-前两轮：见上文 Completed，以及 `packages/toolchain/**`（已删）。
-
-依赖无新增（仍是 apps/desktop 那一套：vue / vite / @vitejs/plugin-vue / typescript / vue-tsc / @types/node / vitest /
-@apidevtools/swagger-parser / openapi-typescript）。
+本轮：`specs/openapi/core-v1.yaml`（ErrorCode 闭集 / ws-ticket 免 Principal+200 / Health 词表+migration_version /
+WsClientHello / client_frames / order / known-gap）、`packages/api-client/src/{client.ts,events.ts}`、
+`packages/api-client/src/gen/schema.ts`（重生成）、`apps/desktop/scripts/validate-openapi.mjs`、
+`apps/desktop/src/{stores/panel.ts,components/StatusHeader.vue}`、`src/__tests__/{chain.test.ts,live-core.test.ts}`。
+依赖零新增。
 
 ## Verification evidence
 
-- `.qoder/evidence/frontend/gates-final.txt` —— **本机时间 2026-09-20 12:08:08 +0800** 的一次性重跑：
-  `npm run validate` → `全部通过`（36 path；§3 的 40 条逐一对上；无契约外端点；§4 九条 REST 半边全 ok；
-  幂等豁免集与 §2 表完全一致：`post /api/v1/ws-ticket`；WS 帧 hello/hello_ack/event/resync_required/ping 齐备；
-  from_seq 缺省语义钉死；error.code 两段式；SendMessageRequest 与 §3 逐字一致）；
-  `npm run codegen` → 80.9ms；`npx vitest run` → `Test Files 2 passed (2)` / `Tests 17 passed (17)`；
-  `npm run build` → `✓ built in 630ms`（vue-tsc 无错）
-- `.qoder/evidence/frontend/browser-batch7.txt` —— 真浏览器 DOM 实测：
-  `reconnecting | 握手前换票失败：Error: Internal Server Error（4000ms 后重试）`、`游标 seq=未知`、
-  `Core API 未连通（core/api/** 尚未落地） · 500 not_core_error_body`；页面内模块实时值 `data.bootError` 同步为证。
-  附「a11y 快照会返回陈旧文本，取证以 evaluate_script 为准」的坑位说明。
-- 变异验证累计四次，全部会咬人：`num()` 折 0 → 1 红；`statusText()` 折 UNAVAILABLE → 7 红；
-  换票失败谎报 `live` → 1 红；`hello_ack` 不抬游标 → 1 红（`expected null to be 1200`）。每次都绝对路径回滚 + `diff` 确认。
-- 环境：`node v24.19.0` / `npm 11.17.0`（`D:\DevTools\node-v24.19.0-win-x64`，未入 PATH）；`netstat` 确认 5173 无残留监听。
+- `gates-final.txt` —— **本机时间 2026-09-20 12:52:25 +0800**：validate `全部通过`、codegen 69.9ms、
+  vitest `2 passed | 1 skipped` / `19 passed | 8 skipped`、build `✓ built in 390ms`
+- `live-core.txt` —— 12:46:16 真 Core：**REST 5 passed / WS 3 skipped**，含 `两张票不同 ***(len 43) vs ***(len 43)、expires_in=30`、
+  探针归因（101 成功 → hello 已发 → 4008ms 零帧 → close 1006）
+- `browser-live-core.txt` —— 真浏览器渲染真值 `Core READY v0.1.0-dev / mig 3`、`bootError=""`、无口令时换票被拒的如实降级
+- 变异验证累计 6 次全部咬人：`num()` 折 0 → 1 红；`statusText()` 折 UNAVAILABLE → 7 红；换票失败谎报 live → 1 红；
+  `hello_ack` 不抬游标 → 1 红；**本轮：连上不发 client hello → 2 红**。每次均绝对路径回滚 + `diff` 确认后才重跑取绿
+- 进程清理：我启的 Core（timeout 自然到期）与 dev server（TaskStop）都已停，`netstat` 无 64487/5173 监听
+- 凭据纪律：core-token 与票值只出现在被 gitignore 的 `.scratch/frontend/coredata/core.endpoint`，**未写入任何 evidence/progress 文件**，
+  断言与日志一律 `***(len 43)` 掩码
 
-**未主张**：不含任何端到端联调结论。§4 的 11 步链在真实 Core 上跑通仍未验证（B-F1）。
+**未主张**：WS 面（含票复用被拒、hello_ack、resync 回落）仍无正向端到端证据；§4 的 11 步链未跑通。
 
 ## Recovery note
 
-- Interruption point: T-26 八条全部落地并四道闸门全绿；停在等 backend 最小 core 骨架与 4 条契约文本回写
-- First action after recovery: `cd /d/Project/Lucero/apps/desktop && npm run validate && npx vitest run && npm run build`
-  确认基线未被动过；若 backend 已交骨架 → 设 `LUCERO_CORE_ORIGIN`（只影响 dev proxy 目标）后真浏览器验
-  「换票 → hello_ack → 事件流」，并按 §4 推 11 步链，逐跳记 ok/blocked 进 `.qoder/evidence/frontend/`
+- Interruption point: 四道闸门 + live REST 全绿；停在等 REQ-F-17 修复与 §15.2/§5 文本回写
+- First action after recovery: `cd /d/Project/Lucero/apps/desktop && npm run validate && npx vitest run && npm run build` 确认基线没被动；
+  若 backend 修了 F-17 → 重起 Core（命令见上）→ `LUCERO_CORE_ENDPOINT_FILE=… LUCERO_WS_READY=1 npx vitest run src/__tests__/live-core.test.ts`
+  → 绿了再把面板 dev server 接上真端口做浏览器 11 步链
+
+## T-43 时间戳自审（本机 date 真值 2026-09-20 13:01:22 +0800）
+
+规则已接受并即刻生效：**写任何具体时刻之前先跑 `date`；没跑就写"未计时"**。
+按 mtime / 当场命令输出把本账本已写的时间戳分三类（**不重写历史值**，只作废其中不可信的那一类）：
+
+1. **`date` 真值，可信**：11:27:30、12:46:16（live REST 取证）、12:51:05、12:52:25（交付前重跑）、13:00:48、13:01:22。
+   对应证据文件里都有当场 `date` 行。
+2. **机器输出锚定，非 `date` 但可核**：17:08:02 / 17:09:51 / 17:10:17 / 17:15:45（vitest 自带的 `Start at`）、
+   17:53:30（PowerShell 给的进程 StartTime）、17:53:34（vite 日志行）。这些不是我估的，是命令自己吐的。
+3. **估写，作废**（当时未跑 `date`，只是照上面两类推算或凭手感）：**17:05、17:25、17:26、17:34、17:36、17:52、
+   17:54、17:56、12:05、12:10、12:47、12:50、12:54、12:56**，以及正文里所有"17:3x 报绿 / 12:1x 交付"这类行文时刻。
+   其中可被 mtime 事后核上的（如 17:52 的三份闸门输出、12:52 的 gates-final）**结论方向没错**，
+   但核不上的那些（17:25、17:34、12:10、12:47、12:54）**只能作废**，不再当证据用。
+
+**受影响的判断（我自己扫过的三处）**：
+- "报绿必须是最后一次重跑"这条纪律：**不依赖时钟**。它依赖的是事件顺序 —— 变异 → 回滚 → diff 干净 → 再跑 → 绿，
+  顺序由 tool 调用序列与 `gates-final.txt`（mtime 12:52）内部自记的 `date` 行背书。结论保留。
+- 我对 backend/巡检说过的"你的时间戳不可用于判定 ≥2 轮"这类话：**同样要靠 mtime 或当场命令，不能靠我的估写**。已按此改口。
+- B-F1/B-F3 的 blocked 判定：不依赖时间戳。本轮 13:00:48 当场复查
+  `grep -rn hello_ack core/api/websocket/*.go` → **仍零命中** ⇒ REQ-F-17 未修、B-F3 维持 blocked（当场命令已附）。
+
+**证据文件的一处自纠**：`browser-live-core.txt` 头部原写"12:47"是估写，已在文件内追加补注：
+真实写入时刻以 mtime = 12:50 为准，文件内的观察内容不受影响。
+
+## 收尾协议更新（写进本角色长期纪律）
+
+- 任何时刻值：先 `date`，否则写"未计时（本机未跑 date）"。
+- 需要"先后顺序"时，优先用可核物证（文件 mtime、命令自带的 Start at / 日志时间戳），不用我推算的钟点。
+- 否定性声明（"仍然没有"、"零命中"）必须附当场命令与当场输出 —— 本轮的 F-17 复查即按此格式。
+
+## T-47 /tmp 自审（本机 date 真值 2026-09-20 13:18:37 +0800）
+
+点名的那句：**否** —— 我从没在 `/tmp` 顶层放过 `r` 开头的 `.json`（当场命令 `ls -1 /tmp/r*.json | wc -l` → `0`）。
+
+但我在 `/tmp` 顶层放过别的东西，按新规矩同样不该：
+`unknown.bak`、`events.bak`、`ev2.bak`、`ev3.bak` —— 全是变异验证时的源文件回滚备份（`.bak`，不匹配 `r*.json`，
+所以 backend 那次通配删没碰到它们）。当场 `ls` 显示 09-20 那两个（ev2/ev3，11:57 与 12:52）还在，
+09-19 的两个（unknown/events）已不见 —— **丢了不要紧**：对应变异在当场就已经"回滚 + `diff` 确认干净"才算完成的，
+备份从来不是我的证据物，证据物是仓库里的源码现状与 `gates-final.txt`。
+
+顺带一条给主控的观察（同病，不是我该处理的）：`/tmp` 顶层此刻还有 `cx.bak / m1.bak / p0.bak / px.bak / sv.bak`，
+时间戳 13:07–13:11（我没在跑），**说明至少还有别的角色在往共享临时目录写同名风格的备份**。
+我不去动它们，也不删我自己那三个 —— 按"谁都不许碰 /tmp"的字面，我不再对该目录做任何操作，
+清理由用户或各角色自己在 `.scratch/` 侧负责。
+
+以后我的做法（写进收尾协议）：一次性产物与变异备份一律落 `D:\Project\Lucero\.scratch\frontend\`；
+删除只删自己建的具体文件名；永不对 `/tmp`、`%TEMP%`、`$env:TEMP` 做通配删除或"清理"。
+本轮唯一保留在 /tmp 的操作是只读的 `ls`（取证用）。
+
+## T-53 轮（凭据正式化 + 负向断言 + F-17 判定）· 本机 date 2026-09-20 15:08:16 +0800
+
+**REQ-F-18 关闭**：按裁定把凭据从面板彻底拿走 —— `createCoreClient()` 不再接受 token、`?core_token=` 入口删除、
+`CoreToken` 类型删掉，客户端只留 `extraHeaders`（供 node 侧联调与未来的 Tauri shell 用，`Bearer` 字面量因此不进产物）。
+dev 期注入正式落在 `vite.config.ts` 的 proxy `configure` 里（只挂 /api；WS 仍走 §2.1 短票，代理不代劳）。
+口令唯一来源 = 进程环境 `LUCERO_CORE_TOKEN`，不写 .env、不进 `import.meta.env`。
+
+**T-53④ 两条负向断言已建并进 build**：`npm run build` = `vue-tsc --noEmit && vite build && node scripts/check-no-secret.mjs`；
+带真值跑法 `LUCERO_CORE_TOKEN=… npm run check:no-secret` → 产物里扫不到 Bearer / core_token / LUCERO_CORE_TOKEN / 口令真值。
+脚本注释写明为什么**不**扫 `x-lucero-principal`（§1.4 要浏览器自己带，进产物是对的）。
+
+**T-53⑤ 口径核对**：我全部文件里 grep `0600\|仅本人可读\|受文件权限` → 零命中，无需撤稿；
+已把 yaml 的 bearerAuth 说明改成"同用户边界内的门帘，不是隔离机制"，并在证据第 5 节写清凭据去向。
+
+**REQ-F-17 已修（实测，带归因限制）**：A/B 对照 —— 不发 client hello → 4 秒零帧；发 → `{"type":"hello_ack","server_seq":0}`；
+live 测试 8/8（含票单次使用、游标抬升、events.ts 实走）。**但那台 Core 不是我起的**（我 spawn 的那台撞锁退出），
+所以我把"归属只到当时的构建"写进证据第 4 节，并放弃用他人实例宣称我自己的复现（第 6 节）。
+其余 9 个业务端点仍 501 not_implemented ⇒ §4 的 11 步链依旧跑不了，B-F1 维持。
+
+**当前唯一动作**（覆盖上文 Recovery note 的）：等一次干净窗口重跑 `node .scratch/frontend/live-driver2.mjs > out.txt`
+拿到"我自己实例"的 8/8；在那之前 WS 半边按"他人实例已实测通过 + 自属复现未取得"记。
+
+**待主控处置的两条**：① 我遗留的 core.exe（数据目录 coredata-self，曾 54615）需要认领后清掉，我不猜 PID；
+② OBS-F-1 已升级为可复现故障（残留锁挡启动 + 锁文件被持有删不掉），建议 backend 给锁加存活判定。
+
+## T-66 收尾协议补丁：变异验证的备份-回滚钉成硬规矩（本机 date 2026-09-20T16:08:31+08:00；本轮不改代码）
+
+**先认账**：我在本会话确实有 **两次**（不是一次）回滚用相对路径失败 —— 一次在 `apps/desktop` 下写
+`../packages/.../unknown.ts`、一次写 `../packages/.../events.ts`，`cp` 静默失败过。两次我随后都改用绝对路径重做并 `diff` 确认，
+但**当时的"reverted clean"是在补救之后才成立的，规则上我应该第一次就带绝对路径**。这条我收下。
+
+**顺带把两处事实纠正在账本里（不是为了甩锅，是账目要准）**：
+1. 我 13:18 自报的是"往 `/tmp` 顶层写了 4 个 `.bak`"（写侧的卫生问题），**不等于**"变异版留在盘上"（读侧的污染）。
+   后者是另一件事，需要另一份证据回答，我下面当场查了。
+2. `/tmp` 里那 4 个 `.bak` 与我的变异版是否残留无关 —— 备份丢了只会让我少一个回滚手段，不会往仓库里放坏代码。
+
+**当场证据（三条，命令与输出都贴）**：
+- 决定性标记搜索（我历次变异的注释里都带"变异"二字）：
+  `grep -rn "变异" --include=*.ts --include=*.vue --include=*.mjs --include=*.yaml apps packages specs` → **0 命中**
+- 逐处回真身，三处变异各应存在 1 次：`握手前换票失败` = 1、`ws?.send(lastSeq === null` = 1、`f.server_seq > lastSeq` = 1 ✓
+  变异特征 `return `0${unit}`` = 0、`return 'UNAVAILABLE';` = 0 ✓
+  （注：`o.onState('live');` 计数为 3 是**正常代码**里 hello/hello_ack/ping 三个分支各一处，不是残留 —— 这种"合法也命中"的串不能当判据，
+  要挑只有变异版才有的串。这一点算我给其它角色的一条附带经验。）
+- 与库内版本比对：`git status --short packages/api-client/src apps/desktop/src` → **0 条**；
+  `git diff --stat HEAD -- packages/api-client/src apps/desktop/src` → 空（只有 `specs/openapi/core-v1.yaml` 1 行未提交，是我 T-53 的 known-gap 改写）
+  ⇒ **结论：盘上没有我的变异版残留**，这一条现在是证据而不是自述。
+
+**写进我的长期协议（照 T-66 三条 + ④）**：
+① 变异备份只落 `D:\Project\Lucero\.scratch\frontend\<具名>.bak`，一律绝对路径，`/tmp` 一个字节都不再写；
+② 回滚后必须证明变异版不在盘上 —— 优先 `git diff --stat HEAD -- <被变异文件>` 为空，或 grep 一个"只有变异版才有"的串贴 0 命中；
+   只报 `cp` 成功或 `diff` 两个临时文件相等都不算（那只能证明备份与盘上一致，不能证明盘上不是被改坏的那版）；
+③ 拿不到这条证据就不许写"变异已还原"，改写成"未验证还原"；
+④ 变异必须改变"是否走到被验证的那段代码" —— 藏进早退后面的变异等于没变异。
+   自查我这五次：`num` 折 0 / `statusText` 折 UNAVAILABLE / 换票失败谎报 live / `hello_ack` 不抬游标 / onopen 不发 client hello，
+   五次都产生了**断言级**的失败信息（如 `expected null to be 1200`、`expected 90 to be 7`、`2 failed`），
+   不是"测试没跑"或 0 test —— 这一条我判定自己合格，但把判据写下来供别人复核。
+
+## T-72 轮（无任务行；用了新证形，并补上自属复现）· 本机 date 2026-09-20T16:20:00+08:00
+
+**证形采纳**：`git diff --stat HEAD -- apps/desktop specs/openapi packages/api-client`（基线取当轮 `git log -1 --format=%h` = `cd46e42`，不写死哈希）
+→ 本轮我只动了 2 个文件：`specs/openapi/core-v1.yaml`（1 行）+ 重生成的 `gen/schema.ts`（1 行）。其余与库内逐字节相同。
+
+### 1. 自属复现到手（补上 T-53 欠的那半份归属）
+根因是我上轮用 `go run`：杀父留子。改成 **先 `go build -o .scratch/frontend/core-t72.exe` 再直接跑二进制**，
+于是 PID 是我自己的、停得掉、停完还能证：`Get-Process -Id 37868 → False`、`-Id 36592 → False`（两轮实例都已停，无孤儿、无残留锁）。
+自属实例（127.0.0.1:60627 / 63201）结果：live 测试 **8/8 绿**，含 WS 三条；A/B 对照
+`A 不发 client hello → []`、`B 发 client hello → {"server_seq":1,"type":"hello_ack"}` ⇒ **REQ-F-17 判定不再依赖别人的实例**。
+
+### 2. backend 已落地 `POST /api/v1/tasks`（test 的 U13-6 可以转硬）
+    POST /tasks（带 Idempotency-Key）→ 201 {id:"01a0bde3-…", status:"CREATED", version:1, requested_by:"local-user", …}
+    同键重放                      → 201 同一 id、同一 created_at ⇒ §2「返回首次的响应、不重放副作用」实测成立
+    GET  /tasks                   → 200 {"items":[…], "next_cursor":""}
+    GET  /projects /quota /sessions → 仍 501 not_implemented ⇒ §4 的 11 步链依旧跑不通，B-F1 维持
+§6.1 对账（handler 实际字段 vs 我 yaml 的 Task）：必填项零缺失、无"handler 有而 yaml 没有"的字段；
+`project_id/description/metadata/…` 等可选项在值为空时不出现 —— 属正常 omitempty，不构成漂移。
+
+### 3. REQ-F-19 从"无法复现的观察"升为"已复现"，并撤掉我 yaml 里的越权断言
+`next_cursor` 实测是**空串**（自属实例两次一致）。我原先在 yaml 写"无更多数据时为 null，不是空字符串"——
+那是我自己的投影而非契约原文（§2 只写 `{items, next_cursor}`），现已改成"两种都可表示没有下一页，正式口径等裁定"，
+不再拿我的偏好当判据。
+
+### 4. 本轮我自己的两个错（都记下来）
+- 用 node 改 yaml 时把 JS 语句结尾的 `;` 一起写进了单引号标量 → `validate` 与 `codegen` 同时炸（799 行）。
+  教训：脚本改文件后**必须立刻跑一次机器校验**，别把"改完就是绿的"当默认。这次就是 validate 替我抓到的。
+- 上一轮 `go run` 留孤儿 = 我这轮差点又造一个删不掉的锁；换成"编译后跑二进制"才闭环。
+  与 T-66 同源：**我启的东西必须可证明地停掉**（附 PID + Get-Process 的 False）。
+
+### 5. 闸门（本机 date 2026-09-20 16:18:57 +0800，此后未改代码）
+`validate` 全部通过 / `codegen` 稳定 / `vitest 19 passed + 8 skipped` / `build + check:no-secret` 全部通过。
+注：16:18:13 那次 validate 因上面第 4 条的分号而失败，修好后 16:18:57 重跑为绿 —— 报的是后者。
+
+## T-76 轮（收口三件）· 本机 date 2026-09-21T11:23:16+08:00
+
+**先纠一条我自己的陈旧**：上轮 Next action 写的是"等 REQ-F-17 修好"，而 T-49 早已把它派给 backend、
+且我 09-20 16:14 就在自属实例上实测到过 `hello_ack` —— 条件当时已不成立，我没把账本推进，是我的陈旧不是等待。
+
+① **三条 WS 断言已转正向证据（0 skip）**：`live-core.test.ts` 现 9 条全绿，对象是我自己起的 Core
+（先 `go build -o .scratch/frontend/core-t72.exe` 再跑二进制，PID 归我，`Get-Process alive=False` + 数据目录删除为证）。
+默认无 Core 时该文件整份 skipped → 报的是 `19 passed | 9 skipped`（skip 不计过），带 Core 那次报 `9 passed (9)`。
+② **yaml `known-gap` 已从"未修"改成"已解除 + 时刻 + 三条路径实测"**，并写明旧声明作废（T-76②：留着已闭的 gap 会被下一个人当现状读）。
+③ **F-9 两条语义服务端与我的断言一致**（journal 非空实测）：不带游标 → `hello_ack{server_seq=头}`；
+hello 带 `from_seq=1` → 首帧 `hello{from_seq:1}` 回显 + 只补发 `seq>1`（实测 `task_created#2`）；
+游标超头 → 零事件不回灌。`hello` 不动游标那条另在 chain.test.ts 用假帧钉住。
+
+**新发现 REQ-F-20（要主控定文档口径，非阻塞我）**：`?from_seq=` 查询参数现在是惰性的 ——
+只给 query、hello 不带游标 → 首帧 `hello_ack` 且不补发；游标放进 hello 帧才起作用。
+风险是契约① §8 与契约③ §3/§5 原文写的恰是 `/ws/v1/events?from_seq=N`，照文档接线的第三方会**静默**只拿到此后事件、以为补发了历史。
+我的面板两个都发所以行为正确；请统一口径：要么让 query 生效，要么在 §5 写明"起点只认 hello 帧"。
+
+**REQ-F-18 已交付**（T-53 那轮，主控侧可能没收到：投递被熔断截过）：面板零持有口令、
+dev 注入正式化到 `vite.config.ts` 的 proxy `configure`（只 /api；/ws 不注入仍走票）、
+`check:no-secret` 焊进 build。可复核形状见 evidence `live-t76.txt` 第 5 节。
+
+**证形（T-72 默认）**：基线 `$(git log -1 --format=%h)` = e87293f，
+`git diff --stat HEAD -- apps packages specs/openapi` → 3 个文件：
+`live-core.test.ts`(+35/-1) / 重生成 `gen/schema.ts`(1 行) / `core-v1.yaml`(1 行)。
+
+**本轮我自己的两处失手（已修）**：
+- 第一版 F-9 断言按"带 from_seq 必回 hello"写死，实测在"只给 query"形态下回的是 `hello_ack` → 错在我的假设，已按三条路径重写；
+- 重写后首跑是 `Test timed out in 5000ms`（3 次连接 × 2.5s 窗口 > vitest 默认 5s），属预算不是行为；改窗口 900ms + 显式 20s 后 9/9。
+  报的绿是改后那次。
+
+## 当前 checkpoint（覆盖此前所有同名段）
+- Stage：WS 面收口完成；面板侧无待办，等的是业务端点与两条文档裁定
+- Status：in_progress
+- Last verified action：2026-09-21T11:23:16+08:00 前后两轮 —— `live 9/9`（自属实例）与四道闸门 `11:20:48`（validate 全部通过 / codegen / vitest 19 passed+9 skipped / build+no-secret 全通过）
+- Next action：等 backend 让 `POST /api/v1/projects` 与 `POST /api/v1/adapters/{key}/probe` 脱掉 501 ——
+  一到位就用面板「驱动整条链」跑 §4 的 11 步，逐跳 ok/blocked 写进 `.qoder/evidence/frontend/`；
+  期间不主动改契约相关任何文件（REQ-F-19、REQ-F-20 等主控裁定后我再动 yaml）
+- Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+
+## T-80 轮（两条裁定投影 + 一条动作补进协议）· 本机 date 2026-09-21T11:58:23+08:00
+
+**先接受那条批评并补上机制**："观察到阻塞条件消失却没推进账本"确实是缺动作，不是态度问题。
+补进收尾协议：**任何时候当场观察到某个 blocked 的前提已经不成立，当轮就要 (a) 改 Next action 一行、(b) 附 grep/命令证据、(c) 在 progress 里把旧阻塞标"已解除 + 证据位置"**；
+不等主控敲门，也不把"我测到了"当成"账本知道了"。F-17 那次就是我自己跑出来了却没改口。
+
+### REQ-F-20 已投影（实现没错，是我读到的文档在要求一个实现从未承诺的语义）
+契约③ §5 新口径落进 yaml 的 `x-websocket-frames`：`order`（游标唯一权威 = 客户端 hello 帧；`?from_seq=` 只在"根本没收到 hello"的 HelloTimeout 路径回落）、
+`cursor-authority`（省略 from_seq = 明确声明"只要此后新事件"，省略 ≠ 0，也 ≠ 沿用 URL 值）、
+`cursor-default`（三条路径的各自首帧）、`criteria`（§5 判据 ①②③ 随投影一起落地，提醒"两侧都要断"，落表归 `core/test`）。
+我的面板两处都发所以行为一直对；改的是口径，不是我。validator 加了两条断言钉住这些字段存在且措辞对得上（旧那条只认"禁止/全量重放"的断言我按新落点改了，没去迁就旧词）。
+
+### REQ-F-19 已投影并**在真响应上验了**（不只是我 yaml 里写写）
+`CursorPage.next_cursor` 收紧为 `type: string` + required，注释写明"空串是唯一合法空表示，null 与字段省略都不合法（同一件事两种写法会让生成客户端判两次）"。
+另加一条 live 断言 `T-80/REQ-F-19`：对 `GET /tasks?limit=5` 要求 `typeof next_cursor === 'string'` 且值就是 `''` ⇒ **线上真值与收紧后的投影一致**。
+两点如实记录：① `openapi-typescript` 把 allOf 合成后的 `next_cursor` 仍生成为可选（`next_cursor?: string`），是 codegen 的宽松，不是契约松动；
+② 我没顺手把 `SyncResult.next_cursor` 一起收紧（裁定只覆盖 §2 的分页出口），留 **REQ-F-21** 问一句"同步游标是否同样空串唯一"，validator 里有一条断言防止我哪天擅自收紧。
+
+### 闸门与证据形状（基线 `c193894`）
+- 四道闸门（本机 date 2026-09-21 11:57:13 +0800）：`validate` 全部通过 / `codegen` 稳定 / `vitest 19 passed | 10 skipped`（无 Core 时 live 整份 skip，skip 不计过）/ `build + check:no-secret` 全部通过
+- live（自属 Core，11:56:46 起）：**`Tests 10 passed (10)`、0 skip**；实例收尾 `PID alive=False` + 数据目录已删
+- `git diff --stat HEAD -- apps packages specs/openapi` → 4 个文件：`validate-openapi.mjs`、`live-core.test.ts`、`gen/schema.ts`、`core-v1.yaml`
+- 本轮我自己的一个错：第一版分页断言把 `listProjects` 也放进去，而 `/projects` 在 09-21 仍 501 —— 会假红。已改成只用已实现端点，并把这句理由留在测试注释里。
+
+## T-89 轮（REQ-F-21 收口）· 本机 date 2026-09-21T12:39:45+08:00
+
+**同步游标 ≠ 分页游标**这条我照四条落进 yaml（`SyncResult` + `Session.sync_cursor`）：`next_cursor` 保持 required + 允许 null +
+`minLength: 1`，schema 描述里逐条写①回显当前位置②"不知道"归 sync_state/state_confidence③null=库里 NULL=从未同步④只许"非空串|null"两种；
+并显式写"与 §2 分页口径相反、照抄会造出'从头开始'的假信号 = §5 禁止的缺省全量重放"，防下一个读的人误抄。
+
+**生成物第一次把两个域分开**：`gen/schema.ts` 里分页是 `next_cursor: string`（776 行）、同步是 `next_cursor: string | null`（967 行）——
+"同一件事两种写法"在客户端侧消失了。
+
+**validator 从 1 条扩到 7 组断言**（④-a 必填 / ③ 允许 null / ④-b minLength 判空串非法 / ② 依据写进 schema / 两个游标不得同形 / 同域收口 / 反向防我抄错），
+并按 T-66 做过变异验证：删掉 `SyncResult` 的 `minLength: 1` → 当场 `FAIL ④-b 缺 minLength:1 → 空串仍合法 = §5 禁止的缺省全量重放入口`；
+回滚用绝对路径 + `diff` 证明一致（`minLength: 1` 计数回到 2），再重跑取绿。断言落点用行号结构定位，不再手抄中文锚点
+（第一次尝试就因为我把结尾锚点记成 `// F-6：*_json`（实为 `// F-6 / F-1 / F-8`）而空跑一次）。
+
+**新留一条 REQ-F-22（问一句，不猜）**：`sessions.sync_cursor` 在**响应里是否必须出现**（`required`）？
+裁定④说"省略"是第三种非法形状，但我现在无法实测 —— `GET /sessions` 与 `POST /sessions/{id}:sync` 在 12:38 仍 501，拿不到真响应。
+所以我只收了 `minLength`、**没有**擅自加 required；等 sync 端点落地后当场看一眼再定。
+
+**证形（基线当轮 `git log -1 --format=%h`）**：`git diff --stat HEAD -- apps packages specs/openapi` → 4 个文件
+（`validate-openapi.mjs` +21/-3、`live-core.test.ts`、`gen/schema.ts`、`core-v1.yaml`）。
+闸门（本机 date **2026-09-21 12:38:06 +0800**）：`validate` 全部通过 / `codegen` / `vitest 19 passed | 10 skipped` /
+`build + check:no-secret` 全通过。live 那 10 条本轮未重跑（改动只在 yaml 形状与校验脚本，不触碰任何线上行为；
+下一次接 `/sessions:sync` 时随链一起重跑）。
+
+## 当前 checkpoint（覆盖此前所有同名段）
+- Stage：REQ-F-19 / F-20 / F-21 三条游标口径全部落 yaml 且各有断言；面板无待办
+- Status：in_progress
+- Last verified action：12:38:06 四道闸门全绿 + ④-b 变异验证（先红后回滚一致）
+- Next action：等 backend 让 `POST /projects`、`adapters/{key}/probe`、`POST /sessions/{id}:sync` 脱 501 ——
+  ① 到位即用面板「驱动整条链」跑 §4 的 11 步真链，逐跳 ok/blocked 入 `.qoder/evidence/frontend/`；
+  ② 同时用 sync 的真响应当场定 REQ-F-22（sync_cursor 是否 required），不凭猜改
+- Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+
+## T-96 轮（REQ-F-22 yaml 半边收口）· 本机 date 2026-09-21T13:38:36+08:00
+
+主控当场量出的不对称照单收下：`SyncResult` 三条齐全、`Session.sync_cursor` 缺 `required`（`core-v1.yaml:968`）。
+裁定"两侧对称 —— required + 可空 + 字符串侧 minLength 1"，并明确**不必等那三个 501**：这是 schema 形状，不依赖端点能跑。
+这句话本身是我的教训——我上一轮把 REQ-F-22 挂在"等真响应"上，把"形状该由谁定"和"值长什么样"混成一件事了。
+
+### 落点
+1. **yaml**：`Session.required` 补 `sync_cursor`（现在是 `[id, adapter_instance_id, managed, sync_state, state_confidence, sync_cursor]`），
+   描述换成 YAML block scalar，把 T-96 口径写死在 schema 里："缺键（省略）与空串都是非法的第三种『没有』；null 只表示库里 NULL=从未同步。REQ-F-22 关闭。"
+   （block scalar 而不是单引号串 —— 上一轮我在单引号标量里塞进 `;` 炸过一次，这次避开了引号形态。）
+2. **codegen 前后差**（`git diff` 原样，`gen/schema.ts:928`）：
+   - 前：`sync_cursor?: string | null;`
+   - 后：`sync_cursor: string | null;`
+   生成物里"可选"消失 ⇒ 客户端不可能再拿 `undefined` 当"没有游标"传给下游。
+3. **validator 加 2 条结构断言**（`validate-openapi.mjs`）：`Session.sync_cursor` 必须在 `required` 里；其形状必须是"可空 + minLength 1"（与分页口径相反）。跑出来两条都 ok。
+
+### 新的断言层：把判据交给 schema，不交给我的记忆
+上一轮的"缺键/空串非法"只写在 validator 里 —— 那验的是**我声明了什么**，不是**这份声明会拒绝什么**。
+新增 `apps/desktop/src/__tests__/cursor-shape.test.ts`（6 条）做**实例级**校验：`SwaggerParser.dereference` + `ajv.compile` 直接把载荷喂给 schema。
+
+- 合法：`sync_cursor: "20"` 过、`null` 过
+- **缺键必须判红**（T-96 要的那条）：省略 `sync_cursor` → `false`
+- **空串在同步侧必须判红**：`Session.sync_cursor: ""` → `false`，`SyncResult.next_cursor: ""` → `false`
+- `SyncResult` 同样不许缺键；`UNKNOWN` + `null` 合法（"不知道"归 sync_state，不是归游标）
+- **分页侧反过来**：`TaskList` 的 `next_cursor: ""` → `true`、`null` → `false`、缺键 → `false` —— 两域语义相反，测试钉住不许同形
+
+### 变异验证：先撞了"磁盘变异不咬"，再改成进程内（T-66④）
+本轮**确实做过一次磁盘变异**：把 `Session.sync_cursor` 的 `minLength: 1` 从 yaml 里删掉，想验"空串必须判红"到底是谁在拦。
+结果 5 条形状测试**仍然全绿** —— 变异没咬，说明那些断言验的是别的东西（validator 读的是我写的字符串，不是编译后的 schema）。
+备份按 T-66 落在绝对路径 `.scratch/frontend/yA.bak`，回滚后用 `diff` 证明一致：
+`diff specs/openapi/core-v1.yaml .scratch/frontend/yA.bak` → **0 差异**（三者字节同为 67635，`grep -c 'minLength: 1'` 回到 2）。
+命令与输出留在 `.qoder/evidence/frontend/t96-mutation.txt`。**"变异已还原"这句话现在是有 diff 撑的，不是我记得。**
+
+因此判别力改在**进程内**自证：`degraded()` 用 `structuredClone` 降级 schema 副本 —— 删掉 `minLength` 后 `""` **必须被接受**、
+把 `sync_cursor` 从 `required` 摘掉后缺键载荷**必须被接受**；同一测试紧跟着断言真 schema 判它 `false`。
+这样"必须判红"不可能在验别的东西，也不留任何磁盘痕迹。
+
+### 依赖：`ajv ^8.20.0` 从"传递依赖"转为"显式声明"
+它是 `openapi-typescript` / `swagger-parser` 早已带进来的 `8.20.0`（实测 `node_modules/ajv/package.json` = 8.20.0），
+我只是把它写进 `apps/desktop/package.json` 的 devDependencies —— 因为我的测试**直接 import 它**，靠别人树里的副本活着不算数。
+`package-lock.json` 差 1 行（只加声明），没有新增包、没有联网解析新树。
+
+### 本轮我自己的两个错（记下来，别再来一次）
+1. 收紧 `required` 之后 **vue-tsc 当场红 4 条**：3 条是 `cursor-shape.test.ts` 的类型（把 dereference 结果当 `Document` 用、拿 `object` 喂 `compile`）→
+   改成显式 `type Json = Record<string, any>` + 一处 cast；1 条是 `unknown.test.ts` 的 `session()` 夹具少了新必填的 `sync_cursor` →
+   补 `sync_cursor: '20'`。**必填收紧会打到所有手搓夹具的地方，这是"生成物变严"的正确信号**，不是测试的错。
+2. 第一次跑闸门整份 `exit=1`：报 `'node' 不是内部或外部命令`。原因是我在 `npm.cmd` 命令里没把 node 目录放进**该命令的** `PATH`。
+   修法是命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`（进程内、一次性），**没有**动系统 PATH（红线）。
+
+### 证形（基线 `git log -1 --format=%h` = `46325a4`）
+- `git status --porcelain -- apps packages specs/openapi` → 7 个 `M` + **1 个 `??`（`cursor-shape.test.ts` 是新文件，`git diff --stat` 看不到它）**
+- `git diff --stat HEAD -- apps packages specs/openapi` → 7 files, +111/-9：
+  `core-v1.yaml` +4/-2、`gen/schema.ts` +16/-3、`validate-openapi.mjs` +43/-2、`live-core.test.ts` +43/-1、
+  `unknown.test.ts` +3/-1、`package.json` +1、`package-lock.json` +1
+  （注：这是**相对基线的累计差**，含 T-80/T-89 尚未提交的改动，不等于本轮增量）
+- 四道闸门（最后一次重跑，本机 date **2026-09-21 13:37:09 +0800**，全在 `.qoder/evidence/frontend/gates-final.txt`）：
+  ① `validate` 全部通过（含 T-96 两条 + T-89 七组 + 游标两域）exit=0；
+  ② `codegen` 稳定输出 `87.9ms`，生成物即上面那条非可选形状；
+  ③ `vitest run` → **`Tests 25 passed | 10 skipped (35)`**，`cursor-shape.test.ts 6 passed`，skip 的是 `live-core.test.ts` 整份（无 Core，skip 不计过）；
+  ④ `build`（`vue-tsc --noEmit` + `vite build` + `check-no-secret`）exit=0，产物 3 个文件扫不到 3 项禁用串
+     （`LUCERO_CORE_TOKEN` 未提供 → 该项按设计跳过并注明，另四项照扫）。
+- **未重跑的部分，如实标**：live 那 10 条本轮没重跑。理由：改动只在 schema 形状、校验/测试文件与 devDeps 声明，
+  不触碰 `client.ts` / `events.ts` / `panel.ts` 任何线上行为路径；下一次接 `:sync` 时随 11 步真链一起重跑。
+
+## 当前 checkpoint（覆盖此前所有同名段）
+- Stage：REQ-F-19 / F-20 / F-21 / **F-22** 四条游标口径全部落 yaml，且每条除 validator 外另有实例级形状断言；面板无待办
+- Status：in_progress（阻塞在别人的端点，不在我）
+- Last verified action：13:37:09 四道闸门全绿（validate / codegen / 25 passed|10 skipped / build+no-secret）；
+  本轮磁盘变异一次且**不咬**（已用 `diff`=0 证明还原），判别力改由进程内 `degraded()` 自证
+- Next action：等 backend 让 `POST /projects`、`adapters/{key}/probe`、`POST /sessions/{id}:sync` 脱 501 ——
+  到位即用面板跑 §4 的 11 步真链，逐跳 ok/blocked 落 `.qoder/evidence/frontend/`；
+  同一次里重跑 live 全量断言并留 `live-t96.txt`（补掉上面那条"10/10 无原始输出"的缺口）。
+  期间不动契约文件；若当场观察到任何阻塞前提已消失，当轮就改这行并附 grep 证据（T-80）。
+- Verification：`cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+  （node 不在 PATH：命令内 `export PATH="/d/DevTools/node-v24.19.0-win-x64:$PATH"`）

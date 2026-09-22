@@ -25,6 +25,14 @@ type SQLiteStore struct {
 	// cp writes ADR-018's "every 1000 successful appends" checkpoint line.
 	// Unset by default: the store still links every audit row, it just leaves
 	// anchoring to whoever owns the file.
+	//
+	// Production does set it (core/cmd/core/main.go calls UseCheckpoints on the
+	// store it builds), so a reader who finds cp nil in a test has found the
+	// fixture's choice, not a missing wire. What really is not live yet is the
+	// volume: nothing writes approvals today, so this leg stays dormant until the
+	// first approval is created. Dormant is not the same as absent — the counting
+	// path itself is covered by TestA181ThresholdCrossingAnchorsTheStoredHead and
+	// TestA182FailedTransactionLeavesNoAnchorLine on real rows.
 	cp *audit.CheckpointCounter
 }
 
@@ -86,8 +94,33 @@ func nullMs(v int64) any {
 // chain binds an audit chain writer to one open transaction. Head reads through
 // the same tx, so a second append in the transaction sees the row the first one
 // wrote and the chain cannot fork behind our back.
+//
+// Scrub is the enforcement point's own function (§2.1: rules are audit's, this
+// package holds neither the walk nor a copy of it) reaching audit as a value,
+// because internal/audit may not import platform/db (§0). What it does here is
+// make the seal cover the bytes that land, and hand back the hits that db's own
+// pass no longer records for audit_entries (§2.2.1③) — see redactionHits.
 func (s *SQLiteStore) chain(tx *db.Tx) *audit.Chain {
-	return &audit.Chain{Head: audit.HeadQuery(tx), Insert: tx, Now: s.now, Checkpoints: s.cp}
+	return &audit.Chain{
+		Head: audit.HeadQuery(tx), Insert: tx, Now: s.now, Checkpoints: s.cp,
+		Scrub: func(table string, cols []string, args []any) ([]any, []audit.RedactionHit, error) {
+			values, hits, err := db.Scrub(table, cols, args)
+			return values, toAuditHits(hits), err
+		},
+	}
+}
+
+// redactionHits is the whole redaction record for one transaction: what the
+// enforcement point scrubbed out of the aggregate rows (db's accumulator), plus
+// what the pre-seal pass scrubbed out of the audit rows themselves (the Chain's).
+//
+// The two are disjoint by construction — §2.2.1③ is exactly db stopping counting
+// audit_entries — so this is a plain concatenation. It deliberately is NOT a
+// merge that decides "these two are the same hit": that rule belongs to the one
+// place the walk lives, and a second copy of it here is how §2.2.1's drift got
+// written in the first place.
+func redactionHits(tx *db.Tx, ch *audit.Chain) []audit.RedactionHit {
+	return append(toAuditHits(tx.RedactionHits()), ch.ScrubHits()...)
 }
 
 // eventIDs mints the envelope ids. Per event contract §4 a command with no
@@ -398,7 +431,7 @@ func (s *SQLiteStore) RevokeGrants(ctx context.Context, at int64) error {
 		_, err = ch.RecordRedaction(ctx, audit.Entry{
 			AuditID: "audit-" + id, PrincipalID: "system", Action: "redaction." + eventjournal.GrantExpired,
 			ResourceType: "grant",
-		}, toAuditHits(tx.RedactionHits()))
+		}, redactionHits(tx, ch))
 		return err
 	})
 }
@@ -468,7 +501,7 @@ func (s *SQLiteStore) recordHits(ctx context.Context, tx *db.Tx, ch *audit.Chain
 		audit.Entry{
 			AuditID: "audit-" + id, PrincipalID: principal, Action: "redaction." + action,
 			ResourceType: "approval", ResourceID: a.ID, TaskID: a.TaskID, ExecutionID: a.ExecutionID,
-		}, toAuditHits(tx.RedactionHits()))
+		}, redactionHits(tx, ch))
 	return err
 }
 

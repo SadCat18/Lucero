@@ -212,6 +212,8 @@ func (c *Core) handler() http.Handler {
 		},
 		Tickets: c.tickets,
 		Tasks:   c.tasks, TaskList: task.NewRepository(c.db.Read), Store: c.store,
+		// inbox 那一腿是纯读：不注入 Store，所以它不需要事务通道。
+		Notifications: notification.NewRepository(c.db.Read),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{

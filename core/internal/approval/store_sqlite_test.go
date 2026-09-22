@@ -347,6 +347,41 @@ func TestStoreRedactsSecretsBeforeTheyLand(t *testing.T) {
 			t.Errorf("audit redaction row missing %s: %s", want, hits[0])
 		}
 	}
+
+	// §2.2.1 ③'s second half, witnessed from the consuming side. Both kinds must
+	// be present: a key hit is found by column name and survives a second pass,
+	// while a pattern hit is found by value and would vanish forever the moment
+	// anything re-scrubs an already-marked row. Counting each kind exactly once is
+	// the other direction of the same hole — two passes both recording the key hit.
+	t.Run("两类命中都在且各记一次", func(t *testing.T) {
+		d := openMigrated(t)
+		seed(t, d)
+		clock := func() int64 { return itNow }
+		svc := NewService(NewSQLiteStore(d, clock), clock)
+		dd := draft()
+		dd.Detail = json.RawMessage(`{"api_key":"` + openAI + `","note":"saw ` + gitHub + `"}`)
+		if _, err := svc.Request(ctx, dd); err != nil {
+			t.Fatal(err)
+		}
+		row := strRows(t, d, `SELECT details_json FROM audit_entries WHERE action=?`,
+			"redaction."+eventjournal.ApprovalRequested)
+		if len(row) != 1 {
+			t.Fatalf("%d redaction rows, want 1", len(row))
+		}
+		for _, tc := range []struct {
+			what, needle string
+			want         int
+		}{
+			{"deny-key hit", `"kind":"key"`, 1},
+			{"pattern hit", `"kind":"pattern"`, 1},
+			{"the rule that fired", `"match":"gh[pousr]_[A-Za-z0-9]{20,}"`, 1},
+		} {
+			if n := strings.Count(row[0], tc.needle); n != tc.want {
+				t.Errorf("%s: %d occurrences of %s, want exactly %d — row is %s",
+					tc.what, n, tc.needle, tc.want, row[0])
+			}
+		}
+	})
 	// The rule (audit.IsVaultRef) and the enforcement point (db's own copy of it)
 	// must agree, or the two definitions drift. Q6's shape: a key wearing a
 	// reference form is not a reference.

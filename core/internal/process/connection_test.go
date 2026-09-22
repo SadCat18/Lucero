@@ -799,7 +799,9 @@ func TestConnectionAgainstRealFakeAdapter(t *testing.T) {
 
 	// An unimplemented method must come back as an explicit refusal over a real pipe,
 	// not as a timeout.
-	// session/push is the §6.6 method this build has not grown (no §4 row yet, CO-25 open);
+	// session/push is withdrawn for v0.1 by CO-40 (contract ② §4.0): as an A->C notice it
+	// would need a turn_ref Core never issued, which §4.2 裁定 ① makes impossible. This
+	// probes that the pump passes such a refusal through unchanged, not that push is due;
 	// session/list is
 	// served now, so it can no longer stand in for "not implemented".
 	unbuilt, err := conn.Call(ctx, "session/push", struct{}{})

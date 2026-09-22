@@ -180,6 +180,42 @@ func (r *redactor) walk(v any, h *hits, column, path string) any {
 
 // redactValue scrubs and serializes a value destined for a TEXT column. Anything
 // that is not text-like (int, time, []byte) passes through untouched.
+// Scrub is the exported entry to the one and only redaction implementation
+// (契约 §2.2.1 item 1). audit needs both the final bytes and the attribution
+// before it seals entry_hash, and cmd/core injects this function value into
+// Chain.Scrub, so the bytes that go into the hash are the bytes that go into
+// the row.
+//
+// Rules still belong to audit (§2.1); execution is still only this code. Do not
+// write a second redactor.
+//
+// Scrubbing is byte-stable on its own output (see TestScrubIsByteStable), so
+// Tx.Append re-scrubbing the same values later changes no byte — that re-scrub
+// stays as defence in depth, not as a correction pass.
+func Scrub(table string, cols []string, args []any) ([]any, []RedactionHit, error) {
+	h := newHits()
+	out, err := scrubArgsInto(h, table, cols, args)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, h.all(), nil
+}
+
+func scrubArgsInto(h *hits, table string, cols []string, args []any) ([]any, error) {
+	if len(cols) != len(args) {
+		return nil, fmt.Errorf("scrub %s: %d columns but %d args", table, len(cols), len(args))
+	}
+	out := make([]any, len(args))
+	for i, v := range args {
+		s, err := redactValue(table+"."+cols[i], v, h)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = s
+	}
+	return out, nil
+}
+
 func redactValue(column string, v any, h *hits) (any, error) {
 	r := red.Load()
 	if r == nil {

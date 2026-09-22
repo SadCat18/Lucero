@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
 )
@@ -181,9 +184,9 @@ func TestFakeAdapterModelSelectKeepsRefusalsApart(t *testing.T) {
 			"make the loop below pass by accident", len(offer.Models))
 	}
 	for i, m := range offer.Models {
-		var got modelSelectResult
+		var got adapter.ModelSelectResult
 		get(t, p, "ms"+string(rune('a'+i)), methodModelSelect,
-			modelSelectParams{RemoteSessionID: "rsn-1", ModelKey: m.ModelKey}, &got)
+			adapter.ModelSelectParams{RemoteSessionID: "rsn-1", ModelKey: m.ModelKey}, &got)
 		if got.ModelKey != m.ModelKey || got.RemoteSessionID != "rsn-1" {
 			t.Errorf("select(%s) = %+v, want the pair it was asked for", m.ModelKey, got)
 		}
@@ -192,18 +195,18 @@ func TestFakeAdapterModelSelectKeepsRefusalsApart(t *testing.T) {
 	cases := []struct {
 		name   string
 		id     string
-		params modelSelectParams
+		params adapter.ModelSelectParams
 		want   adapter.ErrorCode
 		deny   string
 	}{
 		{"unknown model is a capability answer", "msx",
-			modelSelectParams{RemoteSessionID: "rsn-1", ModelKey: "gpt-not-here"},
+			adapter.ModelSelectParams{RemoteSessionID: "rsn-1", ModelKey: "gpt-not-here"},
 			adapter.ErrCapabilityUnavailable, "not implemented"},
 		{"unknown session is not a capability answer", "msy",
-			modelSelectParams{RemoteSessionID: "rsn-nope", ModelKey: "fake-fast"},
+			adapter.ModelSelectParams{RemoteSessionID: "rsn-nope", ModelKey: "fake-fast"},
 			adapter.ErrorCode(-32006), "CAPABILITY"},
 		{"a missing field is the caller's bug", "msz",
-			modelSelectParams{RemoteSessionID: "rsn-1"},
+			adapter.ModelSelectParams{RemoteSessionID: "rsn-1"},
 			adapter.ErrInvalidParams, "CAPABILITY"},
 	}
 	for _, c := range cases {
@@ -377,6 +380,263 @@ func TestFakeAdapterServesEveryContractMethod(t *testing.T) {
 		}
 		if reply.Error == nil && reply.Result == nil {
 			t.Errorf("%s answered neither result nor error", probe)
+		}
+	}
+}
+
+// waitForTicket drains the pipe into the same log p.notifications reads from, until a
+// turn/finished carrying ticket shows up. It has to share that log: call() already
+// consumes every notification that arrives before the reply it waits for, so a second
+// reader would steal frames and the ordering assertions downstream would be looking at
+// a stream with holes in it.
+func (p *fakeProcess) waitForTicket(t *testing.T, ticket string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		if len(framesWithTicket(p.seen, ticket, adapter.MethodTurnFinished)) > 0 {
+			return
+		}
+		select {
+		case r := <-p.frames:
+			if r.err != nil {
+				t.Fatalf("read from the fake adapter while waiting for %q: %v", ticket, r.err)
+			}
+			p.seen = append(p.seen, r.f)
+		case <-deadline:
+			t.Fatalf("no turn/finished with ticket %q within 5s. log so far: %v", ticket, p.trace(t))
+		}
+	}
+}
+
+// framesWithTicket returns the decoded notifications for one ticket, in arrival order.
+func framesWithTicket(all []*adapter.Frame, ticket, method string) []*adapter.StreamFrame {
+	var out []*adapter.StreamFrame
+	for _, f := range all {
+		if f.Kind() != adapter.KindNotification || f.Method == "" {
+			continue
+		}
+		s, err := adapter.DecodeStream(f)
+		if err != nil || s.TurnRef != ticket {
+			continue
+		}
+		if method == "" || s.Method == method {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend is CO-25 as T-110 ruled it: §5
+// promises a queued send runs "when the current turn ends", and this build used to drain
+// on the *next send*. Both readings produce the identical wire order in
+// TestFakeAdapterDeliversThreeStates, because that script happens to send again after
+// the close - so this one closes the running turn with session/stop and sends nothing
+// else afterwards. A stranded queue is the expensive failure mode: the reply already said
+// "queued, position 1", so every symptom reads as success.
+func TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	call(t, p, "dq1", methodSessionSend, adapter.SendParams{RemoteSessionID: "rsn-1",
+		Text: "running", Delivery: adapter.DeliveryStartNow,
+		ExecutionID: "exec-dq1", IdempotencyKey: "k-dq1"})
+
+	var queued adapter.SendResult
+	reply := call(t, p, "dq2", methodSessionSend, adapter.SendParams{RemoteSessionID: "rsn-1",
+		Text: "queued behind it", Delivery: adapter.DeliveryQueue,
+		ExecutionID: "exec-dq2", IdempotencyKey: "k-dq2"})
+	if err := json.Unmarshal(reply.Result, &queued); err != nil {
+		t.Fatalf("queue reply: %v", err)
+	}
+	if queued.TurnID != "" || queued.QueuePosition == nil {
+		t.Fatalf("queue reply = %+v, want a position and no turn yet (§5)", queued)
+	}
+	// §5: the queued prompt must not have started while another turn held the session.
+	if got := framesWithTicket(p.seen, "dq2", ""); len(got) > 0 {
+		t.Fatalf("the queued prompt emitted %d frames before its turn even closed", len(got))
+	}
+
+	// The only thing that happens next is the close: no second send, no timer.
+	call(t, p, "dq3", methodSessionStop, sessionStopParams{RemoteSessionID: "rsn-1"})
+	if got := framesWithTicket(p.seen, "dq1", adapter.MethodTurnFinished); len(got) == 0 {
+		t.Fatal("session/stop did not close the running turn")
+	}
+
+	p.waitForTicket(t, "dq2")
+	p.waitForTicket(t, "dq1")
+	var claim, dispatch, finish *adapter.StreamFrame
+	for _, s := range framesWithTicket(p.seen, "dq2", "") {
+		switch s.Method {
+		case adapter.MethodTurnClaimed:
+			claim = s
+		case adapter.MethodTurnDispatch:
+			dispatch = s
+		case adapter.MethodTurnFinished:
+			finish = s
+		}
+	}
+	if claim == nil || dispatch == nil {
+		t.Errorf("the queued prompt ran without the CO-8 pair (claimed=%v dispatched=%v): "+
+			"Core cannot tell a run from a queue entry that fizzled", claim != nil, dispatch != nil)
+	}
+	if claim != nil && claim.ExecutionID != "exec-dq2" {
+		t.Errorf("queued turn claimed execution %q, want exec-dq2", claim.ExecutionID)
+	}
+	if finish != nil && finish.ResultCode != "OK" {
+		t.Errorf("queued turn closed %q, want OK", finish.ResultCode)
+	}
+	// Position, not just presence: the queued claim must land *after* dq1's close frame.
+	// The check is unconditional because both frames are in the log by now - a guard like
+	// "if the close is already there" is how this assertion stayed silent through a
+	// mutant that emitted the queued turn first.
+	posFinish, posClaim := -1, -1
+	for i, f := range p.seen {
+		s, err := adapter.DecodeStream(f)
+		if err != nil {
+			continue
+		}
+		if s.Method == adapter.MethodTurnFinished && s.TurnRef == "dq1" {
+			posFinish = i
+		}
+		if s.Method == adapter.MethodTurnClaimed && s.TurnRef == "dq2" {
+			posClaim = i
+		}
+	}
+	if posFinish < 0 || posClaim < 0 {
+		t.Fatalf("ordering cannot be judged: close at %d, queued claim at %d, log %v",
+			posFinish, posClaim, p.trace(t))
+	}
+	if posClaim < posFinish {
+		t.Errorf("queued claim at %d arrived before the close at %d (§5: it waits for the turn to end)", posClaim, posFinish)
+	}
+}
+
+// section10 returns the two lists contract ② §10 gives this build: the "必须实现"
+// method names and the debug/* injection table. Both come out of the file rather than
+// out of my progress notes, because "§10 的 11 项全部到齐" is exactly the kind of
+// sentence that can stay true in a ledger while stopping being true in code.
+func section10(t *testing.T) (required, injections []string) {
+	t.Helper()
+	raw, err := os.ReadFile(contractFile(t))
+	if err != nil {
+		t.Fatalf("read contract: %v", err)
+	}
+	body := strings.ReplaceAll(string(raw), "\r", "")
+	start := strings.Index(body, "## 10. FakeAdapter 规格")
+	if start < 0 {
+		t.Fatal(`no "## 10. FakeAdapter 规格" heading: the anchor is stale, not the contract empty`)
+	}
+	rest := body[start:]
+	stop := strings.Index(rest, "\n## 11.")
+	if stop < 0 {
+		t.Fatal("no ## 11 after §10: the section boundary moved")
+	}
+	sec := rest[:stop]
+
+	head := strings.Index(sec, "必须实现：")
+	if head < 0 {
+		t.Fatal(`§10 no longer carries the "必须实现：" sentence - the list moved, do not judge green`)
+	}
+	tail := sec[head:]
+	end := strings.Index(tail, "。")
+	if end < 0 {
+		t.Fatal("the 必须实现 sentence is unterminated")
+	}
+	names := regexp.MustCompile("`([a-z]+/[a-z*]+)`")
+	for _, tok := range strings.Split(tail[:end], "、") {
+		if m := names.FindStringSubmatch(tok); m != nil {
+			required = append(required, m[1])
+		}
+	}
+	if len(required) < 10 {
+		t.Fatalf("§10 parsed to %d required names (%v); fix the parser rather than trusting the pass",
+			len(required), required)
+	}
+
+	rows := regexp.MustCompile("(?m)^\\|\\s*`(debug/[a-z_]+)`")
+	for _, m := range rows.FindAllStringSubmatch(sec, -1) {
+		injections = append(injections, m[1])
+	}
+	if len(injections) != 4 {
+		t.Fatalf("§10's injection table parsed to %d rows (%v), want the four it documents",
+			len(injections), injections)
+	}
+	return required, injections
+}
+
+// TestFakeAdapterSatisfiesContractSection10 is §10 read literally: every method that
+// sentence names must be answered by the real child with something other than
+// "not implemented in this build", the stream/* family must actually reach the wire, and
+// all four debug/* rows must behave as their row promises.
+func TestFakeAdapterSatisfiesContractSection10(t *testing.T) {
+	required, injections := section10(t)
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	for _, name := range required {
+		switch name {
+		case "stream/*":
+			// §10's family row is output the Adapter pushes, not a call it answers, so it
+			// is checked on the wire: all three stream kinds in one real turn.
+			call(t, p, "s10-stream", methodSessionSend, adapter.SendParams{
+				RemoteSessionID: "rsn-1", Text: "stream probe", Delivery: adapter.DeliveryStartNow,
+				ExecutionID: "exec-s10", IdempotencyKey: "k-s10-stream"})
+			seen := map[string]bool{}
+			for _, f := range p.notifications() {
+				s, err := adapter.DecodeStream(f)
+				if err == nil && strings.HasPrefix(s.Method, "stream/") {
+					seen[s.Method] = true
+				}
+			}
+			for _, kind := range []string{adapter.MethodStreamDelta, adapter.MethodStreamItem, adapter.MethodStreamState} {
+				if !seen[kind] {
+					t.Errorf("§10 requires stream/* but %s never reached the wire", kind)
+				}
+			}
+		case "session/send":
+			// The three delivery states are this file's other tests; an empty object here
+			// would only prove the validator works.
+			continue
+		default:
+			reply := call(t, p, "s10-"+name, name, struct{}{})
+			if reply.Error != nil && strings.Contains(reply.Error.Message, "not implemented in this build") {
+				t.Errorf("§10 requires %q, this build answers it as unbuilt", name)
+			}
+			if reply.Error == nil && reply.Result == nil {
+				t.Errorf("%s answered neither result nor error", name)
+			}
+		}
+	}
+
+	// Two of the four injections are hazards for a shared child: debug/crash is specified
+	// to end the process and debug/hang never answers, so probing them inline would delete
+	// the rest of the assertions silently. Each gets its own child, and the assertion is
+	// the behaviour its §10 row promises rather than "it replied".
+	for _, name := range injections {
+		switch name {
+		case "debug/crash":
+			// Wait, not silent: after os.Exit(2) the reader reports EOF on the pipe, and
+			// the harness treats a dead pipe as a failure. The exit status is the promise.
+			crasher := startFakeAdapter(t)
+			initialize(t, crasher)
+			call(t, crasher, "inj-crash", name, struct{}{})
+			_ = crasher.stdin.Close()
+			var exit *exec.ExitError
+			if err := crasher.cmd.Wait(); !errors.As(err, &exit) || exit.ExitCode() != 2 {
+				t.Errorf("%s left the child with %v, want exit status 2 (§10: 立即 os.Exit(2))", name, err)
+			}
+		case "debug/hang":
+			hanger := startFakeAdapter(t)
+			initialize(t, hanger)
+			hanger.write(t, request("inj-hang", name, map[string]any{"seconds": 30}))
+			if f, idle := hanger.silent(t, 300*time.Millisecond); !idle {
+				t.Errorf("%s answered %s: §10 says it hangs, so deadline and session/stop can be tested", name, f.Method)
+			}
+		default:
+			reply := call(t, p, "inj-"+name, name, map[string]any{"code": "PROVIDER_RATE_LIMITED"})
+			if reply.Error != nil && strings.Contains(reply.Error.Message, "not implemented in this build") {
+				t.Errorf("§10 documents %q, this build answers it as unbuilt", name)
+			}
 		}
 	}
 }

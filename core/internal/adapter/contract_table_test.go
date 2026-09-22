@@ -135,6 +135,76 @@ func TestWriteMethodsMatchContractSection(t *testing.T) {
 	}
 }
 
+// methodConst matches this package's own notification constants, e.g.
+// `MethodTurnFinished = "turn/finished"`.
+var methodConst = regexp.MustCompile(`(?m)^	Method\w+\s+=\s+"([a-z]+/[a-z]+)"`)
+
+// notificationRow matches a contract table row whose first cell is a notification name.
+var notificationRow = regexp.MustCompile("(?m)^\\|\\s*`(stream/[a-z]+|turn/[a-z]+)`")
+
+// TestStreamNotificationsMatchContractTables is the same interlock as the §4 one, on the
+// other side of the boundary: §6's four output rows plus §4.2's two evidence rows against
+// this package's six constants, both ways. It exists because a seventh notification can
+// only arrive with a ticket story attached - CO-40 withdrew session/push precisely
+// because an unsolicited A->C notice has no Core-issued turn_ref to echo - so code that
+// grows a notification before the contract does is not a small drift, it is a reopened
+// ruling. The reverse direction catches the contract growing a row nobody implemented.
+func TestStreamNotificationsMatchContractTables(t *testing.T) {
+	body := readContract(t, contractFile(t))
+	s6 := section(body, "## 6. 流式契约", "\n## 7.")
+	s42 := section(body, "### 4.2 两帧取证信号", "\n## 5.")
+	if s6 == "" || s42 == "" {
+		t.Fatalf("anchors moved (§6 empty=%v, §4.2 empty=%v); fix the anchor rather than trusting the pass",
+			s6 == "", s42 == "")
+	}
+	fromContract := map[string]bool{}
+	for _, m := range notificationRow.FindAllStringSubmatch(s6, -1) {
+		fromContract[m[1]] = true
+	}
+	if len(fromContract) < 4 {
+		t.Fatalf("§6's table parsed to %d notification rows (%v); that is a parser failure, not a short contract",
+			len(fromContract), keys(fromContract))
+	}
+	before := len(fromContract)
+	for _, m := range notificationRow.FindAllStringSubmatch(s42, -1) {
+		fromContract[m[1]] = true
+	}
+	if len(fromContract) <= before {
+		t.Fatalf("§4.2 contributed no rows after %d from §6: its table moved, do not judge green", before)
+	}
+
+	// "My side" is read out of stream.go rather than copied here: a hand-written list of
+	// the constants is exactly the second source of truth this test exists to catch, and
+	// a seventh Method would have been added to the file and not to the list.
+	src, err := os.ReadFile("stream.go")
+	if err != nil {
+		t.Fatalf("read stream.go: %v", err)
+	}
+	mine := map[string]bool{}
+	for _, m := range methodConst.FindAllStringSubmatch(string(src), -1) {
+		mine[m[1]] = true
+	}
+	if len(mine) < 6 {
+		t.Fatalf("stream.go's Method* block parsed to %d names (%v); that is a parser failure",
+			len(mine), keys(mine))
+	}
+
+	for name := range fromContract {
+		if !mine[name] {
+			t.Errorf("the contract defines notification %q but this package has no constant for it: "+
+				"decoding it would fail and inventing a ticket story for it is CO-40's dead knot", name)
+		}
+		if !CarriesTurnRef(name) {
+			t.Errorf("%s is a contract notification yet CarriesTurnRef says it owes no turn_ref (§4.2 裁定 ①: 六条全部带)", name)
+		}
+	}
+	for name := range mine {
+		if !fromContract[name] {
+			t.Errorf("this package emits %q, which no contract table names: that is an invented notification", name)
+		}
+	}
+}
+
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

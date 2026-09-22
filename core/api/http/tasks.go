@@ -493,6 +493,11 @@ func decodeCursor(s string) (int64, string, error) {
 	if !ok || id == "" {
 		return 0, "", errors.New("bad cursor")
 	}
+	// 只此一个分隔符：多吃一段就是吃下了别人的游标形状（inbox 那条口是三元组）。
+	// 不挡的话一个 tasks/inbox 互换的游标会安静地返回空页，比 400 难查得多。
+	if strings.Contains(id, "|") {
+		return 0, "", errors.New("bad cursor")
+	}
 	n, err := strconv.ParseInt(at, 10, 64)
 	if err != nil {
 		return 0, "", err

@@ -397,8 +397,11 @@ func (h *Handshake) Delivery(method, mode string) error {
 // session/create became a §4 row at REQ-T8's close (13:39, written from this package's
 // CreateSessionParams/CreateSessionResult). It is gated because creating a remote
 // session is the least reversible thing an Adapter can be asked to do. Note §4.1's own
-// write-set sentence still omits the name - CO-34 续 - so gating it cannot be derived
-// from that list and must not be dropped just because someone re-reads §4.1 verbatim.
+// write-set sentence lists it now (CO-34's fourth fix, 14:39) - and the reason that
+// mattered is worth keeping: when the row existed in §4 but not in §4.1, anyone aligning
+// writeMethods to §4.1 verbatim would have dropped a "create a remote session" call
+// out of §3's gate. The contract and this map are cross-checked at runtime by
+// contract_table_test.go so the two cannot drift apart again silently.
 //
 // model/select stays listed per §4.1's last paragraph: its refusal is really the
 // capability gate, but an Adapter that declares write_entry=false must still mean it.

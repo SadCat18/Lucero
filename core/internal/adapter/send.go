@@ -144,6 +144,33 @@ func (r CreateSessionResult) Validate() error {
 	return nil
 }
 
+// ModelSelectParams picks up where §4's model/select row stops: that row names the
+// behaviour ("对已有会话切模型；不支持必须显式报错") and no payload fields at all
+// (CO-36), so the request keys off the only vocabulary this Adapter already
+// publishes - model/list's model_key - instead of inventing a second name for the
+// same thing.
+type ModelSelectParams struct {
+	RemoteSessionID string `json:"remote_session_id"`
+	ModelKey        string `json:"model_key"`
+}
+
+// ModelSelectResult echoes the pair it applied. It carries no "switched" boolean:
+// §4 has no such field, and an error reply is already the negative answer.
+type ModelSelectResult struct {
+	RemoteSessionID string `json:"remote_session_id"`
+	ModelKey        string `json:"model_key"`
+}
+
+// Validate refuses the two shapes §4's model/select cannot answer with: no session to
+// switch, or a switch with no model named.
+func (p ModelSelectParams) Validate() error {
+	if p.RemoteSessionID == "" || p.ModelKey == "" {
+		return &Error{Code: ErrInvalidParams,
+			Message: "model/select needs both remote_session_id and model_key (§4)"}
+	}
+	return nil
+}
+
 // Validate checks a reply against the delivery mode Core actually asked for.
 // Running it against the *requested* mode rather than a reported one is the point:
 // an Adapter that quietly queued a guide request is exactly the mis-delivery §5

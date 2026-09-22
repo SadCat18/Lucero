@@ -37,7 +37,11 @@ func (r *rejectionReporter) Report(ctx context.Context, tx *db.Tx, rec task.Reje
 	if err != nil {
 		return fmt.Errorf("§5.4 的 audit details_json 编不出来: %w", err)
 	}
-	ch := &audit.Chain{Head: audit.HeadQuery(tx), Insert: tx, Now: r.now}
+	// §2.2.1 的装配半边（T-109 + T-114）：链在密封前要过唯一那份脱敏执行（db 的），
+	// 拿到的命中再由**我这个调用者**写成一条 redaction 行 —— 两边缺一个就分别是
+	// "哈希盖在改之前的字节上"（链永久重算不出来）与"字节对了但归因静默缩水"。
+	// audit 不 import platform/db（§0），所以两者的类型搬运放在这里（`auditScrub`/`toAuditHits`）。
+	ch := &audit.Chain{Head: audit.HeadQuery(tx), Insert: tx, Now: r.now, Scrub: auditScrub}
 	if _, err := ch.Append(ctx, audit.Entry{
 		AuditID: rec.AuditID, PrincipalID: rec.PrincipalID,
 		// §5.4 指定的这一对：动作是 execution_failed（执行侧没能推进），结果判不出来说 UNKNOWN。
@@ -46,7 +50,47 @@ func (r *rejectionReporter) Report(ctx context.Context, tx *db.Tx, rec task.Reje
 	}); err != nil {
 		return fmt.Errorf("§5.4 的 Audit 没写出去: %w", err)
 	}
+	// 没有命中时 `RecordRedaction` 自己返回 (0, nil)，所以诚实的写入不会多出空行（空归因是链上噪音，§2.2）。
+	// audit_id 由 §5.4 那行的 id **派生**，刻意不用 UUIDv7 —— 但别把派生当"挡重放"的手段：
+	// 我把下面这个 id 换成非派生形状做过变异，重放仍然只落一行归因，因为整笔事务在**更早的** notification id
+	// 上就撞 UNIQUE 回滚了（§8 让重试复用同一批 id）。所以派生的真实收益只有两条、都不依赖 UNIQUE：
+	// ① 同一事实的归因行 id 可回放、可直接归因到那一行 §5.4；② 决定论路径里少引一个随机源。
+	// "重放不多行"由 TestRedactionRowIsWrittenOncePerRejection 钉 —— 它钉的是 §8 的整批 id 复用，不是这里。
+	if _, err := ch.RecordRedaction(ctx, audit.Entry{
+		AuditID: "redaction." + rec.AuditID, PrincipalID: rec.PrincipalID,
+		Action: "redaction.execution_failed", ResourceType: "task", ResourceID: rec.TaskID, TaskID: rec.TaskID,
+		CorrelationID: rec.CorrelationID,
+	}, redactionHits(tx, ch)); err != nil {
+		return fmt.Errorf("§5.4 的脱敏归因行没写出去: %w", err)
+	}
 	return nil
+}
+
+// auditScrub 是 `db.Scrub`（三值，T-114 的新签名）与 `audit.Chain.Scrub`（要 audit 自己的命中类型）
+// 之间唯一的搬运。它**不执行任何脱敏** —— 执行仍只有 db 那一份（§2.2 只允许一份）。
+func auditScrub(table string, cols []string, args []any) ([]any, []audit.RedactionHit, error) {
+	values, hits, err := db.Scrub(table, cols, args)
+	return values, toAuditHits(hits), err
+}
+
+func toAuditHits(hits []db.RedactionHit) []audit.RedactionHit {
+	if len(hits) == 0 {
+		return nil
+	}
+	out := make([]audit.RedactionHit, len(hits))
+	for i, h := range hits {
+		// 两边同名字段、Kind 都是 "key"/"pattern" 的字符串枚举（audit 与 db 各留一份是为了 §0 的方向）。
+		out[i] = audit.RedactionHit{Column: h.Column, Kind: audit.HitKind(h.Kind), Match: h.Match, Count: h.Count}
+	}
+	return out
+}
+
+// redactionHits 是一笔事务里全部的脱敏归因：db 在聚合行上命中的（`notifications` 等），
+// 加上密封前那次在审计行上命中的（`ch.ScrubHits()`）。两侧**直接拼接、不去重、不合并**：
+// "这两个是不是同一次命中"的规则只住在强制点那侧，我这里再抄一份就是 §2.2.1 当初要终结的那种漂移
+// （形状照 `internal/approval/store_sqlite.go` 的 `redactionHits`，那是同一条契约的既成写法）。
+func redactionHits(tx *db.Tx, ch *audit.Chain) []audit.RedactionHit {
+	return append(toAuditHits(tx.RedactionHits()), ch.ScrubHits()...)
 }
 
 // auditedStore 是交给 transport 的唯一写入口：一笔事务 + 一次锚点交账。

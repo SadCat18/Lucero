@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -567,6 +568,257 @@ func driveRejectionRollbackIds(t *testing.T, c *Core) error {
 		})
 		return err
 	})
+}
+
+// TestSealCoversTheBytesThatLand 钉内部契约 §2.2.1 那条不变量在**我这侧的装配**上成立：
+// §5.4 的审计行由我造 `audit.Chain`，所以"参与 entry_hash 的字节必须与落库的字节逐字节相同"只有我能保证。
+// 今天 `rejections.go` 那条链**没有注** `Scrub`（T-109 被主控压在 db 的 T-107 之后，14:25），
+// 所以这条用例在链重算不出来时自我让路成 SKIP —— 那不是"测试失败"，那是**缺陷形状的实测**
+// （14:51:21：VerifyChain 报 `seq 1 entry_hash is 9823935a… recomputed 4d4aff22…`）。
+// T-109 那一行注上之后 SKIP 自动消失，它就变成一道真闸门。**别把它改成永远绿的断言**，
+// 也别因为它是 SKIP 就当 §2.2.1 在我这侧已收口。
+func TestSealCoversTheBytesThatLand(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	ctx := context.Background()
+
+	const secret = "sk-abcdefghijklmnop0123456789" // 与 audit.Rules() 的形状规则同形
+	makeTaskRow(t, core, "t-scrub")
+	if err := core.store.Write(ctx, func(tx *db.Tx) error {
+		return core.reporter.Report(ctx, tx, task.RejectionReport{
+			Rejection: task.Rejection{TaskState: task.Created, ExecutionEvent: "execution_completed",
+				Reason: "用户粘贴的内容里有个密钥 " + secret},
+			TaskID: "t-scrub", NotificationID: "ntf-scrub", EventID: "ev-scrub",
+			AuditID: "aud-scrub", PrincipalID: "system", CorrelationID: "c-scrub", CausationID: "c-scrub",
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored string
+	if err := core.db.Read.QueryRow(`SELECT details_json FROM audit_entries WHERE audit_id = 'aud-scrub'`).
+		Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, secret) {
+		t.Errorf("密钥原样落进了审计行：审计面板一旦公开就是泄露（强制点在 db，规则在 audit，但行是我写的）")
+	}
+	// 自破坏探针：夹具要是命中不了脱敏规则，这条用例就只是空转，必须当场喊出来。
+	if !strings.Contains(stored, audit.Rules().Marker) {
+		t.Fatalf("落库的 details 里没有脱敏标记，这条用例没有验到任何东西：marker=%q stored=%s", audit.Rules().Marker, stored)
+	}
+	entries, err := loadAuditEntries(ctx, core.db.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verr := audit.VerifyChain(entries, audit.Head{}); verr != nil {
+		// 主控要的"拿到消息之前别改实现"——失败分支就得把三个数一次打全：两个哈希 + 读到的那一行。
+		for i, e := range entries {
+			if i > 2 {
+				break
+			}
+			t.Logf("第 %d 行：seq=%d audit_id=%s stored=%s recomputed-need-prev=%s details=%s",
+				i, e.Seq, e.AuditID, head(e.EntryHash, 12), head(e.PreviousHash, 12), e.DetailsJSON)
+		}
+		t.Errorf("§2.2.1 的不变量破了：entry_hash 与落库字节不是同一串 —— %v", verr)
+	}
+
+	// 归因这一半也要钉住：密封前那次拿到的命中由**调用者**写成一行 redaction 审计行，
+	// 否则"字节对了但归因静默缩水"（§2.2.1 第 1 条点名的正是这种"看起来正常"的失效）。
+	var redaction *audit.Entry
+	for i := range entries {
+		if entries[i].Action == "redaction.execution_failed" {
+			redaction = &entries[i]
+		}
+	}
+	if redaction == nil {
+		t.Fatalf("命中明明发生了（上面已验过 marker），却没写归因行，审计里就查不到是谁被脱敏：%q", actionsOf(entries))
+	}
+	if strings.Contains(redaction.DetailsJSON, secret) {
+		t.Error("归因行里出现了原值：它只许记列名/规则名/计数（§2.2）")
+	}
+	// ① 两类命中都要在（我这条 §5.4 的 reason 走 pattern，通知体的 deny-key 走 key），
+	// ② 同一列的命中计数必须是 1 而不是 2（§2.2.1 第 3 件：db 对 audit_entries 不再二记）。
+	// 归因行是 JSON 列，就按 JSON 读 —— 拆字符串会把"我解析错了"误报成"归因丢了"。
+	var record struct {
+		Schema     int `json:"schema"`
+		Redactions []struct {
+			Column string `json:"column"`
+			Kind   string `json:"kind"`
+			Match  string `json:"match"`
+			Count  int    `json:"count"`
+		} `json:"redactions"`
+	}
+	if err := json.Unmarshal([]byte(redaction.DetailsJSON), &record); err != nil {
+		t.Fatalf("归因行的 details_json 不是合法 JSON: %v\n%s", err, redaction.DetailsJSON)
+	}
+	if record.Schema != 1 {
+		t.Errorf("归因行没带信封里的 \"schema\":1（§2）：%s", redaction.DetailsJSON)
+	}
+	byKind := map[string]int{}
+	for _, h := range record.Redactions {
+		byKind[h.Kind]++
+		if h.Count != 1 {
+			t.Errorf("列 %s 的命中计数是 %d，不是 1 —— 二记就是 §2.2.1 第 3 件要关的洞", h.Column, h.Count)
+		}
+		if h.Match == "" {
+			t.Errorf("列 %s 的命中没写规则名，等于没归因", h.Column)
+		}
+	}
+	// REQ-A11 的那一半：密封前那次在**审计行自己身上**命中的必须在这里，
+	// 因为值一旦被换成 marker，事后谁都再也找不回来（db 二扫只认键）。
+	own := false
+	for _, h := range record.Redactions {
+		if h.Column == "audit_entries.details_json" {
+			own = true
+		}
+	}
+	if !own {
+		t.Errorf("归因行里没有 audit_entries.details_json 这一列 —— 密封前那次的命中被丢了：%s", redaction.DetailsJSON)
+	}
+	if byKind["pattern"] == 0 {
+		t.Errorf("归因行里没有 pattern 命中（值驱动的命中一旦换成 marker 就再也找不回来）：%s", redaction.DetailsJSON)
+	}
+	// key 命中这里**不该**出现：deny-key 是按列名判的（`details_json`/`body` 不在 deny 列里），
+	// 所以这条路径的归因只会有 pattern 一类。真要钉 key 命中得换一个 deny 列，那是 audit 的用例。
+	if redaction.PreviousHash == "" {
+		t.Error("归因行没接在 §5.4 那行后面（丢了前序哈希，就不是一条链了）")
+	}
+	t.Logf("链共 %d 行，归因行 kinds=%v 共 %d 条命中", len(entries), byKind, len(record.Redactions))
+}
+
+func head(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func actionsOf(entries []audit.Entry) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Action)
+	}
+	return out
+}
+
+// TestRedactionRowIsWrittenOncePerRejection 钉主控①要的幂等断言：同一条 rejection 重放两次，
+// 主行与归因行各自仍只有 1 行、第二笔整体回滚。
+// **别拿它当"audit_id 必须派生"的证据**：我把派生 id 换成非派生形状做过变异，这条照样绿 ——
+// 第二笔在更早的 notification id 上就撞了 UNIQUE，挡重放的是 §8 的"整批 id 复用"，不是这里的键。
+// 它真正有用的反向对照是最后那半段：Reason 里没有可脱敏内容时**不许**写归因行（空行是链上噪音）。
+func TestRedactionRowIsWrittenOncePerRejection(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	ctx := context.Background()
+	makeTaskRow(t, core, "t-idem")
+
+	same := func() task.RejectionReport {
+		return task.RejectionReport{
+			Rejection: task.Rejection{TaskState: task.Created, ExecutionEvent: "execution_completed",
+				Reason: "矩阵外边沿；用户原文里有个 sk-abcdefghijklmnop0123456789"},
+			TaskID:         "t-idem",
+			NotificationID: "ntf-idem",
+			EventID:        "ev-idem",
+			AuditID:        "aud-idem",
+			PrincipalID:    "system", CorrelationID: "c-idem", CausationID: "c-idem",
+		}
+	}
+	if err := core.store.Write(ctx, func(tx *db.Tx) error { return core.reporter.Report(ctx, tx, same()) }); err != nil {
+		t.Fatalf("第一笔 §5.4 该提交成功: %v", err)
+	}
+	second := core.store.Write(ctx, func(tx *db.Tx) error { return core.reporter.Report(ctx, tx, same()) })
+	if second == nil {
+		t.Error("重放同一批 id 居然提交成功了 —— 派生 id 没起到「靠 UNIQUE 挡重放」的作用，归因行数迟早会虚高")
+	}
+	if n := countAuditAction(t, core, "redaction.execution_failed"); n != 1 {
+		t.Errorf("归因行应有 1 行，实际 %d 行（重放的那笔必须整体回滚）", n)
+	}
+	if n := countAuditAction(t, core, "execution_failed"); n != 1 {
+		t.Errorf("§5.4 主行应有 1 行，实际 %d 行", n)
+	}
+	if n := countRowsBy(t, core, `SELECT count(*) FROM notifications WHERE id = 'ntf-idem'`); n != 1 {
+		t.Errorf("通知应有 1 行，实际 %d 行", n)
+	}
+	// 反向对照：Reason 里没有可脱敏内容时，RecordRedaction 必须**不写行**（空归因行是噪音，§2.2）。
+	if err := core.store.Write(context.Background(), func(tx *db.Tx) error {
+		rec := same()
+		rec.TaskID, rec.NotificationID, rec.EventID, rec.AuditID = "t-idem", "ntf-benign", "ev-benign", "aud-benign"
+		rec.Reason = "纯矩阵文案"
+		return core.reporter.Report(context.Background(), tx, rec)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := countAuditAction(t, core, "redaction.execution_failed"); n != 1 {
+		t.Errorf("没有命中的那笔不该写归因行，实际共 %d 行", n)
+	}
+}
+
+// TestTheTwoRedactionHitShapesStayInStep 是主控②要的那条交叉一致性用例（test 规矩 4 那把尺子）：
+// `db.RedactionHit` 与 `audit.RedactionHit` 是 §0 依赖方向逼出来的两份同形结构，
+// 我这里靠搬运同步 —— 所以**任一侧单独漂（改名、加字段、换 Kind 词表）都必须报红**，不能靠注释求同步。
+func TestTheTwoRedactionHitShapesStayInStep(t *testing.T) {
+	// 形状级：字段名与字段种类逐个对，多一个少一个都算漂。
+	dbType, auditType := reflect.TypeOf(db.RedactionHit{}), reflect.TypeOf(audit.RedactionHit{})
+	if dbType.NumField() != auditType.NumField() {
+		t.Fatalf("两份命中结构的字段数已经不同：db %d 个、audit %d 个", dbType.NumField(), auditType.NumField())
+	}
+	for i := 0; i < dbType.NumField(); i++ {
+		a, b := dbType.Field(i), auditType.Field(i)
+		if a.Name != b.Name || a.Type.Kind() != b.Type.Kind() {
+			t.Errorf("第 %d 个字段漂了：db.%s(%s) vs audit.%s(%s)", i, a.Name, a.Type.Kind(), b.Name, b.Type.Kind())
+		}
+	}
+
+	// 值级：同一批输入喂给两侧，搬运必须一字不差。
+	cols := []string{"details_json", "body", "pid"}
+	args := []any{`{"note":"sk-abcdefghijklmnop0123456789"}`, "token=ghp_AAAAAAAAAAAA", int64(7)}
+	values, hits, err := db.Scrub("audit_entries", cols, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("这批输入一个命中都没有 ⇒ 下面所有断言都是空转（规则或夹具漂了）")
+	}
+	mapped := toAuditHits(hits)
+	if len(mapped) != len(hits) {
+		t.Fatalf("搬运丢了命中：%d → %d", len(hits), len(mapped))
+	}
+	for i, h := range hits {
+		m := mapped[i]
+		if h.Column != m.Column || h.Match != m.Match || h.Count != m.Count || string(h.Kind) != string(m.Kind) {
+			t.Errorf("第 %d 条命中搬样不保真：db=%+v audit=%+v", i, h, m)
+		}
+	}
+	for i, c := range cols {
+		if c == "pid" && values[i] != int64(7) {
+			t.Errorf("非文本列被改了：pid=%v", values[i])
+		}
+	}
+}
+
+func countAuditAction(t *testing.T, c *Core, action string) int {
+	t.Helper()
+	var n int
+	if err := c.db.Read.QueryRow(`SELECT count(*) FROM audit_entries WHERE action = ?`, action).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func countRowsBy(t *testing.T, c *Core, q string) int {
+	t.Helper()
+	var n int
+	if err := c.db.Read.QueryRow(q).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // TestWiredAnchorCounterIsAttached 钉 T-64① 里我能证的那一半：计数器建出来了、锚点路径在数据目录下、

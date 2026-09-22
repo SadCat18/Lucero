@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -816,6 +817,154 @@ func TestFakeAdapterDeliveryModesOnTheWire(t *testing.T) {
 }
 
 // INTERNAL 且不崩、不装懂。断言全打在 Degrade()/Symbol() 自己的返回值上（T-29）。
+// TestFakeAdapterModelSelectLegs T-103（契约② §4 的 CO-36 定形）：`model/select` 的三条拒绝腿
+// 加一条正例，全打在 FakeAdapter **真子进程**的线上回话上。
+//
+// 判据见 **契约② §4 判据表 MS**（MS-1~MS-6；15:2x 由本文件注释镜像进本文，本体以契约为准，
+// 这里不再抄一份免得两处真相）。状态列是主控 15:18:51→15:19:38 逐条实跑标定的，不是抄我自述。
+//
+// 两点只属于"怎么把它跑起来"、不是判据，所以留在代码侧：
+// ① 旗标只管 MS-1~MS-5（这五个要走真子进程，默认 SKIP：一次 build 的钱不该让每次 `./test/...` 都付）。
+//
+//	**MS-6（`TestModelSelectShapeMatchesContract`）不碰旗标、常跑** —— 它判的是 Core 自己的类型形状，
+//	没有子进程可起。别把"这条要旗标"写成整张表的性质：我 15:5x 那版就是这么误标过一次，
+//	后果是下一个人把 MS-6 的绿也算成"没跑过的那一半"。
+//	`-run` 是前缀匹配，**不带 `-v` 看不见那行 SKIP、包照样报 ok** —— "计数命令假绿"的现场版。
+//
+// ② MS-4 的两个取值都**当场从对端问来**（`session/create` + `model/list`），不写死 fixture：
+//
+//	写死等于把实现方的表抄进判据，对端换 fixture 时我会红一条根本不存在的错。
+func TestFakeAdapterModelSelectLegs(t *testing.T) {
+	f, err := startFakeAdapter(t)
+	if err != nil {
+		t.Skipf("blocked: %v", err)
+	}
+	if e := f.initialize(hello()); e != nil {
+		t.Skipf("FakeAdapter 握手不通，model/select 判据跑不到；实测原文：%v", e)
+	}
+	// 会话与模型都问对端要（MS-4 的正例原料，也是 MS-3 的"合法 offer"边）
+	created, err := f.request("session/create", map[string]any{"client_request_id": "crid-ms-1"})
+	if err != nil || created.Error != nil {
+		t.Fatalf("session/create 拿不到会话：err=%v frame=%v", err, created)
+	}
+	var cs struct {
+		RemoteSessionID string `json:"remote_session_id"`
+		Created         bool   `json:"created"`
+	}
+	if err := json.Unmarshal(created.Result, &cs); err != nil || cs.RemoteSessionID == "" {
+		t.Fatalf("session/create 的回执里没有 remote_session_id：%s（%v）", created.Result, err)
+	}
+	ml, err := f.request("model/list", map[string]any{})
+	if err != nil || ml.Error != nil {
+		t.Fatalf("model/list: err=%v frame=%v", err, ml)
+	}
+	var ls struct {
+		Models []struct {
+			ModelKey string `json:"model_key"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(ml.Result, &ls); err != nil || len(ls.Models) == 0 {
+		t.Fatalf("model/list 给了 0 个模型（%s）⇒ 正例无原料", ml.Result)
+	}
+	offered := ls.Models[0].ModelKey
+
+	cases := []struct {
+		name   string
+		params map[string]any
+		want   adapter.ErrorCode // 0 = 期望这一发被接受
+	}{
+		{name: "MS-1a 缺 model_key", params: map[string]any{"remote_session_id": cs.RemoteSessionID}, want: adapter.ErrInvalidParams},
+		{name: "MS-1b 缺 remote_session_id", params: map[string]any{"model_key": offered}, want: adapter.ErrInvalidParams},
+		{name: "MS-2 未知会话", params: map[string]any{"remote_session_id": "no-such-session", "model_key": offered}, want: adapter.ErrorCode(-32006)},
+		{name: "MS-3 模型不在 offer 里", params: map[string]any{"remote_session_id": cs.RemoteSessionID, "model_key": "model-nobody-offers"}, want: adapter.ErrCapabilityUnavailable},
+		{name: "MS-4 正例", params: map[string]any{"remote_session_id": cs.RemoteSessionID, "model_key": offered}, want: 0},
+	}
+	seen := map[string]adapter.ErrorCode{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := f.request("model/select", tc.params)
+			if err != nil {
+				t.Fatalf("model/select 没有回话: %v", err)
+			}
+			if tc.want == 0 {
+				if res.Error != nil {
+					t.Errorf("正例被拒：%s ⇒ %v（对端自己 offer 的模型 + 自己刚建的会话）", tc.params, res.Error)
+					return
+				}
+				// 契约 §4 CO-36 定形："回执同形状"。多带一个布尔就是第二真相。
+				var keys map[string]json.RawMessage
+				if err := json.Unmarshal(res.Result, &keys); err != nil {
+					t.Fatalf("回执解不开：%s", res.Result)
+				}
+				if len(keys) != 2 || keys["remote_session_id"] == nil || keys["model_key"] == nil {
+					t.Errorf("回执形状 = %s，期望恰是 {remote_session_id, model_key}（§4 定形：回执同形状）", res.Result)
+				}
+				var echo struct {
+					RemoteSessionID string `json:"remote_session_id"`
+					ModelKey        string `json:"model_key"`
+				}
+				_ = json.Unmarshal(res.Result, &echo)
+				if echo.RemoteSessionID != cs.RemoteSessionID || echo.ModelKey != offered {
+					t.Errorf("回执回显 (%q,%q)，期望 (%q,%q)", echo.RemoteSessionID, echo.ModelKey, cs.RemoteSessionID, offered)
+				}
+				t.Logf("MS-4 绿边：会话 %q + 模型 %q ⇒ %s", cs.RemoteSessionID, offered, res.Result)
+				return
+			}
+			if res.Error == nil {
+				t.Errorf("该拒的没拒：%v ⇒ 回执 %s", tc.params, res.Result)
+				return
+			}
+			if res.Error.Code != tc.want {
+				t.Errorf("%v 得到 code=%d，期望 %d（%v）", tc.params, int(res.Error.Code), int(tc.want), res.Error)
+			}
+			seen[tc.name] = res.Error.Code
+			t.Logf("%s ⇒ code=%d %v", tc.name, int(res.Error.Code), res.Error.Message)
+		})
+	}
+	// MS-5：三条拒绝腿不许塌成同一个码 —— 那是三种不同的用户结论。
+	if a, b := seen["MS-2 未知会话"], seen["MS-3 模型不在 offer 里"]; a != 0 && b != 0 && a == b {
+		t.Errorf("MS-5：未知会话与未知模型都是 %d，§4.1 要求两处门不混", int(a))
+	}
+	if a, b := seen["MS-1a 缺 model_key"], seen["MS-3 模型不在 offer 里"]; a != 0 && b != 0 && a == b {
+		t.Errorf("MS-5：缺参数与不支持同一个码 %d ⇒ Core 会一直改参数而这一轮永远跑不起来", int(a))
+	}
+}
+
+// MS-6 —— 契约形状 ↔ Core 侧类型互校（§4 的 CO-36 定形说"请求 {remote_session_id, model_key}、
+// 回执同形状"；上面 MS-4 已经从**线上**钉住了对端的形状，这一条钉的是 Core 自己的类型有没有跟着长歪）。
+// 两条腿：字段名集合要恰是那一对；json tag 不许带 omitempty —— 带了就允许"省略"这第三种"没有"，
+// 正是 §4 幂等/同步游标那两条裁定要收掉的形状。
+// 注意：这两个类型 14:01 才出现在 `internal/adapter/send.go`（T-102② 那半件，此刻尚未提交）。
+// 所以它红的时候先按 T-68 查 mtime 分清"在制品"与"回归"，别急着报给别人。
+func TestModelSelectShapeMatchesContract(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prob any
+	}{
+		{name: "请求 ModelSelectParams", prob: adapter.ModelSelectParams{}},
+		{name: "回执 ModelSelectResult", prob: adapter.ModelSelectResult{}},
+	} {
+		typ := reflect.TypeOf(tc.prob)
+		got := map[string]string{}
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			tag := strings.Split(f.Tag.Get("json"), ",")[0]
+			if tag == "" || tag == "-" {
+				continue
+			}
+			if strings.Contains(f.Tag.Get("json"), "omitempty") {
+				t.Errorf("%s 的 %s 带 omitempty ⇒ 键可省略 = 第三种\"没有\"（§4 明令收掉的形状）", tc.name, f.Name)
+			}
+			got[tag] = f.Name
+		}
+		if len(got) != 2 || got["remote_session_id"] == "" || got["model_key"] == "" {
+			t.Errorf("%s 的线上字段 = %v，期望恰是 {remote_session_id, model_key}（§4 CO-36 定形）", tc.name, got)
+			continue
+		}
+		t.Logf("MS-6 %s ⇒ %v", tc.name, got)
+	}
+}
+
 // TestUnknownErrorCodeDegradesToInternal T-45⑤：Core 收到 §15.1 之外的码时必须降级为
 // INTERNAL 且不崩、不装懂。断言全打在 Degrade()/Symbol() 自己的返回值上（T-29）。
 func TestUnknownErrorCodeDegradesToInternal(t *testing.T) {

@@ -117,6 +117,12 @@ var denyKeys = sync.OnceValue(func() map[string]bool {
 // this package emits (see TestAuditRowsThisPackageWritesAreNotScrubTargets);
 // Append does not reject on it, because refusing a row is enforcement, and
 // enforcement belongs to db.
+//
+// §2.2.1 sharpened what the answer means rather than replacing it: Chain now runs
+// the injected Scrub before it seals, so a wired caller seals over the bytes that
+// land. Where Scrub is still nil — which is every caller until cmd/core binds it
+// to db's implementation — a "yes" here is precisely the §2.2.1 defect for that
+// row. Ask before writing free text into details_json.
 func ScrubRisk(raw string) (bool, error) {
 	res := patterns()
 	if res == nil {

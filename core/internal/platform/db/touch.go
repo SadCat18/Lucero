@@ -386,16 +386,17 @@ func (tx *Tx) appendEvent(ev EventDraft, a AggregateKind, id string, version int
 	return nil
 }
 
+// auditRows owns its attribution elsewhere: for this table the hit records come
+// from the pre-seal db.Scrub (契约 §2.2.1 item 1), so the mandatory re-scrub
+// below only has to guarantee the bytes, never count the same key a second time.
+const auditRows = "audit_entries"
+
 func (tx *Tx) scrubArgs(table string, cols []string, args []any) ([]any, error) {
-	out := make([]any, len(args))
-	for i, v := range args {
-		s, err := redactValue(table+"."+cols[i], v, tx.hits)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = s
+	sink := tx.hits
+	if table == auditRows {
+		sink = newHits()
 	}
-	return out, nil
+	return scrubArgsInto(sink, table, cols, args)
 }
 
 func (d *DB) aggregateTable(a AggregateKind) (string, error) {

@@ -287,10 +287,12 @@ func TestFakeAdapterHealth(t *testing.T) {
 		t.Errorf("our own health reply is illegal: %v", err)
 	}
 
-	// session/push is the §6.6 method this build has not grown: it has no §4 row yet and
-	// CO-25 still owes it a turn_ref story, so wiring it now would be code ahead of the
-	// contract. (Every §4 C->A name is served as of REQ-T8's close, which
-	// TestFakeAdapterServesEveryContractMethod now enforces instead of this sentence.)
+	// session/push is withdrawn for v0.1 by CO-40 (contract ② §4.0): it is an A->C notice,
+	// and since §4.2 裁定 ① every notification carries a Core-issued turn_ref, a flow Core
+	// never requested has no ticket to echo - a deadlock, not a wording gap. So this is a
+	// decision being guarded, not a to-do: an accidental implementation would reopen the
+	// attribution model that was just closed. (Every §4 C->A name is served as of REQ-T8's
+	// close, which TestFakeAdapterServesEveryContractMethod enforces.)
 	// The assertion
 	// used to sit on session/list, which §10 now requires and this build serves.
 	unbuilt := call(t, p, "3", "session/push", struct{}{})

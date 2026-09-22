@@ -393,7 +393,7 @@ func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
 			return nil, err
 		}
 	}
-	return t, f.drainQueue()
+	return t, nil
 }
 
 // evidence emits turn/claimed then turn/dispatched: "the Adapter took the job" and
@@ -451,8 +451,17 @@ func (f *fake) drainQueue() error {
 
 // finish is §6 规则 1's one mandatory signal. It names the turn by turn_ref only:
 // execution_id stays off the four output notifications (§6 规则 5, §4.2 裁定 ①).
+//
+// It is also CO-25's drain point (T-110, 14:46): §5 says a queued send waits "until the
+// current turn ends", and this frame is the only end a Provider reports. Draining on the
+// next send instead - what this file used to do - strands a queued prompt in any session
+// nobody sends to again, and a stranded queue is invisible: the reply already said
+// "queued, position 1", so every symptom reads as success.
 func (f *fake) finish(t *turn, code string) error {
-	return f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnFinished, ResultCode: code})
+	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnFinished, ResultCode: code}); err != nil {
+		return err
+	}
+	return f.drainQueue()
 }
 
 func (f *fake) notice(t *turn, s *adapter.StreamFrame) error {

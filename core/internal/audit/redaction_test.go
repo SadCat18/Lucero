@@ -386,3 +386,89 @@ func TestRedactionDetailsRejectsUnattributableHits(t *testing.T) {
 }
 
 func TestCanonicalKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"Authorization": "authorization",
+		"x-api-key":     "xapikey",
+		"apiKey":        "apikey",
+		"session_key":   "sessionkey",
+		"Set-Cookie":    "setcookie",
+		"risk_level":    "risklevel",
+	} {
+		if got := CanonicalKey(in); got != want {
+			t.Errorf("CanonicalKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// entry_hash covers details_json, and the enforcement point rewrites that column
+// on the way in. So every details shape this package seals MUST be one the
+// redactor leaves alone, or an honest row breaks the chain it belongs to.
+//
+// The risk here is subtle in a way that only a case like this catches: the
+// redaction row names the rules that fired, so a rule name is a string that
+// looks like its own pattern. Add a DenyKey called "pattern", or a pattern that
+// matches its own source, and this goes red on the spot rather than after a
+// production row has already made the audit log unreadable.
+func TestAuditRowsThisPackageWritesAreNotScrubTargets(t *testing.T) {
+	r := Rules()
+
+	hits := make([]RedactionHit, 0, len(r.Patterns)+len(r.DenyKeys))
+	for _, p := range r.Patterns {
+		hits = append(hits, RedactionHit{Column: "approvals.request_json", Kind: HitPattern, Match: p, Count: 1})
+	}
+	for _, k := range r.DenyKeys {
+		hits = append(hits, RedactionHit{Column: "projects.dsn_json", Kind: HitKey, Match: k, Count: 2})
+	}
+	redactionDetails, err := RedactionDetails(hits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyDetails, err := RedactionDetails(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, raw string
+	}{
+		{"approval entry row", `{"schema":1,"approval_id":"01abc","state":"APPROVED"}`},
+		{"grant-free resolution", `{"schema":1,"approval_id":"01abc","state":"REJECTED"}`},
+		{"redaction row naming every rule", redactionDetails},
+		{"redaction row with no hits", emptyDetails},
+		{"§5.4 rejection shape", `{"schema":1,"reason":"approval required","counts":{"denied":3}}`},
+	} {
+		canonical, err := canonicalJSON(tc.raw)
+		if err != nil {
+			t.Fatalf("%s: canonicalJSON: %v", tc.name, err)
+		}
+		risk, err := ScrubRisk(canonical)
+		if err != nil {
+			t.Fatalf("%s: ScrubRisk: %v", tc.name, err)
+		}
+		if risk {
+			got, _ := ScrubRisk(canonical)
+			t.Errorf("%s would be rewritten by the redactor (%v): %s — the sealed hash would not match the stored bytes",
+				tc.name, got, canonical)
+		}
+	}
+
+	// The detector has to actually fire, or the loop above proves nothing.
+	for _, tc := range []struct{ name, raw string }{
+		{"pattern in a value", `{"note":"see sk-ABCDEFGHIJKLMNOPQRST"}`},
+		{"deny key as a field", `{"token":"abc123"}`},
+		{"deny key nested", `{"ctx":{"connection_string":"postgres://x"}}`},
+		{"deny key inside an array", `{"steps":[{"api_key":"x"}]}`},
+	} {
+		risk, err := ScrubRisk(tc.raw)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !risk {
+			t.Errorf("%s: ScrubRisk said the redactor would leave it alone", tc.name)
+		}
+	}
+	// An empty object is the floor: never a false positive on nothing.
+	if risk, err := ScrubRisk(`{}`); err != nil || risk {
+		t.Errorf("ScrubRisk({}) = %v %v, want false nil", risk, err)
+	}
+}

@@ -3,7 +3,7 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-20T12:23+08:00
+LAST_UPDATED: 2026-09-21T15:24+08:00
 
 ## Objective
 
@@ -32,16 +32,192 @@ LAST_UPDATED: 2026-09-20T12:23+08:00
 
 ## Current checkpoint
 
-- Stage: T-33 已落地——`MigrateFS` 保留但理由改为可测性，embed 脚手架删净，5 条 FS 用例走 `fstest.MapFS`
-- Status: complete —— REQ-A4 随 v0.1 撤回内嵌而消解（不再需要主控拍板），T-27 的接缝亦已由 audit 闭环
-- Last verified action: scoped 门禁 → 2 包 ok、`go vet` VET_OK；
-  收尾全仓 `go test ./internal/... -count=1` → 11 ok / 1 红（`internal/process`，adapter 实时编辑中，
-  相隔 20 秒两次报错内容不同可证，非本角色）
-- Next action: 无待办；仅一条待主控一句话确认——`MigrateFS` 现已零外部调用方，保留导出还是收成包内 `migrateFS`
+- Stage: T-115 两侧一次改完（Scrub 带 hits + audit_entries 二扫丢弃型收集器），三用例 + 双变异各打各层
+- Status: complete
+- Last verified action: `go build ./...` exit 0；`go vet` VET_OK；
+  **收尾全仓 `go test ./internal/... -count=1` → 12 个包全 ok**；变异标记 0 命中；
+  `git status --short` 本角色范围 = 2 个 M + 2 个新测试文件，无越界
+- Next action: 无待办；vault 豁免那族一致性隐患按主控令留待单独一轮，不阻塞本角色
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-115 / REQ-A11 已交付（两侧一次改完，不留半截）**：
+  1. `Scrub` 现按契约定稿返回 **`([]any, []RedactionHit, error)`** —— 收集器不再被丢弃，
+     audit 在密封前就拿到归因。实现仍是把 `Tx.scrubArgs` 与 `Scrub` 共同委托到
+     `scrubArgsInto`，**全项目只有这一份脱敏代码**（§2.1 分工未破）。
+  2. **对 `audit_entries` 这张表，`Tx.Append` 内的二次 scrub 换成丢弃型收集器**
+     （`touch.go` 里按表名分流，注释点明归因归密封前那次）。非 `audit_entries` 的表照旧在事务内累计，
+     已由 `TestOtherTablesStillAccumulateHits` 反向钉住，防止我把豁免做宽。
+  3. 三条用例落地（§2.2.1 ①②③）：`TestAuditEntryAttributionIsCountedOnce` —— 预 Scrub 拿到
+     pattern+key 两类命中、`Tx.Append` 内二扫**返回 0 条命中**、合并后 key 计数恰为 1、
+     落库 `details_json` 实测 `{"note":"the header was [REDACTED]","token":"[REDACTED]"}` 零明文；
+     `TestScrubIsByteStable` 幂等性质继续成立并新增"命中含 key 与 pattern 各至少一条"；
+     `TestScrubFailsClosedAndValidates` 守 fail-closed 与列/参数数校验。
+  - **两个变异各打各的层**：① 把分流改回 `sink := tx.hits` →
+    `the re-scrub inside Tx.Append accumulated [{audit_entries.details_json key token 1}]; audit_entries must not double-count`
+    （正是"key 记两遍"那一侧）；② 把 `Scrub` 退回 `return out, nil, nil` →
+    `Scrub returned hits []; want at least one "key" and one "pattern"`（"归因静默缩水"那一侧）。
+    还原后 `grep T115MUTA\|T115MUTB` **0 命中**，`.scratch/db/` 连目录清掉。
+  - **一致性隐患按令未动**：`walk` 的 `vault://` 豁免与 `redactValue` 的 `case string` 提前分支同口径那族，
+    主控记为待裁、要求别顺手改 → 本轮一行未碰。
+  - **契约不需要补文**：巡检 15:05 说"② 那一半契约零命中"，它 15:15 已自纠（搜的是 `不再累计`、
+    契约写的是 `不得再累计`）。我 15:22 自己读了第 341 行原文确认：
+    「**不得再累计 hits**（归因由密封前那次负责）。否则 key 命中会被记两遍 —— 同一个洞的相反方向。」
+    ⇒ 主控不欠这条文档，我也无需再提。**我这边收下同一课**：下"零命中"结论前先把同义写法都扫一遍，
+    并贴原文而不是只贴计数——我这几轮报别人的"零命中/未被引用"都只给计数，形状一样。
+  - **对齐取证（重要，因为签名改动可能打断并发中的装配）**：HEAD 里 `cmd/core` **没有** `db.Scrub` 调用；
+    工作树里 `cmd/core/rejections.go` 与 `internal/audit/append_test.go` 已按**三返回值**形式在用
+    （前者 `out, hits, err := db.Scrub(...)`，后者注入同形假函数）。
+    改完 `go build ./...` → **exit 0**，`go test ./internal/... `→ **12 包全 ok**，
+    即 `db` / `audit` / `cmd core` 三处对新签名已一致。中间那段是否红过我不判定（无法回溯），
+    只报此刻的实测。
+- **T-107 / REQ-A10 已交付本角色的那两件**（第 2 件 `audit.Chain` 的 Scrub→Seal→Insert 在 audit 包里，未碰）：
+  1. **导出唯一一份脱敏实现的入口**：`db.Scrub(table string, cols []string, args []any) ([]any, error)`。
+     做法是把原 `Tx.scrubArgs` 的函数体抽成 `scrubArgsInto(h *hits, …)`，`Tx.scrubArgs` 与 `Scrub`
+     各一行委托过去 → **全项目仍只有一个脱敏器**（§2.1 分工没破）。
+     `Tx.Append` 内部那次 scrub **原样保留**当纵深防御，行为未改。
+     改前实测确认主控那句：`grep -h "^func [A-Z]" redact.go` 只有 `InitRedaction`（入参校验，不是脱敏入口）。
+  2. **常驻不变量用例** `TestScrubIsByteStable`：同一批字节二次 `Scrub` 必须逐字节相同，打在 `Scrub`
+     返回值上；覆盖 map 载荷、预序列化 JSON 串、含 Bearer/sk 的自由文本、干净 `vault://` 引用、
+     `int64` 与纯文本直传，并额外比 `reflect.TypeOf` 防"类型偷偷变了"。
+     配套 `TestScrubFailsClosedAndValidates`：未 `InitRedaction` 时报错、列数与参数数不符时报错。
+  - **变异验证**（把 `encode` 输出包一层 `[...]` 制造非幂等）→ 用例精确打出两遍的差异
+    `pass1=[{"api_key":…}]` vs `pass2=[[{"api_key":…}]]` → FAIL；还原后 `grep T107MUTANT` **0 命中**、
+    用例转绿，`git status` 本角色范围只剩 `M redact.go`、`M touch.go`、`?? scrub_test.go` 三个应有的改动。
+  - **⚠ 探针实测出一条要让 audit/test 与主控知道的后果**（探针文件已按精确名删除并证零残留）：
+    `Scrub` 按契约建议签名**不返回命中记录**，而 pattern 命中是"值驱动"、deny-key 命中是"键驱动"，
+    所以 audit 采用 Scrub→Seal→Insert 之后，`Tx.Append` 里那次再扫一遍**只会重新记上 key 命中，
+    pattern 命中永久丢失**：
+    ```
+    不预 Scrub : [{Kind:pattern Match:(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,} Count:1} {Kind:key Match:token Count:1}]
+    预 Scrub 后: [{Kind:key Match:token Count:1}]
+    ```
+    这些计数要进 `audit_entries.details_json` 并被 `entry_hash` 覆盖 —— 属于 REQ-A10 同类缺陷的另一面
+    （字节对了，归因计数静默缩水）。**最小解**：`Scrub` 多返回一份命中
+    （`func Scrub(...) ([]any, []RedactionHit, error)`），audit 合并两份即可，我这侧约三行改动。
+    但它与 §2.2.1 第 1 条刚定文的签名不一致，**我没有擅自改**，等主控一句话裁定。
+- **T-72 已并入收尾协议（规则采纳，未改代码/测试）**：
+  ① 交回时除测试输出外，默认附一条 `cd /d/Project/Lucero && git diff --stat HEAD -- <我的路径>`；
+     基线取当轮最新快照 `git log -1 --format=%h`，**不把哈希写死**（我此前几轮的证据命令里钉的是
+     `900038d`，那是当时的基线、现已是 `cd46e42`，正好是这条规矩要防的事）。
+     同时记牢它的边界：**diff 只证"某些文件我没动"，不证"我没改坏别人"**，后者靠最后一次全包重跑。
+  ② 结构性编辑**禁止拿 `## ` 行当锚点**，改完立刻跑归属自检（本节结构复查已计入该自检）。
+  **本轮当场用新形状取到的证据**：`git log -1 --format=%h` → `cd46e42`；
+  `git diff --stat HEAD -- core/internal/platform/ core/internal/eventjournal/ core/migrations/` → **空输出**；
+  `git status --short` 同范围 → **空输出**。即本角色全部产物（含 000003 迁移、四个源文件、六个测试文件）
+  已由主控提交，**当前与基线逐字节相同、零未提交改动**。
+- **T-66 已并入收尾协议（只写规则，未改代码/测试）**——变异验证的"备份-回滚"硬规矩：
+  ① 备份只落绝对路径 `D:\Project\Lucero\.scratch\db\<具名文件>`；
+  ② 回滚后**必须证明变异版不在盘上**（`grep` 一个只有变异版才有的标记串并贴出 0 命中，或 `diff` 与库内版本一致）；
+  ③ 拿不到这条证据就**不许报"变异已还原"**；
+  ④ 变异不许藏在早退后面——判据是"变异必须改变是否走到被验证的那段代码"。
+  **本角色当场回补了 ② 的证据**（此前几轮我只 grep 过"原句在不在"，那属于正向核对，
+  不满足新规矩要的"变异标记 0 命中"，所以按旧口径的"已还原"说法严格讲是证据不足）。
+  现在把今天用过的每一个变异标记串都查了一遍，`grep -rn -F`（范围 `core/internal/platform` + `core/internal/eventjournal`）：
+  ```
+  scrubbed := args                               0
+  tx.db.Read.QueryRowContext(ctx, q, args...)    0
+  PolicyCreated:     false                       0
+  "key:"+k                                       0
+  !--                                             0
+  ```
+  并加两道正向核对：`grep -c 'scrubbed, err := tx.scrubArgs' touch.go` → **4**、
+  `redact.go` 的 `return r.encode([]byte(t), column, h)` → **仍在**、
+  `grep -c '^ALTER TABLE' 000003_*.sql` → **3**。
+  **最硬的一条**：`git diff --stat HEAD -- core/internal/platform/ core/internal/eventjournal/`
+  只列出 `migrate.go`(±4)、`migratefs_test.go`(16)、`touch.go`(+85) 三个我本轮/上轮有意改的文件，
+  **`redact.go` 与 `events.go` 完全不在 diff 里 = 与库内版本逐字节相同**，
+  即我今日动过变异的两个文件回滚是干净的、没给下一轮留破坏态。
+  **④ 的自我判定**：我这三处变异都不早退、都改变被测路径的产物——guard 子句删除后失败信息是
+  `replay changed 1 rows`（走到了 UPDATE 并真的写了行）、deny-key 前缀改回后失败在
+  `Match still carries the "key:" prefix`（走到了 `h.add`）、JSON 短路那条打出
+  `smuggled a secret: {"zebra":1,...,"token":"super-secret-value"}`（走到了 encode 的调用点）。
+  **`settings` 写入口按主控裁定故意不开**（REQ-DB-2 待议），`narrowTables` 本轮复核仍只有
+  `idempotency_keys` 一张，无需我动。
+- **T-60 已接**：
+  - **"契约正文与 REQ 只用符号引用"并入收尾协议**：本文件 `## Coordination` 里原先给 backend 的
+    `core/api/http/tasks.go:301` 之类行号已全部改成符号（`claimIdempotency` / `sealIdempotency` /
+    `narrowTables` / `Tx.UpdateOnce`）。行号只保留在①带当场 `date` 的观察证据、②测试失败原文。
+  - **两处指针的归因我接受主控的更严判定**：`:172-173` 那处**从写下起就指着注释行**，
+    不是我那 3 行注释推歪的——我上一轮的"被我的注释推后 3"只对上了 `:156/:174` 那一组，
+    把另一处也一并算成行号漂移是我归因过宽。
+  - **顺手补掉一个真实的覆盖缺口**（不是为验收，是查 backend 用法时看到的）：
+    "已序列化 JSON 字符串"这条分支此前**没有任何用例走过 deny-key**。补
+    `TestUpdateOnceRedactsPreSerializedJSON`，并**变异验证命中在声称的那一层**：
+    把 `redactValue` 里 JSON 串的 `r.encode(...)` 短路成原样返回后 →
+    `a pre-marshaled payload smuggled a secret: {"zebra":1,"alpha":2,"token":"super-secret-value"}`，
+    恢复后 PASS。顺带产出上面那条键序规范化观察。临时探针文件按精确名删除、备份只落 `.scratch/db/`，
+    用完连目录一起清掉（`ls .scratch/db/` → 不存在）。
+- **T-57 已接（规则 + 契约对账）**：
+  - "加表白名单必须走 REQ 过主控"已写进收尾协议，并**落在诱发点本身**——`narrowTables` 上方的注释现在
+    明写这条，将来谁要在 map 里加表，第一行就会撞见它（未改任何行为）。
+  - **契约 §1.1.13 与代码逐条对账**：签名、白名单表与四个可写列、主键 `key`、聚合表先于白名单被拒、
+    guard 的"第一次 1 行 / 重放 0 行且回读不覆盖"语义、仍走脱敏、不发事件不取 version —— **全部与实现一致**。
+  - **两处引用需要主控改**（都不是语义问题，是指针问题）：
+    ① 原文"仍然跑脱敏（`:172-173`）"指的其实是函数上方的注释行，真正的调用是
+      `scrubbed, err := tx.scrubArgs(...)`；
+    ② 我这次插了 3 行注释，把你引的行号整体推后 3：**`narrowTables` 156→159、
+      `UpdateOnce` 174→177、聚合表守卫 175→178、scrubArgs 206→209**。
+    建议改用**符号引用**（`narrowTables`、`Tx.UpdateOnce`）而不是行号——你 13:5x 按实读写的行号
+    到我这里已经漂了一次，行号在契约里是易腐品。
+  - **`test` 那四条判据在 db 侧已各有通过用例**（14:29 实跑，可直接抄成它的断言，不必从零设计）：
+    ```
+    聚合表 error   → tasks.status refused: aggregate rows must go through Touch or Create
+    白名单外 error → settings.value_json refused: not in platform/db's narrow update whitelist
+    guard 不匹配   → 重放 RowsAffected=0 且 response_json 与首次逐字相同（用例直接比字符串）
+    落库已脱敏     → sealed response_json: {"body":"created","token":"[REDACTED]"}
+    ```
+    第三个用例（不发事件不取 version）另有 `TestUpdateOnceTakesNoVersionAndWritesNoEvent` 守着。
+- **T-48 / REQ-DB-1 交付：窄更新入口（三行原文，请主控折进 §1.1）**
+  1. **方法名**：`func (tx *Tx) UpdateOnce(table, id, guardCol string, guardVal any, setSQL string, args []any) (int64, error)`
+     —— 返回被改动的行数；`0` 表示"已被封存"，调用方据此把 `409 idempotency_replay` 换成"返回首次响应"。
+  2. **白名单**（写死在 `platform/db/touch.go` 的 `narrowTables`，**当前只一张**）：
+     `idempotency_keys`，主键 `key`，可 SET/可 guard 的列 = `state`、`response_json`、`updated_at`、`expires_at`。
+     `execution_leases`、`settings` 按主控取证（前者全仓非测试零命中、后者只有 `permission/source_sqlite.go:30` 的读）**不进**，
+     与 T-28③ 判 `policy_rules` 不建同一把尺子：没有生产消费者的入口就是投机件。
+  3. **拒绝条件**（四类，全部有用例）：非白名单表 → `not in platform/db's narrow update whitelist`；
+     **13 张聚合表（ADR-017 十张 + 000003 三张）即使将来被误加进白名单也再挡一层** → `aggregate rows must go through Touch or Create`；
+     白名单表内的非列（如 `request_hash`、`principal_id`）→ `is not allowed` / `is not a guardable column`；
+     SET 形态仍只认 `column = ?`（`state = 'COMPLETED'`、`state = ?; DROP TABLE …`、空串全拒）。
+     另外它**不取 version、不发事件**（不变量 c 的定义），但**脱敏照走**（`response_json` 正是会带密钥的那种列）。
+  - 形状上"首次完成即封存"是靠 `WHERE <pk> = ? AND <guardCol> <> ?` 表达的：
+     db **不认识 `COMPLETED` 这个词**，状态语义留在调用方，平台层只提供"条件成立才写、并告诉你写了几行"。
+  - 变异验证两条：删掉 guard 子句 → `replay changed 1 rows; want 0`；绕过 `scrubArgs` →
+     `unsupported type map[string]interface {}`（证明序列化与脱敏确实同一条路）。恢复后全绿。
+- **T-47 已并入收尾协议（硬规则）**：一次性产物只落 `D:\Project\Lucero\.scratch\db\`，
+  删除只删自己建的具体文件名，**永不对 `/tmp`、`%TEMP%`、`$env:TEMP` 做任何通配删除或清理**。
+  **本角色自曝**：前几轮我做变异验证时的 `.bak` 备份放在 `/tmp/`（`/tmp/r.bak`、`/tmp/ev.bak`、
+  `/tmp/touch.bak`、`/tmp/m3.bak`、`/tmp/redact.go.bak` 共 5 个），**只用 `rm` 删过这些我自己建的精确文件名，
+  从未跑过通配删除**，但按新规矩落点本身就是错的。本轮起改放 `.scratch/db/`（本次已用
+  `.scratch/db/touch.go.orig` 并删掉该单文件），`/tmp` 不再写入。
+  对主控那两句问话（@test/@frontend）与我无关，不代答。
+- **T-52 已并入收尾协议（只写规则，未改任何代码或测试）**：`*.bak` 也算一次性产物，只准进
+  `D:\Project\Lucero\.scratch\db\`；备份要么落自己角色目录，要么用带内容的唯一名；
+  只删自己建的具体文件名；**永不对 `/tmp`、`%TEMP%`、`$env:TEMP` 做通配删除或"清理"**。
+  `.bak` 不是证据物（证据是仓库源码现状 + 重跑输出），因此**不为其建任何保留/恢复机制**。
+  本角色的变异验证今后一律：备份 → `.scratch/db/<唯一名>` → 恢复后只删那一个具体文件。
+  **本轮当场核到的状态**（全部只读命令，13:41 由 `date` 取时）：
+  - `find core/internal/platform core/internal/eventjournal .scratch/db -name "*.bak"` → **零命中**；
+  - `ls .scratch/db/` → **空**（本轮用的 `.scratch/db/touch.go.orig` 已按精确文件名删掉）；
+  - `ls -la /tmp/*.bak` → 还剩 `ev2.bak`(11:57) 与 `ev3.bak`(12:52) 两个，**不是本角色建的**
+    （我历轮只建过 `/tmp/redact.go.bak`、`/tmp/m3.bak`、`/tmp/ev.bak`、`/tmp/touch.bak`、`/tmp/r.bak`，
+    且均已按精确文件名删除；命名递增序列 ev2/ev3 与主控 13:26 归给 adapter/frontend 的形态一致）。
+    **故我不碰它们**：不是我建的就不删，`/tmp` 更不做任何通配操作。仅如实上报供主控归并。
+- **T-44 已执行**：`MigrateFS` → 包内 `migrateFS`。`grep -h "^func (d \*DB) [A-Z]"` 现在只剩
+  `JournalMode` / `Close` / `Migrate` / `Write` 四个导出方法，公开面少一个无人调的 API。
+  5 条 FS 用例改调私有名即可（`platform/db` 六个测试文件全是 `package db` 同包）。
+  主控对 T-33 的自我纠正成立："保留"出自派发指令、不是契约③ §7，我上一轮把派发指令当成了契约依据 ——
+  以后凡引用契约，我先 `grep` 出原文行号再说话，不引用派发话术当契约条文。
+- **T-43 已并入收尾协议（硬规则）**：本文件任何时间戳，**写之前必须先跑 `date`**；没跑就只准写
+  "未计时（本机未跑 date）"。且**不重写历史时间戳**（那只会造出第二批不可信数字），
+  改为在文件顶部挂一条作废声明（已挂，见 Verification evidence 首段）。
+- **REQ-T3c 的 db 侧取证（修复本身在 audit，见 T-40）**：db 产出的 `Kind` **不存在为空或未知的路径**——
+  全包 `RedactionHit` 只有一处构造点（`redact.go:123`，在 `hits.add` 内），
+  而 `h.add` 只有两个调用点（`redact.go:144` 传 `HitPattern`、`:163` 传 `HitKey`），
+  两者都是包内字面量、**不接受调用方传入 Kind**。所以 audit 那道 `RedactionDetails` 校验
+  在 db→audit 这条线上是纵深防御，不是补我的漏；用例侧我另有两条 guard 守着
+  （`Match` 不得带 `key:` 前缀、`Kind` 必须是两值之一）。
 - **T-33（fs.FS 入口的理由改为可测性）**：`MigrateFS` 保留、公开形状不变，但文档注释里
   "给 go:embed 供数据"的说法已按主控 12:10 的撤回改掉，现在写明"v0.1 交付走
   `cmd/core -migrations <dir>`，本入口的存在理由是让测试用内存 FS 驱动真迁移器"。
@@ -216,9 +392,23 @@ LAST_UPDATED: 2026-09-20T12:23+08:00
   **零命中**（猜测已删），`TestStoreRedactsSecretsBeforeTheyLand` → **ok**，
   收尾全仓 `go test ./internal/... -count=1` → **12 个包全 ok**。
   即 §2.2 要求的"db 与 audit 同一轮改完"在本次达成，中间那次红只存在了约一分钟。
-- **REQ-A4（需主控拍板，本角色与 backend 都做不了）** 这轮的前提"`backend` 在 `core/cmd/core/` 建 `go:embed`
-  再把 `fs.FS` 传给我"**在 Go 里做不到**：`//go:embed` 的模式不能含 `..`（编译器实测
+- **REQ-DB-1 已闭环（给 backend，改用符号引用，按契约 §1.1 第 14 条不再给行号）**：
+  实读 `core/api/http/tasks.go` 的 `claimIdempotency` 与 `sealIdempotency`，backend 已把入口接对——
+  `sealIdempotency` 用 `UpdateOnce("idempotency_keys", key, "state", "COMPLETED", …)` 且
+  `n != 1 → errReplay`（0 行时事务回滚、不覆盖已封存响应），方向完全正确。此条无需 backend 再动。
+  **一条实测观察请 backend 注意**：平台层为跑 deny-key 会把 JSON 字符串解码后重新编码，
+  因此**落库字节的键序被规范化**（Go 对 map 按字典序输出）。实跑对照：
+  入 `{"zebra":1,"alpha":2,"token":"super-secret-value"}` →
+  存 `{"alpha":2,"token":"[REDACTED]","zebra":1}`。
+  语义等价但**与首次返回给客户端的原始字节不同**：若 `sealIdempotency` 首次返回 `string(body)`、
+  重放时由 `claimIdempotency` 回读存库值，同一请求两次拿到的 JSON 字节序不一致。
+  若下游有任何按字节/哈希比较（不是按语义比较）的地方会踩到；不改也大概率无害，请自行判定。
+  **加表白名单一律走 REQ**（契约 §1.1.13 已明写，本角色也在 `narrowTables` 上方注释就地提示）。
+- **REQ-A4（已消解，留此存照）** 我曾提"`core/migrations/embed.go` 该谁建"。
+  前提本身在 Go 里不成立——`//go:embed` 的模式不能含 `..`（编译器实测
   `pattern ../../../migrations: invalid pattern syntax`），只能取包目录自身或其子目录。
+  主控 T-33 裁定 **v0.1 不做迁移内嵌**，交付走 `cmd/core -migrations <目录>`，故无需任何人建 embed 文件；
+  `ls core/migrations/` 当场复核只有三个 .sql、无 `embed.go`（本角色从未建过）。
   三个可行解，都需要越出各自的边界，故请主控选：
   1. **`core/migrations/embed.go`**（`package migrations`，`//go:embed *.sql`）——最直白，
      但该目录本归本角色，且历史上"不在 migrations 建包文件"是主控的裁定；
@@ -251,6 +441,7 @@ LAST_UPDATED: 2026-09-20T12:23+08:00
 - `core/internal/platform/db/touch.go`（新建）— Write / Tx.Touch / Tx.Create / Tx.Append / 列白名单
 - `core/internal/platform/db/redact.go`（新建；T-27 改）— InitRedaction + 递归脱敏 + `RedactionHit{Column,Kind,Match,Count}`
 - `core/internal/platform/db/db_test.go`、`migrate_test.go`、`touch_test.go`（新建）
+- `core/internal/platform/db/update_test.go`（T-48 新建）— 封存一次、11 条拒绝、不取版本不发事件
 - `core/internal/eventjournal/events.go`、`events_test.go`（新建）
 - `core/migrations/000003_grant_policy_version.sql`（T-12 新建）— 三张可变表补 `version`
 - `core/internal/platform/db/migrate.go`（T-24 重构）— `Migrate` 走 `os.DirFS`，新增 `MigrateFS`，两偏差检查
@@ -263,12 +454,72 @@ LAST_UPDATED: 2026-09-20T12:23+08:00
 
 ## Verification evidence
 
-> **时间戳勘误**：本文件 12:23 之前的 `LAST_UPDATED` 与各段里的时刻（16:05、17:15、19:35 之类）
-> 是我**凭感觉写的，没跑过 `date`**，不可信，也不要拿去和账本对时。
-> 本机实际时钟由 `date '+%Y-%m-%dT%H:%M:%S%z'` 读得 **2026-09-20T12:22+0800**（主控消息里的
-> "12:10 撤回"与之一致，说明真实日期已是 09-20 而非 09-19）。今后本文件只记 `date` 的读数。
+> **时间戳作废声明（T-43 要求的写法，不重写历史）**：本文件 **12:23 之前的所有时间戳均为估写、一律作废**
+> ——那是我凭感觉写的、从未跑 `date`，不可用来对时或推因果。
+> 本机真值由 `date '+%Y-%m-%dT%H:%M:%S%z'` 读得：12:22:24 → 12:59:54，日期已是 **2026-09-20**。
+> 规则：本文件今后任何时刻，写之前先跑 `date`；跑不了就写"未计时（本机未跑 date）"。
 
 命令均在 `D:\Project\Lucero\core` 下执行。
+
+- **T-60 实测（时刻取自当场 `date`）**：
+  - 新用例 + 变异：`TestUpdateOnceRedactsPreSerializedJSON` 先 PASS；把 `redactValue` 中
+    JSON 串的 `return r.encode([]byte(t), column, h)` 短路为 `return t, nil` 后 →
+    `--- FAIL: ... a pre-marshaled payload smuggled a secret: {"zebra":1,"alpha":2,"token":"super-secret-value"}`；
+    恢复后 `grep` 确认该行回到原处、用例转绿。变异命中在声称的那一层，不是旁证。
+  - backend 用法实读：`sealIdempotency` 里 `n != 1 → errReplay`、`claimIdempotency` 在
+    `state == "COMPLETED"` 时回读 `response_json` —— guard 语义用对了，REQ-DB-1 对 backend 已无待办。
+  - 临时件纪律：备份写在 `.scratch/db/redact.go.t60`，恢复后按精确文件名删除，`.scratch/db/` 已不存在；
+    `/tmp` 本轮零写入、零删除。
+  - **收尾全仓 `go test ./internal/... -count=1` → 10 ok / 3 红**（15:04 前后）：
+    `internal/adapter`（`stream_test.go` 编译不过：`undefined: MethodMethodTurnClaimed` 等三个，
+    看着像 `Method` 前缀叠了两次的笔误）、`internal/process`（4 条用例红）、`internal/task`（1 条红）。
+    **三者均判为本角色之外且高度疑似实时编辑的瞬时态**，取证：
+    - 单独重跑 `go test ./internal/task/ -run TestResumeRefusesStatesThatWereNeverSuspended` → **ok**；
+    - 单独重跑 `./internal/adapter/` → 报的是**编译期 undefined**，与我包无关（`grep -l "UpdateOnce\|\.Touch(\|AggGrant"`
+      在 adapter/process 里零命中，只有 `internal/task` 用我的写入口，而它单独跑是绿的）；
+    - 我本轮改动只有 `touch.go` 的注释、`update_test.go` 的新用例与一次已恢复的 `redact.go` 变异，
+      无任何行为变化；scoped 门禁全程 2 包 ok。
+    → 三条红按"别人的包 + 瞬时态"上报，不归因本角色、也不替他们改。
+  - `TestUpdateOnceSealsResponseExactlyOnce` → PASS，封存后的真实列值：
+    `sealed response_json: {"body":"created","token":"[REDACTED]"}"`；首次 `RowsAffected=1`、
+    重放 `=0`，且重放后 `response_json` 与首次逐字相同（用例直接比对字符串）。
+  - `TestUpdateOnceRefusesEverythingElse` → 11 条全部被拒并打出各自的理由，摘三条：
+    ```
+    tasks.status refused: update on tasks: aggregate rows must go through Touch or Create
+    execution_leases.heartbeat_at refused: update on execution_leases is not allowed: it is not in platform/db's narrow update whitelist
+    idempotency_keys.request_hash refused: update idempotency_keys: request_hash is not a guardable column
+    ```
+    三条恶意 SET（`state = 'COMPLETED'` / `state = ?; DROP TABLE idempotency_keys` / 空串）全拒，
+    种子行仍在（`count=1`）。
+  - `TestUpdateOnceTakesNoVersionAndWritesNoEvent` → PASS：`event_journal` 行数前后不变。
+  - 变异验证两条（先证会红再恢复）：去掉 guard 子句 → `replay changed 1 rows; want 0`；
+    绕过 `scrubArgs` → `sql: converting argument $2 type: unsupported type map[string]interface {}, a map`。
+    恢复后 `grep` 确认 `scrubbed, err := tx.scrubArgs` 与 `AND " + guardCol + " <> ?` 两处原文回到位。
+- **T-48 / T-47 实测**（时刻由 `date` 读得：13:24、13:26）：
+  - `go vet ./internal/platform/... ./internal/eventjournal/...` → VET_OK；
+    scoped 门禁 → `ok platform/db 2.954s` / `ok eventjournal 0.657s`。
+  - 收尾全仓两次：第一次 11 ok / 1 红 `internal/process`，第二次 **12 ok**；
+    该包单独重跑两次均 `ok`（0.919s / 0.842s），且
+    `grep -rn "UpdateOnce\|idempotency_keys" --include=*.go internal/process` → **零命中** →
+    判为瞬时态（adapter 正在写该包），**不归因本角色、也不当别人的债报**。
+  - 导出面复查：`grep -h "^func (d \*DB) [A-Z]"` → `JournalMode`、`Close`、`Migrate`、`Write`；
+    新增的是 `*Tx` 上的 `UpdateOnce`（有真实消费者 backend，见 `core/api/http/tasks.go:157`）。
+  - `.scratch/db/` 存在且 `git check-ignore -v .scratch/db/x` → 命中 `.gitignore:31`。本轮所有临时件都在此，
+    `/tmp` 未再写入。
+- **T-44 / T-43 实测**：
+  - 导出面：`grep -h "^func (d \*DB) [A-Z]" internal/platform/db/*.go` →
+    `JournalMode`、`Close`、`Migrate`、`Write` 四个（`MigrateFS` 已不在其中）；
+    `grep -rn "MigrateFS" --include=*.go core/` 只剩测试函数名与错误文案，无调用方。
+  - `go vet ./internal/platform/db/` → VET_OK；scoped 门禁 → `ok platform/db 2.241s` /
+    `ok eventjournal 0.550s`、`gate_exit=0`。
+  - **收尾全仓 `go test ./internal/... -count=1`**（改名后最后一步）→ **12 个包全 ok、零 FAIL**，
+    含上一轮红的 `internal/process`（adapter 已收完，3.214s ok）。受影响方：**无**。
+  - Kind 取值面取证：`grep -n "h\.add(" internal/platform/db/*.go` → 仅
+    `redact.go:144`(HitPattern) 与 `redact.go:163`(HitKey)；
+    `grep -n "RedactionHit{" internal/platform/db/*.go` → 仅 `redact.go:115`(map 类型) 与
+    `redact.go:123`(唯一构造点，在 `add` 内)。即 db 侧无"空 Kind"产出路径。
+  - 时钟：`date '+%Y-%m-%dT%H:%M:%S%z'` 于本轮两次读得 **12:22:24** 与 **12:59:54**，
+    `date '+%A'` → Sunday，日期为 **2026-09-20**。
 
 - `D:/DevTools/go/bin/go.exe version` → `go version go1.27.1 windows/amd64`；`go env CGO_ENABLED` → `0`；
   `modernc.org/sqlite@v1.59.0` 已在 `D:\DevTools\go-data\mod`，全程未 `go get`/`go mod tidy`

@@ -10,7 +10,8 @@ import (
 // and every Adapter in the tree agree on it. §4.2 裁定 ① (2026-09-21 12:45) collapsed
 // it to one shape with no exception: every Adapter→Core notification carries the
 // ticket, and turn/claimed + turn/dispatched carry an execution_id *in addition*.
-// (§6 规则 5's table still words this as "四条"; the ruling supersedes it - CO-34.)
+// §6 规则 5 now states the same scope (aligned at CO-34's close, 14:39), so a reader
+// who goes to the contract first gets this list rather than the older "四条".
 func CarriesTurnRef(method string) bool {
 	switch method {
 	case MethodStreamDelta, MethodStreamItem, MethodStreamState,

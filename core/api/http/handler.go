@@ -103,6 +103,9 @@ type Config struct {
 	Tasks    TaskService
 	TaskList TaskLister
 	Store    TaskStore
+
+	// 注入时才挂 GET /api/v1/notifications（读侧一口，不需要 Store）。
+	Notifications NotificationLister
 }
 
 // NewHandler 装出 /api/v1 面：除 /health 外全部要求 Bearer；带 Origin 的外部请求 403；
@@ -110,6 +113,7 @@ type Config struct {
 func NewHandler(c Config) http.Handler {
 	mux := http.NewServeMux()
 	registerTaskRoutes(mux, c)
+	registerNotificationRoutes(mux, c)
 
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

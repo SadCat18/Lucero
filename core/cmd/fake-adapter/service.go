@@ -87,23 +87,6 @@ type modelListResult struct {
 	Models []modelRow `json:"models"`
 }
 
-// modelSelectParams picks up where §4's model/select row stops: that row names the
-// behaviour ("对已有会话切模型；不支持必须显式报错") and no payload fields at all
-// (CO-36), so the request keys off the only vocabulary this Adapter already
-// publishes - model/list's model_key - instead of inventing a second name for the
-// same thing.
-type modelSelectParams struct {
-	RemoteSessionID string `json:"remote_session_id"`
-	ModelKey        string `json:"model_key"`
-}
-
-// modelSelectResult echoes the pair it applied. It carries no "switched" boolean:
-// §4 has no such field, and an error reply is already the negative answer.
-type modelSelectResult struct {
-	RemoteSessionID string `json:"remote_session_id"`
-	ModelKey        string `json:"model_key"`
-}
-
 // approvalRow is §4's "载荷必须结构化": payload is an object, never a prose string,
 // because the Permission Engine has to route on it.
 type approvalRow struct {
@@ -310,13 +293,12 @@ func fixtureModels() []modelRow {
 // Reporting the last one as INVALID_PARAMS would tell Core to fix its params forever
 // without the run ever becoming possible.
 func (f *fake) modelSelect(req *adapter.Frame) error {
-	var p modelSelectParams
+	var p adapter.ModelSelectParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return f.reply(errReply(req, badParams(req.Method, err)))
 	}
-	if p.RemoteSessionID == "" || p.ModelKey == "" {
-		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInvalidParams,
-			Message: "model/select needs both remote_session_id and model_key (§4)"}))
+	if err := p.Validate(); err != nil {
+		return f.reply(errReply(req, err))
 	}
 	if _, ok := f.db.logs[p.RemoteSessionID]; !ok {
 		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrorCode(-32006),
@@ -330,7 +312,7 @@ func (f *fake) modelSelect(req *adapter.Frame) error {
 	// No model state is kept here: §4 has no read path that reports a session's model
 	// back, so storing it would be a field nothing can observe - the reply is the whole
 	// answer this method owes, and what the fake actually proves is the refusal shape.
-	return f.reply(result(req, modelSelectResult{
+	return f.reply(result(req, adapter.ModelSelectResult{
 		RemoteSessionID: p.RemoteSessionID, ModelKey: p.ModelKey}))
 }
 
@@ -469,10 +451,11 @@ func (f *fake) sessionStop(req *adapter.Frame) error {
 		NormalizedState: "STOPPING", Confidence: adapter.ConfidenceHigh}); err != nil {
 		return err
 	}
+	// No drain call here on purpose: finish is the queue's one drain point (CO-25 as
+	// T-110 ruled it), and a second one beside it would make this method pass the
+	// drain tests even if finish stopped draining - which is exactly what an earlier
+	// draft of this file did, and u1 caught it.
 	if err := f.finish(t, "CANCELLED"); err != nil {
-		return err
-	}
-	if err := f.drainQueue(); err != nil {
 		return err
 	}
 	return f.reply(result(req, sessionStopResult{Stopped: true, TurnID: t.turnID,
