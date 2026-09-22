@@ -83,9 +83,9 @@ GET  /api/v1/projects?cursor=&limit=     → 列表；GET/PATCH /api/v1/projects
 POST /api/v1/adapters/{key}/probe        → 触发握手+能力核定；GET /api/v1/adapters[/{id}]
 GET  /api/v1/adapters/{id}/capabilities  → 逐能力等级 + effective_backend + last_verified_at
 GET  /api/v1/models?adapter=             → 模型列表（含 parameter_schema_json）
-POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、按 remote_session_id 去重 upsert 本地行，
+POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、按 remote_session_id 去重 upsert 本地行，                                          → **09-23 03:3x 补派格**：盘上**没注册**（`/api/v1/adapters/` 对非 GET 回 405），此前不在任何派发序列里 ⇒ 排在 `:sync` 之后（它要真 Provider 读通道），归 `backend` + `adapter` 两侧。
                                           返回发现的 session id 列表（幂等：重复 discover 不产生新行）
-POST /api/v1/sessions/{id}:manage      → 置 managed（受管理会话才开同步与通知）
+POST /api/v1/sessions/{id}:manage      → 置 managed（受管理会话才开同步与通知）                                          → **09-23 03:3x 补派格**：盘上**没注册**（`sessions.go` 只有 GET `{id}` 与 `:sync`），此前不在任何派发序列里 ⇒ **它是纯 session 聚合的一次写（置 managed + 发 `session_managed`），不依赖 probe/Provider，归 `backend`，可以立刻做**（T-192）。
 GET  /api/v1/sessions?project=&cursor=&limit=
                                        → 列表（`project` = project_id 过滤）；GET /api/v1/sessions/{id} → 详情；
                                          GET /api/v1/sessions/{id}/messages?after_seq=
