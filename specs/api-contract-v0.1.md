@@ -281,6 +281,14 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 > `Start(ctx context.Context, adapterKey string) (io.ReadWriteCloser, error)`），握手用本包已有的
 > `NewHandshake`/`Negotiate`。**把真 `Supervisor` 递进来的那一步归 `backend` 的 `cmd/core`**，与 REQ-T12 同一条腿。
 
+> **`Probe` 必须自带期限（2026-09-22 22:4x 由实测钉出来，不是假想）**：两条 probe 用例在 `context.Background()` 下
+> **永久挂死**（现场栈：`Registry.Probe → exchange → Writer.Write → io.(*pipe).write` 停在 `select`），
+> 而第三条给了期限就能中断、却把原因报成 `write initialize: io: read/write on closed pipe` 而不是"到期限"。⇒ 两条硬要求：
+> ① **ctx 没带 deadline 时 `Probe` 自己加一个默认期限**，默认值必须是导出常量或包内具名常量（不许只存在于测试里）——
+> 调用方是 `api/http` 的 handler 线程，漏传期限就等于把一个卡住的 Adapter 变成一条永久挂住的 HTTP 请求；
+> ② **失败原因分层**：到期限 ⇒ 消息里必须出现"期限"这个原因，**不许拿底层管道错误冒充**
+> （`ADAPTER_UNRESPONSIVE` 的生产方是 Core 自己，归因写错了事后从 `details_json` 里翻不回来）。
+
 
 ## 8. 明确不做（v0.1）
 
