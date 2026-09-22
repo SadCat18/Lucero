@@ -243,8 +243,15 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 双向差集任一非空即红——这条今天还没有，见契约② 判据表 C8-11 同族的 T-135。
 
 > **「已登记 ≠ 有生产路径」**：登记进本目录只是允许该事件类型存在，不代表有代码会发它。
-> v0.1 已知有名字无生产者的两条：`policy_created` / `policy_updated`
-> （`permission` 只**读** `policy_rules`，全仓没有写路径；写 CRUD 判给 Wave-3，见账本 11:47 裁定）。
+> v0.1 已知有名字无生产者的**三条**：`policy_created` / `policy_updated`
+> （`permission` 只**读** `policy_rules`，全仓没有写路径；写 CRUD 判给 Wave-3，见账本 11:47 裁定）
+> **＋ `session_discovered`（主控 09-23 04:5x 实测补上，此前名单漏它）**：`internal/session/events.go`
+> 的 `EventDiscovered` 与 `internal/eventjournal/events.go` 的 `SessionDiscovered` 常量都在、合法集合里也在，
+> 可**全仓非测试码没有任何一处发它**（`grep -rn '"session_discovered"' core --include=*.go` 去掉 `_test.go`
+> 只剩那两条常量定义），且 `sessions` 表在非测试码里**没有任何写路径**（`session.Repository` 四个方法全读；
+> `Append("sessions"` 零命中）⇒ **§7 那条 `project_created → session_discovered → session_managed` 的第 2 步
+> 今天不可能真跑**。生产者那半其实已经在盘上：`cmd/fake-adapter/service.go` 按 §4 回 `session/list` 载荷，
+> 而 Core 侧零消费者 ⇒ 缺的只有 `sessions:discover` 把载荷落库这一步（活派在账本 T-198）。
 > 判据/评审时别把"事件目录里有这行"当成"该功能已具备"——`test` 的 lint 也不得据此要求存在性。
 
 
