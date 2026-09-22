@@ -299,45 +299,66 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
    不得只报"我这边绿了"。只新增 `AggregateKind` 常量**不是**破坏性的（Go 加常量不影响调用方）——
    破坏来自映射与校验行为的改变，别把两件事混为一谈。
 
-17. **REQ-DB-2 裁定（09-23 05:07）：非版本聚合的写入口 —— 版本住在事件流里，不住在行里。**
-    两个消费方在等同一条通道：① `process_instances` 的退出/崩溃改写（`process_exited`/`process_crashed`，
-    事件契约 §6 登记、`aggregate_type=process`）——今天 `cmd/core/dropaudit.go` 的 `RecordExit`/`RecordCrash`
-    **只能喊不能落**；② `core_ready`/`core_shutdown`——**`core` 根本没有表**。
+17. **REQ-DB-2 裁定（09-23 05:07 · 05:18 由巡检 05:14 的一问纠正两处，见文末"更正记录"）：非版本聚合的写入口 —— 版本住在事件流里，不住在行里。**
+    三个消费方在等同一条通道：① `process_started`（**建行**）；② `process_exited`/`process_crashed`（**改行**）；
+    ③ `core_ready`/`core_shutdown`（**`core` 根本没有表**）。
+    今天 `cmd/core/dropaudit.go` 的三格 `RecordStart`/`RecordExit`/`RecordCrash` **全部只出声不落库**——
+    这是 T-168（01:11）我自己下的令：那次 `RecordStart` 里有一条 `tx.Append("process_instances", …)`，
+    它同时犯了两件事（从 `cmd/core` 写别人的表、且 `Append` 不写事件 ⇒ `process_started` 静默丢掉），已被收回。
     REQ-DB-6 已裁"不进 `narrowTables`、也不给 `process_instances` 补 `version` 列"，本条回答"那到底走哪道门"。
     - **新增两个聚合类型**：`AggProcess AggregateKind = "process"`、`AggCore AggregateKind = "core"`。
-      **它们不进 `aggTable`（聚合→表）那张映射**，因而也不进 `aggTables` ⇒ `Append("process_instances", …)`
-      建行那条腿（`RecordStart`）**继续合法**（这条与第 10 条同向：进映射才是破坏性变更，我们故意不进）。
+      **它们不进 `aggTable`（聚合→表）那张映射**，因而也不进 `aggTables`（这条与第 10 条同向：进映射才是破坏性变更）。
+      **但"不进映射"绝不等于"可以继续用 `Append` 建行"**：第 12 条那句"故意不发事件的可变表"后面的
+      **"除 `process_started`/`process_exited`/`process_crashed` 三个外"是排除**，也就是这三件是**要发事件的事实**，
+      而 `Append` 恰恰不写事件 ⇒ **`process_instances` 的建行腿只能走下面第 ① 个入口，`Append` 对它不再是合法出口**
+      （`check_ownership.sh` 的 W13 那一族已经把"表名字面量出现在谁的包里"钉住了，这里补的是语义那一半）。
       取而代之，`platform/db` 里另立一张**独立登记表** `versionlessAgg = {process: "process_instances", core: ""}`，
       **加一项要过主控**（与 `narrowTables` 同口径）。
     - **版本号怎么来（本裁定的核心）**：`= 该聚合在 `event_journal` 里已有的事件条数 + 1`，
       即 `SELECT COUNT(*)+1 FROM event_journal WHERE aggregate_type=? AND aggregate_id=?`，**在同一事务内取**。
+      新建的行它自己就是第一条 ⇒ 序号天然是 1，与既有 `Create` 写死 `version=1` 的做法同形。
       **并发后果写明白、不许瞒**：两个并发事务会算出同一个序号 ⇒ 后提交者撞
       `UNIQUE(aggregate_type, aggregate_id, aggregate_version)` 而**整笔回滚**。这不是缺陷，**正是要的行为**：
       同一条状态边只允许落一次。调用方必须把"撞 UNIQUE"当作"这一格已被别人落过"来处置（幂等），
       **不许把它重试成第二个事件**——那等于把一次崩溃观察复制成两份事实。
-    - **两个入口**：
+    - **三个入口**（每一个都对应一种物理情形，少一个就会有人拿另外两个硬凑）：
       ```go
-      // 状态边：改一行 + 恰一条事件；没有 version 可靠，幂等闸就是"从哪个状态改走"。
+      // ① 建行 + 恰一条事件（`process_started`）；这张表没有 version 列，所以不复用 Create。
+      func (tx *Tx) CreateVersionless(a AggregateKind, id string,
+          columns []string, values []any, ev EventDraft) error
+      // ② 状态边：改一行 + 恰一条事件；没有 version 可靠，幂等闸就是"从哪个状态改走"。
       func (tx *Tx) TouchTransition(a AggregateKind, id, guardCol string, guardVal any,
           setSQL string, args []any, ev EventDraft) (int64, error)   // 0 = 这条边已落过，且**不插事件**
-      // 没有表的聚合（`core`）：只落事件。
+      // ③ 没有表的聚合（`core`）：只落事件。
       func (tx *Tx) AppendEventOnly(a AggregateKind, id string, ev EventDraft) error
       ```
+      **为什么不是"`Append` + `AppendEventOnly` 两步拼"**：那等于把"行与事件同生同死"从入口里挪到调用方的自觉，
+      而"忘了调第二个"正好就是 T-168 那次事故的形状——**入口存在的意义就是把这件事变成不可能**。
       `TouchTransition` 的 SQL 固定为 `UPDATE <table> SET <set> WHERE id = ? AND <guardCol> = ?`；
       **`guardCol` 逐表白名单**，v0.1 `process_instances` 只允许 `status`。
       **0 行 ⇒ 不插事件**是"行与事件同生同死"的唯一定义方式（否则重放一次就多一条事件，审计链长出幽灵迁移）。
-      两个入口都必须走既有 `appendEvent` ⇒ `Registered(ev.Type)` 与 REQ-B-1 的 `aggregate_type` 闸一并生效，
-      **不许绕过**；脱敏仍在密封之前（REQ-A10/A11），`setSQL` 参数与 payload 同其它入口一样过 `scrubArgs`/`redactValue`。
-    - **落点与顺序**：实现归 `db`（`internal/platform/db`）；`cmd/core` 那三格改走这两个入口归 `backend`；
-      **`adapter` 合验的行级那一半在这条落地之前仍只到"显式未接"**——`lifecyclecolumns_test.go` 里那个
+      三个入口都必须走既有 `appendEvent` ⇒ `Registered(ev.Type)` 与 REQ-B-1 的 `aggregate_type` 闸一并生效，
+      **不许绕过**；脱敏仍在密封之前（REQ-A10/A11），参数与 payload 同其它入口一样过 `scrubArgs`/`redactValue`。
+    - **落点与角色（§7 归属矩阵定的，不是我新发明的）**：入口实现归 `db`（`internal/platform/db`）；
+      **"把一次生命周期观察落成一行 + 一条事件"这件事的语义住在 `internal/process`，那是 `adapter` 的包**；
+      `cmd/core/dropaudit.go` 只做**装配**（把 `db.Tx` 递给 `internal/process` 的那个写口、并把错误喊出来），
+      归 `backend` ⇒ **`process_instances` 这个表名字面量仍不许出现在 `cmd/core`**（W13 那条判据不变）。
+      **`adapter` 合验的行级那一半在这三件落地之前仍只到"显式未接"**——`lifecyclecolumns_test.go` 里那个
       `LUCERO_REQ_DB2=1` 开关就是钉这件事的，**谁都不许为了变绿把它改成 SKIP**。
     - **落地判据（这条通道"什么叫做完"）**：`LUCERO_REQ_DB2=1 CGO_ENABLED=0 go test -count=1 -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
-      必须 **PASS**（不是 SKIP、不是 `t.Fatal` 那句"还没接上真写路径"）——
-      **验收方是 `backend`（它改那三格 Recorder），`db` 只负责两个入口存在且形状对**。
+      必须 **PASS**（不是 SKIP、不是那个用例里"未接上真写路径即 `t.Fatal`"那一句）——
+      **验收方是 `backend`（装配那一格）+ `adapter`（`internal/process` 的写口），`db` 只负责三个入口存在且形状对**。
       **另：REQ-DB-2 落地之前不要顺手带 `LUCERO_REQ_DB2=1` 跑全仓**，那条按设计就是红的
       （该用例里"未接上真写路径即 `t.Fatal`、且明写不许改成 SKIP 蒙过去"那一句是故意的）。
       **主控 09-23 05:09 实跑为证**：带 flag 单跑该用例 ⇒ `--- FAIL (0.00s)`、报的就是那句 ⇒
       这是**已知未闭**，不是新线索，谁拿它去判别人的批次红都算误伤。
+    - **更正记录（09-23 05:14 巡检问出来的两处，它只报读数没代裁）**：
+      ① 本条 05:07 那版写着"`Append("process_instances", …)` 建行那条腿（`RecordStart`）**继续合法**"——
+      **作废**。那句话把"不进 `aggTables` 所以 `Append` 不被拒"（形状层，成立）误读成"所以可以拿它建行"（语义层，不成立）；
+      第 12 条的"除三件外"就是禁止它的那一句，而盘上 `RecordStart` 早在 T-168（01:11）就被我改成只出声了，
+      **我 05:07 写这条时没去读那 20 行**。⇒ 补第 ① 个入口 `CreateVersionless`，并把"两行拼一步"明确禁掉。
+      ② 05:07 那版把"三格改过去"整个派给 `backend`，**归属错了一半**：`internal/process` 是 `adapter` 的包，
+      落库语义住那里；`cmd/core` 只做装配。⇒ 见上面"落点与角色"那一格。
 
 18. **C34 裁定（09-23 05:07）：`process_instances.owner_type` / `owner_id` 的词表。** backend 明说"我不猜"，是对的——
     这两列在 schema 里是**无 CHECK 的可空 TEXT**，所以值域只能由契约登记、由 lint 钉，代码里"看起来自然"的写法不算数。
