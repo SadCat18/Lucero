@@ -209,6 +209,82 @@ func TestAdapterProbeProjectsTheDomainView(t *testing.T) {
 	if got["last_healthcheck_at"] != float64(1234) {
 		t.Errorf("last_healthcheck_at 该是 verified_at（1234），实际 %#v", got["last_healthcheck_at"])
 	}
+	// §1.1 第 16 条（09-23 02:3x 扩到"纯代码侧集合比对"那一类）的三条腿，正好落在"一个字都不补"这格上：
+	// ①解码后的键集合 == 域包那个 struct 能发出的 json 标签集合（少一格 = 吞字段，多一格 = 补字段，都红）；
+	// ②原始 body 里**逐次出现**的顶层键 token 数 == 去重后的数（重复键在 JSON→map 里会被静默吸收）；
+	// ③合成反例证明 ② 有牙（不许只对着干净基线自证）。
+	requireExactViewKeys(t, body)
+}
+
+// requireExactViewKeys 是"transport 不许补字段"的机械版。用 `json.Decoder.Token()` 而不是 `Unmarshal`
+// 是为了**留住重复键**（Unmarshal 会悄悄后写覆盖前写，那正是第 16 条要防的那种吸收）。
+func requireExactViewKeys(t *testing.T, body string) {
+	t.Helper()
+	tokens := topLevelJSONKeys(t, body)
+	uniq := map[string]bool{}
+	for _, k := range tokens {
+		uniq[k] = true
+	}
+	if len(tokens) != len(uniq) {
+		t.Errorf("响应里有重复的顶层键（%d 个 token / %d 个去重）：JSON→map 会把它吸收掉，判据必须自己看见", len(tokens), len(uniq))
+	}
+	// 反例：把同一个顶层键**再写一遍**（合法 JSON，只是重复成员），这条必须把 token 数数出 +1 ——
+	// 不这样做的话 ② 只是对着干净样本空转：`Unmarshal` 会把重复键后写覆盖前写，谁都不会响。
+	dupBody := strings.TrimSuffix(strings.TrimSpace(body), "}") + ",\"id\":\"dup\"}"
+	if dup := topLevelJSONKeys(t, dupBody); len(dup) != len(tokens)+1 {
+		t.Errorf("合成反例没被数出来（原 %d 个 token，加一个重复键之后 %d 个）⇒ 那条去重判据是空的",
+			len(tokens), len(dup))
+	}
+
+	want := map[string]bool{}
+	rt := reflect.TypeOf(adapter.AdapterInstanceView{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+		if tag != "" && tag != "-" {
+			want[tag] = true
+		}
+	}
+	if len(want) != rt.NumField() {
+		t.Fatalf("视图结构里有重复的 json 标签（%d 字段 / %d 去重标签）—— 上面那条去重判据会被这种漂移骗过", rt.NumField(), len(want))
+	}
+	for _, k := range tokens {
+		if !want[k] {
+			t.Errorf("响应出现了 `AdapterInstanceView` 之外的键 %q ⇒ transport 在补字段（§7.2 禁止）", k)
+		}
+		delete(want, k)
+	}
+	for k := range want {
+		t.Errorf("视图里的 %q 没出现在响应里 ⇒ 投影吞了字段", k)
+	}
+}
+
+func topLevelJSONKeys(t *testing.T, body string) []string {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(body))
+	var keys []string
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return keys
+		}
+		if err != nil {
+			t.Fatalf("响应不是合法 JSON（%v）body=%s", err, body)
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		case string:
+			if depth == 1 {
+				keys = append(keys, v)
+			}
+		}
+	}
 }
 
 // TestAdapterProbeMapsDomainErrors 是 §7.2 那句"未知 key 是请求错、不是连接不健康"的机械版，

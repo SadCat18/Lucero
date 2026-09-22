@@ -202,8 +202,10 @@ func parseCodeRows(s151, s152 []string) (codeTables, error) {
 	if dup, ok := firstDup(ct.transport); ok {
 		return codeTables{}, errAnchor(fmt.Sprintf("§15.2 左列（HTTP 码）里 %s 出现两次 —— 一行一个 HTTP 码是这张表的定义", dup))
 	}
-	// 『来自』那一列**故意不判重**：两个不同 HTTP 码映射到同一个 Adapter 码是合法形状，
-	// 判它等于替契约把映射写成"一对一"。但两个数要打印出来（C8-10④ 同一口径：看得见、不咬人）。
+	// 『来自』那一列**故意不判重**（T-183 裁：合规收窄，不是漏做）：两个不同 HTTP 码映射到同一个
+	// Adapter 码是合法形状，判它等于替契约把"映射"写成"双射"。
+	// **什么时候该转红**：契约② §15.2 先落一条 REQ 明写"一一映射"，这条腿再翻成判红；
+	// 在那之前只打印 `原始/去重` 两个数（看得见、不咬人）。
 	ct.namedRaw = len(ct.named)
 	ct.transportRaw = len(ct.transport)
 	ct.codes151 = sortedUniq(ct.codes151)
@@ -702,6 +704,8 @@ func TestEventCatalogMatchesJournalConstants(t *testing.T) {
 	// 但对词表是一一映射破了 —— 所以必须能喂进纯函数判红，而不是等真数据出错。
 	// 这一格**不需要**"注释里也算一个"的用例：`journalConstRE` 行首要求大写标识符 + `=`，
 	// `//` 开头的行结构上就进不来（我第一版写了这么一组，是空判据，已删）。
+	// 另：现盘 63 个常量值全部互不相同（原始数 == 去重数），下面那组"同值"是**该类的合成反例**，
+	// 不是断言盘上存在这一对 —— 把类别读成清单正是今晚 §6 展开约定上踩过的形状。
 	constCases := []struct {
 		name    string
 		src     []string

@@ -283,8 +283,13 @@ func TestDroppedFrameReachesAuditSeam(t *testing.T) {
 				"重开条件是①②都成立之后仍然造不出矛盾帧，那时再开 REQ 讨论（可能是走真 Adapter 的某条真实错误路径）。",
 				evidence)
 		}
-		t.Skipf("前提①已满足（%s），但仍不测：还差②真 Adapter 连接（T-175 的第二条触发条件）。"+
-			"**这条 SKIP 的理由变了，就是它该被改写的信号** —— 不要把它换成一个会红的 TODO，更不要凭空绿。", evidence)
+		t.Skipf("前提①已满足（%s），但仍不测：第②条不成立，而且不是「没测」这一档——"+
+			"Core 的生产码里今天没有任何 `CallTurn(` 的调用方（只有定义与测试），"+
+			"`Registry.Probe` 那条路是 `defer pipe.Close()` 的短连接、只握手不发 `session/send`："+
+			"取证帧（`turn/claimed`/`turn/dispatched`）在生产路径上根本不出现 ⇒ 丢弃分支不可达。"+
+			"要等任务/执行那条链装配起来（U13-6 的写端点是它的前置），矛盾帧才有真实的产生方式。"+
+			"**只成立一半不摘 SKIP**（T-175：拿走不到的路径判绿比 SKIP 更坏，反过来拿半条路径判绿也一样）。"+
+			"自查命令：grep -rn 'CallTurn(' core --include=*.go | grep -v _test.go", evidence)
 	})
 }
 

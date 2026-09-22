@@ -3,8 +3,8 @@ TASK_ID: backend-core
 STATUS: in_progress
 SCOPE: Task / Execution / Session / Quota / Notification 五个业务包的领域类型、状态机、投影、读写 Service；加 transport 薄层 core/api/{http,websocket}** 与 core/cmd/core/**；不写迁移、不碰 approvals 表
 EVIDENCE_DIR: none
-LAST_UPDATED: 2026-09-23T02:15:04+08:00   ← 本机 `date` 实测（第四十批收尾，与第二趟"按具名清 scratch"同一次采样，见第 196 条）。
-  沿革（每条都是当时的实测，最早的作废说明保留）：01:48:36 属第三十九批收尾；01:33:00 属第三十八批收尾 —— 那一批里我先写过 `01:31:05`，
+LAST_UPDATED: 2026-09-23T02:59:31+08:00   ← 本机 `date` 实测（第四十一批收尾，与"按具名清 scratch + 查两个进程名"同一次采样，见第 204 条）。
+  沿革（每条都是当时的实测，最早的作废说明保留）：02:15:04 属第四十批收尾；01:48:36 属第三十九批收尾；01:33:00 属第三十八批收尾 —— 那一批里我先写过 `01:31:05`，
   **那个数没跑 `date`、是凭印象填的，当场作废**（T-43 同一条第二次犯）；01:24:31 属第三十七批；01:07:42 属第三十六批；
   00:56:48 属第三十五批；00:25:42 属第三十四批；00:08:55 属第三十二批；23:47:33 属第三十一批；23:14:55 属第三十批；
   15:52:57 那条是**我估写的、当场作废**（见上面时间戳口径的 09-22 补记）
@@ -68,28 +68,35 @@ Task 不镜像 Execution、AGENT_COMPLETED != ACCEPTED、换 Provider 不新建 
 > 发现后按口径处理：原值标作废、换上实测读数，不改写任何历史条目。同一轮我另有一处口径错（把 `internal/project` 说成
 > "别的 agent 在写"，其实是我自己这一轮刚建的文件），也记在 Completed 第二十九批开头。
 
-- Stage: Wave-2 backend 第四十批（09-23 02:00~02:10）—— **Next action 落地：`GET /api/v1/projects/{id}` 脱 501**（第三十九批留的那一格，把读通道接上）。
-  `registerProjectItemRoute` 的 GET 分支从"回 501"换成 `getProject`：**读库里那一行**（`project.Get`）、投影复用 `projectViewOf` ⇒
-  单条读 / 列表 / PATCH 三条路**同一个形状**（键集相等由用例逐键对账，不是我看一眼说"一样"）；读不到 ⇒ 404 `not_found`；
-  **装配侧没给读通道仍 501** —— 那道闸门留在 `Config.ProjectRead == nil`，不在 handler 里偷偷拿 404 冒充"没这个项目"。
-  归档项目**照样读得到**：这条路径契约里没给任何过滤位，我不替它藏（与 C26 同一课）。405 的话术随之改成"只接受 GET 与 PATCH"；
-  形状守卫（空 id / 多一段 / 带冒号）⇒ 501 且不摸库，本批一个字没动。本批 **W13-2 零新增**（第 194 条实测原文）。
-  另：本批在盘上量到**主控已在 `api-contract-v0.1.md:120` 解除 C31**（02:0x，`notification_read` 常量与 `true` 集合都齐了），
-  所以 `:read` 不再是我手上那句"别做" —— 注意这是**契约文件里的字**、没有单独投递给我，我按"契约为准"把它接成 Next action，
-  若主控的解除口径不是这个意思，一句就能改回。
-  上一批（第三十九批）：`PATCH /api/v1/projects/{id}` 脱 501（写侧四步 + 结构性的"永不改状态"）。
-- Status: in_progress（八包全绿 = 交付前最后一次重跑 **02:09:08→02:09:12，`exit=0`**（前一遍同口径在 02:04:27→02:04:43 也是 `exit=0`、8 个 `ok`）；
-  `api/http` + `internal/project` 按 `-v` 数过 **62 = 52 顶层 PASS + 10 子用例，FAIL=0、SKIP=0、2 个 `ok`**（02:09:18 那遍）；
-  **全仓 `./...` 同批：`exit=0`、18 个 `ok`、非 `ok` 行 0**（02:09:44→02:09:52）；真进程冒烟**十四项**全 OK（02:04:17，新第 ⑭ 项
-  `RESULT_PROJECT_GET= OK_single_read_back_and_404`）；本批变异 **4/4 FIRED**（02:03:46）；gofmt -l 空、`go vet ./...` 空（02:09:38，输出 0 行）；
-  跳过的包：全仓那一遍没跳过任何包；`-v` 计数只数了我本批改动的两包（`api/http`、`internal/project`），其余六包只按 `ok` 行计数 —— 因为它们的用例这批一条没动。
-  **W13-2 本批零新增**：仍是那 5 条（基线 3 + `dropaudit.go:18/:23` 注释里那 2 条）。
-  等别人：**REQ-DB-2（生命周期三格唯一的写通道）**、**C34（`owner_type`/`owner_id` 词表）**、**C35（PATCH 的未知键我判成 400）**、
-  **C36（`:read` 的两格我自挑判据：已读过的再 `:read` 怎么回、哪些状态允许进 `READ`，见 Next action）**、
-  REQ-B-1、REQ-AD-1、C19、C24、C27、C30；**C31 本批按契约 `:120` 判为已解除**，不再列在"等主控"里）
-- Last verified action: 见 Verification evidence 第 191~195 条（191=交付前最后重跑三样计数；192=变异 4/4 FIRED + 两条锚点自伤；
-  193=真进程第 ⑭ 项证到的与证不到的；194=W13-2 零新增实测原文；195=C31 解除是**我在盘上量到的**、非投递，以及为 Next action 核过的四条前置））
-- Next action: 落 `POST /api/v1/notifications/{id}:read`（前置**四条已逐条在盘上核过**，见第 195 条：yaml `:648` declared、
+- Stage: Wave-2 backend 第四十一批（09-23 02:16~02:54）—— **T-181 要的①与②同批落地：`POST /api/v1/adapters/{key}/probe` 接上 + `Rec` 挂上桥**。
+  ① 三段：`api/http/adapters.go`（薄投影：取 key → `Registry.Probe` → 出域包给的 `AdapterInstanceView`，**一个字段都不补**）、
+  `cmd/core/probeassembly.go`（`-adapter key=可执行路径` 可重复给 → `adapter.NewRegistry` + `NewSQLiteStore` + 这座桥上的 `launcher`）、
+  装配闸门 `adaptersField()`（没配 = nil = 那条口维持 501；把 typed nil 直塞接口会得到"非 nil 但一调就 panic"，第 201 条有那条用例）。
+  §15.2 的映射只列 probe 真能产生的码，**认不出的先 `Degrade()` 落成 INTERNAL**（拿别人没给过的数字现编名字就是归因丢了）；
+  邻居路径（`{id}`、`{id}/capabilities`）被我认领进子树之后**状态与码一律不变**（第 199 条那条用例专门钉这件事）。
+  ② `launcher` 从今天带 `store`/`now`，`Supervisor{… Rec: newDropRecorder(store, adapterKey, now, logf)}` —— 真握手那一发的日志里
+  看得见 `REQ-DB-2 未落：生命周期那格没建行 action=started adapter_key="fake" pid=18652`（原文在第 197 条），
+  但**生命周期那三格仍是"出声不写库"**：挂 recorder ≠ 提前落 REQ-DB-2 那格，未裁的还是没裁。
+  两件**由 T-181 明文解除的禁令**记在账上（不是我自己判的）：`probe 未接 ⇒ 别顺手接`（T-133①）与`别给 Supervisor 装 Rec`（第三十四批那条）；
+  解除的原话与时间写在第 202 条。`Idempotency-Key` 今天**只判"有没有带"**、不做重放，理由与待裁那一格是 **C37**。
+  上一批（第四十批）：`GET /api/v1/projects/{id}` 脱 501（单条读与列表/PATCH 同形状）。
+- Status: in_progress（八包全绿 = 交付前最后重跑 **02:53:01→02:53:06，8 个 `ok`**，那一遍**开着** `LUCERO_TEST_FAKE_ADAPTER=1` 跑（所以真握手那条没 skip）；
+  `api/http` + `cmd/core` 按 `-v` 数过（02:53:14，**默认开关**）：**111 RUN = 83 顶层 PASS + 26 子用例 PASS + 2 SKIP**，FAIL=0；
+  两条 SKIP 是 `TestProbeOverRealHandshakeWithFakeAdapter`（要 `LUCERO_TEST_FAKE_ADAPTER=1`，开着跑的那遍它 PASS，02:50:31 / 02:53:01）
+  与常驻的 `TestHelperPipeChild`（子进程入口，父跑必 skip）；**全仓 `./...` 同批（gate 开着）：`exit=0`、18 个 `ok`、非 `ok` 行 0**（02:53:34→02:53:47）；
+  真进程冒烟**十五项**全 OK（02:51:31→02:51:37，新第 ⑮ 项 `RESULT_ADAPTER_PROBE= OK_real_handshake_400_403_405`）；本批变异 **6/6 FIRED**（02:52:39→02:52:47）；
+  gofmt -l 空（02:53:34 那三处 CRLF 是变异脚本还原时写坏的，`gofmt -w` 修回，第 198 条）、`go vet ./...` `exit=0`；
+  **W13 权威判据当场复跑**（`bash scripts/check_ownership.sh` → `exit=0`、"本次扫描 0 项越界"）：W13-1 白名单仍 3 处、
+  **`adapter_instances: 0`、`adapter_capabilities: 0`**（§7.2 专门为这条口点名的那两张表），我的字面 grep 也仍是那 5 条（`main.go` 的行号从 `:194` 漂到 `:210`，第 200 条更正）。
+  等别人：**REQ-DB-2（生命周期三格唯一的写通道）**、**C34（`owner_type`/`owner_id` 词表）**、**C35（PATCH 未知键我判 400）**、
+  **C36（`:read` 的两格自挑判据）**、**C37（probe 的 `Idempotency-Key` 只判存在、不重放）**、
+  **C38（adapter 侧两个返回缺口：health 变了那一格回空 id；视图 `version` 恒 0 —— 实测在第 201 条，我没在 transport 补）**、
+  REQ-B-1（`:sync` 那半格 503 + `adapter_downgraded`，第四十一批复跑全仓 `grep REQ-B-1`：只活在我自己账上与代码注释里，没人答）、
+  REQ-DB-3/4、REQ-A-4、C19、C24、C27、C30；**REQ-AD-1 与 C31 本批不再列**（前者已闭且已交付、后者主控 GO））
+- Last verified action: 见 Verification evidence 第 197~203 条（197=真握手的 200 响应原文 + recorder 出声；198=交付前重跑三样计数 + 两种 gate 面；
+  199=邻居路径不复化的用例；200=W13 权威判据原文；201=C38 两处实测（含复现法）；202=禁令解除的原文与我的边界；203=本批两处自伤：600s 挂起与 CRLF））
+- Next action: 落 `POST /api/v1/notifications/{id}:read`（**T-181 排在①②③之后的那一句**：`C31 = GO … 这条现在可以直接做`；
+  前置**四条已逐条在盘上核过**，见第 195 条：yaml `:648` declared、
   `eventjournal/events.go:61` 有 `notification_read` 常量且 `:95` 在 `true` 集合里、`000002_aggregate_version.sql:30` 给了 `version`、
   `000001_core_schema.sql:580` 的 `state` 认 `READ` 且有 `read_at` 列；契约 `:120` 明写"这条 501 的原因消失，可以做"）。
   要落的写侧形状与 `PATCH /projects` 同一套（读当前行 → `Touch`：一个版本、恰一行 `notification_read` → 读回那一行，C18②），
@@ -983,6 +990,31 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
 - 一件**不是本批改动**但影响 Next action 的事（第 195 条）：C31 已被主控在 `api-contract-v0.1.md:120` 解除（02:0x），
   我是**读契约时量到的**、不是收到投递 ⇒ 已在头部如实标注这个来源差别。
 
+### 第四十一批（09-23 02:16~02:54）：T-181 的①与② —— `POST /api/v1/adapters/{key}/probe` 接上 + `Rec` 挂上桥
+
+- `core/api/http/adapters.go`（**新建**）— `AdapterProber`（一个方法：`Probe(ctx, key) (*adapter.AdapterInstanceView, error)`，
+  **不带事务通道** —— §7.2 裁定 1 把写留在域包里）、`registerAdapterProbeRoute`（子树 `/api/v1/adapters/`）、`splitAdapterPath`、
+  `probeAdapter`、`probeErrorOf`（§15.1 码 → §15.2 码与状态，**只列 probe 真能产生的那些**，认不出的先 `Degrade()`）。
+  分流：未装配 ⇒ 501；非 POST ⇒ 405；缺 `Idempotency-Key` ⇒ 403 `idempotency_key_required`（与 `POST /projects` 同一格不许分叉）；
+  形状不认识 ⇒ 501 且**一次都不落到域**。
+- `core/cmd/core/probeassembly.go`（**新建**）— `adapterFlag`（`-adapter key=可执行路径`，可重复；空 key/空路径/重复 key 在参数层就拒）、
+  `adapterSpec`、`probeService`（把 `ProbeResult.AdapterInstance()` 原样交出去，不补字段）、`newProbeService`
+  （**specs 为空 ⇒ (nil, nil)** ⇒ transport 那格维持 501）、`commandFor`。
+- `core/cmd/core/processpipe.go`（改）— `launcher` 多 `store auditedStore` + `now func() int64`（`newLauncher` 签名跟着变，4 个测试调用点同批改）；
+  `Supervisor{…}` 里装上 `Rec: newDropRecorder(l.store, adapterKey, l.now, l.logf)`；头部那段"今天不挂桥"的理由按 T-181 改写（前提消失了，不是推翻）。
+- `core/cmd/core/main.go`（改）— `config.Adapters` + `flag.Var` + `Core.probe` + `adaptersField()`（**防 typed-nil**）+ `handler()` 注入 `Adapters`。
+- 用例：**新建** `core/api/http/adapters_test.go`（5 条，其中 `TestAdapterProbeMapsDomainErrors` 带 10 个子用例）
+  + **新建** `core/cmd/core/probeassembly_test.go`（6 条，其中真握手那条按 `core/test` 同一套 `LUCERO_TEST_FAKE_ADAPTER=1` 开关）
+  + `processpipe_test.go` 加 `TestLauncherCarriesARecorder`（②的行为级证据：判的是"喊出声且点得出 pid"，不是判字段）。
+- 证据：真进程第 ⑮ 项（第 197 条，200 的完整响应 + 400/403/405 各回各的码）；变异 6/6 FIRED（第 203 条）；
+  W13 权威判据复跑（第 200 条：`adapter_instances: 0`、`adapter_capabilities: 0`）；邻居路径不复化（第 199 条）。
+- **两件量出来的别人家缺口（C38，我没在 transport 补）**：`RecordProbe` 的"health 真的变了"那一格不给 `written` 赋值 ⇒
+  那条 200 响应里 `id` 是空串；`ProbeResult` 不带 version ⇒ 视图 `version` 恒 0，而**同一行库里那一刻是 v2**（§12 "UNKNOWN 不许显示成 0" 的同族）。
+  复现法与判决都写在第 201 条，用例 `TestProbeResponseIdentityOnHealthChange` 钉的是现状，**它变红的那一天就是被修好的那一天**。
+- **两件自伤照记**（第 203 条）：① 三条 boot 用例只 `boot()` 没 `serve()` ⇒ socket 已建、没人 `Accept` ⇒ 客户端连得上但永远等不到，
+  **烧掉 `go test` 自己的 600s**（表现是"没有输出"而不是"一个错"）；已改成 `bootProbeCore` + 带 20s 期限的客户端。
+  ② 变异脚本用文本模式还原文件 ⇒ 三个文件被写成 CRLF ⇒ `gofmt -l` 抓到（同一条陷阱第 N 次：还原必须按字节）。
+
 ## Remaining
 
 - `task.Service` 的其余状态动作：~~`Prepare`/`Pause`/`Resume`~~ **第十六批已交付**（正向写等 REQ-DB-3，见第 79 条）；
@@ -1421,6 +1453,20 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   ② **哪些状态允许进 `READ`**：我只放 `UNREAD`/`PENDING`，其余（`HANDLED`/`IGNORED`/`EXPIRED`/已 `READ`）不改写 ——
   理由是把已处置的重新标成"读过"会替面板抹掉处置痕迹；若主控的口径是"`:read` 就是无条件盖 `read_at`"，我一句就能换成不校验状态。
   两格都**不阻塞我把口开出来**，先按默认落 + 各带一条用例钉住，裁下来若相反我改用例方向。
+- **C37 → 主控（probe 的 `Idempotency-Key` 今天只判"有没有带"，不做重放 —— 要真重放请给一句）**
+  yaml 的 summary 写的是"有副作用 → Idempotency-Key"，所以我缺键回 403 `idempotency_key_required`（与 `POST /projects` 同一格）。
+  但**同一个 key 打两次今天就是真探两次**（第二次可能带回不同的 health），不是重放第一次的响应。为什么不做：
+  真重放要 claim → 副作用 → seal 在**同一个写事务**里（`POST /projects` 就是那个形状，所以失败连 claim 一起回滚），
+  而 `Registry.Probe` 自己开事务写库 ⇒ 我在外面再持一个写事务就是 §1.1 那条嵌套死锁（`SetMaxOpenConns(1)`）。
+  要做得拆成三段事务，而"探针失败后那条 IN_PROGRESS 行怎么算（429？放行重试？多久算过期？）"没人裁过 ⇒ 我不猜。
+  现状有一条用例钉着（`TestAdapterProbeRequiresIdempotencyKey` 判缺键 403 且**一次都不落到域**）。
+- **C38 → adapter/主控（probe 的两个返回值缺口，我在 transport 一个都没补）**
+  ① `adapter.SQLiteStore.RecordProbe` 的"health 真的变了"那一分支不给 `written` 赋值 ⇒ 那次调用返回**空串**，
+  于是 200 响应里 `"id": ""`（yaml 的 required 有 `id`：面板拿到一个"存在但没名字"的实例）。一行就能修（那分支补 `written = id`）。
+  ② `ProbeResult` 不带 version ⇒ `AdapterInstanceView.Version` 恒 **0**，而同一时刻库里那一行是 v1/v2 ——
+  §12 那句"UNKNOWN 不许显示成 0"是同一件事：**0 看起来像一个真的版本号**。要么 `ProbeResult` 带上，要么这一格从视图里去掉（别用零值冒充）。
+  实测与复现法在第 201 条；我这侧的用例 `TestProbeResponseIdentityOnHealthChange` 钉的是**现状**，
+  **它变红的那天就是被修好的那天**（那时把断言改成"两次 id 相同且非空"并关掉这条）。
 - **REQ-DB-7 → 主控/事件目录（`project_updated` 没登记 ⇒ `PATCH /api/v1/projects/{id}` 今天没有任何合法写法）**
   实测在第 155 条：`Touch` 无条件 `appendEvent`、`appendEvent` 第一道闸门要 `Registered(ev.Type)`、
   §6 只有 `project_created`/`project_archived`、`UpdateOnce` 明确拒绝聚合表。
@@ -1598,6 +1644,20 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   `if cursor.Valid && cursor.String != ""` 才给指针，否则 nil
 - `core/internal/session/repository_test.go`（改）— 新增真表用例 `TestSyncCursorKeepsNullApartFromAPosition`（NULL / `'20'` / 存进去的 `''` 三态）
 - `core/cmd/core/**`、`core/api/**`、`internal/task|execution|quota|notification/**` — **本批一个字没动**（A18-3 未裁；`:sync` 不存在）
+- `.qoder/progress/backend.md`（本文件）
+
+第四十一批（T-181 ①+②：probe 这条口接上，`Rec` 同批挂桥）：
+- `core/api/http/adapters.go`（**新建**）— `AdapterProber`、`registerAdapterProbeRoute`、`splitAdapterPath`、`probeAdapter`、`probeErrorOf`
+- `core/api/http/handler.go`（改）— `Config.Adapters` 一个字段 + `registerAdapterProbeRoute(mux, c)` 一行
+- `core/cmd/core/probeassembly.go`（**新建**）— `probeAttemptDeadline`、`adapterFlag.Set/String`、`adapterSpec`、`probeService`、
+  `newProbeService`、`commandFor`
+- `core/cmd/core/processpipe.go`（改）— `launcher` 多两个字段、`newLauncher` 签名 +2 参、`Supervisor` 装 `Rec`、头部注释按 T-181 改写
+- `core/cmd/core/main.go`（改）— `config.Adapters`、`flag.Var(&cfg.Adapters, "adapter", …)`、`Core.probe` 字段、`adaptersField()`、`handler()` 注入
+- `core/api/http/adapters_test.go`、`core/cmd/core/probeassembly_test.go`（**新建**）、`core/cmd/core/processpipe_test.go`（改：
+  新增一条 + 四个 `newLauncher` 调用点跟签名改）
+- `.scratch/backend/t47-smoke.sh`（改）— 第 ⑮ 项 + 开局多 build 一个 `fake-adapter.exe` 并给 core 传 `-adapter`；
+  收尾残留检查从"只看 core.exe"扩成"core.exe 与 fake-adapter.exe 都看"（新引入的孩子进程要一起查）
+- `core/internal/adapter/**`、`internal/process/**`、`migrations/**`、`go.mod` — **一个字没动**（C38 那两处只复现 + 报，不替别人改）
 - `.qoder/progress/backend.md`（本文件）
 
 第四十批（`GET /api/v1/projects/{id}` 脱 501：单条读接上、形状与列表/PATCH 逐键相同）：
@@ -3463,11 +3523,75 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
      第二趟 02:15 删 `021201-t49/`（02:12 重跑冒烟时新建的）、`e40.log`、`repo40.log`、`vet40.log`、`w13.txt`。
      两趟都**先 `ls` 再点名列**、没有用通配；删 `021201-t49/` 之前先 `tasklist` 确认没有还在跑的 `core.exe`（读数：无匹配进程）。
      末尾时钟采样 `2026-09-23T02:15:04+08:00`（本机 `date` 实测）＝头部 `LAST_UPDATED`。
+197. **真握手原文（第四十一批最硬的一条）**，`LUCERO_TEST_FAKE_ADAPTER=1 LUCERO_GO=… go test -v -run TestProbeOverRealHandshakeWithFakeAdapter ./cmd/core/`
+     @02:50:31 → `--- PASS: … (0.86s)`，同一次跑里 stdout 打出：
+     `adapter fake 进程事件: kind=STARTED pid=18652 status=STARTING exit=0` 与
+     **`REQ-DB-2 未落：生命周期那格没建行 action=started adapter_key="fake" pid=18652`** ⇒ ②不是一句"我装了"，
+     是真连接上第一次有人喊这一句（生命周期那三格**仍然只出声不写库**，未裁的还是没裁）。
+     真进程侧同一件事的第 ⑮ 项（02:51:31→02:51:37）响应原文：
+     `HTTP=200 {"id":"01a0ca75-8929-7bf6-81ff-6688f2696cd7","adapter_key":"fake","display_name":"fake","adapter_version":"0.1.0",
+     "protocol_version":"1.0","software_version":"0.1.0","enabled":true,"health":"HEALTHY","effective_backend":"native_api",
+     "last_heartbeat_at":null,"last_healthcheck_at":1790103095593,"metadata":{"schema":1},"version":0,…}`
+     —— 必填五格齐、`enabled` 是域包给的（不是我补的）、`last_heartbeat_at` 是 null 而不是省略；
+     `"version":0` 这一格正是第 201 条那个 C38 的第二半（同一时刻库里是 v1/v2）。
+198. **交付前最后重跑（三样 + 两种 gate 面，分开报）**：
+     ① 八包 `EXIT=0`、8 个 `ok`，**02:53:01→02:53:06**，这一遍**开着** `LUCERO_TEST_FAKE_ADAPTER=1`（真握手那条在里面是 PASS）；
+     ② 两包 `-v` 计数（`api/http` + `cmd/core`，**默认开关**）@02:53:14：`=== RUN` **111** = 顶层 PASS **83** + 子用例 PASS **26** + **SKIP 2**，FAIL **0**，
+     `^ok` 包行 2；两条 SKIP 逐条读原文确认是 `TestProbeOverRealHandshakeWithFakeAdapter`（gate 关）与常驻 `TestHelperPipeChild`（子进程入口）——
+     **不是**我把用例悄悄跳掉了；
+     ③ 全仓 `./...`（gate 开着）**02:53:34→02:53:47**：`REPO_EXIT=0`、`^ok` **18**、非 `ok`/`---` 行 **0**；
+     ④ `go vet ./...` `VET_EXIT=0`；`gofmt -l .` 在 02:53:34 抓到三个文件（第 203 条的 CRLF），`gofmt -w` 之后 02:54:03 复跑两包 `ok`、`-l` 空。
+     T-133① 口径：**跳过了哪几包**——没有（②只数两包是因为另六包这批一条用例没动，这是计数面不同、不是跳过）。
+199. **邻居路径不复化（我认领整棵子树的代价那条）**：`TestAdapterProbeNeighborsStayUnwired` 判
+     `GET /api/v1/adapters`、`GET /api/v1/adapters/{id}`、`GET /api/v1/adapters/{id}/capabilities` 三条**仍是 501 `not_implemented`**、
+     两条 POST 是 405，且**stub 一次都没被叫**（`requireUntouched`）。这一格存在的理由是接一条口最容易顺手把邻居接成 404/405 —— 那是静默的行为变更。
+     另外量到一件不属于我代码的事：`/api/v1/adapters//probe`（双斜杠）**到不了我的形状守卫**，Go 的 `ServeMux` 先做 clean-redirect，
+     非 GET 用 **307（保方法）**，洗完是单段 `{id}` ⇒ POST 的正确答案是 405。用例把 307 与"洗完之后 405"两步都钉住，
+     免得下一个人以为"空 key 守卫漏了 `//`"。
+200. **W13 当场复跑权威判据**（`CGO_ENABLED=0 bash scripts/check_ownership.sh` → `OWN_EXIT=0`，"本次扫描 0 项越界"）：
+     `判据面：33 张迁移表逐个扫 × transport/装配层 16 个生产 .go；白名单 3 处`、
+     `[ok W13-1 白名单]` 三条逐条列出（`tasks.go Append("idempotency_keys")`、`tasks.go UpdateOnce("idempotency_keys")`、`main.go Append("principals")`），
+     **`[W13-2] adapter_instances: 0`、`[W13-2] adapter_capabilities: 0`** —— 正是 §7.2 为这条口点名的那两张表 ⇒ 本批没有开例。
+     我自己的字面 grep（02:54:14，含 `adapter_instances`/`adapter_capabilities` 两个新词）仍是 5 条，
+     **一处行号更正**：`cmd/core/main.go` 的 `Append("principals")` 从第 194 条记的 `:194` 漂到 **`:210`**（我本批往同一个文件加了字段与函数，
+     事实没变、位置变了 —— 按 T-46 的口径旧读数不改写，这里只追加更正）。
+201. **C38 的两处实测（`TestProbeResponseIdentityOnHealthChange`，只用导出面 + 真库真表，02:50 前 PASS）**：
+     ① 首探 `RecordProbe` 回真实 id；把 health 从 `HEALTHY` 改成 `DEGRADED` 再探一次 ⇒ **返回空串**，
+     而同一次调用**确实把库推进到 `health=DEGRADED` v2**（用例逐条扫过）⇒ 库没错、丢的是返回的 id ⇒ 我这条 200 响应里 `"id": ""`；
+     ② 第三探（health 未变）又回到同一个 id ⇒ 所以这不是"永远空"，是**中间那一格漏了赋值**（`probe_store_sqlite.go` 的 `else if existing.health != res.HealthState` 分支）。
+     ③ 视图 `version` 恒 0（`ProbeResult` 没有这个字段）而那一刻库里是 v2 ⇒ §12 那句"UNKNOWN 不许显示成 0"的同族。
+     我这侧**一个都没补**：§7.2 写死"handler 里不许补字段"，装配侧同理。修法两条都在别人手里（`written = id` 一行 / `ProbeResult` 带 version），
+     用例钉现状，**它变红就是被修好了**（那时把断言改成"两次 id 相同且非空"并关 C38）。
+202. **两条禁令是"被明文解除"的，不是我自己判的**（T-181 原文 02:08 投）：
+     ① `probe 接线暂停`（T-133①）—— 主控本轮改口"**方向定死：下一批做 probe 接线**"；
+     ② `别给 Supervisor 装 Rec`（第三十四批那条，挂在 REQ-DB-6 未裁上）—— 主控改口"**同一批把 `Rec` 挂上桥**"，
+     并把我自己写在 `processpipe.go` 里那句"probe 未接 ⇒ 挂上去就是给空转的东西记账"判为**理由正确、前提已消失**。
+     我按原话执行，同时把边界写清楚：解除的是**"要不要接"**，`REQ-DB-2`（生命周期那三格到底怎么写）**没有被解除** ⇒ 三格仍是"出声不写库"，
+     `RecordDrop` 那格今天仍然没有生产调用方（帧泵在 `internal/process` 的 `Connection` 里，probe 这条路是 `adapter.NewReader(pipe)` 直读，不经过它）——
+     **所以 T84-7b 触发条件②"有真连接"我按事实移交、不替 `test` 判它够不够**（原话与判据归 `test`）。
+     `Wave-2 闸门不漂`那句我也照记：主控明写"真子进程 `Task→ACCEPTED` + 崩溃注入那条合验仍然要过"，
+     并把我这两批的单条读定性为"算进度、不算接近闸门"。
+203. **本批两处自伤**：① 三条 boot 类用例只调 `boot()` 没调 `serve()` ⇒ 监听 socket 建好、没人 `Accept` ⇒ 客户端连得上、请求发得进、
+     响应永远不来 —— **烧掉 `go test` 自己的 600s 超时**（表现是"没有输出"，不是"一个可读的错"）。修法是 `bootProbeCore` 里起 `serve()`
+     + 给测试客户端加 20s 期限，另从此给本地跑测试一律带 `-timeout 90s`；这个教训写进了那条 helper 的注释里（因为它下次还会以同样的形式出现）。
+     ② 变异脚本以文本模式写回原文件 ⇒ Windows 下 `"\n"` 被翻译成 CRLF ⇒ 三个文件（`adapters.go`、`main.go`、`processpipe.go`）被 `gofmt -l` 抓到 ⇒
+     `gofmt -w` 修回；**判据面**：还原必须按字节（这条与"变异备份须与还原同条命令"是同一条规矩的两个失败面）。
+     本批变异 **6/6 FIRED**（02:52:39→02:52:47）：P1 摘缺键闸、P2 把未知 key 回成 503、P3 摘掉 `Rec`、P4 放行畸形形状、
+     P5 把未接的邻居回成 404、P6 把 typed nil 直塞接口；**锚点 6/6 唯一命中**（`ANCHOR-*` 0 次），未变异那组复跑是绿的（正向对照）。
+204. **本批 scratch 按具名清（02:59:31）**：`ls` 之后逐名列，删 `025131-t49/`（第 ⑮ 项那遍冒烟建的）、`e41.log`、`repo41.log`、`own41.log`、`mut_probe.py`；
+     删之前先 `tasklist` 查 `core.exe` **与这批新引入的 `fake-adapter.exe`** 都无匹配进程（两条读数都是"没有运行的任务匹配指定标准"）；
+     `t47-smoke.sh` 是常驻工具不动。冒烟脚本的残留检查也同步扩成两个进程名（孩子进程要一起查，不然这批新增的孤儿看不见）。
+     头部 `LAST_UPDATED` 换成本次实测 `2026-09-23T02:59:31+08:00`。
 
 ## Recovery note
 
-- **当前（第四十批之后；本机 `date` 实测见头部 `LAST_UPDATED`）**
-  第四十批的 interruption 状态：**八包 + 全仓 + 真进程十四项全绿（计数与时钟见头部 Status 与第 191/193 条，最后重跑 02:09 与 02:12）**，
+- **当前（第四十一批之后；本机 `date` 实测见头部 `LAST_UPDATED`）**
+  第四十一批的 interruption 状态：**probe 这条口已经接完、`Rec` 已经挂桥，盘上没有半途的改动**
+  （八包 02:53:01 全绿、两包 `-v` 111=83+26+2 SKIP/FAIL 0、全仓 18 个 `ok`、真进程十五项全 OK、变异 6/6 FIRED —— 计数与时钟见第 197/198/203 条）。
+  **恢复后要先复测的一件事**：`-adapter key=可执行路径` 是这批新加的启动参数，冒烟脚本已经带上它了（`t47-smoke.sh` 开局多 build 一个 `fake-adapter.exe`），
+  所以手工起 Core 做联调时**别忘给这个参数**，否则 probe 会维持 501 —— 那是"没配"，不是"坏了"（两种处置见 `probeassembly.go` 的头注释）。
+  Next action：`POST /api/v1/notifications/{id}:read`（T-181 排在①②③之后的那句 C31=GO；前置四条实测见第 195 条）。
+  上一批（第四十批之后）那一段原文保留如下，它记录的仍是 `Rec` 未挂桥时代的口径：**八包 + 全仓 + 真进程十四项全绿（计数与时钟见头部 Status 与第 191/193 条，最后重跑 02:09 与 02:12）**，
   没有半途而废的改动挂在盘上；`GET /api/v1/projects/{id}` 已脱 501，Next action 是 `POST /api/v1/notifications/{id}:read`（前置四条已在第 195 条实测）。
   T-168 之后 `process.Recorder` 的四格里**只有 `RecordDrop` 真写**（一行审计、journal 零新增）；生命周期三格一律只出声，
   等 REQ-DB-2 那条"无版本但要发事件"的通道（第 177~181 条）。上一批"RecordStart 走 Append"是误读，已作废并复原。
@@ -3497,7 +3621,10 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   结构上改不到状态、未知键 400 见 C35）；
   第四十批通了 **`GET /api/v1/projects/{id}`**（单条读回库里那一行、与列表/PATCH 同形状、归档不藏、未知 id ⇒ 404 `not_found`、
   读通道未装配仍 501）；
-  其余仍 501（含 `:read`/`:handle`、`POST /api/v1/sessions/{id}:manage`、`adapters/{key}/probe`）；
+  第四十一批通了 **`POST /api/v1/adapters/{key}/probe`**（真握手 200 出域包那份 `AdapterInstance`、未知 key ⇒ 400、
+  起不来 ⇒ 503 且只落一行 health 零行 capability、缺幂等键 ⇒ 403、非 POST ⇒ 405、没配 `-adapter` ⇒ 仍 501；第 197/199/200 条）；
+  其余仍 501（`:read`/`:handle`、`POST /api/v1/sessions/{id}:manage`、`GET /api/v1/adapters`、`GET /api/v1/adapters/{id}`、
+  `{id}/capabilities`、`GET /models`、`GET /search` —— `probe` 已从这一格里出去）；
   `cmd/core` 那条"仍未实现"的真进程例子因此从 `GET /projects` 换成了 `:read`（第 145 条）——
   **注意 `:read` 的 501 在第四十批已经量到"原因消失"**（契约 `:120` 解除 C31，见第 195 条），所以那条真进程用例钉的是"今天还没接"、
   不是"永远不许接"；等 `:read` 落地时它要跟着换成下一个 501 口（`:handle` 或 `:manage`）。
@@ -3520,8 +3647,10 @@ T-79 的批评成立：①③ 到位但 ② 空转，因为"计数器挂在 appr
   开工前先看 `go build ./internal/audit/ ./internal/platform/db/`），再做 checkpoint 唯一那条 Next action
   （第三十五批起那条 `PATCH /api/v1/projects/{id}` **已在第三十九批交付**、第四十批又交付了 `GET /api/v1/projects/{id}` ⇒
   现在 checkpoint 唯一那条 Next action 是 **`POST /api/v1/notifications/{id}:read`**，前置四条已实测齐（第 195 条），一次只开这一个口）。
-  **别顺手把 probe 接上**（T-133① 仍生效），
-  也**别给 `Supervisor` 装 `Rec`**（REQ-DB-6 未裁），更**别从 session 这条腿发 `adapter_downgraded`**（REQ-B-1 未裁，
+  ~~**别顺手把 probe 接上**（T-133① 仍生效）~~ **T-181（09-23 02:08）明文解除，第四十一批已接**（原话"方向定死：下一批做 probe 接线"）；
+  ~~也**别给 `Supervisor` 装 `Rec`**（REQ-DB-6 未裁）~~ **同一条 T-181 明文要求"同一批把 `Rec` 挂上桥"，第四十一批已挂** ——
+  但**解除的只是"要不要接"**：`REQ-DB-2`（生命周期那三格到底怎么写）没有被解除，三格今天仍是"出声不写库"（第 202 条把这条边界写清楚了）；
+  更**别从 session 这条腿发 `adapter_downgraded`**（REQ-B-1 未裁，
   守卫会当场拒，第 142 条那条用例就是钉这一格的）。
 - 下面两条是第十六批时期的旧记录，原文保留不改（那是当日口径），已被上面的当前块取代：
 - Interruption point: 八包全绿（第 54 条）。transport 面已有 health / ws-ticket / /ws/v1/events
