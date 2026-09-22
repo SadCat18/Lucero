@@ -223,6 +223,31 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
 **本表即权威**：`test` 的文件头注释换成指向本节的指针（与判据表 MS/F20 同一做法），本文件之外不再留第二份。
 
 
+#### 判据表 FL（间歇红；`test` 用 `scripts/flaky_watch.sh` 实现，09-21 15:46 定，2026-09-22 镜像进本文）
+
+一句话口径：**只在 `./...` 全跑时出现、单跑不复现的失败记为 flaky 并带采样时刻，既不计绿也不计回归。**
+四档采样（缺一档就分辨不出并发形状）：`single` 单独跑一个包一个用例 / `shuffle` 同二进制内
+`-count=2 -shuffle=on` / `isolated` 多包一起跑但 `-p 1`（去跨包并发、留包内 shuffle）/
+`parallel` 不限 `-p`（即 `go test ./...` 的默认并行）。
+**每次采样前取一次 `date`；判的是 `-run` 命中的那行 `--- PASS/FAIL/SKIP`，不判包级 `ok`**——
+`-run` 是前缀匹配且不带 `-v` 时 SKIP 看不见、包照样报 ok。**全量采样归主控**（worker 的 build/test 禁令不变）。
+
+| ID | 断言 | 当场命令 | 状态 / 归属 |
+|---|---|---|---|
+| FL-1 | 只有 `parallel` 红、`isolated` 全绿 ⇒ 判 **FLAKY（跨包并发）**，带两次采样时刻 | `bash scripts/flaky_watch.sh -run <用例名> -p <包> -n 2` | 现存（分类器由 `--selftest` 反向验，不靠真红一次）/ test |
+| FL-2 | `single` 也红 ⇒ 判 **REGRESSION**（稳定复现），派归属角色，**不许标成 flaky** | 同上 | 现存 / test |
+| FL-3 | `shuffle` 红而 `single` 绿 ⇒ **FLAKY（同二进制并发）**：同包内共享的东西（包级变量、临时资源计数）才是方向，跨包端口不是 | 同上；最小复现手段 = 同包 `-shuffle=on` + `-count=2` | 现存（09-21 16:10:54 第一次由实测落地：`cmd/core` 两跑全红、无 flag 绿，见账本 09-21 16:10 段）/ test |
+| FL-4 | `parallel` 与 `isolated` **都红** ⇒ **FLAKY（未定维度）**：不是"一起跑"造成的，方向要回到共享面枚举 | 同上 | 现存 / test |
+| FL-5 | 四档都不红 ⇒ **未复现**，只报采样次数与时刻，**不得写成"已绿/已修"** | 同上 | 现存（09-21 15:57 与 09-22 15:11 两次全跑均落到这一档）/ test |
+| FL-6 | 任一采样没拿到该用例的 `---` 行（编译不过 / 用例改名）⇒ **探测不成立**，exit 2 并拒绝下结论 | `bash scripts/flaky_watch.sh --selftest` 里喂合成计数验 | 现存 / test |
+| FL-7 | 共享面必须**可枚举**，不许一个一个猜：`core.lock` / `core.endpoint` / `audit.head` / 真子进程端口 / **同批包里被改到的共享契约** | 脚本末尾自动列（数 `cmd/core/*_test.go` 的 `Config{` 与 `DataDir:`/`t.TempDir()` 是否相称 + 三个文件名引用处） | 现存 / test |
+| FL-8 | **前置档，比 FL-1~FL-5 优先**：记 flaky 之前先核时间线 —— 失败时刻往前 `-s`（默认 120）秒、往后 90 秒内，**全仓**（`core/`+`specs/`+`scripts/`）有任何 .go 的 mtime 落进窗口 ⇒ 这次观察**不算证据**，既不计 flaky 也不计回归；判决必须报扫过的文件数 | `bash scripts/flaky_watch.sh -a 2026-09-21T15:29:31+08:00` | 现存（那次实测命中：`core_test.go` 失败后 54s、`rejections.go` 失败后 58s 被改写）/ test |
+
+**FL-7 为什么要列第五项**：`cmd/core` 曾经那两跑全红的根因是 `internal/audit` 改了字段形状，
+连带打红别人包里的用例——**那不是文件级共享，是跨包契约改动的连带**。只列四个文件名会漏掉一整类。
+
+
+
 
 
 ## 5. 三态投递原语（Phase 0 §6.4 的直接结论）
