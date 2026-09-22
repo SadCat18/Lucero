@@ -299,6 +299,52 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
    不得只报"我这边绿了"。只新增 `AggregateKind` 常量**不是**破坏性的（Go 加常量不影响调用方）——
    破坏来自映射与校验行为的改变，别把两件事混为一谈。
 
+17. **REQ-DB-2 裁定（09-23 05:1x）：非版本聚合的写入口 —— 版本住在事件流里，不住在行里。**
+    两个消费方在等同一条通道：① `process_instances` 的退出/崩溃改写（`process_exited`/`process_crashed`，
+    事件契约 §6 登记、`aggregate_type=process`）——今天 `cmd/core/dropaudit.go` 的 `RecordExit`/`RecordCrash`
+    **只能喊不能落**；② `core_ready`/`core_shutdown`——**`core` 根本没有表**。
+    REQ-DB-6 已裁"不进 `narrowTables`、也不给 `process_instances` 补 `version` 列"，本条回答"那到底走哪道门"。
+    - **新增两个聚合类型**：`AggProcess AggregateKind = "process"`、`AggCore AggregateKind = "core"`。
+      **它们不进 `aggTable`（聚合→表）那张映射**，因而也不进 `aggTables` ⇒ `Append("process_instances", …)`
+      建行那条腿（`RecordStart`）**继续合法**（这条与第 10 条同向：进映射才是破坏性变更，我们故意不进）。
+      取而代之，`platform/db` 里另立一张**独立登记表** `versionlessAgg = {process: "process_instances", core: ""}`，
+      **加一项要过主控**（与 `narrowTables` 同口径）。
+    - **版本号怎么来（本裁定的核心）**：`= 该聚合在 `event_journal` 里已有的事件条数 + 1`，
+      即 `SELECT COUNT(*)+1 FROM event_journal WHERE aggregate_type=? AND aggregate_id=?`，**在同一事务内取**。
+      **并发后果写明白、不许瞒**：两个并发事务会算出同一个序号 ⇒ 后提交者撞
+      `UNIQUE(aggregate_type, aggregate_id, aggregate_version)` 而**整笔回滚**。这不是缺陷，**正是要的行为**：
+      同一条状态边只允许落一次。调用方必须把"撞 UNIQUE"当作"这一格已被别人落过"来处置（幂等），
+      **不许把它重试成第二个事件**——那等于把一次崩溃观察复制成两份事实。
+    - **两个入口**：
+      ```go
+      // 状态边：改一行 + 恰一条事件；没有 version 可靠，幂等闸就是"从哪个状态改走"。
+      func (tx *Tx) TouchTransition(a AggregateKind, id, guardCol string, guardVal any,
+          setSQL string, args []any, ev EventDraft) (int64, error)   // 0 = 这条边已落过，且**不插事件**
+      // 没有表的聚合（`core`）：只落事件。
+      func (tx *Tx) AppendEventOnly(a AggregateKind, id string, ev EventDraft) error
+      ```
+      `TouchTransition` 的 SQL 固定为 `UPDATE <table> SET <set> WHERE id = ? AND <guardCol> = ?`；
+      **`guardCol` 逐表白名单**，v0.1 `process_instances` 只允许 `status`。
+      **0 行 ⇒ 不插事件**是"行与事件同生同死"的唯一定义方式（否则重放一次就多一条事件，审计链长出幽灵迁移）。
+      两个入口都必须走既有 `appendEvent` ⇒ `Registered(ev.Type)` 与 REQ-B-1 的 `aggregate_type` 闸一并生效，
+      **不许绕过**；脱敏仍在密封之前（REQ-A10/A11），`setSQL` 参数与 payload 同其它入口一样过 `scrubArgs`/`redactValue`。
+    - **落点与顺序**：实现归 `db`（`internal/platform/db`）；`cmd/core` 那三格改走这两个入口归 `backend`；
+      **`adapter` 合验的行级那一半在这条落地之前仍只到"显式未接"**——`lifecyclecolumns_test.go` 里那个
+      `LUCERO_REQ_DB2=1` 开关就是钉这件事的，**谁都不许为了变绿把它改成 SKIP**。
+
+18. **C34 裁定（09-23 05:1x）：`process_instances.owner_type` / `owner_id` 的词表。** backend 明说"我不猜"，是对的——
+    这两列在 schema 里是**无 CHECK 的可空 TEXT**，所以值域只能由契约登记、由 lint 钉，代码里"看起来自然"的写法不算数。
+    - **v0.1 唯一合法值**：`owner_type = 'adapter_instance'`，`owner_id = adapter_instances.id`（UUIDv7）。
+      **不登记 `'project'` / `'core'`**——今天没有任何生产者会那样写，登记了就是第 17 条那把尺子反着用的例子
+      （"有名字无生产者"）；**等真有生产者再登记**，那时按同一条规矩连带登记它的 `owner_id` 指向哪张表。
+    - **为什么是实例 id 而不是 `adapter_key`**：与 T-204 那条 `{id}` 裁定同一形状，且 `sessions.adapter_instance_id`
+      已经 `REFERENCES adapter_instances(id)`——归属列跨表可比才有用，写 key 就Join不上。
+    - **NULL 保留给"建行时还不知道归属"**（`RecordStart` 现在就是这个状态：它的 `Append` 连这两列都没写）。
+      要把归属补上，走第 17 条的 `TouchTransition`（`guardCol` 用 `status`）**或**在 `RecordStart` 之前就把 id 备齐；
+      **不许**为这两格再开一条 `Append` 之外的裸写通道。
+    - **key → id 的反查已有现成件**：`cmd/core/discoverassembly.go` 开头那句
+      `SELECT adapter_key FROM adapter_instances WHERE id = ?` 是同一条查询的反方向，**复用那条 SQL 的形状、别新造第三份查找**。
+
 
 
 ## 2. Redaction：规则归 audit，强制点在 db
