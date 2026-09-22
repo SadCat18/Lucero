@@ -310,6 +310,19 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 > `RecordDrop` 的实现侧约束（归 `backend` 的 `cmd/core`）：只写审计行、**不写 `event_journal`**（T84-7 断的就是这一对），
 > 且这里不得出现 `Tx.Append("audit_entries"` 表名字面量（W13-2），审计行走 `audit` 自己的出口。
 
+> **`DroppedEvent.ProcessRole` 裁定：删掉这个字段，不要给它加生产者（2026-09-23 00:2x，答 `adapter` 00:1x 之问）**。
+> 证据（09-23 00:2x 全仓实测）：`grep -rn "ProcessRole\|process_role" core/ --include=*.go` **只有两处命中** ——
+> 一次是 `supervisor.go:224` 的字段声明本身，一次是 `supervisor.go:196` 的注释；**零生产者、零消费者**。
+> 而 `000001` 的 `process_instances` **没有 `process_role` 这一列**（它有的是 `process_type` CHECK(ADAPTER/WORKER)
+> + `owner_type` + `owner_id`），所以就算喂了值，**今天也没有地方存**。
+> **两条被提出的路都不选**：① 给 `Supervisor` 加注入期 `Role` —— 那是刚定稿的接口第二次改形状，
+> 而且把一个**没人读的字段**变成契约义务；② 让 backend 的实现补上它 —— 补一个没有落点的字段只是把空串换成猜测。
+> **正确的形状是**：丢弃事件"属于哪个 Adapter"这个信息**本来就在装配方手里**（`cmd/core` 每 adapter 一个 `Supervisor`，
+> 它知道 `adapter_key` / `owner_id`），所以它应该出现在**审计行的 `details_json`** 里，而不是出现在跨接缝的事件结构里 ——
+> 这与 `supervisor.go:196` 那句注释的本意一致（"注入器按 Supervisor 配置，它知道键的两半"），
+> **但那句注释里的 `process_role` 是个不存在的名词，必须一并改成 `process_type` + `owner_*`**（注释比代码强，同 T-143 那一族）。
+> 判据侧同步：契约② 判据表 **T84-7b** 增加一条"审计行必须能指出是哪个 Adapter，**不许留空串冒充**"。
+
 
 ## 8. 明确不做（v0.1）
 
