@@ -83,8 +83,23 @@ GET  /api/v1/projects?cursor=&limit=     → 列表；GET/PATCH /api/v1/projects
 POST /api/v1/adapters/{key}/probe        → 触发握手+能力核定；GET /api/v1/adapters[/{id}]
 GET  /api/v1/adapters/{id}/capabilities  → 逐能力等级 + effective_backend + last_verified_at
 GET  /api/v1/models?adapter=             → 模型列表（含 parameter_schema_json）
-POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、按 remote_session_id 去重 upsert 本地行，                                          → **09-23 03:3x 补派格**：盘上**没注册**（`/api/v1/adapters/` 对非 GET 回 405），此前不在任何派发序列里 ⇒ 排在 `:sync` 之后（它要真 Provider 读通道），归 `backend` + `adapter` 两侧。
+POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、按 (`adapter_instance_id`, `remote_session_id`) 去重 upsert 本地行，                                          → **09-23 03:3x 补派格**：盘上**没注册**（`/api/v1/adapters/` 对非 GET 回 405），此前不在任何派发序列里 ⇒ 排在 `:sync` 之后（它要真 Provider 读通道），归 `backend` + `adapter` 两侧。
                                           返回发现的 session id 列表（幂等：重复 discover 不产生新行）
+                                          → **09-23 04:5x 三处收窄（主控裁定，先契约后派发；依据都是量出来的）**：
+                                          ① **去重键是两列，不是 `remote_session_id` 单列**：`000001_core_schema.sql` 的
+                                          `idx_sessions_remote_unique` 是 `ON sessions(adapter_instance_id, remote_session_id) WHERE remote_session_id IS NOT NULL`
+                                          ⇒ **同一个 `remote_session_id` 由两个 Adapter 各报一次是合法的两行**（事件契约 §6 那一格的 payload 也正是这两键），
+                                          谁都不许把 `remote_session_id` 当全局唯一键。**查询必须按实例作用域**（`RemoteIndex(adapterInstanceID)` 是对的），
+                                          否则第二个 Adapter 一 discover 就会认领走第一个的会话。
+                                          ② **路径参数 `{id}` 就是 `adapter_instances.id`（UUIDv7），与同前缀 `probe` 的 `{key}` 不是一回事**——
+                                          yaml 那两格分别 `ref` 的是 `parameters/Id`（"聚合根 UUIDv7"）与 `parameters/Key`（"adapter_key，非实例 id"）。
+                                          **装配层不许把 `splitAdapterPath` 返回的 `key` 变量直接喂进名为 `adapterInstanceID` 的参数**：
+                                          那是"类型对、语义错"，第一次真跑就 404，而单测（httptest 里自己塞 id）永远绿。要么显式解析，要么把形参改名。
+                                          ③ **同一批里出现两次同一个 `remote_session_id` ⇒ 整批拒**（400 `validation_failed`），
+                                          不许"后一条覆盖前一条"（那是静默丢事实）。**已存在的行：一行不改、一条事件都不发、不 `Touch`**——
+                                          "幂等"若只保证行不重复，就会每次调用都往事件链与审计链上加笔，§7 那条 oracle 序列没法断言。
+                                          ④ **`Idempotency-Key` 本格必带**（yaml 已 `required: true`，且 §2 通则"所有改变业务状态的 POST 必须带"）——
+                                          同前缀的 `probe` 盘上已经在查这道（缺 ⇒ 403 `idempotency_key_required`），discover 不许少这一格检查。
 POST /api/v1/sessions/{id}:manage      → 置 managed（受管理会话才开同步与通知）                                          → **09-23 03:3x 补派格**：盘上**没注册**（`sessions.go` 只有 GET `{id}` 与 `:sync`），此前不在任何派发序列里 ⇒ **它是纯 session 聚合的一次写（置 managed + 发 `session_managed`），不依赖 probe/Provider，归 `backend`，可以立刻做**（T-192）。                                          → **C41 裁定（09-23 04:1x）：`managed` 与 `project_id` 两个键都要照做，`project_id` 不是未知键。** 依据是**事件契约 §6 那格本身就登记着** `session_managed` 的 payload 为 **`managed` `project_id`**（§6:177），而 `sessions.project_id` 是可空列（`REFERENCES projects(id) ON DELETE SET NULL`）、yaml 里 `project_id: {type: [string,"null"]}` 且只有 `managed` 必填、事件链是 `project_created → session_discovered → session_managed` ⇒ **"在 manage 这一口把会话绑到项目"是设计里的原意，不是 backend 自挑的加料**。**payload 形状**：两键都必须在（`project_id` 允许显式 `null` = "这次没绑/解绑"，但**不许省略键** —— 同 REQ-F-22 那条"键必须在、值可空"）；**不需要新事件类型**（`session_project_assigned` 不登记，YAGNI：`session_managed` 已经带这个键）。**禁令**：不许为了省事把 `project_id` 当未知键 400 拒 —— 那会让 yaml 里这一格变成"传了必被拒"的假字段，而 codegen 会把它生成合法可选参数。
 GET  /api/v1/sessions?project=&cursor=&limit=
                                        → 列表（`project` = project_id 过滤）；GET /api/v1/sessions/{id} → 详情；
