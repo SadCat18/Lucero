@@ -1,5 +1,8 @@
 # Internal Module Contracts v0.1（Wave-1 契约①）
 
+> **编号消歧（2026-09-22）**：`契约①` 单写时**指本文**；`specs/events/event-contract-v0.1.md` 一律写作「事件契约」。
+> 此前两份契约同时自称"契约①"，"契约① §2/§8"两边都能对上。规则见事件契约文件头。
+
 - 状态: **accepted**（用户 2026-09-19 批准：redaction 机制/规则分离 + `approvals` SQL 只准出现在 `internal/approval`）
 - 适用: `core/internal/**` 包之间的调用方向与接口形状
 - 上游依据: ADR-004 模块化单体、ADR-011 集中式 Permission Engine、ADR-012 敏感操作进 Audit、

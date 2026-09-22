@@ -1,4 +1,9 @@
-# Event Contract v0.1（Wave-1 契约①）
+# Event Contract v0.1（Wave-1 **事件契约**）
+
+> **编号消歧（2026-09-22）**：本文与 `specs/contracts-internal-v0.1.md` 曾同时自称"契约①"，
+> 于是"契约① §2/§8"这种引用**两边都能对上**（本文 §2=事件信封、§8=客户端游标；那份 §2=Redaction、没有 §8）。
+> 约定：**本文一律写作「事件契约」，`契约①` 单写时指 `contracts-internal-v0.1.md`**。
+> 引用只写编号不写文件名的一律按此读；今后新写的引用请带文件名。
 
 - 状态: **accepted**（用户 2026-09-19 批准，含把事件命名定为小写下划线这一处对交接示意图的偏离）
 - 适用范围: `event_journal` 的全部写入方，以及 `/ws/v1/events` 的事件帧格式
@@ -36,8 +41,15 @@
 | `payload_json` | 必含 `"schema": 1`（契约版本，不加新列）。**入库前必须过强制脱敏** |
 | `created_at` | Unix 毫秒 |
 
-WS 帧：`{"type":"event","data":<event_journal 一行>}`。心跳：`{"type":"ping","server_seq":<N>}`——
-**故意不带 `event_id`**，客户端据此区分"活着但没有新事件"，不得伪造空事件。
+WS 帧全集（**形状以本文为准，游标权威与首帧规则以契约③ §5 为准**，两处不重复写规则、只互指）：
+`{"type":"event","data":<event_journal 一行>}`；心跳 `{"type":"ping","server_seq":<N>}`——
+**故意不带 `event_id`**，客户端据此区分"活着但没有新事件"，不得伪造空事件；
+`{"type":"hello","from_seq":N}`（**客户端→服务端**的第一个帧）；
+服务端首帧二选一：回显 `{"type":"hello","from_seq":N}`（hello 带了游标）**或** `{"type":"hello_ack","server_seq":head}`
+（hello 省略游标 ⇒ 起点=journal 头、**不补发**，客户端必须把 `server_seq` 记成新游标）；
+`{"type":"resync_required"}`（journal 已裁到无法补发 ⇒ 客户端改走 REST 全量拉）。
+> 2026-09-22 LAG-2 回写：本段此前只列了 `event` 与 `ping` 两种，`hello_ack` 从未出现在事件契约里，
+> 而 §8 又只教了 `?from_seq=` —— 两处合起来正好把"缺省即全量重放"这条被禁止的行为写成了唯一读法。
 
 ## 3. `aggregate_version`（ADR-017，已批准）
 
@@ -223,8 +235,11 @@ project_created → session_discovered → session_managed
 
 ## 8. 客户端游标与幂等
 
-- 客户端持久化 last `seq`；重连时 `/ws/v1/events?from_seq=N`，服务端从 journal 补发再切实时。
+- 客户端持久化 last `seq`；**重连时游标的唯一权威是连上后第一个客户端帧 `{type:"hello","from_seq":N}`**，
+  服务端据此从 journal 补发 `seq > N` 再切实时。`?from_seq=N` 只是**"根本没收到 hello"时的回落**（超时路径），
+  省略 `from_seq` 的 hello 会主动把 query 上的游标作废 —— 完整口径与三条判据在**契约③ §5**（REQ-F-20），本文不重述。
   journal 已被裁剪时返回 `resync_required`，客户端改走 REST 全量拉取。
+  **禁止**把"没带游标"实现成"从 0 全量重放"（§9 禁止事项同源：那等于自己 DDOS 自己）。
 - 高风险写操作（`task_created` / `send_message` / `approval_resolved` / `handoff_created`）必须带
   `Idempotency-Key`，键 = `(principal_id, operation, request_hash)`。命中已完成记录时
   **返回首次的 `response_json`，不重放副作用、不产生新事件**。

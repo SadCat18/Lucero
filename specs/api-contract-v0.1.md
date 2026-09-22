@@ -74,6 +74,10 @@
 
 ```
 GET  /api/v1/health                      → {state, version, migration_version, ready}   （唯一免鉴权）
+POST /api/v1/ws-ticket                   → {ticket, expires_in:30}；WS 握手前的读侧票（§1 第 2.1 条 + REQ-T-4 豁免
+                                         Principal + REQ-F-11 豁免幂等缓存）。**本节原先没有这行** ⇒ LAG-1 回写时
+                                         一并补：它**要** Bearer（免鉴权的只有 /health），但只写在 §1，
+                                         照本表接线的客户端根本发现不了这个端点
 POST /api/v1/projects                    → 建项目（canonicalize 后的 path 冲突返回 409）
 GET  /api/v1/projects?cursor=&limit=     → 列表；GET/PATCH /api/v1/projects/{id}
 POST /api/v1/adapters/{key}/probe        → 触发握手+能力核定；GET /api/v1/adapters[/{id}]
@@ -82,10 +86,15 @@ GET  /api/v1/models?adapter=             → 模型列表（含 parameter_schema
 POST /api/v1/adapters/{id}/sessions:discover → 从 Provider 拉会话清单、按 remote_session_id 去重 upsert 本地行，
                                           返回发现的 session id 列表（幂等：重复 discover 不产生新行）
 POST /api/v1/sessions/{id}:manage      → 置 managed（受管理会话才开同步与通知）
-GET  /api/v1/sessions[/{id}]           → 详情；GET /api/v1/sessions/{id}/messages?after_seq=
+GET  /api/v1/sessions?project=&cursor=&limit=
+                                       → 列表（`project` = project_id 过滤）；GET /api/v1/sessions/{id} → 详情；
+                                         GET /api/v1/sessions/{id}/messages?after_seq=
 POST /api/v1/sessions/{id}:sync        → 显式增量同步，返回 sync_state + next_cursor
 POST /api/v1/tasks                       → 建任务（必须带 Idempotency-Key）
 GET  /api/v1/tasks?status=&project=&cursor=
+GET  /api/v1/tasks/{id}                  → **F-8 批准 · LAG-1 回写（2026-09-22）**：单任务详情。
+                                         垂直链上 `:accept` 之前必须用它取最新 `version`（`If-Match` 的输入），
+                                         没有这条读，客户端就只能拿列表里的旧版本去撞 409
 PATCH /api/v1/tasks/{id}                 → 只允许 priority/title/description/mode；带 If-Match
 POST /api/v1/tasks/{id}:queue|pause|resume|cancel|accept   → 状态动作（custom verb，不硬套 REST）
 POST /api/v1/tasks/{id}:transfer         → 建 Handoff（body: target_adapter, target_session?, reason）
@@ -97,7 +106,9 @@ POST /api/v1/executions/{id}/send        → **C10/REQ-F-1 补（17:45）**：�
                                           `DELIVERY_MODE_UNSUPPORTED`，**不得静默降级**
 GET  /api/v1/executions/{id}/output?after_seq=  → 流式批次（读 execution_output_chunks，非事件）
 POST /api/v1/executions/{id}:cancel      → 中止当前生成（映射 session/stop；不支持返回 501 而非假成功）
-GET  /api/v1/approvals?state=PENDING     → 待决审批；POST /api/v1/approvals/{id}:resolve
+GET  /api/v1/approvals?state=PENDING     → 待决审批；GET /api/v1/approvals/{id} → **F-8 批准 · LAG-1 回写**：单审批详情
+                                         （面板要在不刷列表的前提下盯一条审批的状态变化，只有列表读就得整表重拉）
+                                         ；POST /api/v1/approvals/{id}:resolve
 GET  /api/v1/quota?adapter=              → 观测值 + observation_kind + confidence（UNKNOWN≠0）
 GET  /api/v1/notifications?state=&cursor=; POST /api/v1/notifications/{id}:read|handle
 GET  /api/v1/search?q=&scope=messages,tasks   → FTS5；返回命中 + 片段 + 上下文 id
@@ -128,9 +139,24 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 `test` 角色据此写端到端链测试，`frontend` 的面板必须**只能靠这些端点**把整条链显示出来；
 任何"面板得知道内部字段才能渲染"的情况都算 API 设计缺陷，写 Coordination 而不是在 UI 里绕过。
 
-## 5. WS 帧与游标（与契约① §2/§8 一致）
+## 5. WS 帧与游标（与**事件契约** §2/§8 一致）
 
-- 连接后第一帧 `{type:"hello", from_seq}`；服务端先补发 `event_journal` 中 `seq > from_seq` 的事件，再切实时。
+- **LAG-2 裁定（2026-09-22）：本条原先那句"连接后第一帧 `{type:"hello", from_seq}`"就是要收掉的歧义句** ——
+  它没说是**谁**的第一帧，也没提服务端还有第二种首帧形状。现在按"客户端必做 / 服务端首帧"分两行写死：
+  - **客户端必须先报游标，再等就绪**：连上后的**第一个客户端帧**必须是 `{type:"hello", from_seq}`。
+    不发 hello 的连接有 `HelloTimeout` 倒计时，超时才回落到 `?from_seq=`（见下面 REQ-F-20）。
+  - **服务端的首帧必有一个，形状由"hello 有没有带游标"决定**（两种都算就绪信号，客户端不会停在"无首帧"）：
+    ① hello **带** `from_seq` → 首帧 `{type:"hello", "from_seq":N}` **回显**，N = 实际补发起点；
+    客户端**只当就绪信号，不得据此改游标**。
+    ② hello **省略** `from_seq` → 首帧 `{type:"hello_ack", "server_seq":head}`，起点抬到 journal 头（**不补发**），
+    且客户端**必须**把 `server_seq` 记成自己的新游标。这一条同时堵死"缺省即从 0 全量重放"。
+    ⇒ 面板的正确接线是：**收到 `hello_ack` 就覆盖游标，收到 `hello` 回显不要覆盖**；两者都不覆盖就等于
+    把"服务端从哪儿开始"这件事丢掉，重连后会重复渲染同一段事件。
+  判据分两半，别混成一条：**服务端那两形状已由 F20-1/F20-2/F20-3 钉住**（`test` 的
+  `core/test/ws_cursor_contract_test.go`，F20-1 断的正是"首帧 `hello_ack{server_seq}` 且 server_seq == journal 头、
+  一条都不补发"）。**客户端那一半（"收到 `hello_ack` 覆盖游标、收到 `hello` 回显不得覆盖"）此前没有任何判据**，
+  它是面板行为 ⇒ 新增 **F20-4** 归 `frontend`（本轮派发，落在 `packages/` 自属面，不劳 `test` 去测别人的状态机）。
+- 服务端先补发 `event_journal` 中 `seq > from_seq` 的事件，再切实时。
 - **REQ-F-20 裁定（11:3x）：游标的唯一权威是 hello 帧；`?from_seq=` 只在"根本没有 hello 到达"时才生效。**
   实现是正确的、**误导的是本文原来那行 endpoint 写法**（我 11:32 逐处读码核过，两方转述都不准）：
   `initialFrom(r)` 确实解析 `?from_seq=` 并区分"没带"与"带了个 0"；但 `serve` 里只要读到一帧合法 `hello`，
@@ -155,6 +181,7 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | F20-1 | 只给 `?from_seq=` + `hello` 省略游标 ⇒ 首帧 `hello_ack{server_seq}`、**不补发历史** | `go test -count=1 -v -run TestHelloCursorOmittedOverridesQuery ./test/` | 现存（PASS）/ test |
 | F20-2 | 只给 `?from_seq=` + 超时不发 `hello` ⇒ 回显 `hello{from_seq=query}` 并**补发** `seq > query` | `go test -count=1 -v -run TestNoHelloFallsBackToQueryCursor ./test/` | 现存（PASS）/ test |
 | F20-3 | `hello` 游标与 `query` 不一致 ⇒ **以 `hello` 为准**，两个方向都判 | `go test -count=1 -v -run TestHelloCursorOverridesQuery ./test/` | 现存（PASS×2 子用例：`query_小于_hello`、`query_大于_hello`）/ test |
+| F20-4 | **客户端那一半**：面板收到 `hello_ack` ⇒ 把 `server_seq` 写进自己的游标；收到 `hello` 回显 ⇒ **不得**覆盖。**两侧都要断**，且读帧的 helper 必须是"读字面上第一个返回的帧"——为躲心跳而 `continue` 的容错读法会把"首帧是 X"悄悄降级成"第 N 帧里出现过 X" | `cd apps/desktop && npx vitest run -t helloAckAdvancesCursor` | **待建** / frontend（LAG-2 本轮派发；用例名若改，必须回写本行，否则命令是假的） |
 
 `test` 侧把文件头注释改成"判据见契约③ §5 判据表 F20"的指针，**现在可以改了**（表已在，不会再指向不存在的东西）。
 
@@ -215,6 +242,44 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 两者都**不发事件、不推版本**，把它们塞进某个 Service 只会造出一个"只有一行逻辑的 Service"，
 那是为分层而分层。**但**：如果将来有人往这两张表之外的表在这里写，W13-2 直接红，不许以"同属基础设施"为由口头豁免——
 **要豁免就改本表并说明理由**。
+
+### 7.2 REQ-AD-1 裁定（2026-09-22）：`POST /api/v1/adapters/{key}/probe` 的两段归属
+
+**先把事实摆出来（全仓、排除测试）**：
+`grep -rn "Probe\|probe" core/ --include=*.go | grep -v _test.go` → **0 命中**。今天没有任何 probe 实现。
+`internal/adapter` 的导出面全是协议元语（`NewHandshake`/`Negotiate`/`DecodeStream`/`CarriesTurnRef`…），
+`internal/process` 的包注释明写它**不写库、不发事件**（DB 写入属于持有句柄的人，`Recorder` 就是为此存在的注入接缝）。
+⇒ backend 维持 501、不写假 200，是对的。yaml 那侧其实早已钉死形状（`probeAdapter`：`Idempotency-Key` + `Principal` 必带、
+路径参数是 `adapter_key` 而非实例 id、200 体是 `AdapterInstance`、产 `adapter_registered`/`adapter_health_changed`），
+**缺的从来不是"要什么"，是"谁能被调"**。
+
+**裁定（两段，同轮派发）**：
+
+1. **入口归 `adapter`**，落 `core/internal/adapter/`（新 `probe.go` + `probe_store_sqlite.go`）。形状：
+   `func (r *Registry) Probe(ctx context.Context, adapterKey string) (*ProbeResult, error)`，
+   `ProbeResult` 至少带 `adapter_instance_id`、`software_version`、`capabilities[]`、`verified_at`、`health_state`，
+   并且**必须能投影成 yaml 的 `AdapterInstance`**（handler 里不许补字段）。
+   **为什么落 `internal/adapter` 而不是 `internal/process`**：process 按设计不持 DB 句柄，让它写 `adapter_instances`
+   等于推翻它自己的包注释；而"能力核定要落库 + 发事件"是**域服务**，与 `internal/approval/store_sqlite.go` 同形
+   （域包自带 SQLite store，写仍只走 `platform/db`）。`internal/adapter` 因此从"纯协议"变成"协议 + 注册域"，
+   §7 归属行不变（同一 owner、同一条路径），不改表。
+2. **handler 与接线归 `backend`**：`api/http` 只做薄投影（取 key → 调 `Registry.Probe` → 出 `AdapterInstance`），
+   `cmd/core` 只放构造与注入。**W13 的白名单不为本条放宽**——这次不需要豁免：写就在域包里，
+   `api/http`/`cmd/core` 出现 `adapter_instances`/`adapter_capabilities` 的表名字面量写调用即 W13-2 红。
+
+**v0.1 边界（防止把 probe 顺手做成"自动恢复"）**：一次尝试、不重试；超时与健康度沿用 `internal/process` 里 `Supervisor`
+已有的 backoff / 健康度口径（不新造一套）；失败 ⇒ 只记 `health_state` 变化并回 §15.2 对应码，**不伪造 capability 行**。
+事件只用事件契约已登记的那三个（`adapter_registered`/`adapter_health_changed`/`adapter_capability_verified`），
+**禁止新增 `event_type`**（事件契约 §9 禁止事项 1）。
+
+> **REQ-T12 没落地这件事改变了 probe 的接法（2026-09-22 实测，全仓、排除测试）**：
+> `grep -rn "Supervisor{\|NewSupervisor" core/ --include=*.go` 与非测试的 `func .*RecordStart` 都**只命中
+> `internal/process` 自己那两行**（`Recorder` 的声明与 `Supervisor` 内部那次调用）——今天**没有任何非测试代码构造过
+> `Supervisor`，也没有 `Recorder` 的任何实现**。所以 **`Registry.Probe` 不得依赖 `internal/process`**
+> （那等于把 probe 排在 REQ-T12 后面，还平白多出一条跨角色 import）：改为吃一个**注入的窄接口**，
+> 形状自定、语义固定为"把这个 key 的 Adapter 拉起来、交回一对管道"（例如
+> `Start(ctx context.Context, adapterKey string) (io.ReadWriteCloser, error)`），握手用本包已有的
+> `NewHandshake`/`Negotiate`。**把真 `Supervisor` 递进来的那一步归 `backend` 的 `cmd/core`**，与 REQ-T12 同一条腿。
 
 
 ## 8. 明确不做（v0.1）

@@ -204,6 +204,24 @@ Codex 的 `ThreadList` 由 Codex Adapter 自己映射到 `session/list`，映射
    → **这条是代码要改**（现在 `StreamFrame.Validate` 对 dispatched 空值直接 `INVALID_PARAMS`），
    且校验点落在 **Core 侧 tracker**（"这条 turn 是否已拿到过名字"），不是让 Adapter 自己保证。
 
+#### 判据表 T84（§4.2 两帧取证信号；从 `core/test/turn_evidence_test.go` 镜像进本文，2026-09-22）
+
+14:05 逐条实跑标定，除 T84-7 外全 `--- PASS`（命令一律带 `-v`：`go test -run` 空匹配也报 `ok`）。
+被测面是 Core 侧导出接缝（`TurnTracker` / `CarriesTurnRef` / `NewStream`，以及 `process.Supervisor` + 真 FakeAdapter），
+**一条期望值都不从 `stream.go` 的实现里抄**。T84-4/T84-5 是下面两条裁定的转录，改名过一次（历史见 `test` 的 progress）。
+
+| ID | 断言（两侧都要断） | 当场命令 | 状态 / 归属 |
+|---|---|---|---|
+| T84-1 | `claimed` 不给 `turn_id`，`dispatched` 才给 ⇒ `TurnID()` 前空后有 | `go test -count=1 -v -run TestClaimedCarriesNoTurnID ./test/...` | 现存（PASS）/ test |
+| T84-2 | 没有 `dispatched` 不许显示 RUNNING：8 个形状里**恰 1 个**可达 RUNNING（正例），其余逐条判"不等于 RUNNING"；错误面也两侧判（该拒的 4 个不许静默收下、不该拒的 3 个不许乱拒） | `go test -count=1 -v -run TestRunningRequiresDispatch ./test/...` | 现存（PASS×8 子用例）/ test |
+| T84-3 | `provider_execution_id` 必须挂在 `claimed` 上，**含 `accepted=false` 的拒绝路径也要留下两个 id**；空值被拒且不许留下"看起来有名字"的假证据 | `go test -count=1 -v -run TestClaimedKeepsProviderHandle ./test/...` | 现存（PASS）/ test |
+| T84-4 | 裁定第 1 条：**六种通知一律必带 `turn_ref`**（缺 ⇒ `INVALID_PARAMS`、带 ⇒ 成帧，逐个判） | `go test -count=1 -v -run TestTurnRefMandatoryOnEveryNotification ./test/...` | 现存（PASS）/ test |
+| T84-5 | 裁定第 2 条：`dispatched` 的 `provider_execution_id` 可空（前提 `claimed` 给过非空）、给了非空就必须等于它；异名 ⇒ UNKNOWN。全打在 `TurnTracker` 上 | `go test -count=1 -v -run TestDispatchedHandleOptionalButNeverContradicts ./test/...` | 现存（PASS×3 子用例）/ test |
+| T84-6 | 裁定第 1 条的另一半：票号绑定与帧内 `execution_id` **一致 ⇒ 收下并推进**；**不一致 ⇒ 丢弃**（两个 tracker 都不动、假 id 的帧 0 条转发） | `LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -v -run TestTurnRefCrossCheck ./test/...` | 现存（PASS×2 子用例）/ test（`turn_attribution_test.go`） |
+| T84-7 | 裁定第 1 条写的"丢弃 **+ Audit**"里 Audit 那一半：一次丢弃留一行审计、且**不写 `event_journal`** | 无可跑命令（接缝未到：`internal/process` 的 `Recorder` 只有 `RecordStart`/`RecordExit`/`RecordCrash`，包内 `audit` 零命中） | **待建**（REQ-T12）/ 三段：`adapter` 给 `Recorder` 加一次"丢弃"事件、`backend` 在 `cmd/core` 注实现（审计行**必须**走 `audit` 自己的 Append 出口，出现 `Tx.Append("audit_entries"` 表名字面量即 W13-2 红）、`test` 落判据 |
+
+**本表即权威**：`test` 的文件头注释换成指向本节的指针（与判据表 MS/F20 同一做法），本文件之外不再留第二份。
+
 
 
 
@@ -456,11 +474,50 @@ HTTP 层（契约③ §2 错误体 `error.code`）用**小写蛇形**。它们�
 | `execution_state_unknown` | 409 | `EXECUTION_STATE_UNKNOWN` |
 | `version_conflict` | 409 | —（HTTP 层专有，来自 ADR-017 的 `If-Match`，不经 Adapter） |
 
+#### 15.2.1 REQ-F-14 收编（2026-09-22）：Core transport 自有码 —— 是 **11 条**，不是 frontend 报的 4 条
+
+frontend 的原始诉求成立（"`ErrorCode` 闭集必须覆盖线上真会出现的码"），但**它的采样面只扫了 `handler.go`**，
+所以数是 4。我按"整个 transport 出口"重测了一遍：命令贴在下面，任何人可复跑——
+
+```
+grep -rhoE 'writeError\(w, http\.Status[A-Za-z]+, "[a-z_]+"' core/api/http/*.go \
+  | sed -E 's/.*, "([a-z_]+)"/\1/' | sort -u          # 12 个码，_test.go 已被文件名排除
+```
+
+12 个里只有 `version_conflict` 原样在上表，**其余 11 个此前在 §15.2 没有行**，即：
+`method_not_allowed`、`not_implemented`、`origin_not_allowed`、`unauthorized`（frontend 那 4 条，来自 `handler.go`）
++ `validation_failed`、`not_found`、`internal_error`、`illegal_transition`、`idempotency_key_required`、
+`idempotency_replay`、`idempotency_mismatch`（来自 `tasks.go`/`notifications.go`，frontend 没扫到）。
+`core/api/**` 之外没有任何 `writeError` 生产者（全仓 grep 已确认），所以这张表就是 HTTP 错误码的**全集**。
+
+| HTTP 码 | 状态 | 来自 |
+|---|---|---|
+| `validation_failed` | 400 | —（Core transport：请求体/查询参数不合法，含 `limit`、`cursor`、`If-Match` 形状） |
+| `unauthorized` | 401 | —（Core transport：`Bearer` 口令缺失或不对；与 Adapter 的 `auth_required` **同 HTTP 码、不同生产者**，见下） |
+| `origin_not_allowed` | 403 | —（Core transport：`Origin` 不在白名单；与 `dangerous_flag_refused` 同理） |
+| `idempotency_key_required` | 403 | —（Core transport：改业务状态的 POST 没带 `Idempotency-Key`，§3/契约③ 那条规则） |
+| `not_found` | 404 | —（Core transport：库里没有这行；与 Adapter 的 `session_not_found` 不同生产者） |
+| `method_not_allowed` | 405 | —（Core transport：路由存在但方法不对） |
+| `idempotency_replay` | 409 | —（Core transport：同键命中已完成记录，返回首次响应，见契约③ §2 幂等行） |
+| `idempotency_mismatch` | 409 | —（Core transport：同键不同 `request_hash`） |
+| `illegal_transition` | 409 | —（Core transport：状态机拒绝该迁移，来自各 Service 而非 Adapter） |
+| `not_implemented` | 501 | —（Core transport：端点尚未接线，走 catch-all；**不得**用假 200 代替） |
+| `internal_error` | 500 | —（Core transport：兜底；与 Adapter 的 `internal` 同 HTTP 码、不同生产者） |
+
+**三对"同 HTTP 码、不同名字"是故意的，不许合并**：`unauthorized`/`auth_required`（401）、
+`not_found`/`session_not_found`（404）、`internal_error`/`internal`（500）。
+区别在**生产者**：右列是反引码名的，说明这个 HTTP 响应是**把 Adapter 的失败翻译出来的**；右列是 `—` 的，
+说明 Core 自己就没做成那件事。客户端要区分的是"我这条请求在 Core 里就没过"还是"过 Core 到了 Provider 才挂"，
+合并成一个名字就把这条信息丢了——这与 §15.1/§15.2 "命名分裂是故意的"是同一条线。
+
 **新增码必须同时改 §15.1 与 §15.2，缺一即算契约不一致。** 一致性判据**不比行数**，
 按**码名集合**双向比（`test` 以此为准，别自己发明更聪明的算法）：
 ① §15.2『来自』列出现的每个反引号码 ∈ §15.1 码列；② §15.1 每个码 ∈ §15.2『来自』列。
-**唯一例外**：`version_conflict` 在 §15.2 有行而 §15.1 无码（HTTP 专有，右列写的是 `—` 而非码名，所以它天然不会进①的集合）。
-当前基线：§15.1 = 17 码，§15.2 = 18 行。
+**例外的判据是形状、不是名字**：『来自』列以 `—` 开头的行 = HTTP 层专有、天然不进 §15.1，
+所以它从①的集合里排除、也不受②约束。**别把例外写成 `version_conflict` 这个名字**——
+15.2.1 之前只有 1 行是 `—`，之前那句"唯一例外"就因此是错的（写死名字 ⇒ 收编后判据自相矛盾）。
+当前基线：§15.1 = **17** 码，§15.2 = **29** 行（原 18 + 15.2.1 收编 11），其中『来自』为 `—` 的 **12** 行
+（11 条新收编 + 原有 `version_conflict`）、带反引码名的 **17** 行。`17 + 12 = 29`，两个数都要对上才算解析没坏。
 
 ### 15.3 数字码（JSON-RPC `error.code`）——**本节 12:4x 重写，撤回我上一版的越权裁定**
 
