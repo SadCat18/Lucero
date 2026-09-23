@@ -339,6 +339,13 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **0 行 ⇒ 不插事件**是"行与事件同生同死"的唯一定义方式（否则重放一次就多一条事件，审计链长出幽灵迁移）。
       三个入口都必须走既有 `appendEvent` ⇒ `Registered(ev.Type)` 与 REQ-B-1 的 `aggregate_type` 闸一并生效，
       **不许绕过**；脱敏仍在密封之前（REQ-A10/A11），参数与 payload 同其它入口一样过 `scrubArgs`/`redactValue`。
+      **③ 号入口的规范句（09-24 07:2x 补，db 07:12 指出它那道收紧在正文里查不到依据 ⇒ 现在有了）**：
+      **`AppendEventOnly` 只准给"没有表的聚合"用**（v0.1 即 `table == ""` 的那一个：`core`）。
+      **有表的无版本聚合（`process`）一律走 ①/②**——否则会出现"`process_exited` 落在事件流里、
+      而 `process_instances` 那一行还停在 `RUNNING`"，那是第 12/13 条那个洞的**反方向**
+      （原来防"行改了、事件静默丢掉"，这里防"事件写了、行没动"）。
+      **配套判据双向**：`AppendEventOnly(AggProcess, …)` 必须报错、`AppendEventOnly(AggCore, …)` 必须成功。
+      "观察到进程退出但库里根本没有它的行"这一格**不进事件流**，走 `RecordDrop` 那一族的审计登记（与第 20 条 CO-44 同源）。
     - **落点与角色（§7 归属矩阵定的，不是我新发明的）**：入口实现归 `db`（`internal/platform/db`）；
       **"把一次生命周期观察落成一行 + 一条事件"这件事的语义住在 `internal/process`，那是 `adapter` 的包**；
       `cmd/core/dropaudit.go` 只做**装配**（把 `db.Tx` 递给 `internal/process` 的那个写口、并把错误喊出来），
@@ -417,6 +424,14 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       （两种都给 `(0, nil)` 且不插事件、`TestTouchTransitionZeroRowsBooksNoEvent` 双向钉住）就是我要的。
       ④ **对判据的连带后果**：`exit_code`/`exited_at` 的可断言面**只在"先落了 started 那一行"之后存在** ⇒
       `TestLifecycleRowLandsTheFiveColumns` 必须**先建再落 exit**，不许指望从 0 行状态里把退出码落进库。
+      ⑤ **`guardVal` 只能用"写口自己写进库的那个状态"，不许用"它观察到的状态"**（09-24 07:2x 由 `adapter`
+      落码时用的 `landedStatus` 反推成规则，不是我凭空定的）。**量出来的前提**：`supervisor.go` 发 `EventStarted`
+      时带的是 `StatusStarting`，而**没有任何一种事件带 `StatusRunning`** ⇒ 行建出来是 `STARTING`、也停在能被 guard 的位置；
+      拿"我观察到它在跑"当 guard 会**每次都得 0 行**，于是每一次退出都被静默判成"这条边已落过"。
+      **写口必须自己记账：我建的那一行当时是什么状态，我就拿什么当 guard。**
+      **配套一句（同一来源）**：一次尝试一行 ⇒ **一行只落一条终态边**，所以 `landedStatus` 在这一格里**不推进是有意的**；
+      将来谁要在同一行上落第二条边（例如 `FAILED → EXITED`），**必须同时把 guard 换成自己上一次落进去的那个状态**，
+      并且 0 行照旧喊出来——**不许为了让第二条边落成功而回头用旧的 guard 再试一次**（那是 CO-44 ① 已否决的那条路）。
     - **CO-45（同一个 Supervisor 第二次拉起撞 `PRIMARY KEY`）：裁 (a) 一次尝试一行。**
       理由：表名与 `idx_process_instances_active(process_type, status)` 都读成"一次实例一行"，
       而 (b)（第二次改走 `TouchTransition(FAILED→RUNNING)`）**会把 pid 历史压没**——崩溃预算要数的正是"哪一次尝试、哪个 pid"。

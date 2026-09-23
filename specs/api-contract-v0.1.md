@@ -107,6 +107,16 @@ POST /api/v1/sessions/{id}:manage      → 置 managed（受管理会话才开�
 GET  /api/v1/sessions?project=&cursor=&limit=
                                        → 列表（`project` = project_id 过滤）；GET /api/v1/sessions/{id} → 详情；
                                          GET /api/v1/sessions/{id}/messages?after_seq=
+                                         → **09-24 07:2x 裁定（frontend 07:13 实测归因错，巡检报上来）**：这一格是**声明过的合法形状**，
+                                         今天盘上却掉进 `splitSessionVerb` 的 `!ok` 分支，回的是 501 加一句**"这条路径的形状我不认识"**——
+                                         **状态码对、归因错**：那句话在告诉调用方"这条路径可能根本不存在"，而契约说它存在、只是没装配。
+                                         修法照 T-195③/④ 那个模式：扩 `splitSessionVerb` 认 `{id}/messages` 形状 ⇒ 走一条**装配闸**
+                                         （未接线 ⇒ 501 `not_implemented` + 文案明写"这条腿还没装配"），**别只改文案凑数**。
+                                         **并且明确禁令：这一格今天不要顺手接上读面**（`Repository.ListMessages` 已经现成）——
+                                         理由：**全仓没有任何一条路径往 `messages` 写行**（只有 fake-adapter 在产 `messageRow` 载荷，与 discover 之前同一个形状），
+                                         接上只会恒返回 `200 + 空 items`，而"200 空页"会被面板读成"这条链通了"。
+                                         **接线的时机 = `messages` 有了生产者（`:sync` 落消息那一格）那一轮，读面与写面同轮交**；
+                                         在那之前 frontend 对这一格的期望就写成"501 且归因必须是'未装配'"。
 POST /api/v1/sessions/{id}:sync        → 显式增量同步，返回 sync_state + next_cursor
 POST /api/v1/tasks                       → 建任务（必须带 Idempotency-Key）
 GET  /api/v1/tasks?status=&project=&cursor=
