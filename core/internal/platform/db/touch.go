@@ -36,6 +36,11 @@ const (
 	AggGrant             AggregateKind = "grant"
 	AggPolicy            AggregateKind = "policy"
 	AggAdapterCapability AggregateKind = "adapter_capability"
+	// AggProcess and AggCore have no version column anywhere: they stay out of
+	// aggTable on purpose (契约 §1.1 item 17) and emit events through
+	// TouchTransition / AppendEventOnly rather than Touch.
+	AggProcess AggregateKind = "process"
+	AggCore    AggregateKind = "core"
 )
 
 var aggTable = map[AggregateKind]string{
@@ -46,6 +51,43 @@ var aggTable = map[AggregateKind]string{
 	AggGrant: "temporary_grants", AggPolicy: "policy_rules",
 	AggAdapterCapability: "adapter_capabilities",
 }
+
+// versionlessAgg lists the aggregates that have no version column to take a
+// number from (契约 §1.1 item 17). Adding an entry requires the orchestrator,
+// same rule as narrowTables.
+//
+// These kinds are deliberately NOT in aggTable: aggTables would then refuse every
+// narrow write on the table and Touch would look for a version column the frozen
+// schema never gave it. "Not in aggTable" is a shape fact, not a permission —
+// Append is still closed on their tables, because a row of a lifecycle aggregate
+// and its event must be one transaction (see CreateVersionless).
+type versionlessAggSpec struct {
+	table  string
+	guards map[string]bool
+}
+
+// noTable marks the entry of an aggregate that has no table anywhere: its
+// lifecycle is events only. It is a value, not an unfilled field — `core` is
+// meant to be empty (契约 §1.1 item 17 entry ③).
+const noTable = ""
+
+var versionlessAgg = map[AggregateKind]versionlessAggSpec{
+	AggProcess: {table: "process_instances", guards: map[string]bool{"status": true}},
+	AggCore:    {table: noTable},
+}
+
+// versionlessTables inverts versionlessAgg for Append, which must send these
+// tables to CreateVersionless instead of leaving row-and-event pairing to the
+// caller's memory.
+var versionlessTables = func() map[string]bool {
+	m := map[string]bool{}
+	for _, spec := range versionlessAgg {
+		if spec.table != noTable {
+			m[spec.table] = true
+		}
+	}
+	return m
+}()
 
 // aggTables is the inverse: Append must not be able to write an aggregate row
 // without taking a version.
@@ -317,13 +359,17 @@ func (tx *Tx) Create(a AggregateKind, id string, columns []string, values []any,
 
 // Append inserts an append-only row: no version, no event. Aggregate tables are
 // refused so their writes cannot skip Touch; schema_migrations belongs to the
-// migrator and event_journal to appendEvent.
+// migrator and event_journal to appendEvent. Tables of versionless aggregates are
+// refused too — their rows have an event that must ride along.
 func (tx *Tx) Append(table string, columns []string, values []any) (int64, error) {
 	if !isIdentifier(table) {
 		return 0, fmt.Errorf("table %q is not an identifier", table)
 	}
 	if aggTables[table] {
 		return 0, fmt.Errorf("append to %s: aggregate rows must go through Touch or Create", table)
+	}
+	if versionlessTables[table] {
+		return 0, fmt.Errorf("append to %s: these rows carry a lifecycle event, so they go through CreateVersionless (契约 §1.1 item 17)", table)
 	}
 	switch table {
 	case "schema_migrations", "event_journal":
@@ -348,6 +394,165 @@ func (tx *Tx) Append(table string, columns []string, values []any) (int64, error
 		return 0, fmt.Errorf("append to %s: %w", table, err)
 	}
 	return res.LastInsertId()
+}
+
+// CreateVersionless inserts the first row of a versionless aggregate and books its
+// first event in the same transaction (契约 §1.1 item 17 entry ①).
+//
+// It exists because Create stamps version=1, which these tables have no column
+// for, and because "Append the row, then remember AppendEventOnly" is precisely
+// the shape of the T-168 incident: a lifecycle fact that left no event. One entry
+// makes that pairing unskippable.
+func (tx *Tx) CreateVersionless(a AggregateKind, id string, columns []string, values []any, ev EventDraft) error {
+	spec, ok := versionlessAgg[a]
+	if !ok {
+		return fmt.Errorf("create-versionless %s: not a versionless aggregate (see 契约 §1.1 item 17)", a)
+	}
+	if spec.table == noTable {
+		return fmt.Errorf("create-versionless %s: this aggregate has no table, use AppendEventOnly", a)
+	}
+	if id == "" {
+		return fmt.Errorf("create-versionless %s: empty id", a)
+	}
+	if len(columns) == 0 {
+		return fmt.Errorf("create-versionless %s: no columns", a)
+	}
+	if len(columns) != len(values) {
+		return fmt.Errorf("create-versionless %s: %d columns but %d values", a, len(columns), len(values))
+	}
+	if err := tx.db.checkInsert(a, spec.table, columns); err != nil {
+		return err
+	}
+	if ev.AggregateID != "" && ev.AggregateID != id {
+		return fmt.Errorf("create-versionless %s: id %q but the event is about %q", a, id, ev.AggregateID)
+	}
+	scrubbed, err := tx.scrubArgs(spec.table, columns, values)
+	if err != nil {
+		return err
+	}
+	cols := append(append([]string{}, columns...), "id")
+	args := append(append([]any{}, scrubbed...), id)
+	q := "INSERT INTO " + spec.table + " (" + strings.Join(cols, ", ") + ") VALUES (" +
+		placeholders(len(cols)) + ")"
+	if _, err := tx.conn.ExecContext(tx.ctx, q, args...); err != nil {
+		return fmt.Errorf("create-versionless %s %s: %w", a, id, err)
+	}
+	version, err := tx.nextEventVersion(a, id)
+	if err != nil {
+		return err
+	}
+	return tx.appendEvent(ev, a, id, version)
+}
+
+// TouchTransition records one state edge for a versionless aggregate: it moves a
+// row from guardVal to something else and appends exactly one event. It returns
+// the number of rows changed, and 0 means the edge was already taken, in which
+// case no event is written — that pairing is the only definition of "row and
+// event live or die together"; otherwise a replay would grow a ghost transition
+// in the audit chain.
+//
+// The idempotency gate is the state it moves *from*, since there is no version
+// to compare. guardCol is whitelisted per table.
+func (tx *Tx) TouchTransition(a AggregateKind, id, guardCol string, guardVal any, setSQL string, args []any, ev EventDraft) (int64, error) {
+	spec, ok := versionlessAgg[a]
+	if !ok {
+		return 0, fmt.Errorf("touch-transition %s: not a versionless aggregate (see 契约 §1.1 item 17)", a)
+	}
+	if spec.table == noTable {
+		return 0, fmt.Errorf("touch-transition %s: this aggregate has no table, use AppendEventOnly", a)
+	}
+	if id == "" {
+		return 0, fmt.Errorf("touch-transition %s: empty id", a)
+	}
+	cols, err := parseSet(setSQL)
+	if err != nil {
+		return 0, err
+	}
+	if len(cols) != len(args) {
+		return 0, fmt.Errorf("touch-transition %s: %d columns but %d args", a, len(cols), len(args))
+	}
+	if !spec.guards[guardCol] {
+		return 0, fmt.Errorf("touch-transition %s: %s is not a guardable column on %s", a, guardCol, spec.table)
+	}
+	for _, c := range cols {
+		if c == "id" {
+			return 0, errors.New("touch-transition: id is the row key, not a settable column")
+		}
+		if err := tx.db.checkColumn(spec.table, c); err != nil {
+			return 0, err
+		}
+	}
+	scrubbed, err := tx.scrubArgs(spec.table, cols, args)
+	if err != nil {
+		return 0, err
+	}
+
+	set := make([]string, 0, len(cols))
+	for _, c := range cols {
+		set = append(set, c+" = ?")
+	}
+	q := "UPDATE " + spec.table + " SET " + strings.Join(set, ", ") + " WHERE id = ? AND " + guardCol + " = ?"
+	res, err := tx.conn.ExecContext(tx.ctx, q, append(append([]any{}, scrubbed...), id, guardVal)...)
+	if err != nil {
+		return 0, fmt.Errorf("touch-transition %s %s: %w", a, id, err)
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("touch-transition %s %s: rows affected: %w", a, id, err)
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	version, err := tx.nextEventVersion(a, id)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.appendEvent(ev, a, id, version); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
+// AppendEventOnly records an event for a versionless aggregate that has no table
+// at all — in v0.1 that is `core`, and it is the only kind allowed here.
+//
+// Aggregates that do own a row are refused: an event without the matching row
+// move leaves the row where it was, which is the reverse of the hole 契约 §1.1
+// items 12/13 close ("row changed, event lost"). "A process exited but no row
+// exists" is an audit registration (RecordDrop's family), not an aggregate event,
+// and must not be laundered into the journal.
+func (tx *Tx) AppendEventOnly(a AggregateKind, id string, ev EventDraft) error {
+	spec, ok := versionlessAgg[a]
+	if !ok {
+		return fmt.Errorf("append-event %s: not a versionless aggregate (see 契约 §1.1 item 17)", a)
+	}
+	if spec.table != noTable {
+		return fmt.Errorf("append-event %s: it owns table %s, so an event with no row move would desync them — use TouchTransition or CreateVersionless (契约 §1.1 item 17)", a, spec.table)
+	}
+	if id == "" {
+		return fmt.Errorf("append-event %s: empty id", a)
+	}
+	version, err := tx.nextEventVersion(a, id)
+	if err != nil {
+		return err
+	}
+	return tx.appendEvent(ev, a, id, version)
+}
+
+// nextEventVersion numbers an event of a versionless aggregate by the events
+// already stored for it. Two concurrent transactions can compute the same number
+// and the later commit then hits UNIQUE(aggregate_type, aggregate_id,
+// aggregate_version) and rolls back whole: that is the intended "this edge was
+// already recorded" signal, and callers must not retry it into a second event.
+func (tx *Tx) nextEventVersion(a AggregateKind, id string) (int64, error) {
+	var v int64
+	err := tx.conn.QueryRowContext(tx.ctx,
+		`SELECT count(*)+1 FROM event_journal WHERE aggregate_type = ? AND aggregate_id = ?`,
+		string(a), id).Scan(&v)
+	if err != nil {
+		return 0, fmt.Errorf("count events for %s %s: %w", a, id, err)
+	}
+	return v, nil
 }
 
 const insertEventSQL = `INSERT INTO event_journal
@@ -402,6 +607,9 @@ func (tx *Tx) scrubArgs(table string, cols []string, args []any) ([]any, error) 
 func (d *DB) aggregateTable(a AggregateKind) (string, error) {
 	t, ok := aggTable[a]
 	if !ok {
+		if _, vless := versionlessAgg[a]; vless {
+			return "", fmt.Errorf("aggregate %q has no version column: use TouchTransition or AppendEventOnly, not Touch/Create", a)
+		}
 		return "", fmt.Errorf("unknown aggregate %q", a)
 	}
 	return t, nil

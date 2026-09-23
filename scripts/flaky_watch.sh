@@ -3,8 +3,8 @@
 # 判据本体在契约② 判据表 FL（T-119，主控 15:46 定；本脚本按那张表实现，这里不另立口径）。
 #
 # 四个档位，两两对照才能把"并发形状"分辨出来（主控 15:55 补的那一维就是这里的 isolated）：
-#   single     单独跑那一个包、一个用例                       —— 红 = 稳定复现，是回归不是 flaky
-#   shuffle    同一测试二进制内 -count=2 -shuffle=on           —— 用例互相踩（同二进制并发）
+#   -m all（默认）跑四档；-m single 只跑一档 —— 串行就能复现的故障不需要付 4× 成本（05:32 实测：-n 50 四档连跑 10 分钟没跑完）
+#   single     单独跑那一个包、一个用例                       —— 红 = 稳定复现，是回归不是 flaky#   shuffle    同一测试二进制内 -count=2 -shuffle=on           —— 用例互相踩（同二进制并发）
 #   isolated   多包一起跑但 `-p 1`（一次只编译/运行一个包）    —— 去掉"跨包并发"，保留包内 shuffle
 #   parallel   多包一起跑、不限制 -p（`go test ./...` 的默认）  —— 跨包并发：抢 CPU/端口/文件锁
 # 判决（FL-1/FL-2 的原样实现）：
@@ -16,7 +16,10 @@
 #   任一档 探测失败（编译不过 / 用例名不存在） ⇒ 探测不成立，exit 2 —— 不许在坏探针上下结论
 # 每次 go test 之前都取一次 date：没有时刻的采样数字不算证据（T-43）。
 #
-# 用法：bash scripts/flaky_watch.sh [-run 用例名] [-p 主包] [-n 次数] [一起跑的包...]
+# 用法：bash scripts/flaky_watch.sh [-r 用例名] [-p 主包] [-n 次数] [一起跑的包...]
+#        **是 -r，不是 go test 的 -run**：getopts 不认长选项，`-run TestX` 会被拆成
+#        `-r un` + 位置参数 TestX ⇒ 用例名变成 "un"、-p/-n 全掉进包列表（05:26 主控实测、
+#        我 05:30:58 在本脚本上复现：打印出 `用例=un 主包=./cmd/core/`）。现在直接拒跑。
 # Exit：0 = 已分类（flaky / 未复现）；1 = 判成回归；2 = 探测本身不成立
 set -uo pipefail
 
@@ -35,19 +38,34 @@ SELFTEST=0
 SELFTEST_RUN=0
 if [[ "${1:-}" == "--selftest" ]]; then SELFTEST_RUN=1; shift; fi
 
-RE=TestSealCoversTheBytesThatLand   # -run 是前缀匹配，所以名字要写全（FL 表头钉的就是这条）
+RE=TestSealCoversTheBytesThatLand   # 交给 go test 的 -run 是无锚定子串匹配，所以名字要写全（FL 表头钉的就是这条）
 MAIN=./cmd/core/
 N=2
 AT=""        # 只核对时间线时用：失败时刻（ISO）
 SLACK=120    # 往前看多少秒；往后固定看 90 秒（还原也可能发生在失败之后几秒）
-while getopts "r:p:n:a:s:h" o; do
+# 参数面守卫：`-run` 是 go test 的旗标，不是本脚本的。getopts 见 `-run TestX` 会把它读成
+# `-r` + 值 "un"，剩下 TestX 与后面的 -p/-n 全落进位置参数 —— **症状是"探测不成立"而不是报错**，
+# 于是抄错的人只看到一句"没抓到 --- 行"，永远拿不到读数（契约① §1.1 第 19 条登记的就是这件事）。
+# 宁可拒跑，也不要给出一个看起来像采样的空跑。
+for a in "$@"; do
+  case "$a" in
+    -run|-run=*) printf '%s: `-run` 是 go test 的旗标；本脚本收 `-r 用例名`（getopts 不认长选项，\n                 写 -run 会被拆成 `-r un` + 一堆位置参数，读数全是假的）\n' "$0" >&2; exit 2 ;;
+  esac
+done
+
+# MODES 的默认值必须落在 getopts **之前**：放后面会把 `-m xxx` 解析出来的值盖掉，
+#   于是 `-m single` 照样四档连跑（05:49:31 实测：过滤没生效、四档全跑，判决还说"跨包并发"）。
+MODES=all   # -m single / -m single,shuffle / -m all（默认全跑，保持老行为）
+while getopts "r:p:n:a:s:hm:" o; do
   case "$o" in
     r) RE="$OPTARG" ;;
     p) MAIN="$OPTARG" ;;
     n) N="$OPTARG" ;;
     a) AT="$OPTARG" ;;
     s) SLACK="$OPTARG" ;;
-    h) printf '用法: %s [-run 用例名] [-p 主包] [-n 次数] [一起跑的包...]\n     %s -a <失败时刻ISO> [-s 前看秒数] [要查的目录...]\n' "$0" "$0"; exit 0 ;;
+    m) MODES="$OPTARG" ;;
+    h) printf '用法: %s [-r 用例名] [-p 主包] [-n 次数] [一起跑的包...]\n     %s -a <失败时刻ISO> [-s 前看秒数] [要查的目录...]\n     （用例子串只认 -r；写 -run 会被拒绝，因为 getopts 不认长选项）
+     -m single|shuffle|isolated|parallel|all（默认 all）：串行可复现的故障只跑一档，别付 4× 成本\n' "$0" "$0"; exit 0 ;;
   esac
 done
 shift $((OPTIND - 1))
@@ -86,7 +104,7 @@ probe() {  # probe <档位名> <go test 参数...>
   if [[ -z "$mark" ]]; then
     mark=BROKEN
     reason="$(printf '%s\n' "$out" | grep -E '\.go:[0-9]+:[[:space:]]+(undefined|.*expected|.*cannot|.*no required)|^# |no such file|build failed' | head -2 | tr '\n' ' ')"
-    [[ -z "$reason" ]] && reason="输出里没有这个用例的任何 --- 行（用例改名了？-run 前缀写错了？）"
+    [[ -z "$reason" ]] && reason="输出里没有这个用例的任何 --- 行（用例改名了？还是把 -r 写成了 -run？）"
   fi
   printf '  %s  %-9s %-7s 包退出码=%s%s\n' "$stamp" "$label" "$mark" "$rc" "${reason:+  ← ${reason:0:120}}"
   case "$mark" in
@@ -160,6 +178,14 @@ fi
 # 单独成函数只为了让 --selftest 能喂合成计数验它五句判决都能落地 —— 一个只会印"未复现"的分类器
 # 等于没有分类器（这条判据的绿红两边都在这儿）。
 classify() {
+  # 每一档的计数都可能**压根没被赋值**（`-m single` 就只跑一档），所以全部走 ${x:-0}：
+  # 05:50:39 实测旧写法在 `set -u` 下直接 `shuffle_BROKEN: unbound variable` 崩掉，
+  # 屏幕上没有判决、退出码 1 —— 一个"看起来像红"的崩溃比漏判更坏，因为它会被读成结论。
+  single_RED=${single_RED:-0}; single_BROKEN=${single_BROKEN:-0}
+  shuffle_RED=${shuffle_RED:-0}; shuffle_BROKEN=${shuffle_BROKEN:-0}
+  isolated_RED=${isolated_RED:-0}; isolated_BROKEN=${isolated_BROKEN:-0}
+  parallel_RED=${parallel_RED:-0}; parallel_BROKEN=${parallel_BROKEN:-0}
+  SAMPLES=${SAMPLES:-1}
   local total_broken=$(( single_BROKEN + shuffle_BROKEN + isolated_BROKEN + parallel_BROKEN ))
   if (( total_broken > 0 )); then
     printf '判决：探测不成立 —— 有 %s 次采样没拿到该用例的 --- 行（多半是别人的包此刻编不过）。\n' "$total_broken"
@@ -167,7 +193,17 @@ classify() {
     return 2
   fi
   if (( single_RED > 0 )); then
-    printf '判决：REGRESSION —— 单独跑也红（%s/%s）。这是稳定复现，派归属角色，不许标成 flaky。\n' "$single_RED" "$SAMPLES"
+    # 「single 档红过」只说明**与并发形状无关**，不说明稳定复现：发生率 p≈6% 的事件在 n=6 里
+    # 出现一次的概率就有 ~30%（05:45:19 实测 5 绿 1 红）。把 1/6 印成"稳定复现"会把人派去修一个
+    # 不可复现的 bug，所以按 N/N 与 x<N 分两句话。
+    if (( single_RED == SAMPLES )); then
+      printf '判决：REGRESSION（稳定复现 %s/%s）—— single 档每次都红，派归属角色，不许标成 flaky。\n' "$single_RED" "$SAMPLES"
+    else
+      printf '判决：REGRESSION（间歇，single 档 %s/%s ≈ %s%%）—— 与并发形状无关（单独跑就红过），\n' \
+        "$single_RED" "$SAMPLES" "$(( 100 * single_RED / SAMPLES ))"
+      printf '      但**不是"稳定复现"**：按发生率与归属记档，复采次数要配得上这个量级（§1.1 第 19 条）；\n'
+      printf '      也别反过来把它记成 flaky —— 单进程串行就红，说明它不是"跑在一起"造成的。\n'
+    fi
     return 1
   fi
   if (( shuffle_RED > 0 )); then
@@ -183,7 +219,9 @@ classify() {
     fi
     return 0
   fi
-  printf '判决：未复现 —— 四档各 %s 次都没红。**这不等于已绿**（主控 15:46 的口径）；\n' "$SAMPLES"
+  # 措辞必须跟着 `-m` 走：只跑了一档却说"四档都没红"，就是拿一档的事实说四档的话。
+  printf '判决：未复现 —— 实跑档 [%s] 各 %s 次都没红。**这不等于已绿**（15:46 的口径；\n' "${MODES:-all}" "$SAMPLES"
+  printf '      档数与次数没配得上事件量级时，这一句只表示"本次没采到"，不表示"没有故障"）；\n'
   printf '      要判成"已修"需要归属角色交出带时刻的复采，或这条判据换成能稳定复现的形状。\n'
   return 0
 }
@@ -191,8 +229,10 @@ classify() {
 # 反向用例：喂五组合成计数，判决必须各不相同。跑这个不需要等真的红一次。
 if (( SELFTEST_RUN )); then
   fails=0
+  SELFTEST_CASES=0   # 实际断言条数；收尾那句不许再手写"五句"（05:53 时它已经过期）
   check_verdict() {  # check_verdict <期望关键字> <s RED> <sh RED> <is RED> <pa RED> <broken>
     local want="$1"
+    SELFTEST_CASES=$((SELFTEST_CASES + 1))
     single_RED=$2; shuffle_RED=$3; isolated_RED=$4; parallel_RED=$5
     single_BROKEN=$6; shuffle_BROKEN=0; isolated_BROKEN=0; parallel_BROKEN=0
     local got; got="$(classify | head -1)"
@@ -204,13 +244,33 @@ if (( SELFTEST_RUN )); then
     fi
   }
   SAMPLES=3
-  check_verdict REGRESSION        1 0 0 0 0
+  check_verdict "REGRESSION（稳定复现 3/3）" 3 0 0 0 0
+  check_verdict "REGRESSION（间歇"      1 0 0 0 0
+  # 反面对：部分红里出现"稳定复现"就是我在撒谎，所以这一条不许含那个词。
+  partial=$(SAMPLES=3; single_RED=1; shuffle_RED=0; isolated_RED=0; parallel_RED=0; \
+            single_BROKEN=0; classify | head -1)
+  SELFTEST_CASES=$((SELFTEST_CASES + 1))
+  case "$partial" in
+    *稳定复现*) printf '  [SELFTEST FAIL] 1/3 的样本被判成"稳定复现"：%s\n' "$partial"; fails=$((fails + 1)) ;;
+    *) printf '  [ok] 间歇不误标稳定复现     ← %s\n' "${partial:0:78}" ;;
+  esac
   check_verdict "FLAKY（同二进制并发）" 0 1 0 0 0
   check_verdict "FLAKY（跨包并发）"   0 0 0 1 0
   check_verdict "FLAKY（未定维度）"   0 0 1 1 0
   check_verdict 未复现              0 0 0 0 0
   check_verdict 探测不成立           0 0 0 0 1
-  (( fails == 0 )) && printf '\n  [SELFTEST OK] 五句判决各就各位（分类器不是永真式）\n'
+  # `-m single` 的形状：另外三档连变量都不存在。旧写法在这里直接崩（unbound variable），
+  # 现在必须照样给出判决。
+  onlyone=$(unset shuffle_RED isolated_RED parallel_RED shuffle_BROKEN isolated_BROKEN parallel_BROKEN; \
+            MODES=single SAMPLES=2 single_RED=0 single_BROKEN=0; classify | head -1)
+  SELFTEST_CASES=$((SELFTEST_CASES + 1))
+  case "$onlyone" in
+    *未复现*) printf '  [ok] 只跑一档也有判决     ← %s\n' "${onlyone:0:70}" ;;
+    *) printf '  [SELFTEST FAIL] 只跑一档时没拿到判决：%s\n' "$onlyone"; fails=$((fails + 1)) ;;
+  esac
+  (( fails == 0 )) && printf '
+  [SELFTEST OK] %s 条断言各就各位（分类器不是永真式；条数由自增算出，不手写）
+' "$SELFTEST_CASES"
   exit $(( fails > 0 ? 2 : 0 ))
 fi
 
@@ -218,10 +278,20 @@ SAMPLES="$N"
 RUN_FROM="$(date -Iseconds)"
 printf 'flaky_watch  用例=%s  主包=%s  每档 %s 次  并发跑的包：%s  窗口起点=%s\n\n' "$RE" "$MAIN" "$N" "${PEERS[*]}" "$RUN_FROM"
 
-run_mode single   "$N" -count=1 -v -timeout "$TMO" -run "$RUNRE" "$MAIN"
-run_mode shuffle  "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN"
-run_mode isolated "$N" -count=1 -shuffle=on -p 1 -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
-run_mode parallel "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
+want_mode() { [[ "$MODES" == all || ",${MODES// /}," == *",$1,"* ]]; }
+
+if want_mode single; then
+  run_mode single   "$N" -count=1 -v -timeout "$TMO" -run "$RUNRE" "$MAIN"
+fi
+if want_mode shuffle; then
+  run_mode shuffle  "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN"
+fi
+if want_mode isolated; then
+  run_mode isolated "$N" -count=1 -shuffle=on -p 1 -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
+fi
+if want_mode parallel; then
+  run_mode parallel "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
+fi
 timeline "$RUN_FROM" "$(date -Iseconds)" cmd/core internal/adapter
 
 # 共享面枚举（判据要求"可枚举的几个"，不许一个一个猜）。

@@ -12,11 +12,14 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
+	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/session"
 )
 
 // AdapterProber 是这条口唯一的依赖形状：拉起来一次、握手一次，把已经落库的那一行投影出来。
@@ -25,16 +28,73 @@ type AdapterProber interface {
 	Probe(ctx context.Context, adapterKey string) (*adapter.AdapterInstanceView, error)
 }
 
+// ErrAdapterNotLaunchable 是"这个实例的 key 在本机没配起法"（`-adapter key=路径` 没给过它）。
+// 它必须是**能被包外认出的哨兵**：装配方在 `cmd/core` 里判这件事，而"该回 501 还是 503"是 transport 的口径。
+// 回 501 的理由：这台机器上从来没有过这条能力，不是那个 Adapter 病了（后者是 `adapter_unresponsive`/503）。
+var ErrAdapterNotLaunchable = errors.New("httpapi: 这个 adapter_key 没配起法")
+
+// SessionDiscoverer 是 discover 那条腿的业务面（yaml 的 `discoverAdapterSessions`）：
+// 拿实例 id → 起一条连接、拉一次 §4 的 `session/list` → 按 `(adapter_instance_id, remote_session_id)` 去重 upsert
+// （T-204①：契约③ 原来那句"按 `remote_session_id` 去重"措辞不严，已按 `idx_sessions_remote_unique` 的两列改准；
+// 这条腿本来就按实例作用域查，所以两列口径与实现本来就一致）。
+// 这里不出现协议、也不出现事务通道：那是装配方（cmd/core）与 `internal/session` 之间的事。
+type SessionDiscoverer interface {
+	DiscoverSessions(ctx context.Context, adapterInstanceID string) ([]session.Discovered, int, error)
+}
+
+// discoveredSessionView 是 yaml `DiscoveredSession`（required: session_id + remote_session_id）。
+type discoveredSessionView struct {
+	SessionID       string `json:"session_id"`
+	RemoteSessionID string `json:"remote_session_id"`
+}
+
+func discoverAdapterSessions(w http.ResponseWriter, r *http.Request, c Config, instanceID string) {
+	items, _, err := c.SessionDiscover.DiscoverSessions(r.Context(), instanceID)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrAggregateNotFound):
+			writeError(w, http.StatusNotFound, "not_found", "没有这个 Adapter 实例（先 probe 一次让它登记）", false)
+		case errors.Is(err, ErrAdapterNotLaunchable):
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"这个实例的 adapter_key 在本机没配起法（-adapter key=可执行路径 没给过它）", true)
+		case errors.Is(err, session.ErrInvalidCommand):
+			// T-204③ 裁定："同页重复 remote_session_id 整批拒"这一格定 **400 `validation_failed`**（码早已登记，不新登记）。
+			// 语义要说清楚：这一支里发坏清单的是 **Provider**（§4 那一页给了两行同样的 remote_session_id，或给了空 id），
+			// 不是调用方 —— 但 §15.2 没有"上游数据畸形"这一格，而 500 会把"这份清单畸形"冒充成"Core 自己坏了"，
+			// 所以按主控指定的那一个落，不复用 serverError。
+			writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
+		default:
+			if status, code, retryable, mapped := probeErrorOf(err); mapped {
+				// 连接与握手那一串错与 probe 是同一批（同一个 Adapter 在同一条腿上），
+				// 所以复用 probeErrorOf，不另写第二份映射表 —— 两份迟早分叉。
+				writeError(w, status, code, err.Error(), retryable)
+				return
+			}
+			serverError(w, r, err)
+		}
+		return
+	}
+	views := make([]discoveredSessionView, 0, len(items))
+	for _, it := range items {
+		views = append(views, discoveredSessionView{SessionID: it.SessionID, RemoteSessionID: it.RemoteSessionID})
+	}
+	// `items` 是 required：空页也要出键、出空数组（同 inbox 那条口径）。
+	if views == nil {
+		views = []discoveredSessionView{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": views})
+}
+
 // registerAdapterProbeRoute 认领子树 `/api/v1/adapters/`。
 // 认领整棵子树是有代价的：`/api/v1/adapters/{id}` 与 `.../capabilities` 本来由 catch-all 回 501，
 // 现在由这里回 —— 状态与码都没变（501 `not_implemented`），但**必须由自己的用例钉住**，
 // 不然"接一条口顺手把邻居接成 404/405"就是静默的行为变更。
 func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 	mux.HandleFunc("/api/v1/adapters/", func(w http.ResponseWriter, r *http.Request) {
-		key, tail, ok := splitAdapterPath(r.URL.Path)
+		seg, tail, ok := splitAdapterPath(r.URL.Path)
 		if !ok {
 			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"adapters 这条路径只认 {key}/probe、{id} 与 {id}/capabilities；别的形状 Core 不猜", true)
+				"adapters 这条路径只认 {key}/probe、{id}/sessions:discover、{id} 与 {id}/capabilities；别的形状 Core 不猜", true)
 			return
 		}
 		switch tail {
@@ -56,7 +116,32 @@ func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 					"POST /api/v1/adapters/{key}/probe 是有副作用的写，必须带 Idempotency-Key", false)
 				return
 			}
-			probeAdapter(w, r, c, key)
+			// 这一格里 `seg` 就是 **adapter_key**（yaml:176 明写"路径参数 `key` 是 `adapter_key`（非实例 id）"）。
+			probeAdapter(w, r, c, seg)
+		case "sessions:discover":
+			// T-195③/T-198：这一格以前到不了这里 —— `splitAdapterPath` 见整条路径里有冒号就判"不认形状"，
+			// 于是它回的是"形状不认识"的 501 而不是 405；修法按主控说的**扩它认识的形状**，不是改 405 文案。
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+					"/api/v1/adapters/{id}/sessions:discover 只有 POST（它会真去连一次 Provider）", false)
+				return
+			}
+			if c.SessionDiscover == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"sessions:discover 还没装配（cmd/core 没给出 Adapter 的起法）", true)
+				return
+			}
+			if r.Header.Get("Idempotency-Key") == "" {
+				// T-204④：yaml 这条腿本来就带 `parameters/IdempotencyKey`（`:217`，而那个参数是 `required: true`），
+				// §2 的通则也是"有副作用的 POST 必填"——缺这道检查是**代码的缺口**，不是契约没写。
+				// 顺序与话术都照上面那格 probe（405 → 501 → 403），同一件事不许有两种写法。
+				writeError(w, http.StatusForbidden, "idempotency_key_required",
+					"POST /api/v1/adapters/{id}/sessions:discover 是有副作用的写，必须带 Idempotency-Key", false)
+				return
+			}
+			// 这一格里 `seg` 换了一件事：**它是 `adapter_instances.id`，不是 adapter_key**
+			// （yaml:214 与 probe 那条分开登记，T-204② 复核的结论就是"`{id}` 是对的，别改 yaml"）。
+			discoverAdapterSessions(w, r, c, seg)
 		case "":
 			// GET /api/v1/adapters/{id} 与 GET /api/v1/adapters：declared 未接。
 			if r.Method != http.MethodGet {
@@ -78,25 +163,41 @@ func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 	})
 }
 
-// splitAdapterPath 把 `/api/v1/adapters/{key}/probe` 拆成 (key, "probe")。
-// 第二段只认 `probe` 与 `capabilities` 两个已知形状；空 key、多一段、带冒号的一律不认（ok=false）。
-func splitAdapterPath(path string) (key, tail string, ok bool) {
+// splitAdapterPath 把 `/api/v1/adapters/<那一段>/<尾巴>` 拆成 (seg, tail)。
+// 第一个返回值**故意不叫 key 也不叫 id**：同一棵子树里两条路的路径参数不是同一个东西，
+// 而 yaml 把它们分开登记 —— probe 那一格是 `adapter_key`（`parameters/Key`，yaml:176 明写"非实例 id"），
+// discover 与 capabilities 那两格是 `adapter_instances.id`（`parameters/Id`，yaml:214 明写"不是 adapter_key"）。
+// T-204② 点的就是这个：调用方拿到的 `seg` 该按所在那一格自己决定叫什么。
+// 已知形状三种：`{key}/probe`、`{id}/capabilities`、`{id}/sessions:discover`（T-195③ 点名的那一格：
+// 它整条路径里有冒号，所以"见冒号就不认"的旧写法把它挡在了分流之前）。
+// 其余一律不认（空段、多一段、别的 custom verb、第二个冒号）。
+func splitAdapterPath(path string) (seg, tail string, ok bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/adapters/")
-	if rest == "" || strings.Contains(rest, ":") {
+	if rest == "" {
+		return "", "", false
+	}
+	// discover 那一条先单独认：它是"段/动词:动词"的形状，通配规则会把它判成畸形。
+	if s, found := strings.CutSuffix(rest, "/sessions:discover"); found {
+		if s == "" || strings.Contains(s, "/") || strings.Contains(s, ":") {
+			return "", "", false
+		}
+		return s, "sessions:discover", true
+	}
+	if strings.Contains(rest, ":") {
 		return "", "", false
 	}
 	i := strings.IndexByte(rest, '/')
 	if i < 0 {
 		return rest, "", rest != ""
 	}
-	key, tail = rest[:i], rest[i+1:]
-	if key == "" || tail == "" || strings.Contains(tail, "/") {
+	seg, tail = rest[:i], rest[i+1:]
+	if seg == "" || tail == "" || strings.Contains(tail, "/") {
 		return "", "", false
 	}
 	if tail != "probe" && tail != "capabilities" {
 		return "", "", false
 	}
-	return key, tail, true
+	return seg, tail, true
 }
 
 func probeAdapter(w http.ResponseWriter, r *http.Request, c Config, key string) {

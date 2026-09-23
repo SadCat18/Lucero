@@ -1,6 +1,7 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -270,6 +271,32 @@ func (c *coreProc) waitEndpoint() endpoint {
 	return endpoint{}
 }
 
+// probeHealth 是 health 的**非致命**版本，只给窗口内的诊断用。
+// 为什么必须另有一个：`health()` 请求失败就 `t.Fatal`，而"上一代端口暂时不通"正是重启窗口里
+// 的正常状态 —— 我 05:01:43 第一版就拿它做试探，结果诊断探针自己把用例判死了（1.45s FAIL，
+// 红句是 `connectex: No connection…`，与端口假设毫无关系）。诊断不能有权力杀人。
+func probeHealth(e endpoint) (string, error) {
+	req, err := http.NewRequest("GET", "http://"+e.HostPort+"/api/v1/health", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+e.Token)
+	cl := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if s, ok := out["state"].(string); ok {
+		return s, nil
+	}
+	return "无 state 字段", nil
+}
+
 func health(t *testing.T, e endpoint) map[string]any {
 	t.Helper()
 	req, err := http.NewRequest("GET", "http://"+e.HostPort+"/api/v1/health", nil)
@@ -366,8 +393,12 @@ func TestCrashKillCoreAndRestart(t *testing.T) {
 func TestCrashRestartSameDataDir(t *testing.T) {
 	exe := buildCore(t)
 	dir := t.TempDir()
+	// 两个孩子的 stderr 必须**接住而不是丢掉**：05:04 之前这里是 `io.Discard`，
+	// 于是"新 core 到底为什么没写 endpoint"在我手里没有任何证据可看，只能靠猜
+	// （巡检那条端口假设之所以一度没法证伪，一半责任在我的 Discard 上）。
+	var firstLog, secondLog bytes.Buffer
 	first := exec.Command(exe, "-data-dir", dir, "-migrations", filepath.Join(moduleRoot(), "migrations"))
-	first.Stderr = io.Discard
+	first.Stderr = &firstLog
 	first.Stdout = io.Discard
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
@@ -379,11 +410,16 @@ func TestCrashRestartSameDataDir(t *testing.T) {
 	_ = first.Process.Kill()
 	_ = first.Wait()
 
-	// 上一代的 core.endpoint 还在原地：必须先记下旧值，等文件被**改写**且端口变掉，
-	// 否则会拿着已死端口去请求（我第一版就是栽在这个竞态上）。
+	// 上一代的 core.endpoint 还在原地，所以要认出"这是新一代写的"。
+	// 换代见证用 **口令**：`cmd/core` 每次 boot 用 crypto/rand 现编 32 字节（main.go:177~182），
+	// 不入库、不落配置 ⇒ 新文件里的 token 与旧的不同，就一定是另一代进程写的。
+	// 端口不当见证的理由：Core 绑 `127.0.0.1:0`（main.go:185），端口由 OS 发还，理论上可以重发同一个。
+	// **但这条假设已被我自己的采样否掉**：05:03:27~05:04:22 十二次同配置采样里
+	// "新一代沿用旧端口"出现 0 次（那 12 次里 11 绿 1 红），所以这次的 26s 红不是端口造成的；
+	// 端口断言仍然是错的判法（它不该参与判决），只是它不是本次红的原因。
 	start := time.Now()
 	second := exec.Command(exe, "-data-dir", dir, "-migrations", filepath.Join(moduleRoot(), "migrations"))
-	second.Stderr = io.Discard
+	second.Stderr = &secondLog
 	second.Stdout = io.Discard
 	if err := second.Start(); err != nil {
 		t.Fatalf("第二次启动进程失败: %v", err)
@@ -391,21 +427,75 @@ func TestCrashRestartSameDataDir(t *testing.T) {
 	t.Cleanup(func() { _ = second.Process.Kill() })
 	deadline := start.Add(25 * time.Second)
 	var e2 endpoint
+	var (
+		rounds          int
+		lastSeen        endpoint
+		fileRewritten   bool
+		sawNewToken     bool
+		samePortAsOld   bool
+		lastErr         string
+		samePortReadyAt int // 第一次旧端口还能被 health 答 READY 的轮次（诊断用）
+	)
 	for time.Now().Before(deadline) {
+		rounds++
 		b, err := os.ReadFile(filepath.Join(dir, "core.endpoint"))
-		if err == nil {
+		if err != nil {
+			lastErr = "读不到 core.endpoint: " + err.Error()
+		} else if json.Unmarshal(b, &lastSeen) != nil {
+			lastErr = "core.endpoint 不是合法 JSON"
+		} else {
 			if fi, e := os.Stat(filepath.Join(dir, "core.endpoint")); e == nil && !fi.ModTime().Before(start) {
-				var cand endpoint
-				if json.Unmarshal(b, &cand) == nil && cand.HostPort != "" && cand.HostPort != e1.HostPort {
-					e2 = cand
-					break
+				fileRewritten = true
+			}
+			if lastSeen.Token != "" && lastSeen.Token != e1.Token {
+				sawNewToken = true
+				// "端口相同"只有在**确认是新一代**之后才有意义：
+				// 窗口第一轮读到的本来就是旧文件，那时端口必然相同 —— 我 05:02:42 第一版就是这么误报的
+				// （8/8 都打"同端口"日志，等于什么都没测到）。
+				if lastSeen.HostPort == e1.HostPort {
+					samePortAsOld = true
+					if s, err := probeHealth(lastSeen); err == nil && s == "READY" {
+						samePortReadyAt = rounds
+					}
 				}
+			}
+			if fileRewritten && sawNewToken && lastSeen.HostPort != "" {
+				e2 = lastSeen
+				break
 			}
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+	// 失败时把"两种红"分开：文件没被改写 ⇒ 锁没回收（产品缺）；改写了但 health 不 READY ⇒ 新一代没起来（产品缺）；
+	// 改写、口令变、health READY ⇒ 换代成功，红只可能出在判据自己身上。
 	if e2.HostPort == "" {
-		t.Fatal("硬杀后同目录重启 25s 内没有换新 core.endpoint —— 残留锁没被自动回收（要人工加 -take-over-lock 就是缺陷）")
+		hv := "未探"
+		if lastSeen.HostPort != "" {
+			s, err := probeHealth(lastSeen)
+			if err != nil {
+				hv = "探测失败: " + err.Error()
+			} else {
+				hv = s
+			}
+		}
+		// 把最常见的那一种失败自己说出来：第二代一旦「以为还有 Core 在跑」，红话就不该只停在
+		// 「没认出新一代 endpoint」这一层 —— 让读者从几百字现场里自己找拒绝原因，等于没分类。
+		shape := ""
+		if strings.Contains(secondLog.String(), "已有 Core 在跑") {
+			shape = "\n>>> 形状判定：第二代进程**拒绝起锁**（它认为残留锁里的 pid 还活着），所以从未写 endpoint。" +
+				"这不是「端口换了没换」的问题，也不是判据这边的问题：存活判定在 `cmd/core/lock.go` 的 " +
+				"`os.FindProcess(pid)` 上，Windows 下它对「已退但句柄未净 / pid 被复用」会给「活着」。"
+		}
+		t.Fatalf("硬杀后同目录重启 25s 内没认出新一代 core.endpoint —— 现场：轮数=%d 文件被改写=%v "+
+			"口令换过=%v 新一代沿用旧端口=%v 且曾答 READY 的轮次=%d 最后一次读到的=%+v health=%v 最近一次读文件=%q"+
+			"\n第一代 stderr 尾部：%s\n第二代 stderr 尾部：%s（旧值：端口=%s 口令前 8 字=%s）%s",
+			rounds, fileRewritten, sawNewToken, samePortAsOld, samePortReadyAt, lastSeen, hv, lastErr,
+			tailOf(firstLog.Bytes(), 400), tailOf(secondLog.Bytes(), 600),
+			e1.HostPort, e1.Token[:8], shape)
+	}
+	if samePortAsOld {
+		t.Logf("换代时 OS 把上一代的端口 %s 又发给了新一代（旧断言在此会拒收健康的新 core） —— 换代靠口令认出（token 前 8 字 %s→%s），端口不参与判决",
+			e1.HostPort, e1.Token[:8], e2.Token[:8])
 	}
 	got := health(t, e2)
 	if got["state"] != "READY" {
@@ -418,6 +508,19 @@ func TestCrashRestartSameDataDir(t *testing.T) {
 func TestCoreReadyEventIsJournalized(t *testing.T) {
 	t.Skip("blocked(REQ-T7 给 backend): §6 要求 core_ready 进 journal（principal=system，payload 带 version/migration_version），" +
 		"实测 cmd/core 启动两次并 READY 之后 event_journal 仍为 0 行；补上后本用例改为断言存在 core_ready 且 aggregate_type=core")
+}
+
+// tailOf 取子进程日志的尾部：失败时最有用的通常是最后几行（panic、拒绝起锁的报错），
+// 而整份 Core 日志可能长到把判决刷出屏幕。
+func tailOf(b []byte, n int) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) <= n {
+		if s == "" {
+			return "(空)"
+		}
+		return s
+	}
+	return "…" + s[len(s)-n:]
 }
 
 func waitForEndpoint(t *testing.T, dir string) endpoint {

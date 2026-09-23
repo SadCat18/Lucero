@@ -71,9 +71,12 @@ type Core struct {
 	sessionSvc *session.Service
 	// probe 是 §7.2 那条 probe 腿的装配产物（Registry + Launcher）。nil = 一个 `-adapter` 都没配，
 	// 此时 transport 那格维持 501 —— 注入时必须走 adaptersField()，不能直接把 nil 塞进接口。
-	probe   *probeService
-	ln      net.Listener
-	tickets *httpapi.Tickets
+	probe *probeService
+	// discover 是 sessions:discover 那条腿，与 probe 同一个 launcher、同一句"没配就是 nil"；
+	// 注入走 discoverField()，同一条 typed-nil 陷阱不解释第二遍。
+	discover *discoverService
+	ln       net.Listener
+	tickets  *httpapi.Tickets
 
 	state atomic.Pointer[string]
 }
@@ -155,17 +158,21 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	core.tasks = task.NewService(core.reporter)
 	core.store = auditedStore{d: d, checkpoints: core.checkpoints}
 
-	// T-181①：probe 的装配位。一个 `-adapter` 都没给 ⇒ `probe` 是 nil ⇒ transport 那一格维持 501
+	// session 的那个 Service 只构造一次（读侧 `:sync`、写侧 `:manage`，以及 discover 建行也共用），
+	// 时钟用上面那份 nowMillis。它必须建在下面两个装配之前：discover 的"建行"就在这个 Service 里。
+	core.sessionSvc = session.NewService(session.NewRepository(d.Read), nowMillis)
+
+	// T-181① / T-198：probe 与 discover 两条腿一起装配（同一份 `launcher`、同一套"这个 key 怎么起"）。
+	// 一个 `-adapter` 都没给 ⇒ 两个都是 nil ⇒ transport 那两格维持 501
 	// （"这台机器没配 Adapter"与"你给错了 key"是两种处置，不许拿 400 伪装成前者，见 probeassembly.go）。
-	probe, err := newProbeService(d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
-		func(format string, args ...any) { log.Printf(format, args...) })
+	probe, discover, err := newAdapterServices(d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
+		func(format string, args ...any) { log.Printf(format, args...) }, core.sessionSvc)
 	if err != nil {
 		core.close()
 		return nil, err
 	}
 	core.probe = probe
-	// session 的那个 Service 只构造一次（读侧 `:sync` 与写侧 `:manage` 共用），时钟用上面那份 nowMillis。
-	core.sessionSvc = session.NewService(session.NewRepository(d.Read), nowMillis)
+	core.discover = discover
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -229,6 +236,14 @@ func (c *Core) adaptersField() httpapi.AdapterProber {
 	return c.probe
 }
 
+// discoverField 与 adaptersField 是同一条规矩的两个实例：nil 检查放在这里，不给 transport 留 typed nil。
+func (c *Core) discoverField() httpapi.SessionDiscoverer {
+	if c.discover == nil {
+		return nil
+	}
+	return c.discover
+}
+
 // handler 把两个 transport 面拼起来：/ws/v1/events 走一次性短票（REQ-F-2，不接受 Authorization 头），
 // 其余 /api/v1 走 Bearer。两条共用同一个回环来源判定，CORS 规则不出现第二套。
 func (c *Core) handler() http.Handler {
@@ -264,6 +279,8 @@ func (c *Core) handler() http.Handler {
 		// probe 这条口（§7.2 的 backend 半边）。走 c.adaptersField() 而不是直接塞：
 		// 把 typed nil 装进接口会得到一个"非 nil 但一调就 panic"的值，501 那格就白留了。
 		Adapters: c.adaptersField(),
+		// discover 与 probe 同一条腿的两个入口，"没配 Adapter"时同样是 nil ⇒ 501（不是 404、不是 405）。
+		SessionDiscover: c.discoverField(),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{

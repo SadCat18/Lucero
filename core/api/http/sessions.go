@@ -236,7 +236,7 @@ func getSession(w http.ResponseWriter, r *http.Request, c Config, id string) {
 // SessionManager 是 `POST /api/v1/sessions/{id}:manage` 的业务面。它与 SessionSyncer 分成两个字段：
 // 一个要事务通道（写）、一个只要读 —— 合成一个接口就会逼 cmd/core 造一个只为凑签名的转发类型。
 type SessionManager interface {
-	Manage(ctx context.Context, tx session.TouchWriter, id string,
+	Manage(ctx context.Context, tx session.Writer, id string,
 		cmd session.ManageCommand) (session.Session, bool, error)
 }
 

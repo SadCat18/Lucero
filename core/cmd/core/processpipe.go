@@ -55,6 +55,23 @@ func newLauncher(command func(string) (*exec.Cmd, error), deadline time.Duration
 
 var errNoDeadline = errors.New("cmd/core: 拉起的 ctx 必须带期限")
 
+// supervisorFor 造"这个 key 的那台子进程该怎么被看着"这件事的唯一一份配置。
+// 它存在的原因是 discover 那条腿要的是 `Supervisor.Connect`（起子进程 + 开读帧的泵），
+// 而 `Start` 只要 `Supervisor.Start`（起子进程 + 交回管道）—— 两个入口共用一份配置，
+// 免得 `Restart`/`Rec`/`Sink` 三处各写一遍、迟早分叉（`Rec` 那半格尤其：漏一份就等于那条路上没人记账）。
+func (l *launcher) supervisorFor(adapterKey string) *process.Supervisor {
+	return &process.Supervisor{
+		Kind:    process.KindAdapter,
+		Launch:  func() (*exec.Cmd, error) { return l.command(adapterKey) },
+		Restart: process.RestartNever,
+		// 一个 adapter 一个 recorder：`DroppedEvent` 里没有任何身份字段，adapter_key 只能由构造点带。
+		Rec: newDropRecorder(l.store, adapterKey, l.now, l.logf),
+		Sink: func(ev process.Event) {
+			l.logf("adapter %s 进程事件: kind=%s pid=%d status=%s exit=%d", adapterKey, ev.Kind, ev.PID, ev.Status, ev.ExitCode)
+		},
+	}
+}
+
 // Start 起一次子进程并交回一根双工管道。一次调用 = 一次尝试，不在这里重试
 // （§7.2 把 v0.1 钉在一次尝试上，重试会变成"自带 backoff 故事的自动恢复循环"）。
 func (l *launcher) Start(ctx context.Context, adapterKey string) (io.ReadWriteCloser, error) {
@@ -68,16 +85,7 @@ func (l *launcher) Start(ctx context.Context, adapterKey string) (io.ReadWriteCl
 		}
 		ctx, cancel = context.WithTimeout(ctx, l.deadline)
 	}
-	sup := &process.Supervisor{
-		Kind:    process.KindAdapter,
-		Launch:  func() (*exec.Cmd, error) { return l.command(adapterKey) },
-		Restart: process.RestartNever,
-		// 一个 adapter 一个 recorder：`DroppedEvent` 里没有任何身份字段，adapter_key 只能由构造点带。
-		Rec: newDropRecorder(l.store, adapterKey, l.now, l.logf),
-		Sink: func(ev process.Event) {
-			l.logf("adapter %s 进程事件: kind=%s pid=%d status=%s exit=%d", adapterKey, ev.Kind, ev.PID, ev.Status, ev.ExitCode)
-		},
-	}
+	sup := l.supervisorFor(adapterKey)
 	child, err := sup.Start(ctx)
 	if err != nil {
 		if cancel != nil {

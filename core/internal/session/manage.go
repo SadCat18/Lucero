@@ -16,10 +16,12 @@ import (
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 )
 
-// TouchWriter 是这一口需要的最小写面（`*db.Tx` 天然满足）。
-// 刻意不与读侧的 `Queryer` 合成一个"大接口"：凑签名多出来的方法会让读的人以为是必需依赖（同 notification 那两处分开写的理由）。
-type TouchWriter interface {
+// Writer 是写侧需要的最小面（`*db.Tx` 天然满足）：`:manage` 只要 `Touch`，discover 还要 `Create` 建行。
+// 两个能力合成一个接口而不是拆两个：它们是同一个事务上的两种写，拆开只会多一层"哪个方法要哪个接口"的疑问。
+// 刻意不与读侧的 `Queryer` 合成"大 Store"：凑签名多出来的方法会让读的人以为是必需依赖。
+type Writer interface {
 	Touch(a db.AggregateKind, id, setSQL string, args []any, ev db.EventDraft) (int64, error)
+	Create(a db.AggregateKind, id string, columns []string, values []any, ev db.EventDraft) error
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -60,7 +62,7 @@ func projectOrNil(project string) *string {
 //
 // 事件 payload 装的是**生效后**的那两格（不是请求体的回声）：§6 那一格的键就是 `managed` `project_id`，
 // 若我把没改动的 `project_id` 留空发出去，事件就在说"这条会话没有归属"，而库里那一行明明有 —— 那是事件替请求撒谎。
-func (s *Service) Manage(ctx context.Context, tx TouchWriter, id string, cmd ManageCommand) (Session, bool, error) {
+func (s *Service) Manage(ctx context.Context, tx Writer, id string, cmd ManageCommand) (Session, bool, error) {
 	if strings.TrimSpace(cmd.EventID) == "" {
 		return Session{}, false, fmt.Errorf("%w: 缺 event_id（重试要复用同一个）", ErrInvalidCommand)
 	}

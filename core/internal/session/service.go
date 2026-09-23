@@ -28,7 +28,7 @@ type SyncOutcome struct {
 
 // Service 的只读那一格（`:sync` 走降级链）今天仍然一行都不写；写侧从第四十五批起多了一条 `Manage`
 // （见 manage.go —— 它是纯聚合的一次写，不依赖 adapter 的连接层）。
-// 两个方法要的能力不同，所以 `Manage` 自己吃一个 `TouchWriter`，这里不把事务通道存进 Service：
+// 两个方法要的能力不同，所以 `Manage` 自己吃一个 `Writer`，这里不把事务通道存进 Service：
 // 存进来就等于允许"拿构造时的库、在别的请求里写"。
 type Service struct {
 	repo *Repository

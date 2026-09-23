@@ -125,6 +125,9 @@ type Config struct {
 
 	// 注入时才挂 POST /api/v1/adapters/{key}/probe（§7.2 的 backend 半边：只投影，不写）。
 	Adapters AdapterProber
+	// SessionDiscover 在时才挂 POST /api/v1/adapters/{id}/sessions:discover
+	// （它是面板链第 2/3/4 格共用的那把锁：Core 侧今天没有第二条路能建出 sessions 行）。
+	SessionDiscover SessionDiscoverer
 }
 
 // NewHandler 装出 /api/v1 面：除 /health 外全部要求 Bearer；带 Origin 的外部请求 403；

@@ -176,8 +176,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 从 Provider 拉会话清单，按 remote_session_id 去重 upsert 本地行
-         * @description 幂等：重复 discover 不产生新行，只返回同一批 session id。产 `session_discovered`。
+         * 从 Provider 拉会话清单，按 (adapter_instance_id, remote_session_id) 去重 upsert 本地行
+         * @description 路径参数 `id` 是 `adapter_instances.id`（UUIDv7），**不是** `adapter_key`——与同前缀的 probe（`parameters/Key`）不同，别照抄。
+         *     幂等：重复 discover 不产生新行、已存在的行一条事件都不发，只返回同一批 session id。新行产 `session_discovered`。
          *     返回体即"发现的 session id 列表"，面板拿它再去 :manage / :sync（§3 17:35 裁定，REQ-F-7）。
          */
         post: operations["discoverAdapterSessions"];

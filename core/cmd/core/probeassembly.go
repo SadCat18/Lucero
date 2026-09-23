@@ -23,6 +23,7 @@ import (
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/session"
 )
 
 // probeAttemptDeadline 是这座桥自己给"一次拉起"上的期限（launcher 在 ctx 没带 deadline 时补它）。
@@ -84,29 +85,36 @@ func (p *probeService) Probe(ctx context.Context, adapterKey string) (*adapter.A
 	return &view, nil
 }
 
-// newProbeService 装配 Registry。specs 为空 ⇒ 返回 (nil, nil)：**一个 Adapter 都没配，就没有可探的东西**，
-// transport 那格因此维持 501 而不是给每个 key 回一个"未知 adapter_key"的 400 ——
-// 后者会把"这台机器上没配 Adapter"伪装成"你给错了名字"，是两种完全不同的处置。
-func newProbeService(d *db.DB, store auditedStore, specs []adapterSpec, deadline time.Duration,
-	now func() int64, logf func(string, ...any)) (*probeService, error) {
+// newAdapterServices 装配 probe 与 discover 两条腿。specs 为空 ⇒ 返回 (nil, nil, nil)：
+// **一个 Adapter 都没配，就没有可探/可发现的东西**，transport 那两格因此维持 501 而不是给每个 key
+// 回一个"未知 adapter_key"的 400 —— 后者会把"这台机器上没配 Adapter"伪装成"你给错了名字"，是两种完全不同的处置。
+// 两条腿共用同一个 `launcher`：`Supervisor` 的配置（Restart / Rec / Sink）只该有一处（见 `supervisorFor`）。
+func newAdapterServices(d *db.DB, store auditedStore, specs []adapterSpec, deadline time.Duration,
+	now func() int64, logf func(string, ...any),
+	sessionSvc *session.Service) (*probeService, *discoverService, error) {
 	if len(specs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	pstore, err := adapter.NewSQLiteStore(d, now)
 	if err != nil {
-		return nil, fmt.Errorf("装配 probe 的写通道: %w", err)
+		return nil, nil, fmt.Errorf("装配 probe 的写通道: %w", err)
 	}
 	launch := newLauncher(commandFor(specs), deadline, logf, store, now)
 	entries := make([]adapter.Entry, 0, len(specs))
+	byKey := make(map[string]adapterSpec, len(specs))
 	for _, s := range specs {
 		entries = append(entries, adapter.Entry{AdapterKey: s.key, DisplayName: s.displayName, Launcher: launch})
+		byKey[s.key] = s
 	}
 	reg, err := adapter.NewRegistry(
 		adapter.Version{Major: adapter.ProtocolMajor, Minor: adapter.ProtocolMinor}, entries, pstore, now)
 	if err != nil {
-		return nil, fmt.Errorf("装配 adapter.Registry: %w", err)
+		return nil, nil, fmt.Errorf("装配 adapter.Registry: %w", err)
 	}
-	return &probeService{reg: reg}, nil
+	discover := &discoverService{
+		dbh: d, read: d.Read, launch: launch, byKey: byKey, svc: sessionSvc, logf: logf,
+	}
+	return &probeService{reg: reg}, discover, nil
 }
 
 // commandFor 把"这个 key 该怎么起"做成 launcher 要的闭包。没配起法的 key 理论到不了这里

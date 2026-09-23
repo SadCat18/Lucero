@@ -175,11 +175,13 @@ describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面', () => {
    ⇒ 断言不能写"它现在必须 501"（那是把别人的进度钉成我的红），也不能写"它现在必须 200"
    （别人回退我就瞎）。统一形状：**200 就必须符合契约形状；不是 200 就只能是 `not_implemented`**。 */
 describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）', () => {
-  const raw = (method: string, path: string, idem?: string) =>
+  const raw = (method: string, path: string, idem?: string, body?: unknown) =>
     fetch(`${base}${path}`, {
       method,
       headers: { authorization: `Bearer ${token}`, 'x-lucero-principal': 'local-user',
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
         ...(idem ? { 'idempotency-key': idem } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 
   it('分页出口三条：200 时 next_cursor 必须是字符串（空串=唯一合法"没有下一页"），未接线只许 501', async () => {
@@ -206,34 +208,66 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
     expect([200, 404, 501]).toContain(res.status);
   });
 
-  it(':sync 路由活着时错误体必须是统一形状（三键齐 + retryable 是布尔）', async () => {
-    const res = await raw('POST', '/api/v1/sessions/01TESTNOTEXIST:sync', 'live-sync-shape');
-    if (res.status === 501) {                       // 还没装配也合法，但不能悄悄假成功
-      expect((await res.json()).error.code).toBe('not_implemented');
-      return;
+  it('§4 第 3/4 格（manage / sync）：501 与 404 是两种不同的红，405 一律不许', async () => {
+    // 上一版这条的 else 分支写的是 `expect([200,201,404]).not.toBe(405)` —— 拿**数组字面量**去比 405，
+    // 无论对方回什么都永远通过，是条空断言。这里改成先收口状态集、再按状态核各自的形状。
+    // 口径：未接线 = 501 not_implemented（装配漏件）；路由通了但行不存在 = 404 session_not_found（数据没到）；
+    // 真接通 = 200/201 且必须给得出契约形状。405/500/404-with-其它码 都算红。
+    for (const [label, path, idem, body] of [
+      // 04:5x 教训：discover 原来也在这个循环里，但它按 `adapter_key` 寻址是错的 —— 见下面单独那条两行期望。
+      ['manage', '/api/v1/sessions/01TESTNOTEXIST:manage', 'live-manage', { managed: true }],
+      ['sync', '/api/v1/sessions/01TESTNOTEXIST:sync', 'live-sync', undefined],
+    ] as const) {
+      const res = await raw('POST', path, idem, body);
+      const err = await res.json().then((j) => (j as { error?: unknown }).error ?? null) as
+        { code?: string; message?: string; retryable?: boolean } | null;
+      expect([200, 201, 404, 501],
+        `${label} 回了 ${res.status}：只许这四种（501=没装配 / 404=缺行 / 200-201=真通），不许 405 与假成功`)
+        .toContain(res.status);
+      if (res.status === 501) {
+        expect(err?.code, label).toBe('not_implemented');
+        expect(err?.retryable, `${label} 的 501 应可重试（等装配）`).toBe(true);
+      } else if (res.status === 404) {
+        expect(['code', 'message', 'retryable'].every((k) => k in (err ?? {})),
+          `${label} 的错误体三键不齐：${JSON.stringify(err)}`).toBe(true);
+        expect(err?.code, label).toBe('session_not_found');
+        expect(typeof err?.retryable, `${label} retryable 必须是布尔`).toBe('boolean');
+      }
+      console.log(`  §4 ${label} → ${res.status} ${err?.code ?? '<no error>'}`);
     }
-    const err = (await res.json()).error;
-    expect(['code', 'message', 'retryable'].every((k) => k in err), JSON.stringify(err)).toBe(true);
-    expect(typeof err.retryable).toBe('boolean');
-    expect(err.code).toBe('session_not_found');     // 404：路由到业务层了，不是"形状不认识"
+
+    // 400 and 404 are two different reds: invalid body = 400 validation_failed, not 404 [row missing] nor 501 [not wired].
+    const noBody = await raw('POST', '/api/v1/sessions/01TESTNOTEXIST:manage', 'live-manage-empty');
+    expect(noBody.status, '缺 required 的 managed ⇒ 应当是请求不合法').toBe(400);
+    expect((await noBody.json()).error.code).toBe('validation_failed');
   });
 
-  it('§4 第 2/3 格（discover / manage）：未接线时必须是 501 的形状，不许 405、不许假 200', async () => {
-    // 这条**不钉"永远 501"**（上一条测试刚犯过那个错）：backend 接上之后它应当自动变成"过"。
-    // 钉的是口径：能力没接线 ⇒ 501 not_implemented；方法不接受 ⇒ 才许 405。
-    for (const [label, path, idem] of [
-      ['discover', '/api/v1/adapters/opencode/sessions:discover', 'live-discover'],
-      ['manage', '/api/v1/sessions/01TESTNOTEXIST:manage', 'live-manage'],
-    ] as const) {
-      const res = await raw('POST', path, idem);
-      if (res.status === 501) {
-        const err = (await res.json()).error;
-        expect(err.code, label).toBe('not_implemented');
-        expect(err.retryable, `${label} 的 501 应当是可重试`).toBe(true);
-      } else {
-        expect([200, 201, 404], `${label} 回了 ${res.status}`).not.toBe(405);
+  /**
+   * §4 第 2 格 discover 的寻址口径（T-205）：yaml `core-v1.yaml:207` 这一格是 `{id}` +
+   * `parameters/Id`（聚合根 UUIDv7 = `adapter_instances.id`），**同前缀的 `probe` 那格才是 `{key}`**
+   * （`:171`，`parameters/Key`，描述自己写了"非实例 id"，且两处都注了"别照抄"）。
+   * 我 04:5x 的样本拿 `opencode`（那是 adapter_key）去打 ⇒ 就算 backend 接通也只会得到 404，
+   * 那条红属于我设图错，不是它的缺陷。所以这里两行期望都写死，谁先落地都不用重写门控：
+   *   - 按 id 打（正路）：501 = 还没装配；200 = 通了；503 `adapter_unresponsive` = 装配了但没有可用 Provider；
+   *     404 = 库里没有这个实例 id。
+   *   - 按 key 打（错路）：**接通之后必须是 404**，不许"顺手也认 key" —— 那样两种寻址就悄悄合一了。
+   */
+  it('§4 第 2 格 discover：按 {id} 寻址才是正路，拿 adapter_key 打接通后必须 404', async () => {
+    const legs = [
+      ['by-id ', '/api/v1/adapters/01TESTNOTEXISTINSTANCE/sessions:discover', [200, 404, 501, 503]],
+      ['by-key', '/api/v1/adapters/opencode/sessions:discover', [404, 501]],
+    ] as const;
+    for (const [label, path, allowed] of legs) {
+      const res = await raw('POST', path, `live-discover-${label}`);
+      const err = await res.json().then((j) => (j as { error?: unknown }).error ?? null) as
+        { code?: string; retryable?: boolean } | null;
+      expect(allowed as readonly number[], `${label} 回了 ${res.status}，只许 [${allowed.join(',')}]`)
+        .toContain(res.status);
+      if (res.status === 501) expect(err?.code, label).toBe('not_implemented');
+      if (label === 'by-key' && res.status !== 501) {
+        expect(err?.code, '按 key 打不得被认成合法寻址').toBe('not_found');
       }
-      console.log(`  §4 ${label} → ${res.status}（03:26 现盘实测为 501）`);
+      console.log(`  discover ${label} → ${res.status} ${err?.code ?? '<no error>'}`);
     }
   });
 });
@@ -241,7 +275,8 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
 /* ── §4 第一格：POST /projects ───────────────────────────────────────────────
    T-140 现场核过（不是转述）：`handler.go:120` 调 `registerProjectRoutes`，`projects.go:79` 同一 path 按方法分流。
    当时是"POST 已接、GET 仍 501"；**09-23 03:26 复测：GET 也已接（200，items/next_cursor 齐）**，那半句按历史读。
-   所以这一格今天就能真跑；discover / manage 两跳仍 501（见上面 T-189 那段），不拿它凑绿。 */
+   所以这一格今天就能真跑。第 2/3/4 格的现状见上面 T-189/T-197 那段：**discover 与 probe 仍 501；manage 与 sync 已通到业务层、
+   对合成 id 回 404 `session_not_found`** —— 端到端还跑不了，因为 Core 里没有任何一条路径能创建 session 行。 */
 describe.skipIf(!live)('真 Core 联调 · §4 第一格（POST /projects，T-140）', () => {
   const uniq = `t140-${Date.now()}`;
   const pathOf = (leaf: string) => `D:/Project/Lucero/.scratch/frontend/proj-${uniq}/${leaf}`;

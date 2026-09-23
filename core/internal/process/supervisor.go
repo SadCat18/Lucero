@@ -156,32 +156,44 @@ type Launcher func() (*exec.Cmd, error)
 // Supervisor runs one child, restarting it per §8 until the crash budget is spent.
 //
 // Recorder is the whole internal/process -> persistence surface, per T-55: this
-// package declares the facts it needs recorded and nothing else. The implementation
-// is injected in cmd/core by backend, and internal/process must not import
-// platform/db or eventjournal (internal contract §0's direction), so the row shapes
-// stay the injector's business - three methods is the entire vocabulary.
+// package declares the facts it needs recorded and nothing else, and no DB type
+// crosses the seam (T-62 froze it: void methods, no row handle). The implementation
+// is injected in cmd/core by backend.
+//
+// Two sentences this block used to carry are gone, and the reason matters more than the
+// text: they claimed internal/process "must not import platform/db or eventjournal" and
+// cited "internal contract §0's direction" for it. §0 (specs/contracts-internal-v0.1.md:13-25)
+// bars only db -> 业务包 and audit -> db, and never names this package - the ban was my
+// inference wearing a clause's name. T-211 and §1.1 第 17 条's 落点与角色 put the lifecycle
+// write cell, "一次观察落成一行 + 恰一条事件", in this package, so platform/db will be
+// imported here; what stays true is the narrower rule: Recorder itself declares no DB type.
 //
 // These three calls are the lifecycle writes into **`process_instances`**, and they
 // carry no transition number: §14's lifecycle rows do not advance transition_no, so the
 // injector must not try to allocate one here.
 //
-// Measured against platform/db rather than from memory (13:34:37, `date` 实读): `process_instances` is
-// **not** in `aggTable` and there is **no** `process` AggregateKind in `touch.go`'s
-// registry, so `Touch`/`Create` cannot express this write - which is what internal
-// contract §12 means when it lists the table among those whose three facts
-// (`process_started`/`_exited`/`_crashed`, event contract's aggregate column reads
-// `process`) ride on `Append` instead. Note §12's wording says "已由 `process` 聚合表达"
-// while the registry has no such kind: the string is an event label here, not a versioned
-// aggregate, and CO-39 asks 主控 to say so in the contract before someone adds AggProcess
-// and starts versioning a table that has no version column.
+// Re-measured between 05:22:46 and 05:26:07 (`date` 实读的两个端点; the 13:34:37 reading
+// this paragraph carried is void): `AggProcess`/`AggCore` exist (touch.go:42-43) and sit in
+// `versionlessAgg` = {process: "process_instances", core: ""} while staying out of `aggTable`, exactly as
+// §1.1 第 17 条 rules. So CO-39's question is answered the opposite way from what I asked:
+// `process` **is** an AggregateKind now - it just has no version column, and `Append` is not
+// the exit for this table's three facts (第 12 条's "除…外" exclusion + 第 17 条's ① entry).
+// That reading aged inside the same round, so here is the 05:37:20 one: 第 17 条's ①
+// `CreateVersionless` landed at 05:35:54 (touch.go:401) and all three entries now match the
+// contract's signatures 3/3 ⇒ the create leg has a door. What this package has **not** done is
+// write through it: CO-44 (0 rows means two different things) and CO-45 (a restart fires
+// RecordStart a second time against one construction-time id) are still unruled, so there is
+// no write cell here yet - "no door" is no longer a reason anyone can cite.
 //
 // What an Event does NOT carry is the other half of the row: 000001's process_instances
 // also requires id, restart_policy and (for an owned process) owner_type/owner_id, plus
 // executable, created_at and updated_at. Those are assembly-time facts, not per-event
-// ones - the injector is built next to the Supervisor it supervises, so it holds the
-// policy and the owner and stamps the row with them. That is what keeps this interface
-// three void methods with no row handle (T-62), and TestEnumsFitTheFrozenProcessInstancesTable
-// is the trip wire that the columns it relies on still exist.
+// ones, so the injector - built next to the Supervisor it supervises - is the only place
+// that knows them. It hands them to this package's write cell once per Supervisor and does
+// not stamp the row itself (T-211: 落库语义住在 internal/process; cmd/core 只做装配).
+// What stays frozen is the seam in front of that cell: four void methods, no row handle
+// (T-62 froze three, T-129 added the fourth), and TestEnumsFitTheFrozenProcessInstancesTable
+// is the trip wire that the columns the cell will rely on still exist.
 //
 // Event.Crashes has no column to land in (000001 is frozen and never grew one), so the
 // running count rides in metadata_json. Losing it would be silent, and §8's budget is
