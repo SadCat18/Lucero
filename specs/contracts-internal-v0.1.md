@@ -401,6 +401,32 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **在两条都绿之前，Wave-2 那道"真子进程 + 崩溃注入"的门每 ≈15 次合验会真红一次 ⇒ 合验结论里必须写明这一格未闭。**
     - **归属**：`core/cmd/core/**` 归 `backend`（§7）；`scripts/flaky_watch.sh` 归 `test`（它只管采样与定档，不改产品）。
 
+20. **CO-44 / CO-45 裁定（09-24 07:0x，回 `adapter` 与 `db` 的两问）：`process_instances` 的写口语义。**
+    背景：`platform/db` 三个入口 09-23 05:35:54 已到货且签名与第 17 条 3/3 一致，这两问是那条链上**唯一没答的题**，
+    `adapter` 因此"前提消失仍不落码"（按"前提消失 ≠ 禁令解除"）——**这个处置我认，答案在我这边。**
+    - **CO-44（`TouchTransition` 返回 0 行的两种现实）：平台层保持不可区分，区分责任放回调用方。**
+      ① **0 行就是 0 行**：不插事件、**不做第二次 guard 尝试**、不重试到"落成功"。
+      **明确否决**"第一次 0 行时再拿 `STARTING` 试一次"那个选项——它把一次观察变成两条猜测顺序的分支，
+      而"行还停在 `STARTING`（从没收到 start）"这件事**没有主体可归属**：正确的出口是**审计登记**
+      （"我知道有个 pid 退了，库里没有它的行"，`RecordDrop` 那一族），**不许用聚合事件去冒充一个没有主体支撑的事实**
+      ——与第 17 条末段对 `AppendEventOnly` 的收紧是同一条规矩的两面。
+      ② **但 0 行不许静默**：`internal/process` 的写口拿到 0 行时**必须喊出来**（`logf` 或审计），
+      否则"幂等"与"从来没成功过"在事后不可分。
+      ③ **平台层不为此改签名**：`db` 提的"0 行时补一次 `SELECT status` 并把区别放进返回值"**否决**（YAGNI；
+      区分只在调用方有语义，平台层多一个返回值就是多一个所有人都要解释的空位）。今天的形状
+      （两种都给 `(0, nil)` 且不插事件、`TestTouchTransitionZeroRowsBooksNoEvent` 双向钉住）就是我要的。
+      ④ **对判据的连带后果**：`exit_code`/`exited_at` 的可断言面**只在"先落了 started 那一行"之后存在** ⇒
+      `TestLifecycleRowLandsTheFiveColumns` 必须**先建再落 exit**，不许指望从 0 行状态里把退出码落进库。
+    - **CO-45（同一个 Supervisor 第二次拉起撞 `PRIMARY KEY`）：裁 (a) 一次尝试一行。**
+      理由：表名与 `idx_process_instances_active(process_type, status)` 都读成"一次实例一行"，
+      而 (b)（第二次改走 `TouchTransition(FAILED→RUNNING)`）**会把 pid 历史压没**——崩溃预算要数的正是"哪一次尝试、哪个 pid"。
+      连带三条：① **id 源由 `internal/process` 的写口持有**（注入 `NewID func() (string, error)`），
+      平台层不铸号（`CreateVersionless` 的 `id` 本来就由调用方预生成，第 17 条不改）；
+      ② **`metadata_json` 记 attempt 序号 + 上一条 instance id**（**不开新列**：`000001` 冻结、迁移是 `db` 地盘），
+      这样"一个 Supervisor 的第 N 次尝试"可复原，而 pid 历史留在各行里；
+      ③ **Recovery 数"活进程"的口径登记在此**：`status IN ('STARTING','RUNNING','STOPPING')` 按 `process_type` 分组数行数。
+      **谁都不许自己发明第二个口径**；要改（例如把 `STOPPING` 算死）写 REQ 给我，**改本条而不是改代码注释**。
+
 
 
 ## 2. Redaction：规则归 audit，强制点在 db
