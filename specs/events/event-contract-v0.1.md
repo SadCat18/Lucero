@@ -166,6 +166,16 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 
 ## 6. 事件目录 v0.1
 
+> **本表是事件类型名的唯一权威（REQ-T24 裁定，09-24 09:4x）。** 起因：同一个动作在三份文档里出现过三种写法——
+> 契约③ §4 写 `approval_resolved`(+`grant_issued`)、本表登记 `execution_approval_resolved`、契约① §1.2.1 规则 2 两个都用。
+> **结论是它们本来就该是两个名字**：`approval_resolved` 属 **approval** 聚合、`execution_approval_resolved` 属 **execution** 聚合，
+> 一条审批链上两者都要落（前者是后者的 `causation_id` 来源，契约① 那句是对的）。
+> **由此两条规矩**：① 其它文档引用事件名时**必须写本表的完整名**（不许简写、不许省聚合前缀），
+> 因为 `task_running` 与 `execution_started` 这种"看起来同义"的名字本来就是两码事；
+> ② 本表允许**合并行登记**（如 `execution_paused` / `execution_resumed` 一行两名），
+> **凡按字面 grep 本表来对账的判据，必须先走 §6 的展开约定 ①~⑤ 再比对**——直接 grep 必然假红
+> （`test` 09:3x 自证：`execution_succeeded` 在本表只以合并行出现，字面扫就数不到它）。
+
 | event_type | 触发者（包） | payload 关键字段 | Audit |
 |---|---|---|---|
 | `project_created` | project | `name` `canonical_path` | – |

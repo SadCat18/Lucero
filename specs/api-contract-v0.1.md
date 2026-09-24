@@ -125,6 +125,17 @@ GET  /api/v1/tasks/{id}                  → **F-8 批准 · LAG-1 回写（2026
                                          没有这条读，客户端就只能拿列表里的旧版本去撞 409
 PATCH /api/v1/tasks/{id}                 → 只允许 priority/title/description/mode；带 If-Match
 POST /api/v1/tasks/{id}:queue|pause|resume|cancel|accept   → 状态动作（custom verb，不硬套 REST）
+                                         → **C43 裁定（09-24 09:4x）：`:queue` 必须带请求体 `{"adapter_key": "..."}`，缺失 ⇒ 400 `validation_failed`。**
+                                         **不猜默认、不"取唯一 HEALTHY 实例"**（那是甲案，我否了）：把"分派给谁"变成运行期健康集合的函数之后，
+                                         同一输入两次排队可以选到不同 Adapter ⇒ **幂等与重放当场失效**，而 v0.1 恰恰单机——"多数时候只有一个"
+                                         是最容易骗过判据的那种巧合。**"选谁"必须是调用方声明的事实**，它才可能被审计、被重放。
+                                         解析 `adapter_key → adapter_instances.id` 的**唯一合法出口是 `internal/adapter` 导出的只读接口**
+                                         （`executions.adapter_instance_id` 是 NOT NULL + FK，而 `tasks` 那 16 列里没有任何指向 Adapter 的列——09-24 09:4x 逐列数过，最接近的只有自由 JSON 的 `metadata_json`，而我不想把"选谁"塞进它变成第五处隐式约定；
+                                         `cmd/core` 里 `SELECT adapter_instances` 是越界，backend 拒绝得对）。
+                                         失败处置**复用既有三个码、不新增**：本机没配起法 ⇒ 501 `not_implemented`；有实例但连不上 ⇒ 503 `adapter_unresponsive`；
+                                         key 在库里根本没有 ⇒ 404 `not_found`（与 discover 同一格口径）。
+                                         **审计落点不需要新登记**：`execution_created` 的 payload 本来就带 `adapter_instance_id`（事件契约 §6 那一行），
+                                         而 `task_queued` 的 payload 只有 `priority` ⇒ **不给 `task_queued` 加键**（那是另一次登记变更，要另裁）。
 POST /api/v1/tasks/{id}:transfer         → 建 Handoff（body: target_adapter, target_session?, reason）
 GET  /api/v1/executions?task_id=         → 该任务全部 Execution（含 attempt_no/trigger_type/predecessor）
 GET  /api/v1/executions/{id}             → 含三份快照：model / permission / environment
@@ -166,7 +177,7 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 | Discover Fake Session | `POST /api/v1/adapters/{id}/sessions:discover` → 取回 session id 列表 | `session_discovered` |
 | Mark Managed | `POST /api/v1/sessions/{id}:manage`（id 来自上一步） | `session_managed` |
 | Create Task | `POST /tasks` + `Idempotency-Key` | `task_created` |
-| Create Execution | `POST /tasks/{id}:queue` 触发调度 | `execution_created` → `task_preparing` |
+| Create Execution | `POST /tasks/{id}:queue`，**调度对象由请求体 `adapter_key` 声明**（C43），解析成实例 id 后建 execution | `execution_created` → `task_preparing` |
 | Send Message | `POST /executions/{id}/send`（映射 `session/send`，带三态 `delivery`） | `execution_started` → `task_running` → `message_recorded` |
 | Stream Output | WS `stream/delta` + `GET /executions/{id}/output` 补历史 | `execution_output_flushed` |
 | Request Approval | WS `approval_requested` | `execution_approval_requested` → `task_waiting_approval` |
