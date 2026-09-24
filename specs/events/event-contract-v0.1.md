@@ -108,7 +108,11 @@ WHERE id = ? RETURNING version;
 
 | from | 正常后继 | recovery 允许 |
 |---|---|---|
-| `CREATED` | `STARTING` `CANCELLED` `FAILED` | — |
+| `CREATED` | `STARTING` `CANCELLED` `FAILED` | — |   ← **REQ-DB-4 裁定（09-24 08:5x）**：这条 `CREATED → STARTING` 从今天起由 **`execution_starting`** 表达
+   （此前 §6 里没有对应事件，`execution.Service` 宁可明确失败也不自己造事件 ⇒ 正向写第一步落不了库）。
+   **登记顺序照 §1.1 第 16 条那把尺子：先写本目录与 §6 那一行，再改常量与判据**——
+   `platform/db`/`eventjournal` 那侧必须同轮补常量与注册集合，否则"目录 ↔ 常量"那条双向判据会红一轮，
+   **那是预期的中间态，不是谁的回归**。
 | `STARTING` | `RUNNING` `WAITING_APPROVAL` `FAILED` `CANCELLED` | `INTERRUPTED` |
 | `RUNNING` | `WAITING_APPROVAL` `WAITING_INPUT` `PAUSED` `TRANSFERRING` `SUCCEEDED` `FAILED` `CANCELLED` | `INTERRUPTED` |
 | `WAITING_APPROVAL` | `RUNNING` `PAUSED` `FAILED` `CANCELLED` | `INTERRUPTED` |
@@ -195,6 +199,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `task_transferring` | task | `handoff_id` | – |
 | `task_state_corrected` | recovery | `from` `to` `evidence` `recovered_from` | ✓ |
 | `execution_paused` / `execution_resumed` | execution | `reason` / `from` | – |
+| `execution_starting` | execution | `from` | – |
 | `execution_created` | execution | `task_id` `adapter_instance_id` `model_id` `attempt_no` `trigger_type` | – |
 | `execution_started` | execution | `provider_execution_id` `model_snapshot_sha256` | – |
 | `execution_output_flushed` | execution | `batch_first_seq` `batch_last_seq` `char_count` `channel` | – |
@@ -262,7 +267,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 ```
 project_created → session_discovered → session_managed
 → task_created → task_queued → task_preparing
-→ execution_created → execution_started → task_running
+→ execution_created → execution_starting → execution_started → task_running
 → message_recorded → execution_output_flushed × N
 → execution_approval_requested → task_waiting_approval
 → approval_requested → notification_created

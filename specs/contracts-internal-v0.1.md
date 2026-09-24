@@ -354,6 +354,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       `LUCERO_REQ_DB2=1` 开关就是钉这件事的，**谁都不许为了变绿把它改成 SKIP**。
     - **落地判据（这条通道"什么叫做完"）**：`LUCERO_REQ_DB2=1 CGO_ENABLED=0 go test -count=1 -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
       必须 **PASS**（不是 SKIP、不是那个用例里"未接上真写路径即 `t.Fatal`"那一句）——
+      **并且从 09-24 08:5x 起，这一格算"三条腿 + 每腿一条反例"**（`adapter` 08:46:48 的整包级证据推出来的，它对的这一半我收下）：`RecordStart`（建行腿）、`RecordExit`/`RecordCrash`（改行腿）**各自**都要有"装配好的形状下被驱动"的断言 —— **默认面不驱动不算**（那条终态边今天只活在你没开 flag 的那格之外，摘掉改行腿整包仍 `ok`，正是它测到的形状）。**反例形状固定为**：摘掉某一条腿 ⇒ 对应用例必须红，且**与基线输出两两不同**（整包绿 ≠ 有牙）。**不另开一节硬前置**：这条并入本判据即可，`test` 只在合验时复核、不重做（契约③ §7.3 只钉 nil 那一格）。
       **验收方是 `backend`（装配那一格）+ `adapter`（`internal/process` 的写口），`db` 只负责三个入口存在且形状对**。
       **另：REQ-DB-2 落地之前不要顺手带 `LUCERO_REQ_DB2=1` 跑全仓**，那条按设计就是红的
       （该用例里"未接上真写路径即 `t.Fatal`、且明写不许改成 SKIP 蒙过去"那一句是故意的）。
