@@ -376,6 +376,25 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 > 那是为了让判据好写而改产品结构，方向反了；真需要可测性，就把**行为**暴露在进程边界上（现在正是这样）。
 
 
+### 7.3 装配层的"零值 store"必须有确定结局（09-24 08:4x 裁定，**先于 Wave-2 合验的硬前置**）
+
+**实测前提（两处，09-24 08:43 亲量）**：`cmd/core/rejections.go` 的 `auditHead(ctx, d *db.DB)` 第一句就是
+`audit.HeadQuery(d.Read)`；`cmd/core/processpipe.go` 的 `launcher.ownerID` 用 `l.store.d.Read` —— **两条都没有 nil 分支**。
+09-24 08:20:44 `TestLauncherCarriesARecorder` 曾以 `*db.DB = 0x0` panic 过一次（栈：`rejections.go:141` ←
+`auditedStore.Write` ← `writeLifecycle`）；我 08:31~08:33 复跑单测与整包都 **ok** ⇒ 不复现、**不为它开行**。
+**但形状仍在**，而它落在崩溃注入那条路上——**所以这一格按内容裁，不按那次读数裁**：
+
+- **规则**：装配层递给 `Recorder` / `auditedStore` / `launcher` 的 `*db.DB` **不许存在"零值可达"的路径**。
+  如果"未装配"是允许的状态，那这条路径**必须有确定结局**：返回错误 + 喊出来，**不许 panic**。
+  理由不是洁癖：panic 会把"没装配"伪装成"崩了"，而 Wave-2 的判读依据恰恰是"崩了算不算预期"——
+  **一个会 panic 的装配层，等于给崩溃注入的判决掺进第三种结局。**
+- **验收（硬前置，不依赖别的格子）**：一条反例——把 store 换回 nil ⇒ 该用例必须**红**（断的是"确定结局"：
+  报错 + 不写库 + 不 panic）。**这一条既不等 `LUCERO_REQ_DB2=1` 转 PASS，也不等 ownership lint 那格形状修完。**
+- **归属**：实现与证据归 `backend`（`core/cmd/core/**` 是它的）；`test` 只在合验时**复核形状**（不重做、不另写判据）。
+- **不许顺手做的事**：不要为了"永远不会 nil"就在每个入口加 `if d == nil { return }` 这种**静默早退**——
+  那是把 panic 换成"什么都不发生"，事后同样分不清（CO-44 ② 同一条：0 行/未装配都必须**喊出来**）。
+
+
 ## 8. 明确不做（v0.1）
 
 认证体系与多用户、CORS 开放、`/api/v1` 之外的公开端点、GraphQL、长轮询替代 WS、
