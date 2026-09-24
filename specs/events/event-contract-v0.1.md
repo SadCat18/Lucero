@@ -174,7 +174,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 因为 `task_running` 与 `execution_started` 这种"看起来同义"的名字本来就是两码事；
 > ② 本表允许**合并行登记**（如 `execution_paused` / `execution_resumed` 一行两名），
 > **凡按字面 grep 本表来对账的判据，必须先走 §6 的展开约定 ①~⑤ 再比对**——直接 grep 必然假红
-> （`test` 09:3x 自证：`execution_succeeded` 在本表只以合并行出现，字面扫就数不到它）。
+> （`test` 09:3x 先自曝了一次**假警报**：它报"§6 缺 `approval_resolved`"，其实是本表有**合并行**、字面 grep 数不到——它把这次的教训立成了长期规矩，所以本条的依据是**行内容**而不是"我 grep 到了"）。
 
 | event_type | 触发者（包） | payload 关键字段 | Audit |
 |---|---|---|---|

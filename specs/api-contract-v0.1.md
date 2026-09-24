@@ -352,7 +352,7 @@ lint 判据：`git diff --name-only <基线>` 的每一项必须落在提交者�
 
 > **`Recorder` 的形状第一次进契约（2026-09-22 23:2x）**：`internal/process` 的 `Recorder` 现在是**四个方法** ——
 > `RecordStart(ev Event)` / `RecordExit(ev Event)` / `RecordCrash(ev Event)` / `RecordDrop(ev DroppedEvent)`；
-> `DroppedEvent` 的字段是 `Kind` `ProcessRole` `Method` `TurnRef` `FrameExecutionID` `BoundExecutionID` `Reason` `Timestamp`
+> `DroppedEvent` 的字段是 `Kind` `Method` `TurnRef` `FrameExecutionID` `BoundExecutionID` `Reason`（**这份清单已于 09-24 10:4x 与代码对齐：`ProcessRole` 不在其中**） `Timestamp`
 > （**⚠ 后继注（09-23 00:3x）：本清单里的 `ProcessRole` 已被本节末尾裁定删除 —— 它是"声明了但零生产者、零消费者、库里也没有这一列"的字段。
 > 清单原文保留不改，是为了让人看见"当初以为需要它"这件事；执行按本节末尾那条。**）
 > （**注意 `FrameExecutionID` 与 `BoundExecutionID` 都按"当时收到的样子"记，不互相校正 —— 这两个值不一致本身就是那条要落审计的事实**）。
