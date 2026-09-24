@@ -869,7 +869,7 @@ components:
         task_agent_completed, task_verifying, task_waiting_acceptance, task_accepted, task_failed,
         task_cancelled, task_interrupted, task_paused, task_blocked, task_resumed, task_transferring,
         task_state_corrected,
-        execution_created, execution_started, execution_output_flushed, execution_paused,
+        execution_created, execution_starting, execution_started, execution_output_flushed, execution_paused,
         execution_resumed, execution_approval_requested, execution_approval_resolved,
         execution_cancelled, execution_failed, execution_succeeded, execution_interrupted,
         approval_requested, approval_resolved, approval_expired, approval_cancelled,
