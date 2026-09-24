@@ -36,6 +36,7 @@ const (
 	TaskTransferring           = "task_transferring"
 	TaskStateCorrected         = "task_state_corrected"
 	ExecutionCreated           = "execution_created"
+	ExecutionStarting          = "execution_starting"
 	ExecutionStarted           = "execution_started"
 	ExecutionOutputFlushed     = "execution_output_flushed"
 	ExecutionApprovalRequested = "execution_approval_requested"
@@ -83,7 +84,8 @@ var catalog = map[string]bool{
 	TaskCancelled: true, TaskInterrupted: true, TaskTransferring: true,
 	TaskPaused: true, TaskBlocked: true, TaskResumed: true,
 	TaskStateCorrected: true,
-	ExecutionCreated:   true, ExecutionStarted: true, ExecutionOutputFlushed: true,
+	ExecutionCreated:   true, ExecutionStarting: true, ExecutionStarted: true,
+	ExecutionOutputFlushed:     true,
 	ExecutionApprovalRequested: true, ExecutionApprovalResolved: true,
 	ExecutionCancelled: true, ExecutionFailed: true, ExecutionSucceeded: true,
 	ExecutionInterrupted: true, ExecutionPaused: true, ExecutionResumed: true,
