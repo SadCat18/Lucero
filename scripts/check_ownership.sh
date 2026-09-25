@@ -256,6 +256,10 @@ cross_package_refs() {
     VALUE_SHAPES="$VALUE_SHAPES|(==|!=)[[:space:]]*[\"'\`]${tbl}[\"'\`]|[\"'\`]${tbl}[\"'\`][[:space:]]*(==|!=)|case[[:space:]]+[\"'\`]${tbl}[\"'\`]"
     VALUE_SHAPES="$VALUE_SHAPES|return[^(]*,[[:space:]]*[\"'\`]${tbl}[\"'\`]"
     VALUE_SHAPES="$VALUE_SHAPES|strings\.[A-Za-z]+\([^)]*,[[:space:]]*[\"'\`]${tbl}[\"'\`]"
+    # E（T-280①，09-25）：map/JSON **键位** —— `map[string]any{"attachments": …}` 里那个字符串是键名，
+    # 不是"表名以变量传入"。判据只看形状：`,`/`{` 之后紧跟引号包住的名字、且**名字后面紧跟冒号**才算键位；
+    # `= "tbl"`（定义位）与 `Append("tbl",`（写口首参）后面分别是 `=` 与 `,`/`)`，都进不来这一条。
+    VALUE_SHAPES="$VALUE_SHAPES|[{,][[:space:]]*[\"'\`]${tbl}[\"'\`][[:space:]]*:"
     hits="$(grep -rniE "\b${tbl}\b" "$root" --include='*.go' 2>/dev/null \
              | grep -vE "$excl" \
              | strip_comments \
@@ -288,7 +292,9 @@ cross_package_refs() {
         #   B 与变量比较的字面量（`verb == "messages"`、`"messages" != x`、`case "messages":`）= verb/token 值；
         #   C `return` 里非首元素（`return sub, "messages", true`）—— **中间不许出现 `(`**，
         #     所以 `return tx.Append("a", "quota_accounts")` 走不进这一条，仍会掉进 literal 被报红；
-        #   D `strings.*(..., "messages")` 非首参 = 字符串工具的值参。
+        #   D `strings.*(..., "messages")` 非首参 = 字符串工具的值参；
+        #   E `{…, "attachments": …}` map/JSON **键位**（T-280① 第四例：`json.Marshal(map[string]any{"attachments": cmd.Attachments})`）
+        #     —— 认的是"名字后面紧跟冒号"这个位置，所以定义位（`= "tbl"`）与写口首参（`("tbl",`）都进不来。
         # 这一支排在 literal **之前**是必须的：A 的形状（引号后紧跟 `/`）本来就不满足"整个字面量等于表名"，
         # 放在 literal 分支里面它永远不响（我第一次就把它塞错了位置，自测的 path.go 当场没被判成 value）。
         printf 'value|%s|%s|%s\n' "$f" "$tbl" "$want"
@@ -346,7 +352,7 @@ check_2() {
   (( tags > 0 )) && info "另有 $tags 处表名只出现在 Go 结构体 tag 里（序列化名，不是表引用）：$(printf '%s\n' $tagfiles | sort -u | tr '\n' ' ')"
   # 被形状排除的那几处**必须报出来**，不能静默消失：静默排除与静默放行区分不开，下一条假红来了没人看得见。
   # 同 W13 那一节的"非表名 $note"计数一个思路（T-236 主控也点了这句）。
-  (( vals > 0 )) && info "另有 $vals 处表名字面量落在**值位**（前导 / 的路径段、与 verb/变量比较、case、return/strings 的非首参），按形状不参与表名比对；定义位（const/var = \"表名\"）不在其中：$(printf '%s\n' $valwhat | sort -u | tr '\n' ' ')"
+  (( vals > 0 )) && info "另有 $vals 处表名字面量落在**值位**（前导 / 的路径段、与 verb/变量比较、case、return/strings 的非首参、map/JSON 键位），按形状不参与表名比对；定义位（const/var = \"表名\"）不在其中：$(printf '%s\n' $valwhat | sort -u | tr '\n' ' ')"
   (( reads > 0 )) && info "另有 $reads 处只读引用（§1.3/§4 允许跨模块读与 JOIN，不判越界）：$(printf '%s\n' $readfiles | sort -u | tr '\n' ' ')"
   (( n == 0 && reads == 0 && fx == 0 )) && info "没有任何包在自己的目录之外提到别人的表名"
   # REQ-T15 后半（主控 10:36 T-273④ 当场裁）**：不判红，但要现读 + 计数 + 打出来。**
@@ -911,6 +917,10 @@ const q = `SELECT id FROM quota_accounts`
   printf 'package task\n\nfunc f(verb string) bool { return verb == "quota_accounts" }\n'                  > "$fx2/task/verb.go"
   printf 'package task\n\nfunc f() (string, string, bool) { return "sub", "quota_accounts", true }\n'      > "$fx2/task/ret.go"
   printf 'package task\n\nfunc f(v string) { switch v { case "quota_accounts": } }\n'                       > "$fx2/task/case.go"
+  # T-280① 第四例：同一个词既是表名又是 JSON 键位。`map[string]any{"quota_accounts": …}` 必须是 value，
+  # 而**同名**出现在 SQL 写位置（下面 delrow.go）必须照旧红 —— 一红一不红成对写，才证明排除吃的是形状不是名字。
+  printf 'package task\n\nfunc f(l []string) ([]byte, error) { return json.Marshal(map[string]any{"quota_accounts": l}) }\n' > "$fx2/task/key.go"
+  printf 'package task\n\nconst q = "DELETE FROM quota_accounts WHERE id = ?"\n'                              > "$fx2/task/delrow.go"
   printf 'package task\n\nfunc f(p string) bool { return strings.EqualFold(p, "quota_accounts") }\n'       > "$fx2/task/fold.go"
   # ---- 证据顺序按 T-241（主控 08:51 重申）：**先**立"真绕过必须照旧红"，**再**谈形状排除。
   #      倒过来做就会出现"加了排除、把真绕过一起放走"的判据 —— 所以下面三件红件先写、六件值位件后写，
@@ -940,7 +950,7 @@ const q = `SELECT id FROM quota_accounts`
   # ---- T-236 的双向对照：四类值位形状必须**不红**，真写口必须**照旧红** --------------------
   # 只验"排除生效"不验"排除不吞真越界"，等于交出一条会把真越界一起放行的假宽松判据（§1.1 第 16 条同族）。
   local vbad vf
-  for vf in path cut verb ret case fold; do
+  for vf in path cut verb ret case fold key; do
     printf '%s\n' "$out" | grep -qE "^value\|.*task/${vf}\.go\|quota_accounts\|" || \
       { report "  [SELFTEST FAIL] 值位形状 ${vf}.go 没被单列成 value —— 它会被 literal 腿判成越界（就是 T-236 那两条假红）"; fails=$((fails+1)); }
     if printf '%s\n' "$out" | grep -qE "^(literal|write)\|.*task/${vf}\.go\|"; then
@@ -951,6 +961,10 @@ const q = `SELECT id FROM quota_accounts`
     { report "  [SELFTEST FAIL] 非归属包里 tx.Append(\"quota_accounts\", …) 没判成 write —— 值位排除把真越界一起放行了"; fails=$((fails+1)); }
   printf '%s\n' "$out" | grep -qE '^write\|.*task/w3\.go\|quota_accounts\|' || \
     { report "  [SELFTEST FAIL] 语法不合法的裸 SQL 写（UPDATE quota_accounts: SET）没判成 write —— 判据开始要求'SQL 能跑'，那是一句冒号就绕过的门"; fails=$((fails+1)); }
+  # T-280① 的另一半：**同一个词**在键位不红、在 SQL 写位置必须红。只验前一半的排除是"把名字放进豁免表"，
+  # 那等于没有判据；成对才说明我吃的是语法位置。
+  printf '%s\n' "$out" | grep -qE '^write\|.*task/delrow\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] DELETE FROM quota_accounts 没判成 write（键位排除顺带把 SQL 写位置也放走了）"; fails=$((fails+1)); }
   # C 类的边界要单独断：排除"值位"不许顺手把 `return 调用(…, "表名")` 也放掉。
   if printf '%s\n' "$out" | grep -qE '^value\|.*task/ret2\.go\|'; then
     report "  [SELFTEST FAIL] ret2.go（return 里带调用的表名）被判成了 value —— C 类排除过宽，开了一个新洞"; fails=$((fails+1))

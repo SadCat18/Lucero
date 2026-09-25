@@ -119,6 +119,23 @@ GET  /api/v1/sessions?project=&cursor=&limit=
                                          在那之前 frontend 对这一格的期望就写成"501 且归因必须是'未装配'"。
 POST /api/v1/sessions/{id}:sync        → 显式增量同步，返回 sync_state + next_cursor
 POST /api/v1/tasks                       → 建任务（必须带 Idempotency-Key）
+                                         → **REQ-LK-1 裁定（09-25 18:2x）：收请求体里的 `session_id`，并在同一事务里写 `task_session_links`。**
+                                         **选甲不选乙的理由是契约面本身**：yaml `CreateTaskRequest` 早就声明了
+                                         `session_id: {type: [string,"null"]}`（在 `required: [title]` 之外，可空）⇒
+                                         这个字段**已经是契约面的一部分**，"另开一个写 link 的口"等于为同一件事做两个入口，
+                                         而且两步式第二步失败会留下"task 建了、link 没有"的孤儿态，面板与 §7 那条 oracle 链都不稳。
+                                         **一条 `Tx.Create(AggTask,…)` + 同一闭包里 `Append("task_session_links",…)`，要么都有要么都没有。**
+                                         边界四条（都不许自由发挥）：
+                                         ① `role` 固定 **`ORIGIN`**、`ordinal = 0`（这是"任务的来源会话"，不是执行会话；
+                                            `UNIQUE(task_id, session_id, role)` 允许后续再挂 EXECUTION/HANDOFF 等，所以这一步不排他）；
+                                         ② 给了 `session_id` 但库里没有那个会话 ⇒ **404 `session_not_found`**（`send.go:22` 已把这条口径钉死："send 没有会话就没有落点" ⇒ 同一件事两处同一个码，不用泛型 `not_found`），**不许静默建孤儿**
+                                            （与 `send` 腿今天对空 session_id 回 404 的既有行为同形，那格它做对了）；
+                                         ③ `session_id` 缺省或 `null` ⇒ **不写 link**（"没有来源会话"是合法状态，同 `tasks.project_id` 可空）；
+                                         ④ **不发事件**：§6 没有 link 类事件，已把 `task_session_links` 登记进 §1.1 第 12 条
+                                            "故意不发事件"那张清单（同一事务里只多一行关系）；**也不给 `task_created` 的 payload 加键**
+                                            （§6 那一格加键是登记变更，要另开 REQ；链上 `execution_created` 已带 `task_id` + `adapter_instance_id`，可推）。
+                                         **写权归属核对过**：`check_ownership.sh` 的归属表里 `task_session_links|internal/task` ⇒ 写归 backend 的包；
+                                         `internal/session/repository.go` 那处 SELECT 是**跨模块读**，§1.3/§4 允许（不是越界）。
 GET  /api/v1/tasks?status=&project=&cursor=
 GET  /api/v1/tasks/{id}                  → **F-8 批准 · LAG-1 回写（2026-09-22）**：单任务详情。
                                          垂直链上 `:accept` 之前必须用它取最新 `version`（`If-Match` 的输入），

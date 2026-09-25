@@ -131,6 +131,10 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     不是聚合根，因此**没有 `Create` 路径不是缺口**。用 `tx.Append("principals", …)` 就是合法正解
     （现有两处测试夹具这么插是对的，不算"绕过平台层"）；不要为它加 `version` 列或 `principal_*` 事件。
     将来若引入多用户/凭据轮换，再按新 ADR 升级为聚合。
+    **`task_session_links`（REQ-LK-1 裁定，09-25 18:2x 补）**：它是**关系行**，不是聚合根，
+    且 §6 目录里**没有任何 `*_link` / `*_linked` 事件**（09-25 grep `link` 在事件契约里 **0 命中**）⇒
+    写它**就是纯 link，不发事件**，也不给它补 `version` 列；
+    **谁都不许为了"让 link 也有事件"现造一个事件名**——那是 §6 的登记变更，要单独开 REQ 走"先登记再实现"。
 13. **`Tx.UpdateOnce`：无事件可变表的唯一合法 UPDATE 入口（REQ-DB-1 裁定，13:5x 按 db 交付原文写）**
     第 12 条只说了"这些表不需要 `Touch`/`Create`"，却没给 UPDATE 入口，于是幂等中间件封不了自己的响应
     （backend 只能回 `409 idempotency_replay`）。db 已交付，签名与语义以 **`platform/db` 的
