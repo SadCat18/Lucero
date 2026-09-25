@@ -253,9 +253,9 @@ GET  /ws/v1/events?from_seq=N            → 事件流（含 resync_required、p
 
 | ID | 断言（两侧都要断） | 当场命令 | 状态 / 归属 |
 |---|---|---|---|
-| F20-1 | 只给 `?from_seq=` + `hello` 省略游标 ⇒ 首帧 `hello_ack{server_seq}`、**不补发历史** | `go test -count=1 -v -run TestHelloCursorOmittedOverridesQuery ./test/` | 现存（PASS）/ test |
-| F20-2 | 只给 `?from_seq=` + 超时不发 `hello` ⇒ 回显 `hello{from_seq=query}` 并**补发** `seq > query` | `go test -count=1 -v -run TestNoHelloFallsBackToQueryCursor ./test/` | 现存（PASS）/ test |
-| F20-3 | `hello` 游标与 `query` 不一致 ⇒ **以 `hello` 为准**，两个方向都判 | `go test -count=1 -v -run TestHelloCursorOverridesQuery ./test/` | 现存（PASS×2 子用例：`query_小于_hello`、`query_大于_hello`）/ test |
+| F20-1 | 只给 `?from_seq=` + `hello` 省略游标 ⇒ 首帧 `hello_ack{server_seq}`、**不补发历史**。**两条对照腿同断、缺一条就是半边的**：① 省略游标之后**新提交的事件仍要实时推下来**（"不补发"不许靠"干脆不推"装出来）；② **显式 `from_seq=0` 必须补发全部**（缺这条，①与"没补发"都可能只是帧解析失明的假绿） | `go test -count=1 -v -run '^TestHelloCursorOmittedOverridesQuery$' ./test/` | 现存（PASS；三段各自落地：首帧类型 + `server_seq` 等于替身行数、省略时若补发即判红、新事件必须作为 `event` 帧到达、显式 0 ⇒ 补发 `[1 2 3]`。自证读数 11:07:43 单跑 `-v`：`--- PASS`、包 `ok 0.230s`；断言落点在 `core/test/ws_cursor_contract_test.go` 该用例体内，五处 `t.Errorf/t.Fatalf` 对上这五件事）/ test |
+| F20-2 | 只给 `?from_seq=` + 超时不发 `hello` ⇒ 回显 `hello{from_seq=query}` 并**补发** `seq > query` | `go test -count=1 -v -run '^TestNoHelloFallsBackToQueryCursor$' ./test/` | 现存（PASS）/ test |
+| F20-3 | `hello` 游标与 `query` 不一致 ⇒ **以 `hello` 为准**。**两个方向都判，且第二个方向才有牙**：`query` 小、`hello` 大 是最直觉的一侧；**`query` 大、`hello` 小 那一侧是专门用来抓"取较大者"那种看着更保守的实现**的 —— 不写清楚就会被读成一个方向，那种实现只过第一侧 | `go test -count=1 -v -run '^TestHelloCursorOverridesQuery$' ./test/` | 现存（PASS×2 子用例：`query_小于_hello`、`query_大于_hello`）/ test |
 | F20-4 | **客户端那一半**：面板收到 `hello_ack` ⇒ 把 `server_seq` 写进自己的游标；收到 `hello` 回显 ⇒ **不得**覆盖。**两侧都要断**，且读帧的 helper 必须是"读字面上第一个返回的帧"——为躲心跳而 `continue` 的容错读法会把"首帧是 X"悄悄降级成"第 N 帧里出现过 X" | `cd apps/desktop && npx vitest run -t helloAckAdvancesCursor` | **待建** / frontend（LAG-2 本轮派发；用例名若改，必须回写本行，否则命令是假的） |
 
 `test` 侧把文件头注释改成"判据见契约③ §5 判据表 F20"的指针，**现在可以改了**（表已在，不会再指向不存在的东西）。

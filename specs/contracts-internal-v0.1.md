@@ -540,6 +540,13 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       不是在等一个期限到期）；再加一条反例 —— **把连接面那一步搬回写事务里，用例必须红**（证明它有牙，不是装饰）。
       **`--- SKIP` 不算样本**，注入不生效的用例不许报绿。
 
+    **19:5x 补：第二次探针（`frontend` 19:36，`.qoder/evidence/frontend/probe-send20.txt` + `corelog-send20.txt`）把"哪一步卡住"收窄了三格** —— `probe` 177ms 200、`discover` 11ms 200、`executions?task_id=` 13ms 200，**唯独 `send` 30 秒不返回**；随后 `POST /projects` 8 秒仍不返回；Core 日志全文 6 行、`grep -cE 'panic|deadline|timeout|ERROR'` = **0**。
+        - **排除①："读不到自己未提交的库"不是成因。** `discover` 那条腿做的是同一件读事，毫秒级就过了；`sendpipe` 第一发 `p.read.QueryRowContext` 走的是**读池**（4 条连接 + WAL），不会被自己那条写事务挡住。
+        - **排除②：不是 SQLite 等锁超时。** `connPragmas` 里 `busy_timeout(5000)` ⇒ 真在等锁的写会**报错**（`database is locked`），而不是永不返回；日志里也一条没有。
+        - **卡点因此只剩一种形状：ctx 到期之后仍有同步步骤不返回。** `internal/process` 的 `Connection.request` 我 19:54 读过，它是 `select { reply / ctx.Done() / c.dead }` —— **等回执那一腿吃 ctx**。所以不返回的只可能在 select 之外的同步调用上，三处待实测点名：`Connect` 里"起孩子 + 等 hello"那一段、ctx 分支里的 `c.Cancel(id)`（它还要往**同一条**连接 `write`，孩子不读 stdin 时就是二次堵塞）、以及 `sendPipe` 的 `defer conn.Close()`。**这三处由 `adapter` 交读数，我不替它挑。**
+        - **另一条独立的平台事实，登记在这里（它解释"为什么别的写会无限等，而不是 5 秒报错"）**：`POST /projects` 卡的是**从池里取那唯一一条写连接** —— `write.SetMaxOpenConns(1)` 的等待发生在 Go 侧 `database/sql`，**`busy_timeout` 管不到它**，而 HTTP 请求的 ctx 没有期限 ⇒ **等下去没有上界**。⇒ 只要任何 handler 在写事务里做外部 I/O，全 Core 的写就是无限期挂起。**这条对所有 handler 成立，不只对 `send`。**
+        - **修法有现成先例，不是新发明**：`cmd/core/discoverassembly.go` 今天的顺序就是 `Connect` → `Initialize` → `Call` → **再** `dbh.Write(tx)`（它没有外部副作用，所以"后写"够用）；`internal/adapter` 的 `Registry.Probe` 同形（`exchange` 完了才 `RecordProbe`）。**`send` 不能照抄"后写"** —— 连接面那边会留下一次真投递，所以它要的是上面 (b) 那格：**预留 → 提交 → 投递 → 第二笔落结果**。期限只是止痛，不变量照旧。
+
 
 
 ## 2. Redaction：规则归 audit，强制点在 db
