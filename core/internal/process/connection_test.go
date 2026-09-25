@@ -354,8 +354,15 @@ func TestConnectionDeathMarksTurnUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := c.Turn("exec-1")
-	if err := waitFor(func() bool { return c.LastSeq() == 2 }, 2*time.Second); err != nil {
-		t.Fatalf("the pump did not process the evidence pair: %v", err)
+	// Wait on the thing being asserted. The cursor moves inside c.mu and applyTurn runs
+	// after that lock is dropped, so waiting on LastSeq here left a window where frame 2
+	// was counted but the turn was still CLAIMED - a full-suite run on a loaded machine
+	// took it once (during the T-314 mutation batch, unrelated to the mutation being tested).
+	if err := waitFor(func() bool { return tr.State() == adapter.TurnRunning }, 2*time.Second); err != nil {
+		t.Fatalf("the pump did not move the turn to RUNNING: %v", err)
+	}
+	if got := c.LastSeq(); got != 2 {
+		t.Fatalf("connection watermark = %d, want 2 once the evidence pair landed", got)
 	}
 	if tr.State() != adapter.TurnRunning {
 		t.Fatalf("turn state before the crash = %q, want RUNNING", tr.State())
@@ -1009,4 +1016,86 @@ func nextNotice(t *testing.T, conn *Connection) *adapter.StreamFrame {
 		t.Fatal("no stream notification within 10s")
 	}
 	return nil
+}
+
+// T-314 ⑤: closing a connection must reap the child, not just hand back the pipes. The
+// measured shape it covers is a child that ignores stdin - polite EOF never arrives, so
+// before this change the process outlived the "closed" connection (and its §14 row).
+func TestCloseReapsTheChild(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
+	conn, err := sup.Connect(context.Background(), "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if conn.child.Reaped() {
+		t.Fatal("the child is born reaped - the guard below would prove nothing")
+	}
+	start := time.Now()
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !conn.child.Reaped() {
+		t.Fatalf("Close returned while pid %d is still unreaped - that is the orphan T-314 ⑤ is about", conn.child.PID)
+	}
+	if el := time.Since(start); el > 5*time.Second {
+		t.Fatalf("Close took %v; the reap is bounded by closeReapTimeout (2s) plus a kill, not by the child", el)
+	}
+}
+
+// Whoever reaps first owns the child: cmd/core's pipeline already calls Stop(child, 2s) for
+// this exact process, so a later Close must not aim a second Kill at it. Read this case as
+// documentation rather than as teeth - mutation m2 (dropping the Reaped() check) stays green,
+// because the error a second Kill would produce is swallowed by childAlreadyGone. The check
+// earns its place against pid reuse, which no test here can manufacture on demand.
+func TestCloseAfterAnExistingReapStaysQuiet(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
+	conn, err := sup.Connect(context.Background(), "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := sup.Stop(conn.child, 2*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !conn.child.Reaped() {
+		t.Fatal("Stop returned without reaping")
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close after an existing reap = %v, want nil (no second kill)", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil (still idempotent)", err)
+	}
+}
+
+// The pump harness builds a Connection with no Supervisor and a Child whose PID is
+// os.Getpid(), so "Close is safe on that shape" is a claim worth pinning even though the
+// protection comes from Stop's own `c.cmd == nil` gate rather than from Close's (T-314 ⑤
+// mutation m3: dropping the sup check stays green - do not cite this case as its teeth).
+func TestCloseWithoutASupervisorReapsNothing(t *testing.T) {
+	conn, _ := pipeConnection(t)
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close on a supervisor-less connection = %v, want nil", err)
+	}
+}
+
+// An Adapter that dies while we hold it is the shape cmd/core's comment insists is not
+// hypothetical: the reaper goroutine's cmd.Wait releases the process handle, so the Kill in
+// Stop answers `kill: invalid argument` on Windows rather than os.ErrProcessDone. Without
+// the already-gone filter that becomes a failed shutdown - T-314 probe P1 measured exactly
+// that message coming out of Close.
+func TestCloseAfterTheChildAlreadyCrashedStaysQuiet(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("crash")}
+	conn, err := sup.Connect(context.Background(), "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if conn.child.Reaped() {
+		t.Fatal("this case only means something when the child is gone and nobody has reaped it" +
+			" through Child.Wait yet - if that stops holding, the assertion below is vacuous")
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close on an already-crashed child = %v, want nil (the process is not running,"+
+			" which is what Close was for)", err)
+	}
 }

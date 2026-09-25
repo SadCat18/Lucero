@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
 )
@@ -203,6 +204,11 @@ func (c *Connection) gate(method string) error {
 // Cancel sends $/cancel for an in-flight request id (§1). The Adapter must move the
 // Execution to CANCELLED or INTERRUPTED and answer; swallowing it silently is the P0
 // this method exists to make impossible to forget.
+//
+// No ctx parameter, and the T-314 probe says that is load-bearing rather than cosmetic:
+// with a stuck child and a full pipe it did not return inside a 3s observation window.
+// request's ctx branch calls this *after* the deadline fires, so that leg is a second
+// uncancelable step - reported for ruling, not changed here.
 func (c *Connection) Cancel(targetID string) error {
 	if targetID == "" {
 		return &adapter.Error{Code: adapter.ErrInvalidParams, Message: "$/cancel needs the id to cancel"}
@@ -275,9 +281,30 @@ func (c *Connection) SinceSeq(turnRef string) int64 {
 	return c.lastByRef[turnRef]
 }
 
-// Close stops the pump and releases the pipes. It does not kill the child: shutting
-// an Adapter down is Supervisor.Stop's job, because that is where §14's STOPPING
-// transition belongs.
+// closeReapTimeout is how long Close waits for the child to go away.
+// It is deliberately **the same 2s cmd/core's pipeline already uses for the same child**
+// (契约① §1.1 第 23 条 20:2x 裁定: 不新增第三种期限、不另开一个 Kill).
+const closeReapTimeout = 2 * time.Second
+
+// Close ends the session, **reaps the child**, and releases the pipes - in that order.
+// Marking the connection dead and handing the pipes back was never enough: a child that
+// stops reading stdin also never notices the pipes went away, so it survives as an orphan
+// holding a §14 row whose pid is now somebody else's to reuse. (There is a probe number for
+// "how long a stuck write can block": **it is not in the contract yet, so do not cite it
+// downstream as an established fact** - T-326 ④. The shape claim above holds without it.)
+//
+// The order is load-bearing, and the reason is partly measured and partly eliminated:
+// Stop runs **before** the pipes go back because that is what cmd/core's duplexPipe.Close
+// already does for this same child, and because a full-suite run on a loaded machine showed
+// pipes-first taking 30.44s - almost exactly the helper's lifetime - while the same steps on
+// an idle machine cost 0s (probe A) and Stop itself is bounded by the 2s below. I never
+// reproduced the 30.44s on demand, so read "closing a handle the pump is reading from waits
+// for the child" as the surviving explanation, not as a measured law.
+//
+// "关 stdin 让孩子自退" is deliberately **not** run ahead of Stop. ⑤ allowed it as courtesy,
+// and it is nothing more: doing it first is precisely what produces the already-dead-child
+// case that childAlreadyGone has to swallow (probe P1: Close answered
+// `kill: invalid argument` on a crashed Adapter).
 func (c *Connection) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -287,7 +314,23 @@ func (c *Connection) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 	c.kill(errors.New("connection closed"))
+	// Why Reaped() is checked even though childAlreadyGone exists: the two answer
+	// different questions. childAlreadyGone asks the OS "is this pid still mine", and after
+	// the pid has been recycled that answer is yes - so without this check the Kill below
+	// could terminate an unrelated process and report a bogus reap failure. Mutation m2
+	// (dropping it) stays green precisely because that collision cannot be manufactured on
+	// demand, so treat this as a guard with a reason and no deterministic test.
+	// c.sup != nil is the decorative one: an in-test connection (pipeConnection) has no
+	// supervisor and no cmd, and Stop's own first line already refuses that shape, which is
+	// why mutation m3 is green too.
+	var err error
+	if c.sup != nil && !c.child.Reaped() {
+		err = c.sup.Stop(c.child, closeReapTimeout)
+	}
 	c.child.CloseStreams()
+	if err != nil && !childAlreadyGone(err, c.child.PID) {
+		return fmt.Errorf("reap the adapter process after closing the connection: %w", err)
+	}
 	return nil
 }
 

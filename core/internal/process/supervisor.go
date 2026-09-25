@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -138,6 +139,38 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return -1
+}
+
+// childAlreadyGone separates "this child was already dead by the time we reached it" from
+// a reap that actually failed. Not a hypothetical branch: an Adapter that crashes while we
+// hold it has its handle released by the reaper goroutine's cmd.Wait, and the later Kill
+// then answers `kill: invalid argument` (measured, T-314 probe P1) instead of
+// os.ErrProcessDone. Reported as a failure, that turns a normal shutdown into an error the
+// caller cannot act on.
+//
+// This is the same rule cmd/core already applies to the same child: its duplexPipe.Close
+// filters Stop's error through a helper of exactly this shape. CO-51 asks which copy
+// becomes the single source.
+func childAlreadyGone(err error, pid int) bool {
+	if errors.Is(err, os.ErrProcessDone) {
+		return true
+	}
+	proc, perr := os.FindProcess(pid)
+	if perr != nil {
+		return true
+	}
+	_ = proc.Release()
+	return false
+}
+
+// Reaped reports whether someone has already collected the child's exit status. Closing a
+// connection must not kill a reaped process again: Kill on a closed handle comes back as an
+// error that has nothing to tell the caller, and cmd/core's pipeline may well have reaped it
+// first (processpipe.go does exactly that with the same 2s bound).
+func (c *Child) Reaped() bool {
+	c.waitMu.Lock()
+	defer c.waitMu.Unlock()
+	return c.waited
 }
 
 // CloseStreams releases the pipes once the caller is done with a live child.

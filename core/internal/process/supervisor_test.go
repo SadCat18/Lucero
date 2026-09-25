@@ -17,10 +17,15 @@ import (
 func TestHelperProcess(t *testing.T) {
 	switch os.Getenv("LUCERO_HELPER") {
 	case "":
-		t.Skip("re-exec helper: set LUCERO_HELPER=crash|live|clean")
+		t.Skip("re-exec helper: set LUCERO_HELPER=crash|live|clean|sleep")
 	case "crash":
 		os.Exit(2) // what fake-adapter's debug/crash does (§10)
 	case "clean":
+		os.Exit(0)
+	case "sleep":
+		// Ignores stdin and never exits on its own: the stuck-child shape that
+		// Connection.Close has to reap (T-314 5) rather than leave orphaned.
+		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	case "live":
 		// Echo every line until the parent closes stdin. Never sleep here: a helper
