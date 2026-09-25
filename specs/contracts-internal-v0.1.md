@@ -546,6 +546,21 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
         - **卡点因此只剩一种形状：ctx 到期之后仍有同步步骤不返回。** `internal/process` 的 `Connection.request` 我 19:54 读过，它是 `select { reply / ctx.Done() / c.dead }` —— **等回执那一腿吃 ctx**。所以不返回的只可能在 select 之外的同步调用上，三处待实测点名：`Connect` 里"起孩子 + 等 hello"那一段、ctx 分支里的 `c.Cancel(id)`（它还要往**同一条**连接 `write`，孩子不读 stdin 时就是二次堵塞）、以及 `sendPipe` 的 `defer conn.Close()`。**这三处由 `adapter` 交读数，我不替它挑。**
         - **另一条独立的平台事实，登记在这里（它解释"为什么别的写会无限等，而不是 5 秒报错"）**：`POST /projects` 卡的是**从池里取那唯一一条写连接** —— `write.SetMaxOpenConns(1)` 的等待发生在 Go 侧 `database/sql`，**`busy_timeout` 管不到它**，而 HTTP 请求的 ctx 没有期限 ⇒ **等下去没有上界**。⇒ 只要任何 handler 在写事务里做外部 I/O，全 Core 的写就是无限期挂起。**这条对所有 handler 成立，不只对 `send`。**
         - **修法有现成先例，不是新发明**：`cmd/core/discoverassembly.go` 今天的顺序就是 `Connect` → `Initialize` → `Call` → **再** `dbh.Write(tx)`（它没有外部副作用，所以"后写"够用）；`internal/adapter` 的 `Registry.Probe` 同形（`exchange` 完了才 `RecordProbe`）。**`send` 不能照抄"后写"** —— 连接面那边会留下一次真投递，所以它要的是上面 (b) 那格：**预留 → 提交 → 投递 → 第二笔落结果**。期限只是止痛，不变量照旧。
+    - **20:2x 归因读数已交（`adapter` 第 24 轮，`ctx-probe.sh` / `ctxprobe_test.go.txt` 20:08~20:09），我按字核过并纠正两处**：
+      ① `Supervisor.Start(ctx)` 函数体 29 行里 **一次都不读 ctx**（我 grep：体内 `ctx` 出现 1 次、`ctx.Done`/`ctx.Err` 0 次）
+      ⇒ 拿一个**已取消**的 ctx 进去照样把孩子起出来（它量的 **588ms**、`err=nil`）；`Connect(ctx)` 只透传 + 组装
+      （**2.25ms 返回、不等 hello**，等 hello 在 `Initialize`→`request`）。**⇒ 我上一条列的候选 (a)"Connect 等 hello 那一段"排除掉**，
+      但它换成了一件更糟的事：**取消之后仍然会起一个没人负责的孩子**。
+      ② **`request` 那一腿确实吃 ctx**（400ms 期限 → 400.31ms 返回、err 里带 `sent $/cancel`、`pending` 归 0 不泄漏）
+      ⇒ 候选 (b) 在"小帧 + 孩子还在读 stdin"时不堵；**真正剩着的两处是 `Cancel` 里那次 `write`（孩子不读 stdin 且管道缓冲满时是第二次堵塞）与 `Connection.Close()`** —— 这两处仍待现场量（要真 handler + 真 `session/send` + 卡死孩子，探针形状不算）。
+      ③ **"三条路径都不杀进程、`Child` 没有 Kill"这句不实，我按盘更正**：`Supervisor.Stop(c, timeout)` 里就是
+      **`c.cmd.Process.Kill()` + 有期限的 `c.Wait(ctx)`**（先例 `cmd/core/processpipe.go` 用 **2 秒**）。
+      真相是**连接收尾没走它**：`Connection.Close()` 只做 `kill(错误)`（把连接标死）+ `child.CloseStreams()`（关管道），
+      **没有一步杀进程** ⇒ 探针里四个孩子全活着是"没人调 `Stop`"，不是"缺这个能力"。
+      **裁定**：连接收尾要接上**既有的** `Stop`，期限 **2 秒**、与 `processpipe` 同值 —— **不新增第三种期限、不另开 Kill**。
+      "关 stdin 让孩子自退"可以作为 `Stop` 之前的礼貌一步，但**不许把它当成回收机制**（孩子不守规矩时没人兜底）。
+      **通用教训**：看任何带 `ctx` 参数的接口，别信签名 —— 数函数体里 `ctx.Done()`/`ctx.Err()` 出现几次，
+      再拿一个**已经取消的 ctx** 真跑一次量耗时；判"取消生效"要同时看**多久返回**与**副作用有没有停下来**（进程、句柄、在写的行）。
 
 
 
