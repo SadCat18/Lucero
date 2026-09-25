@@ -531,7 +531,8 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       ② **两段式要明写幂等语义**：第一笔事务落"意图"（消息 + 状态边 + 事件）并**提交**，第二笔落连接面的结果
       （成功推进、超时/失败落 `UNKNOWN`）。**重试拿到的答案不许悄悄变** —— 今天"失败整笔回滚 ⇒ 重试得到新答案"这条
       语义（`internal/execution/send.go` 注释里写明的）如果要改，**改本条并登记**，不许只改代码；
-      ③ **挂住的 Adapter 一律落 `UNKNOWN`，不许 `FAILED`**（契约② 三态口径），且 Core 其余的写必须在**一个明确上界内**恢复。
+      ③ **挂住的 Adapter 一律落 `UNKNOWN`，不许 `FAILED`**（契约② 三态口径；**适用范围由第 25 条④收窄：只指"崩溃恢复"那一支
+      （`Occasion=Recovery`），同步失败/挂住这一支 v0.1 留 `RUNNING` + 503 `adapter_unresponsive`**），且 Core 其余的写必须在**一个明确上界内**恢复。
     - **要交的读数（先归因、后动码）**：`backend` 交"兜底为什么没界住"的三段分别计时 —— `Connect`（起子进程 + 等 hello）、
       `Initialize`（握手）、`CallTurn`（等回执）在 ctx 取消后各多久返回；`adapter` 交它包里那两段的"吃不吃 ctx"事实。
       **谁持锁谁量**，我不替任何一方判成因。
@@ -637,6 +638,39 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **结论不因此变弱**：`Close` 收尾顺序要"先 `Stop` 杀进程、再还管道"，靠的是**行为断言**（C3 那一档就是现盘反例：
       孩子已退 ⇒ `Kill` 报 `invalid argument`），不是靠"反过来会卡 30 秒"那个数量级；**判据也按行为写，不写秒数**。
       要恢复量级证据只有一条路：重跑 `.scratch/adapter/ctx-probe4.sh` 并让输出活到我入册之后。
+
+25. **REQ-S-1 两段式的幂等语义与"投递结果未知"那一支（09-25 22:0x 裁，回 `backend` 第 276 / 281 条；它把草稿备好了、等裁不动码）**。
+    - **① 语义定稿（把第 23 条那句"失败整笔回滚"改掉）**：`send` 是**一次可安全重放的尝试，答案来自第一次完成的尝试**。
+      第一笔（意图：消息行 + 状态边 + 事件）**提交即成为既成事实**；同一 `Idempotency-Key` 的重试
+      **不得**产生第二条消息或第二条状态边；若第一笔已提交而进程在第二笔之前中断，claim 行保持未密封 ⇒
+      同 key 重试走**续跑**（再打一次连接面 + 密封），**不是**永久 409 `idempotency_replay`。
+      ⇒ 第 23 条②里那句"重试拿到的答案不许悄悄变"**按本条定义读**（"不许变"指**库里事实**不许多算一次，
+      不是"永远回同一份字节"——重放响应体里的 `version` 必须是**当前库里的版本**，写死旧值就是撒谎）。
+    - **② 续跑凭证放哪儿：`idempotency_keys.response_json`，且必须登记这一列的两义**。
+      `backend` 量的地基我复现了：`claimIdempotency` 只在 `state='COMPLETED'` 时读 `response_json` ⇒
+      **`IN_PROGRESS` 期间那一格是无人读的闲置位**。裁：**claim 时把第一笔身份写进 `response_json`，密封时覆盖成真响应**。
+      **这条"一列两义"必须连同读取条件一起钉住**，否则下一个人只看到"response_json = 响应"就会读错
+      （与 REQ-F-21"同一个字段名两套口径"、F20 那格同族：键的存在与含义都要有唯一说法）。
+      ⇒ **不开新列、不动迁移、不改 ID 规范**（migration 是 `db` 的地盘；确定性派生 id 换的是 ID 规范，风险另一档，两条都否决）。
+    - **③ 并发双续跑：容忍，但要喊**。密封已经是 `UpdateOnce(… guard state != 'COMPLETED')` ⇒ 只有第一个能封上，
+      第二个拿 0 行 ⇒ 按 CO-44 那套**必须出声**（不许静默当成功），且**第二条真投递由 §4 透传的 `Idempotency-Key` 在 adapter 侧挡掉**
+      ——这就是"至多一次真投递"的落点。**不许为这件事给 `platform/db` 加双列 guard**（第 17 条那句"不为单个调用方改签名"照旧生效）。
+    - **④ "超时/挂住那一支" v0.1 定稿 = 丙，并顺手把第 23 条③的字改对**：
+      第一笔提交后 execution **留在 `RUNNING` 不动**，第二笔只密封幂等结果，HTTP 答案走已绑 503 的
+      **`adapter_unresponsive`（retryable=true）**；**同步路径上不新造 `UNKNOWN` 边**（`Occasion` 只有 `Normal`/`Recovery`、
+      `advance` 硬写 `Normal`，甲=改领域边集要 ADR、乙=`state_confidence` 是一列两义且该列今天没有生产写入者 —— 两条都否）。
+      **但第 23 条③原文"挂住的 Adapter 一律落 `UNKNOWN`"字面与丙不合 ⇒ 本条更正它的适用范围**：
+      **`UNKNOWN` 只属于"崩溃恢复"那一支** —— 即 `Occasion=Recovery` 那条既有边（`to==Unknown` 且 `Reason` 非空、非终态）。
+      ⇒ 契约②那条"Adapter 崩溃 ⇒ in-flight Execution 转 `UNKNOWN`（非 `FAILED`）"的验收项，落点是**恢复扫描**，不是同步失败响应。
+      **连带一个真实缺口，立项不派工**：`internal/execution` 非测试码里 **`Recovery` 没有任何生产者**（全仓非测试命中只有
+      `internal/task/projection.go` 那一处，那是 task 的状态机）⇒ **REQ-RC-1**（恢复扫描器要成为 `Recovery` 的入口，
+      并按第 20 条 CO-45③ 那个口径数活进程）。**排在第 8 格端到端之后、Wave-3 之前，今天不占闸门前面**；
+      在此之前，崩溃注入的测试**不许**为了变绿去改 `advance` 或硬塞 `Recovery`。
+    - **⑤ 判据（这一格怎么算证到）**：三条用例 —— (a) 崩在密封前 ⇒ 同 key 重试后 `messages` 仍**恰一行**、
+      `executions` 仍**恰两条状态边**、幂等行被密封且响应 `version` 等于当前库版本；
+      (b) 双客户端同 key 并发 ⇒ 只有一行密封成功、另一条走 0 行分支**并且喊出来**；
+      (c) 挂住/超时 ⇒ 库里 `RUNNING` 不变 + 503 `adapter_unresponsive` + `retryable=true` + **不多发任何事件**。
+      反例两条起步：把续跑改回 `errReplay` ⇒ (a) 必须红；把密封 guard 摘掉 ⇒ (b) 必须红。
 
 
 
