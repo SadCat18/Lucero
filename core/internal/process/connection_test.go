@@ -1099,3 +1099,111 @@ func TestCloseAfterTheChildAlreadyCrashedStaysQuiet(t *testing.T) {
 			" which is what Close was for)", err)
 	}
 }
+
+// T-326 ③'s own criteria, deliberately separate from the ⑤ batch above: a deadline must
+// bound the **write**, not just the wait for a reply. The stuck child never reads stdin, so
+// a 256KB frame fills the OS pipe and the write parks - before this change the caller sat
+// there past its deadline because the select came after it.
+func TestAbandonedWriteComesBackInsideTheDeadline(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
+	conn, err := sup.Connect(context.Background(), "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() }) // kills the child, which frees the parked write
+
+	// `request`, not `Call`: Call refuses at the §2 handshake gate before it ever reaches
+	// the pipe, and the stuck helper never completes that handshake. The gate has its own
+	// cases (TestCallGate); this one is about the write.
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = conn.request(ctx, "probe/big", map[string]any{"blob": strings.Repeat("x", 256*1024)}, "")
+	el := time.Since(start)
+	t.Logf("400ms 期限：request 返回耗时=%v err=%v", el.Round(time.Millisecond), err)
+	if el > 3*time.Second {
+		t.Fatalf("a 400ms deadline took %v to answer - the write is still the step that"+
+			" decides whether deadlines mean anything", el)
+	}
+	// Both halves of the truth have to be reachable: the caller's deadline, and the fact
+	// that the connection is now gone ( callers branch on these differently).
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want errors.Is(context.DeadlineExceeded)", err)
+	}
+	if !errors.Is(err, ErrConnectionLost) {
+		t.Errorf("err = %v, want errors.Is(ErrConnectionLost): an abandoned write takes the"+
+			" connection down with it", err)
+	}
+
+	// And nothing may be written behind the abandoned frame: the next request must be
+	// refused outright rather than queued behind a parked writeMu.
+	start = time.Now()
+	_, err2 := conn.request(context.Background(), "probe/after", map[string]any{}, "")
+	if !errors.Is(err2, ErrConnectionLost) {
+		t.Errorf("second request err = %v, want ErrConnectionLost", err2)
+	}
+	if el := time.Since(start); el > time.Second {
+		t.Errorf("second request took %v on a connection we gave up on, want a fast refusal", el)
+	}
+}
+
+// The second uncancelable step CO-52 named: request's ctx branch calls Cancel, which writes
+// to the same jammed pipe. It goes away because Cancel refuses a dead connection outright -
+// it may not queue behind the writeMu the abandoned goroutine still holds.
+func TestCancelAfterAnAbandonedWriteRefusesFast(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
+	conn, err := sup.Connect(context.Background(), "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	_, _ = conn.request(ctx, "probe/big", map[string]any{"blob": strings.Repeat("x", 256*1024)}, "")
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- conn.Cancel("in-flight-id") }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrConnectionLost) {
+			t.Errorf("Cancel err = %v, want ErrConnectionLost", err)
+		}
+		if el := time.Since(start); el > time.Second {
+			t.Errorf("Cancel took %v, want a fast refusal: it is queueing behind the parked write again", el)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Cancel never returned - that is CO-52's second uncancelable step, still open")
+	}
+}
+
+// The comment on writeWithin says this is not what §9.2 rule 5 bans ("不裸启动**无限**
+// goroutine"), and that is a testable claim: the parked goroutine must finish once Close
+// kills the child, which only holds because its one send lands in a buffered channel.
+// Unbuffer it and this case goes red with a leaked writer.
+func TestAbandonedWriteDoesNotLeakItsGoroutine(t *testing.T) {
+	base := runtime.NumGoroutine()
+	func() {
+		sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
+		conn, err := sup.Connect(context.Background(), "0.1.0-test")
+		if err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+		defer cancel()
+		_, _ = conn.request(ctx, "probe/big", map[string]any{"blob": strings.Repeat("x", 256*1024)}, "")
+		if err := conn.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && runtime.NumGoroutine() > base {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > base {
+		t.Errorf("goroutines = %d, want back to the starting %d: the abandoned writer is parked"+
+			" forever, which is the shape §9.2 rule 5 is actually about", got, base)
+	}
+}

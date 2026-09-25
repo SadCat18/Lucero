@@ -226,6 +226,14 @@ func (c *Connection) Cancel(targetID string) error {
 	if closed {
 		return ErrConnectionLost
 	}
+	// A dead connection is refused here rather than at the pipe: after an abandoned write the
+	// goroutine that owns writeMu is still parked, so queueing a $/cancel behind it would hang
+	// the very caller that just hit its deadline (CO-52's second uncancelable step).
+	select {
+	case <-c.dead:
+		return ErrConnectionLost
+	default:
+	}
 	return c.write(f)
 }
 
@@ -235,6 +243,48 @@ func (c *Connection) write(f *adapter.Frame) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.w.Write(f)
+}
+
+// writeWithin hands one frame over on a goroutine the caller can walk away from, so the
+// write stops being the step that decides whether a deadline means anything. Without it
+// there is a synchronous c.write *before* request's select: a child that stops reading
+// stdin fills the OS pipe and the caller never reaches the select at all (T-314 probe E).
+//
+// The three outcomes are the ones the ruling names (契约① §1.1 第 23 条 21:1x): the write
+// landed, the deadline went off, or the connection died. Both giving-up paths take the
+// connection down with them - the parked goroutine still owns writeMu, and the only thing
+// that reliably frees it is the pipe breaking, which is what killing the child does. So a
+// frame we abandoned cannot be followed by a second frame sneaking out behind it.
+//
+// This is not the "裸启动无限 goroutine" §9.2 rule 5 forbids: that clause is about
+// unbounded ones. It owns exactly one send into a buffered channel and finishes as soon as
+// the abandoned write returns.
+func (c *Connection) writeWithin(ctx context.Context, f *adapter.Frame) error {
+	done := make(chan error, 1)
+	go func() { done <- c.write(f) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		c.abandon(f.Method, ctx.Err())
+		return errors.Join(ctx.Err(),
+			lostError(f.Method, "the write was abandoned after the deadline; $/cancel was not sent"))
+	case <-c.dead:
+		c.abandon(f.Method, ErrConnectionLost)
+		return lostError(f.Method, "the adapter process died while a frame was being written")
+	}
+}
+
+// abandon is the half of the ruling that keeps walking away safe: the connection is over,
+// and the child is reaped by whoever owns Close. Callers must not read a returned nil as
+// "the Adapter got it" - by here nobody knows, which is exactly why the turn goes UNKNOWN in kill.
+//
+// It deliberately does **not** set c.closed: Close returns early on that flag, so setting it
+// here would turn the owner's Close into a no-op and leave the child alive with the pump, the
+// reaper and the parked writer all waiting on it (TestAbandonedWriteDoesNotLeakItsGoroutine
+// caught exactly that). kill is the state change; Close stays the only reaper.
+func (c *Connection) abandon(method string, cause error) {
+	c.kill(fmt.Errorf("write %s abandoned: %w", method, cause))
 }
 
 // Inbound receives deduplicated stream notifications. It blocks the pump when full:
@@ -293,13 +343,13 @@ const closeReapTimeout = 2 * time.Second
 // "how long a stuck write can block": **it is not in the contract yet, so do not cite it
 // downstream as an established fact** - T-326 ④. The shape claim above holds without it.)
 //
-// The order is load-bearing, and the reason is partly measured and partly eliminated:
-// Stop runs **before** the pipes go back because that is what cmd/core's duplexPipe.Close
-// already does for this same child, and because a full-suite run on a loaded machine showed
-// pipes-first taking 30.44s - almost exactly the helper's lifetime - while the same steps on
-// an idle machine cost 0s (probe A) and Stop itself is bounded by the 2s below. I never
-// reproduced the 30.44s on demand, so read "closing a handle the pump is reading from waits
-// for the child" as the surviving explanation, not as a measured law.
+// The order follows cmd/core's precedent, not a stopwatch: duplexPipe.Close already runs
+// Stop before it hands the pipes back, and that is the shape ⑤ pointed at ("与 processpipe
+// 同值"). One loaded full-suite run of the opposite order was **slow and red** - 30.44s on
+// the `--- FAIL` line of TestCloseReapsTheChild - but that number is the test's wall time on
+// a failure, not a measurement of any single step, and I could not reproduce it on an idle
+// machine (probe A measured those same steps at 0s). So nothing below asks you to believe a
+// duration: the ordering is the ruling, the 30.44s is only how the wrong one first showed up.
 //
 // "关 stdin 让孩子自退" is deliberately **not** run ahead of Stop. ⑤ allowed it as courtesy,
 // and it is nothing more: doing it first is precisely what produces the already-dead-child
@@ -369,8 +419,13 @@ func (c *Connection) request(ctx context.Context, method string, params any, exe
 	c.pending[id] = ch
 	c.mu.Unlock()
 
-	if err := c.write(f); err != nil {
+	if err := c.writeWithin(ctx, f); err != nil {
 		c.forget(id)
+		if errors.Is(err, ErrConnectionLost) {
+			// The abandonment error already names the method; wrapping it again would print
+			// the method twice in one line.
+			return nil, err
+		}
 		return nil, fmt.Errorf("send %s: %w", method, err)
 	}
 	select {
