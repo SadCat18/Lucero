@@ -564,7 +564,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       ④ **20:4x 登记第三处（`Connection.write` 不可取消）——归属已定，见本条末段**：`request` 的 ctx 分支是在期限**之后**
       才调 `Cancel`→`write`，而那一次 `write` 里没有 `select ctx.Done()`；实测形状 = "给一个卡死的孩子发 256KB 帧，
       400ms 期限过后又堵了 **44.8 秒**"。
-      **归属与证据状态（21:1x 二次更正，最终版）**：这条秒数**现在两份日志都不在盘上**，按第 24 条第 ⑤ 款处理 ——
+      **归属与证据状态（21:1x 二次更正，最终版）**：这条秒数**现在两份日志都不在盘上**，按第 24 条第 ④ 款处理 ——
       **不判归属，降级为"曾量到、输出未留存"**。过程留档防重演：`backend` 那份
       （`.scratch/backend/reqs1_timing.txt`）我 20:46:40 量到 12410 字节 / 四段命中，20:47:38 已被它自己的
       `find -newermt "10 minutes ago" -delete` 清掉；`adapter` 那份（`.scratch/adapter/ctxprobe_out.txt`，
@@ -582,7 +582,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **那条 FAIL 已被后一批取代**，同样当场用现盘读数证：`.scratch/adapter/delivery-r25-210428.log`
       （21:04，94177 字节）`grep -c "^FAIL\|--- FAIL"` = **0**，同一条用例在第 821 行
       **`--- PASS: TestCloseReapsTheChild (0.55s)`**。⇒ 引"顺序代价"这一格**只许引 `probe4-full.log` 那三档**；
-      要带载量级就得重跑一次并把输出留住（回到第 ⑤ 款）。
+      要带载量级就得重跑一次并把输出留住（回到第 ④ 款）。
       **裁定**：`write` 放进一个可放弃的 goroutine，`select { 写完 / ctx.Done() / c.dead }`，超时即标死连接、交给 `Close` 回收孩子。
       **顺序：先交 Stop 接线那一批，再补这一格**（两批判据不同，不许合成一批）。附带一句实话：Stop 接线一落地，本格的严重性会自动降一档
       —— 孩子被杀 ⇒ 管道断 ⇒ 堵住的 `write` 拿到 EPIPE 自行解开；但这正说明"回收"与"可取消"是同一件事的两半，
@@ -605,7 +605,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       今天的落点（**已被 ⑤ 推翻，原文留着防重演**）：我 20:5x 据此判 44.8 秒归 `adapter`，
       因为 `backend` 那份灭失、而 `.scratch/adapter/ctxprobe_out.txt` 我 20:49 量到还在（一行
       `write 256KB→stuck-child: req=400ms deadline, took=44833.49ms`）。
-    - **⑤ 拿"某文件现在还在"当前提的裁定，必须在使用那一刻重新 `test -f`；状态句不许写进契约。**
+    - **④ 拿"某文件现在还在"当前提的裁定，必须在使用那一刻重新 `test -f`；状态句不许写进契约。**
       21:01:48~21:02:28 巡检三条命令（`test -f`、`grep -rn '44833' .scratch/`、`grep -rn '44\.8' .scratch/adapter/`）
       证明 **`adapter` 那份也没了** ⇒ 我 20:5x 那句"只有它还能复跑"**从写下的那一刻起就在衰减**，
       而我把它写成了永久状态。**规矩：契约里只许写"某时刻 + 某命令 + 某结果"，不许写"现在可复跑"这类无时戳状态。**
@@ -616,7 +616,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       输出必须留在 `.scratch/` 里活到我入册之后（回到第 ① 款）。
       **其五 本条结论不受影响**：`Connection.write` 的 ctx 分支里没有 `select ctx.Done()` 是**读代码就能证**的，
       44.8 / 30.44 这类秒数只是把它的重要性量化，**没有它们这一格照样要修**。
-    - **④ 附一条同族的"格式串漏参"**（`adapter` 那份日志里同一批行写着 `got=%d` 未被格式化）：
+    - **⑤ 附一条同族的"格式串漏参"**（`adapter` 那份日志里同一批行写着 `got=%d` 未被格式化）：
       数值本身是真的，但**别人读到 `got=%d` 会以为这一档没量到** ⇒ 探针脚本里的 printf 参数要对齐，
       交账前自己先读一遍输出原文（与"守门判形状不判字面行数"同族：读的是**能不能被误读**）。
     - **⑥ 引一条读数之前，先看它所在那一行的前缀是什么**（09-25 21:1x 由巡检抓我第二次，我 21:14:44 自己复跑确认）。
@@ -630,7 +630,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     - **⑦ 本格的最终证据状态（21:20 复量，读这一条就够，别再去翻上面三段）**：
       **所有带载秒数现在都不在盘上了** —— `probe4-load.log` 与 `ctxprobe6_out.txt` 我 21:20:08 逐条 `test -f` 都是
       **NO**（它们 21:1x 还各自给过 30.44s / 30.439741s），`44.8` 那份两份台账也都灭失。
-      ⇒ 44.8 与 30.44 一律按第 ⑤ 款处理：**"曾量到、输出未留存"，不判归属、不作已证事实引用**。
+      ⇒ 44.8 与 30.44 一律按第 ④ 款处理：**"曾量到、输出未留存"，不判归属、不作已证事实引用**。
       **现在还在盘上的只有两份**：`.scratch/adapter/probe4-full.log`（空机三档 `A5 Stop 耗时=1ms`、
       `B1 先 Stop 后 CloseStreams 耗时=1ms`、`C3 err=kill: invalid argument` 且 `Reaped()=false`）与两份
       `delivery-r25-*.log`（20:39 那份末尾 `FAIL` / 21:04 那份 FAIL 计数 0、同一条用例 `--- PASS (0.55s)`）。
