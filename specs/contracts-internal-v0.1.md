@@ -564,12 +564,16 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       ④ **20:4x 登记第三处（`Connection.write` 不可取消）——归属已定，见本条末段**：`request` 的 ctx 分支是在期限**之后**
       才调 `Cancel`→`write`，而那一次 `write` 里没有 `select ctx.Done()`；实测形状 = "给一个卡死的孩子发 256KB 帧，
       400ms 期限过后又堵了 **44.8 秒**"。
-      **归属判定（第 24 条第 ③ 款的第一个案例）**：盘上现在**只有 `adapter` 那一份可复跑** ——
-      `.scratch/adapter/ctxprobe_out.txt`（mtime 20:43:55，20:49:20 复量 `grep -c "4\.8"` = **4**，其中一行
-      `write 256KB→stuck-child: req=400ms deadline, took=44833.49ms`）⇒ **这条读数归 `adapter`**，
-      注释作者与证据主是同一个人，注释不用改。`backend` 那份同名实验日志（`.scratch/backend/reqs1_timing.txt`，
-      我 20:46:40 还量到 12410 字节 / 四段命中）**在 20:47:38 已被它自己的 `find -newermt "10 minutes ago" -delete` 清掉**，
-      它 20:48 也主动让了归属。⇒ 灭失那份只当"同一件事被两个人各量过一次"的旁证，**不再作为引用源**。
+      **归属与证据状态（21:1x 二次更正，最终版）**：这条秒数**现在两份日志都不在盘上**，按第 24 条第 ⑤ 款处理 ——
+      **不判归属，降级为"曾量到、输出未留存"**。过程留档防重演：`backend` 那份
+      （`.scratch/backend/reqs1_timing.txt`）我 20:46:40 量到 12410 字节 / 四段命中，20:47:38 已被它自己的
+      `find -newermt "10 minutes ago" -delete` 清掉；`adapter` 那份（`.scratch/adapter/ctxprobe_out.txt`，
+      一行 `took=44833.49ms`）我 20:49 量到在盘、**21:04 复量 `test -f` 已不在**，`grep -rn '44833' .scratch/`
+      只剩我自己的两份转抄。⇒ 我 20:5x 那句"只有 `adapter` 那份可复跑"**从写下那刻就在衰减**，那是个状态句，已删。
+      **不受影响的**：`Connection.write` 的 ctx 分支里没有 `select ctx.Done()` 读代码即可证；而"收尾顺序"那一格
+      **另有一份现在就在盘上的证据** —— `.scratch/adapter/delivery-r25-203909.log`（20:39:52，94196 字节）里有
+      `killStreams took 30.44s` 那一行（我 21:0x 复量命中 1 处），它证的是**同一族问题的另一档**（先还管道后杀 ⇒ 30 秒），
+      **要用哪条证据请引这一份，别再引 44.8**。
       **裁定**：`write` 放进一个可放弃的 goroutine，`select { 写完 / ctx.Done() / c.dead }`，超时即标死连接、交给 `Close` 回收孩子。
       **顺序：先交 Stop 接线那一批，再补这一格**（两批判据不同，不许合成一批）。附带一句实话：Stop 接线一落地，本格的严重性会自动降一档
       —— 孩子被杀 ⇒ 管道断 ⇒ 堵住的 `write` 拿到 EPIPE 自行解开；但这正说明"回收"与"可取消"是同一件事的两半，
@@ -589,9 +593,20 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **并且：派发行里凡是否定结论，必须把我跑过的命令原文一起写进去**，让对方能自己重跑 ——
       否则我的一句话比对方一条留存的日志更没证据力。
     - **③ 归属判据：同一条读数有两个主张时，证据现在还在盘上的那一方拿归属**（注释、转述、记忆都不算证据）。
-      今天的落点：44.8 秒 = 在 `.scratch/adapter/ctxprobe_out.txt` 里可复跑的那一份
-      （一行 `write 256KB→stuck-child: req=400ms deadline, took=44833.49ms`），
-      而 `backend` 那份灭失、且他 20:48 主动让 ⇒ **归 `adapter`**，注释作者与证据主同一人，不必回填引用。
+      今天的落点（**已被 ⑤ 推翻，原文留着防重演**）：我 20:5x 据此判 44.8 秒归 `adapter`，
+      因为 `backend` 那份灭失、而 `.scratch/adapter/ctxprobe_out.txt` 我 20:49 量到还在（一行
+      `write 256KB→stuck-child: req=400ms deadline, took=44833.49ms`）。
+    - **⑤ 拿"某文件现在还在"当前提的裁定，必须在使用那一刻重新 `test -f`；状态句不许写进契约。**
+      21:01:48~21:02:28 巡检三条命令（`test -f`、`grep -rn '44833' .scratch/`、`grep -rn '44\.8' .scratch/adapter/`）
+      证明 **`adapter` 那份也没了** ⇒ 我 20:5x 那句"只有它还能复跑"**从写下的那一刻起就在衰减**，
+      而我把它写成了永久状态。**规矩：契约里只许写"某时刻 + 某命令 + 某结果"，不许写"现在可复跑"这类无时戳状态。**
+      **两份都灭失时的处置（本案就用这条）**：① **不判归属** —— 出处本身也标"未定"（两份台账各说各的、日志都没了，
+      再判就是凭偏好）；② 读数降级为**"曾量到、输出未留存"**，不许当已证事实引用；
+      ③ 涉及的角色归属**改由归属表支撑**（`internal/process` 归 `adapter`，见契约③ §7 —— 这条本来就不依赖那个秒数）；
+      ④ **要恢复成事实只有一条路：重跑**。脚本还在盘上（`.scratch/adapter/ctx-probe4.sh`，20:42），
+      输出必须留在 `.scratch/` 里活到我入册之后（回到第 ① 款）。
+      ⑤ **本条结论不受影响**：`Connection.write` 的 ctx 分支里没有 `select ctx.Done()` 是**读代码就能证**的，
+      44.8 / 30.44 这类秒数只是把它的重要性量化，**没有它们这一格照样要修**。
     - **④ 附一条同族的"格式串漏参"**（`adapter` 那份日志里同一批行写着 `got=%d` 未被格式化）：
       数值本身是真的，但**别人读到 `got=%d` 会以为这一档没量到** ⇒ 探针脚本里的 printf 参数要对齐，
       交账前自己先读一遍输出原文（与"守门判形状不判字面行数"同族：读的是**能不能被误读**）。
