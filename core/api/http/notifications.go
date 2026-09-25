@@ -127,9 +127,16 @@ type NotificationReader interface {
 		cmd notification.ReadCommand) (notification.Notification, bool, error)
 }
 
-// registerNotificationItemRoute 认领子树 `/api/v1/notifications/`（`:read` 这条口）。
-// 认领整棵子树就要负责邻居：`{id}:handle` 与"别的形状"必须**保持它们今天的 501**，
-// 不许因为多了这段代码而变成 404/405 —— 那是静默的行为变更（第四十一批的 adapters 同一条规矩）。
+// NotificationHandler 是 `:handle` 这条口的写面。它与 `NotificationReader` 分成两个字段（同一个
+// `*notification.Service` 同时满足两个）：合并成一个"大接口"就会逼装配层为凑签名造转发类型。
+type NotificationHandler interface {
+	MarkHandled(ctx context.Context, tx notification.Toucher, id string,
+		cmd notification.HandleCommand) (notification.Notification, bool, error)
+}
+
+// registerNotificationItemRoute 认领子树 `/api/v1/notifications/`（`:read` 与 `:handle` 两条口）。
+// 认领整棵子树就要负责邻居：**没接线的那条必须保持 501**，不许因为多了这段代码而变成 404/405 ——
+// 那是静默的行为变更（第四十一批的 adapters 同一条规矩）。
 func registerNotificationItemRoute(mux *http.ServeMux, c Config) {
 	mux.HandleFunc("/api/v1/notifications/", func(w http.ResponseWriter, r *http.Request) {
 		id, verb, ok := splitNotificationVerb(r.URL.Path)
@@ -157,10 +164,14 @@ func registerNotificationItemRoute(mux *http.ServeMux, c Config) {
 					"/api/v1/notifications/{id}:handle 只有 POST", false)
 				return
 			}
-			// declared、方法合法、能力没接线 ⇒ 501（C28②）。今天不许为它编一个假 200，
-			// 也不许把它回成 405 让客户去换方法。
-			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"POST /api/v1/notifications/{id}:handle 还没接线（`notification_handled` 已登记，缺的是状态边由谁裁）", true)
+			// declared、方法合法、能力没接线 ⇒ 501（C28②）。这一格的边集是 09-25 契约① 第 21 条裁的，
+			// 裁之前它一直是 501；裁了但没注入同样回 501，不假 200、也不回 405 叫客户换方法。
+			if c.NotifHandle == nil || c.Store == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"POST /api/v1/notifications/{id}:handle 还没装配（写通道或 Service 没注入）", true)
+				return
+			}
+			handleNotification(w, r, c, id)
 		default:
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"notifications 的单条路径只认 {id}:read 与 {id}:handle", true)
@@ -205,6 +216,35 @@ func readNotification(w http.ResponseWriter, r *http.Request, c Config, id strin
 	switch {
 	case err == nil:
 		// C18 裁定 ②：两种情况都回"库里那一行"，不回显请求。
+		writeJSON(w, http.StatusOK, notificationViewOf(out))
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrAggregateNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "没有这条通知", false)
+	case errors.Is(err, notification.ErrIllegalTransition):
+		writeError(w, http.StatusConflict, "illegal_transition", err.Error(), false)
+	case errors.Is(err, notification.ErrInvalidDraft):
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
+	default:
+		serverError(w, r, err)
+	}
+}
+
+// handleNotification 是 `POST /api/v1/notifications/{id}:handle`：与 `:read` 同一条形状 ——
+// 一笔事务、库里那一行原样回（C18 ②）、不回显请求；"改没改"两种情况响应形状一致，所以不接第二个返回值。
+// 错误码沿用 §15.2 那三行：查不到 404 `not_found`、边不合法 409 `illegal_transition`、缺 event_id 那类 400。
+// **不要求 `Idempotency-Key`**（第 21 条末格：与 `:read` 同一条子树同一口径），也不吃 `If-Match`（不发明乐观锁）。
+func handleNotification(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	principal := r.Header.Get("X-Lucero-Principal")
+	correlation := newUUIDv7()
+	var out notification.Notification
+	err := c.Store.Write(r.Context(), func(tx *db.Tx) error {
+		var err error
+		out, _, err = c.NotifHandle.MarkHandled(r.Context(), tx, id, notification.HandleCommand{
+			EventID: newUUIDv7(), PrincipalID: principal, CorrelationID: correlation, CausationID: correlation,
+		})
+		return err
+	})
+	switch {
+	case err == nil:
 		writeJSON(w, http.StatusOK, notificationViewOf(out))
 	case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrAggregateNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "没有这条通知", false)

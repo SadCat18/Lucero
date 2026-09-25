@@ -107,6 +107,61 @@ type ReadCommand struct {
 	CausationID   string
 }
 
+// HandleCommand 就是 `ReadCommand` 那四个字段 —— §6 里 `_read` 与 `_handled` 是三行**共用**同一列 payload
+// 键的合并行，两路口径也一样（都不带版本号、都不要求 Idempotency-Key），所以这里用类型别名而不是复制一份：
+// 抄一遍四个字段，早晚有一处改了另一处没改（CO-49 那族）。
+type HandleCommand = ReadCommand
+
+// MarkHandled 落契约① §1.1 第 21 条（09-25 裁定）那条边：`UNREAD|READ|PENDING → HANDLED`，
+// 同一事务里一行状态改动 + 恰一行 `notification_handled`。
+//
+// 三格判据都是裁定给的，不是我挑的：
+//   - `HANDLED → HANDLED` 是**合法 no-op**（200、版本不动、不覆写 `handled_at`、**不发事件**）—— 与 C36① 已认的
+//     `:read` 重放同一口径；第二个返回值就是"这一次真改了吗"。
+//   - `IGNORED`/`EXPIRED → HANDLED` 报 `ErrIllegalTransition`（409）：**一行都不许多写**，所以这里在任何 Touch 之前返回。
+//     `IGNORED` 本身就是用户的处置、`EXPIRED` 是系统判定的时效已过，都不是另一个动作该覆盖掉的痕迹。
+//   - `READ` 在允许集里是**有意的**（它记"看过"、不是"处置过"），且它与 `:read` 的不对称别来统一：
+//     只放 `READ→HANDLED` 会逼面板在用户点"已处理"时先补发一次 `:read`，一次用户动作就在 journal 里留下两条边。
+//
+// `UNREAD → HANDLED` **只写 `handled_at`、不补 `read_at`**：把"处置"折成"也算读过"，就是替面板抹掉"未读但已处理"这个真实形状。
+func (s *Service) MarkHandled(ctx context.Context, tx Toucher, id string, cmd HandleCommand) (Notification, bool, error) {
+	if strings.TrimSpace(cmd.EventID) == "" {
+		return Notification{}, false, fmt.Errorf("%w: 缺 event_id（重试要复用同一个，不然会发第二条事件）", ErrInvalidDraft)
+	}
+	cur, err := NewRepository(tx).Get(ctx, id)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	switch cur.State {
+	case StateUnread, StateRead, StatePending:
+	case StateHandled:
+		return cur, false, nil
+	default:
+		return cur, false, fmt.Errorf("%w: %s→HANDLED（已处置/已失效的状态不再被一次「处理」盖掉）", ErrIllegalTransition, cur.State)
+	}
+	at := s.now()
+	payload, err := Payload(HandledPayload{
+		NotificationType: cur.Type, Priority: cur.Priority, TaskID: cur.TaskID, ApprovalID: cur.ApprovalID,
+	})
+	if err != nil {
+		return Notification{}, false, fmt.Errorf("notification: handled payload: %w", err)
+	}
+	// 两列：`state` 与 `handled_at`。这张表**没有 updated_at**（同 MarkRead 那格），`Touch` 返回的是新版本号不是行数。
+	if _, err := tx.Touch(db.AggNotification, id, "state = ?, handled_at = ?",
+		[]any{string(StateHandled), at}, db.EventDraft{
+			EventID: cmd.EventID, Type: EventHandled, Aggregate: db.AggNotification, AggregateID: id,
+			CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID, PrincipalID: cmd.PrincipalID,
+			Payload: payload,
+		}); err != nil {
+		return Notification{}, false, fmt.Errorf("notification: mark handled %s: %w", id, err)
+	}
+	updated, err := NewRepository(tx).Get(ctx, id)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	return updated, true, nil
+}
+
 // MarkRead 落 `UNREAD|PENDING → READ` 这一条边：一行状态改动 + 恰一行 `notification_read`，同一事务。
 // 返回的第二个值是"这一次真改了吗"——重复点"读过"是**合法的 no-op**：200、版本不动、事件也不发
 // （什么都没变还发一条更新，就是把事件写成仪式；与 `project.Patch` 的空 PATCH 同一条口径）。

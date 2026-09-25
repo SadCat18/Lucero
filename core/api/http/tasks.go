@@ -406,7 +406,8 @@ func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 		// （契约① §4：一条命令链共享同一个 correlation_id）；AttemptNo=1、TriggerInitial 由 Create 默认。
 		//
 		// session_id 装配（第六十一批）：links 已有则抄第一条（按 ordinal）；没有则留空不发明 ——
-		// 创建侧 POST /tasks 无 session_id、今天也没有生产写入者建 links（第 264 条上报的缺口）。
+		// 这里读到的 links **不再恒空**：创建侧从 REQ-LK-1（第六十四批）起也能挂来源会话了，
+		// 所以我 09-24 那句「没有生产写入者建 links」已被自己那次提交推翻（回改见台账第 270 条）。
 		// send 腿对空 session_id 回 404 session_not_found，不静默造一个会话。
 		sessionID := ""
 		if links, err := session.NewRepository(tx).ForTask(ctx, id); err != nil {

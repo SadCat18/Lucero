@@ -304,6 +304,9 @@ func (c *Core) discoverField() httpapi.SessionDiscoverer {
 // handler 把两个 transport 面拼起来：/ws/v1/events 走一次性短票（REQ-F-2，不接受 Authorization 头），
 // 其余 /api/v1 走 Bearer。两条共用同一个回环来源判定，CORS 规则不出现第二套。
 func (c *Core) handler() http.Handler {
+	// `:read` 与 `:handle` 共用同一个 `*notification.Service`：它只带一个 `now` 闭包，造两份也不会坏，
+	// 但会让人以为这两路口径可以各自漂移（CO-49 那条"同一份值只留一处定义"的规矩按同一个理由走）。
+	notifSvc := notification.NewService()
 	rest := httpapi.NewHandler(httpapi.Config{
 		Token:   c.token,
 		Version: Version,
@@ -323,7 +326,10 @@ func (c *Core) handler() http.Handler {
 		// inbox 那一腿是纯读：不注入 Store，所以它不需要事务通道。
 		Notifications: notification.NewRepository(c.db.Read),
 		// `:read` 是这条竖线第一次真改 notifications 的一行状态（C31 已 GO）：写要事务通道，所以配 Store。
-		NotifRead: notification.NewService(),
+		NotifRead: notifSvc,
+		// `:handle` 的边集是 09-25 契约① §1.1 第 21 条裁的（`UNREAD`/`READ`/`PENDING → HANDLED`、
+		// `HANDLED` 重放是 200 no-op、`IGNORED`/`EXPIRED` 409 且一行都不写）；同一把 Service、同一个 Store。
+		NotifHandle: notifSvc,
 		// 建项目这条口只要一个 Service（canonicalize 与冲突判定都在 internal/project 里）；
 		// 时钟与 §5.4/审计那两处共用同一个 nowMillis，别在业务包里各取一次时间。
 		Projects: project.NewService(nil),

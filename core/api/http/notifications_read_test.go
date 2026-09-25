@@ -20,6 +20,14 @@ import (
 // 不会像第三十五批那样押到别人家的 nil 上、变异不咬还以为断言有牙。
 func newReadHarness(t *testing.T, wired bool) (*httptest.Server, *db.DB) {
 	t.Helper()
+	return newNotifHarness(t, wired, false)
+}
+
+// newNotifHarness 是同一套真库装配，把"接哪几条写口"分开给：
+// `:read` 与 `:handle` 是两个字段，所以"只接一条"这一格能被钉住（没接的那条必须仍是 501，
+// 且 501 只能来自那道 nil 闸 —— 别的家照给，第三十五批那种"变异不咬还以为有牙"就不复现）。
+func newNotifHarness(t *testing.T, readWired, handleWired bool) (*httptest.Server, *db.DB) {
+	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "lucero.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -46,8 +54,11 @@ func newReadHarness(t *testing.T, wired bool) (*httptest.Server, *db.DB) {
 		Store:            d,
 		Notifications:    notification.NewRepository(d.Read),
 	}
-	if wired {
+	if readWired {
 		cfg.NotifRead = notification.NewService()
+	}
+	if handleWired {
+		cfg.NotifHandle = notification.NewService()
 	}
 	srv := httptest.NewServer(httpapi.NewHandler(cfg))
 	t.Cleanup(srv.Close)
@@ -164,17 +175,20 @@ func TestNotificationReadRefusesHandledWith409(t *testing.T) {
 	}
 }
 
-// TestNotificationReadVerbRouting 钉"认领整棵子树的代价"：`:handle` 与邻居今天的 501/405 一个字都不许变。
+// TestNotificationReadVerbRouting 钉"认领整棵子树的代价"：`:handle` 与邻居的 501/405 一个字都不许变。
 // 少钉一条，就是接一条口顺手把邻居接成 404/405 那种静默行为变更（第四十一批同一条规矩）。
+// 09-25 起 `:handle` 已经有实现（契约① §1.1 第 21 条裁了边集），**这里的 501 只能来自 harness 没注入
+// `NotifHandle` 那道闸**（readWired=true、handleWired=false 就是这一支）；接通之后那六格行为由
+// `notifications_handle_test.go` 钉，别拿这条 501 当"`:handle` 还没做"。
 func TestNotificationReadVerbRouting(t *testing.T) {
-	srv, d := newReadHarness(t, true)
+	srv, d := newNotifHarness(t, true, false)
 	seedOne(t, d, "n-route")
 
 	for _, tc := range []struct {
 		method, path string
 		want         int
 	}{
-		// declared、方法合法、能力没接线 ⇒ 501。
+		// declared、方法合法、**这一格没装配**（harness 故意不给 NotifHandle）⇒ 501。
 		{"POST", "/api/v1/notifications/n-route:handle", http.StatusNotImplemented},
 		// 没有动词的那条（GET /notifications/{id}）契约里根本没 declared ⇒ 形状不认，也是 501。
 		{"GET", "/api/v1/notifications/n-route", http.StatusNotImplemented},

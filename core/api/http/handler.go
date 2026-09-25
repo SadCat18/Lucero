@@ -110,6 +110,9 @@ type Config struct {
 	Notifications NotificationLister
 	// NotifRead + Store 都在时才挂 POST /api/v1/notifications/{id}:read（写侧要事务通道）。
 	NotifRead NotificationReader
+	// NotifHandle + Store 都在时才挂 POST /api/v1/notifications/{id}:handle（契约① §1.1 第 21 条裁的边集）。
+	// 与 NotifRead 分开两个字段：缺任何一个，那一条口就维持 501，不给前端半套端点。
+	NotifHandle NotificationHandler
 
 	// Projects + Store 都在时才挂 POST /api/v1/projects（写侧要事务通道）。
 	Projects ProjectService
