@@ -269,6 +269,19 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 而 Core 侧零消费者 ⇒ 缺的只有 `sessions:discover` 把载荷落库这一步（活派在账本 T-198）。
 > 判据/评审时别把"事件目录里有这行"当成"该功能已具备"——`test` 的 lint 也不得据此要求存在性。
 
+> **【名单现状 · 主控 09-25 19:2x 复量】上面那段要按两处更正来读，原文照例留档不删：**
+> ① **`session_discovered` 从名单里划掉**——"非测试码没有任何一处发它 / `sessions` 表无非测试写路径"已被事实超过：
+> `internal/session` 的 `discover.go` 走 `Tx.Create(db.AggSession, …)` 并带恰一条 `EventDiscovered`，
+> `cmd/core` 的 discover 腿也已装配（`newAdapterServices` → `Core.discoverField()`，没配 Adapter 时给 nil ⇒ 501）。
+> 复量命令：`grep -rn "EventDiscovered" core/internal/session/discover.go`（非测试码命中即证明有生产者）。
+> 上面那句"§7 第 2 步今天不可能真跑"随之失效——**但"能真跑"仍要以 `sessions:discover` 的端到端用例为证，不是以这段更正为证**。
+> ② **新补一条进名单**：`adapter_downgraded` —— 非测试码只剩 `internal/eventjournal` 的 `AdapterDowngraded` 常量
+> 与注册表那个 `true` 条目，**零发射点**（09-25 19:2x 实测）。归属与发射时机已裁在契约① §1.1.22：
+> 发在**降级发生的那一刻**（`internal/adapter` 的能力核定/注册域，Touch `adapter_instances`），
+> **`POST /sessions/{id}:sync` 的 503 出口只回码、不发这条事件**（守卫机械不允许，见契约① 同条引的
+> `TestAdapterDowngradedCannotRideASessionTouch`）。
+> 所以本名单当前是**三条**：`policy_created` / `policy_updated` / `adapter_downgraded`。
+
 
 ## 7. 垂直链事件序列（测试 oracle）
 

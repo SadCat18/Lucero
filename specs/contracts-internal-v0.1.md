@@ -454,6 +454,60 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       ③ **Recovery 数"活进程"的口径登记在此**：`status IN ('STARTING','RUNNING','STOPPING')` 按 `process_type` 分组数行数。
       **谁都不许自己发明第二个口径**；要改（例如把 `STOPPING` 算死）写 REQ 给我，**改本条而不是改代码注释**。
 
+21. **`notifications` 的状态机边集（09-25 19:2x 裁定，回 `backend` 第六十六批的问题："`:handle` 的边集不在契约里，我不自己定"）**。
+    `backend` 这句话是对的：`grep HANDLED specs/` 只命中 `core-v1.yaml` 的 enum，两份契约里**从来没有一张通知状态机表**，
+    而"CHECK 约束里有 `HANDLED`"**不是裁定**——它只说明这一格能存，不说明谁能走到。现在补上。
+    - **词表（读自盘）**：`000001_core_schema.sql` 里 `CREATE TABLE notifications` 的 `state` 列 CHECK 给六个值
+      `UNREAD` `READ` `PENDING` `HANDLED` `IGNORED` `EXPIRED`，Go 侧同名常量是 `internal/notification` 的 `State` 那一组
+      （`StateUnread`…`StateExpired`，`domain.go`）。
+    - **裁定（认 `backend` 在 C36④ 自挑的默认，并补它没问的两格）**：
+      ① `→ HANDLED` 的合法前态 = **`UNREAD` / `READ` / `PENDING`**；
+      ② `HANDLED → HANDLED` = **200 no-op**：版本不动、`handled_at` 不覆写、**不发事件**（与 C36① 已认的 `:read` 重放同一口径）；
+      ③ `IGNORED → HANDLED` 与 `EXPIRED → HANDLED` = **409 `illegal_transition`**（沿用 `ErrIllegalTransition`；
+      §15.2 那张表明写这一码"来自各 Service 而非 Adapter"，正是这里该用的那个）。
+    - **为什么 `READ` 必须在允许集里（这就是那道二选一）**：`HANDLED` 记的是"用户处置过"，`READ` 记的是"用户看过"，
+      **两件事没有先后关系**。只放 `READ → HANDLED` 等于把"先看后处理"写成产品流程：面板要在用户点"已处理"时先补发一次 `:read`，
+      于是**一次用户动作在 journal 里留下两条边**，而其中第一条（`notification_read`）根本不是用户做的事。
+      **准入集跟着"哪些状态还没有处置痕迹"走，不跟着 UI 的点击顺序走。**
+    - **与 `:read` 的不对称是有意的，别来"统一"它**：`:read` 只放 `UNREAD`/`PENDING`（C36②，已认），`:handle` 多放一个 `READ`。
+      同一条理由的两面——**`HANDLED`/`IGNORED`/`EXPIRED` 是终态**（`IGNORED` 本身就是用户的处置、`EXPIRED` 是系统判定的时效已过，
+      都不是另一个动作该覆盖掉的痕迹），而"读过"不是处置痕迹，把它改成"已处理"不抹掉任何已发生的事实。
+    - **`read_at` 与 `handled_at` 各归各（`backend` 没问，但这一格一定会被猜）**：`UNREAD → HANDLED` **只写 `handled_at`，不补 `read_at`**。
+      两列都已在库里（`CREATE TABLE notifications` 的 `read_at` / `handled_at`，均可空）。把"处置"折成"也算读过"，就是替面板抹掉"未读但已处理"这个真实形状。
+    - **事件面不新增任何东西**：`notification_handled` 早已登记（事件契约 §6 的合并行 `notification_created` / `_handled` / `_read`
+      那一格），payload 就是那一格的四键 `notification_type` `priority` `task_id` `approval_id`，`aggregate_type = notification`；
+      **不要求 `Idempotency-Key`**（C36③ 已认，同一条子树同一口径）。
+    - **落地判据（这一格怎么算证到）**：同一事务里 `Touch(AggNotification, …, "state = ?, handled_at = ?")` + 恰一条 `notification_handled`；
+      用例至少钉六格：`UNREAD→HANDLED` / `READ→HANDLED` / `PENDING→HANDLED` / `HANDLED` 重放（断**版本不动**且 **journal 不增长**两样）/
+      `IGNORED→409` / `EXPIRED→409`，且 409 那两条要断**一行都没写**。**反例两条起步**：摘掉 `handled_at` 的写入 ⇒ 必须有用例红；
+      把 409 那道闸改成"任意前态都盖" ⇒ `IGNORED`/`EXPIRED` 那两条必须红。
+
+22. **`adapter_downgraded` 的归属：`:sync` 的 503 半格归 `adapter`，且 503 出口不发事件（09-25 19:2x，回 `backend` 第六十六批的另一问）**。
+    `backend` 把这一格从"等主控 REQ-B-1"改成"归 `adapter`"，**换归属换对了**，但它引的依据不是最硬的那条，所以这里连依据一起钉下来。
+    - **它引的**：事件契约 §6 `adapter_downgraded` 那一行的触发者列 = `adapter`。**成立。**
+    - **更硬的一条（机械不可达，不是"没做完"）**：这个事件的 `aggregate_type` 是 `adapter`，而 `Tx.Touch` 要求事件上的聚合
+      **等于被 Touch 的那个聚合** ⇒ 从 session 这条腿发它，要么被守卫拒，要么把它错标到 session 名下。
+      **盘上已有现场证据**：`internal/session` 的 `TestAdapterDowngradedCannotRideASessionTouch`
+      断的就是"必须红，且红的理由含 `aggregate_type` 「adapter」但 touching「session」"（原文是那两条反引号里的英文，别照抄我这行的写法去 grep）。
+    - **落点**：只有 `internal/adapter` 能写 `adapter_instances`（契约③ REQ-AD-1 裁定段：`internal/process` 按设计不持 DB 句柄；
+      §7 归属行 `core/internal/adapter/**` + `process/**` = `adapter`）。所以这条事件的发射点在 `internal/adapter` 的注册/核定域里，
+      Touch 的是 `adapter_instances` 那一行。
+    - **发射时机（防止被做成"每次 503 顺手补一条事件"）**：`adapter_downgraded` 的语义是**一次能力核定的变化**，
+      与"某个客户端某次请求拿到 503"无关。① 只在降级**发生**的那一刻发（握手 / probe 核定出 effective < requested 那一处）；
+      ② **`:sync` 的 503 出口只回码、不发事件、不 Touch 任何聚合**——`backend` 现在的形状是**正确终态**，不是半成品，
+      不许再为它开"半个事件"的口子；③ 响应里若要体现"为什么降级"，那是**读**已落库的 capability/health 行，
+      不是在响应路径上写事件（否则一次轮询刷一条 journal，与 C36①"重放不发事件"是同一条理由）。
+    - **REQ-B-1 的处置：结案，且不需要新通道**。守卫的行为正是我要的 ⇒ **不新增裸写入口、不为这一格改 `platform/db` 的签名**
+      （第 17 条那句"不许为这两格再开一条 `Append` 之外的裸写通道"照旧生效）。
+    - **排程：不排在 Wave-2 闸门之前**。这一格在 `adapter` 的队列里，等闸门之后由主控点名；今天只补归属与登记，
+      **不给任何角色新增前置**。同时按 §6"已登记 ≠ 有生产路径"，把 `adapter_downgraded` 记进**有名字无生产者**名单
+      （09-25 19:2x 实测：全仓 `adapter_downgraded` / `AdapterDowngraded` 在非测试码只剩 `internal/eventjournal` 的
+      `AdapterDowngraded` 常量与注册表里那个 `true` 条目两处）。
+    - **同一条 grep 顺出来的更正**：事件契约 §6 名单里 `session_discovered` 那两断句（"非测试码没有任何一处发它"、
+      "`sessions` 表在非测试码里没有任何写路径"）**已被事实超过**——`internal/session` 的 `discover.go` 走
+      `Tx.Create(db.AggSession, …)` + 恰一条 `session_discovered`，`cmd/core` 的 discover 腿也已装配（`newAdapterServices` 的返回值
+      经 `Core.discoverField()` 注入，没配 Adapter 时给 nil ⇒ 501）。名单改成"两条 + 一条新补"，原文按"历史不静默改"留档不删。
+
 
 
 ## 2. Redaction：规则归 audit，强制点在 db

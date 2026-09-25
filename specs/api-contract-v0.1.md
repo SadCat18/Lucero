@@ -118,6 +118,9 @@ GET  /api/v1/sessions?project=&cursor=&limit=
                                          **接线的时机 = `messages` 有了生产者（`:sync` 落消息那一格）那一轮，读面与写面同轮交**；
                                          在那之前 frontend 对这一格的期望就写成"501 且归因必须是'未装配'"。
 POST /api/v1/sessions/{id}:sync        → 显式增量同步，返回 sync_state + next_cursor
+                                         → **C25 续裁（09-25 19:2x）：这一口的 503 出口只回码、不发 `adapter_downgraded`、
+                                         不 Touch 任何聚合。** 那条事件的归属与发射时机见契约① §1.1.22（发在降级发生的那一刻，
+                                         在 `internal/adapter` 的核定域里）；**"只回 503"是正确终态，不是半成品，别再为它开半个事件的口子。**
 POST /api/v1/tasks                       → 建任务（必须带 Idempotency-Key）
                                          → **REQ-LK-1 裁定（09-25 18:2x）：收请求体里的 `session_id`，并在同一事务里写 `task_session_links`。**
                                          **选甲不选乙的理由是契约面本身**：yaml `CreateTaskRequest` 早就声明了
@@ -173,6 +176,12 @@ GET  /api/v1/notifications?state=&cursor=; POST /api/v1/notifications/{id}:read|
                                          **决定性事实我核过**：`apps/desktop/src/stores/panel.ts` 的 inbox 调用**本来就显式带
                                          `state: 'UNREAD'`** ⇒ 这个默认值对面板零收益、纯留隐患，backend 那两行默认直接删。
                                          与 REQ-F-21（同步游标不许用空串兼职"没有位置"）、§12（UNKNOWN 不许显示成 0）同一条线。
+                                       → **`:handle` 的边集已裁（09-25 19:2x，全文见契约① §1.1.21）**：
+                                         合法前态 = `UNREAD` / `READ` / `PENDING`；`HANDLED` 重放 = 200 no-op（版本不动、不发事件）；
+                                         `IGNORED` / `EXPIRED` = 409 `illegal_transition` 且一行都不写；
+                                         **`UNREAD → HANDLED` 只写 `handled_at`，不补 `read_at`**；不要求 `Idempotency-Key`。
+                                         为什么 `READ` 在允许集里（而不是"先看后处理"）：见同一条的第二小点，一句话是
+                                         **"准入集跟着'哪些状态还没有处置痕迹'走，不跟着 UI 的点击顺序走"**。
                                          **`:read` 已放行（09-23 02:0x 解除 C31）**：它缺的 `notification_read` 常量
                                          db 已补（`events.go:61` 声明 + `:95` 进 `true` 集合，主控 02:01 复核），
                                          事件契约 §6 也登记了 ⇒ **这条 501 的原因消失，可以做**。
