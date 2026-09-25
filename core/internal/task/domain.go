@@ -8,6 +8,7 @@ type Task struct {
 	ID           string
 	ProjectID    string
 	ParentTaskID string
+	SessionID    string // 来源会话（REQ-LK-1：`task_session_links` 里 role=ORIGIN 那一行，可以没有）
 	Title        string
 	Description  string
 	TaskType     string

@@ -83,6 +83,9 @@ type createTaskBody struct {
 	Priority    string `json:"priority"`
 	RiskLevel   string `json:"risk_level"`
 	ProjectID   string `json:"project_id"`
+	// SessionID 是 REQ-LK-1（甲）那格：yaml `CreateTaskRequest` 里它早就在（可空），
+	// 非空时同事务挂一行 `task_session_links(role=ORIGIN)`；JSON `null` 与缺省都落成 ""（同一处置）。
+	SessionID string `json:"session_id"`
 }
 
 type taskView struct {
@@ -94,6 +97,7 @@ type taskView struct {
 	Mode        string `json:"mode"`
 	RiskLevel   string `json:"risk_level"`
 	ProjectID   string `json:"project_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
 	RequestedBy string `json:"requested_by,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	UpdatedAt   int64  `json:"updated_at"`
@@ -103,6 +107,7 @@ type taskView struct {
 func viewOf(t task.Task) taskView {
 	return taskView{ID: t.ID, Title: t.Title, Description: t.Description, Status: string(t.Status),
 		Priority: t.Priority, Mode: t.Mode, RiskLevel: t.RiskLevel, ProjectID: t.ProjectID,
+		SessionID:   t.SessionID,
 		RequestedBy: t.RequestedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Version: t.Version}
 }
 
@@ -224,10 +229,17 @@ func createTask(w http.ResponseWriter, r *http.Request, c Config) {
 			sealed = s // 已封存 → 原样回首次响应，不再碰任何聚合
 			return nil
 		}
+		// REQ-LK-1（甲）：link 那一行的 id 由调用方铸（与 task id 同规矩，§3），
+		// 只有真给了来源会话才铸 —— 没给就不该凭空多一个 UUID。
+		linkID := ""
+		if body.SessionID != "" {
+			linkID = newUUIDv7()
+		}
 		created, err := c.Tasks.Create(r.Context(), tx, task.NewTask{
 			ID: id, EventID: newUUIDv7(), Title: body.Title, Description: body.Description,
 			Mode: body.Mode, Priority: body.Priority, RiskLevel: body.RiskLevel,
-			ProjectID: body.ProjectID, RequestedBy: principal,
+			ProjectID: body.ProjectID, SessionID: body.SessionID, SessionLinkID: linkID,
+			RequestedBy: principal,
 			PrincipalID: principal, CorrelationID: correlation, CausationID: correlation,
 		})
 		if err != nil {
@@ -251,6 +263,9 @@ func createTask(w http.ResponseWriter, r *http.Request, c Config) {
 			"同一 Idempotency-Key 带了不同的请求体（键含 request_hash）", false)
 	case errors.Is(err, task.ErrInvalidTask):
 		writeError(w, http.StatusBadRequest, "validation_failed", err.Error(), false)
+	case errors.Is(err, session.ErrSessionNotFound):
+		// REQ-LK-1 第②条：**不用泛型 `not_found`** —— 与 send 腿「没有会话就没有落点」同一格口径、同一个码。
+		writeError(w, http.StatusNotFound, "session_not_found", err.Error(), false)
 	default:
 		serverError(w, r, err)
 	}

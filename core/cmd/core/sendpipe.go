@@ -39,7 +39,10 @@ type sendPipe struct {
 func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (execution.TurnReceipt, error) {
 	// 反查 adapter_key 与远端会话 id。session 没行 ⇒ 包成 session.ErrSessionNotFound（transport ⇒ 404）。
 	// remote_session_id 为空 ⇒ ErrSessionNotLinked 家族（404 session_not_found：send 没有落点）。
-	var remoteSessionID, adapterKey string
+	// 这一列可空，而库里"空"有两份现实：`NULL` 与 `''`。绑成普通 string 会让 NULL 变成 Scan 错误
+	// ⇒ 一路冒到 transport 的 default 支就是 500，而它对调用方来说和"没落点"是同一件事（CO-44 同族：
+	// 平台层不替你分，调用方要么合并处置、要么明确喊出来，不许让它变成 500）。
+	var remoteSessionID, adapterKey sql.NullString
 	err := p.read.QueryRowContext(ctx,
 		`SELECT s.remote_session_id, ai.adapter_key
 		 FROM sessions s JOIN adapter_instances ai ON ai.id = s.adapter_instance_id
@@ -50,12 +53,12 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 	if err != nil {
 		return execution.TurnReceipt{}, fmt.Errorf("sendpipe: 反查 session %s: %w", call.SessionID, err)
 	}
-	if remoteSessionID == "" {
+	if !remoteSessionID.Valid || remoteSessionID.String == "" {
 		return execution.TurnReceipt{}, execution.ErrSessionNotLinked
 	}
-	if _, ok := p.byKey[adapterKey]; !ok {
+	if _, ok := p.byKey[adapterKey.String]; !ok {
 		return execution.TurnReceipt{}, fmt.Errorf("%w: %s（要 -adapter %s=<可执行路径>）",
-			httpapi.ErrAdapterNotLaunchable, adapterKey, adapterKey)
+			httpapi.ErrAdapterNotLaunchable, adapterKey.String, adapterKey.String)
 	}
 
 	// 与 discover 同一条：连接这条路必须有期限，否则一个挂住的 Adapter 拖住 handler 线程。
@@ -66,7 +69,7 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 		defer cancel()
 	}
 
-	conn, err := p.launch.supervisorFor(adapterKey).Connect(cctx, coreProtocolVersion())
+	conn, err := p.launch.supervisorFor(adapterKey.String).Connect(cctx, coreProtocolVersion())
 	if err != nil {
 		return execution.TurnReceipt{}, unresponsive("起连接", err)
 	}
@@ -84,7 +87,7 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 	// attachments 不进协议：SendParams 没有该字段（§4 session/send 的参数表就这些），
 	// 附件只在本地 content_json 里（RecordMessage 已落）。
 	params := adapter.SendParams{
-		RemoteSessionID: remoteSessionID, Text: call.Text,
+		RemoteSessionID: remoteSessionID.String, Text: call.Text,
 		ExecutionID: call.ExecutionID, Delivery: call.Delivery,
 		IdempotencyKey: call.IdempotencyKey,
 	}

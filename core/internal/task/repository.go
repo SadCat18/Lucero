@@ -20,8 +20,15 @@ type Repository struct{ q Queryer }
 
 func NewRepository(q Queryer) *Repository { return &Repository{q: q} }
 
+// taskCols 末列是 REQ-LK-1 的来源会话：link 表是**关系行**（不发事件、不推版本），
+// 所以读模型用相关子查询把它带回来，而不是给 tasks 加一列 —— 加列会造出第二个真相来源。
+// 取法要写死：`UNIQUE(task_id, session_id, role)` 只禁"同一会话挂两次"，**不禁**一个 task 挂多个 ORIGIN
+// （裁定没说不许多挂，我不替它发明），所以这里按 `ordinal, id` 取确定的一条并留 `LIMIT 1` ——
+// 否则真多挂起来时读侧是 500，而不是"看见第一个"。多挂本身由写侧那条 UNIQUE 用例反证（第 268 条）。
 const taskCols = `id, project_id, parent_task_id, title, description, task_type, mode, priority,
-	status, risk_level, requested_by, created_at, updated_at, accepted_at, archived_at, version`
+	status, risk_level, requested_by, created_at, updated_at, accepted_at, archived_at, version,
+	(SELECT l.session_id FROM task_session_links l
+	   WHERE l.task_id = tasks.id AND l.role = 'ORIGIN' ORDER BY l.ordinal, l.id LIMIT 1)`
 
 // Get 是写侧 Service 取"库里的当前状态"的唯一来源：状态机的 from 不许由调用方口头给。
 func (r *Repository) Get(ctx context.Context, id string) (Task, error) {
@@ -112,14 +119,16 @@ func scanTask(row rowScanner) (Task, error) {
 		project, parent      sql.NullString
 		desc, requestedBy    sql.NullString
 		acceptedAt, archived sql.NullInt64
+		origin               sql.NullString // 没有 ORIGIN 行时子查询给 NULL，不是空串
 	)
 	if err := row.Scan(&t.ID, &project, &parent, &t.Title, &desc,
 		&t.TaskType, &t.Mode, &t.Priority, &t.Status, &t.RiskLevel, &requestedBy,
-		&t.CreatedAt, &t.UpdatedAt, &acceptedAt, &archived, &t.Version); err != nil {
+		&t.CreatedAt, &t.UpdatedAt, &acceptedAt, &archived, &t.Version, &origin); err != nil {
 		return Task{}, err
 	}
 	t.ProjectID, t.ParentTaskID, t.Description, t.RequestedBy =
 		project.String, parent.String, desc.String, requestedBy.String
+	t.SessionID = origin.String
 	t.AcceptedAt = acceptedAt.Int64
 	t.Archived = archived.Valid
 	return t, nil

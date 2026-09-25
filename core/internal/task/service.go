@@ -2,13 +2,19 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/session"
 )
+
+// LinkRoleOrigin 是 REQ-LK-1 第①条钉死的角色：建任务时挂的是「任务的来源会话」，
+// 不是执行会话（`EXECUTION`/`HANDOFF` 由后面那些腿各挂各的，`UNIQUE(task_id, session_id, role)` 允许并存）。
+const LinkRoleOrigin = "ORIGIN"
 
 // ErrVersionConflict 对应契约③ §2 的 409 version_conflict："我看到的不是你现在的"。
 var ErrVersionConflict = errors.New("task: version conflict")
@@ -208,6 +214,8 @@ type NewTask struct {
 	Priority      string
 	RiskLevel     string
 	ProjectID     string
+	SessionID     string // REQ-LK-1（甲）：可选的"来源会话"，非空就必须真存在
+	SessionLinkID string // 那一行 link 的 id：与 task id 同规矩，**调用方铸 UUIDv7**（§3）
 	RequestedBy   string
 	EventID       string
 	PrincipalID   string
@@ -218,6 +226,12 @@ type NewTask struct {
 // ErrInvalidTask 是入参校验失败：这些词表都是 000001 里 CHECK 过的列，
 // 在这里拦住才能给出可控的错误体，而不是把 SQLite 的约束文本透给客户端。
 var ErrInvalidTask = errors.New("task: invalid task")
+
+// ErrOriginSessionMissing 是 REQ-LK-1 第②条：给了 `session_id` 但库里没有那个会话。
+// **这里刻意不新造一个错误值** —— 上抛的是 `session.ErrSessionNotFound` 本身（见 Create 里那句 return），
+// 因为裁定要的是"同一件事两处同一个码"：send 腿与建任务腿都回 404 `session_not_found`，
+// 两个包各留一份哨兵的话，早晚会有一处改了另一处没改（CO-49 那族）。这个 var 只给调用方一个可读的名字。
+var ErrOriginSessionMissing = session.ErrSessionNotFound
 
 var taskPriorities = map[string]bool{"LOW": true, "NORMAL": true, "HIGH": true, "CRITICAL": true}
 var taskRiskLevels = map[string]bool{"LOW": true, "MEDIUM": true, "HIGH": true, "CRITICAL": true, "UNKNOWN": true}
@@ -267,6 +281,18 @@ func (s *Service) Create(ctx context.Context, tx *db.Tx, in NewTask) (Task, erro
 	if err != nil {
 		return Task{}, fmt.Errorf("task: task_created payload: %w", err)
 	}
+	// REQ-LK-1（09-25 裁甲）：`session_id` 是契约面上已有的字段（yaml `CreateTaskRequest`，可空），
+	// 所以"任务 + 它的来源会话"必须**一次要么都有要么都没有** —— 分两步就会留下"task 建了、link 没有"的孤儿态。
+	// 存在性检查读的是 `tx`（不是 `d.Read`）：读与写在同一个闭包里，才谈得上"同一事务"。
+	if in.SessionID != "" {
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id = ?`, in.SessionID).Scan(&one); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return Task{}, ErrOriginSessionMissing
+			}
+			return Task{}, fmt.Errorf("task: 反查来源会话 %s: %w", in.SessionID, err)
+		}
+	}
 	if err := tx.Create(db.AggTask, in.ID, cols, vals, db.EventDraft{
 		EventID: in.EventID, Type: EventCreated, Aggregate: db.AggTask, AggregateID: in.ID,
 		CorrelationID: in.CorrelationID, CausationID: in.CausationID,
@@ -274,10 +300,24 @@ func (s *Service) Create(ctx context.Context, tx *db.Tx, in NewTask) (Task, erro
 	}); err != nil {
 		return Task{}, fmt.Errorf("task: create %s: %w", in.ID, err)
 	}
+	// link 是**关系行**：契约① §1.1 第 12 条已把它登进"故意不发事件"那张清单 ⇒ 走 `Append`（只写行、不记账），
+	// 也不给 `task_created` 的 payload 加键（§6 加键是登记变更，要另开 REQ）。
+	// `role` 固定 `ORIGIN`、`ordinal=0`：这是"任务的来源会话"，不是执行会话；
+	// `UNIQUE(task_id, session_id, role)` 允许以后再接 EXECUTION/HANDOFF，所以这一步不排他。
+	if in.SessionID != "" {
+		if in.SessionLinkID == "" {
+			return Task{}, fmt.Errorf("%w: 挂了来源会话却没给 link 的 id（调用方生成 UUIDv7）", ErrInvalidTask)
+		}
+		if _, err := tx.Append("task_session_links",
+			[]string{"id", "task_id", "session_id", "role", "ordinal", "created_at"},
+			[]any{in.SessionLinkID, in.ID, in.SessionID, LinkRoleOrigin, 0, now}); err != nil {
+			return Task{}, fmt.Errorf("task: 挂来源会话 %s→%s: %w", in.ID, in.SessionID, err)
+		}
+	}
 	return Task{ID: in.ID, Title: in.Title, TaskType: in.TaskType, Mode: in.Mode,
 		Priority: in.Priority, Status: Created, RiskLevel: in.RiskLevel,
-		ProjectID: in.ProjectID, RequestedBy: in.RequestedBy, Description: in.Description,
-		CreatedAt: now, UpdatedAt: now, Version: 1}, nil
+		ProjectID: in.ProjectID, SessionID: in.SessionID, RequestedBy: in.RequestedBy,
+		Description: in.Description, CreatedAt: now, UpdatedAt: now, Version: 1}, nil
 }
 
 // Queue 是唯一合法的"排队"入口：CREATED→QUEUED（§5.1）。
