@@ -20,6 +20,24 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 ## 日报
 
+### 2026-09-25 17:4x（主控手写 —— cron 那份今天又没起来：`lastRunAt` 17:39:40、`session-failed`、69ms、`consecutiveFailures:1`）
+
+- **Wave 完成度**：0 ✓ / 1 ✓ / **Wave-2 ☐（但闸门第一次"只差验证"**：分派腿、executions 读面、send 面、
+  messages 读写同轮、REQ-L-1 的锁全部落盘，`LUCERO_REQ_DB2=1` 那条判据**今天实测 PASS**）/ Wave-3 ☐。
+- **谁做的**：backend 与 adapter 在 09-24 16:05→18:42 独立推进（**当时巡检已熔断、我在睡觉**），
+  我 09-25 17:41 自己跑过才入库：`go build`/`go vet`/`gofmt -l` 全清、
+  `LUCERO_TEST_FAKE_ADAPTER=1 go test ./...` = **18 包 ok / 0 FAIL / 0 无测试文件**（提交 `2c56023`）。
+- **过去 24h 关闭**（各带我的复量）：① **REQ-DB-2 全格关闭**；
+  ② **C43 分派腿后半**（`tasks.go:374` 调 `ResolveInstance`）；③ **REQ-T21 第三态**（`lock.go` 有界重试 +
+  `TestThirdStateBootingCoreIsNotJudgedTakenByOther`）；④ T-276 头部纪律五家送达。
+- **未关闭**：① **REQ-L-1 的量级腿（FL-10：`single` 档 122 次 + 负载条件 + 前后两次可归因戳）**，归 test；
+  ② **`check_ownership.sh` exit 1** —— `attachments@internal/session/record.go` 是 **JSON 键位被当表名**
+  （第四例同族假阳性），归 test 修形状、**代码不许自喂**；③ 合验（协议侧 + 行级）仍未发令，等 ①②；
+  ④ **无人值守第四次停摆：09-24 11:18 起 30 小时零巡检**（`failureCircuit`，`session-failed` 2.3s 起不来），
+  日报今天 17:39 同样失败 —— **上面那句"没人卡在我这裁"是按老规矩 grep 过才敢说的，但链子本身又是靠你开口才醒的**。
+- **NEEDS YOU 未处理 3 条**：熔断 (A)/(B)、worker 代码由主控代提交（处理中，已入册）、B5② 探针未授权；
+  **push：origin 已同步到 `5ce4fbe`（你 10:5x 授权那一次），此后本地又攒 2 个提交，要不要再推等你一句话。**
+
 ### 2026-09-24 09:00 档（日报生成器 · 本机 `date` 09:01:02）——只记上面那份 07:0x 手写日报之后的增量
 
 - **Wave 完成度**：0 ✓ / 1 ✓ / **2 ☐** / 3 ☐ = **2/4**（对照 `## Completion criteria` 的框，本档未见到新勾）。闸门 `Task→ACCEPTED` 未闭合。
@@ -851,8 +869,17 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-278 | backend | **待投递** | **更正我 T-271 的一句话，并且它会改变你的收尾判据。** 我写"`ResolveInstance` 你已经在用（adapter 10:01 那格落地了）"——**不成立**。09-24 11:00:23 我亲量：`grep -rn ResolveInstance core/ --include=*.go` 去掉 `_test.go` 只剩 `probe_store_sqlite.go:76`（注释）与 `:86`（定义），**生产侧调用点 = 0**。⇒ **C43 分派腿的后半格（`:queue` 里 `adapter_key → adapter_instances.id` 那一步）今天仍未交**，adapter 只把门建好了、你还没走进去。排合验与 Wave-2 时**按未交算**（巡检 10:56 也独立量到同一条，`Task → ACCEPTED` 那道闸还差它）。**不用回话**，做完在交账里带上那一发的调用点与正/反例（缺 `adapter_key` ⇒ 400；给了但库里没这个 key ⇒ 404；有 key 没配起法 ⇒ 501）即可。<br>**同批一句状态**：你 10:4x 自己发的更正我收到了，与我这条同向——**两次"以为已交"都不是谁骗谁，是"接口存在"被当成了"接口有人在用"**。 |
+| T-278 | backend | **作废（09-25 17:4x 主控量，未投递过、也不许投）** | **这条更正的前提已经消失**：我 09-24 11:00 量到 `ResolveInstance` 生产调用点为 0，而 09-25 17:41 复量已经变了 —— `core/api/http/tasks.go:43` 声明接口、**`:374` 有真实调用点**（`instanceID, err := c.Instances.ResolveInstance(r.Context(), adapterKey)`）⇒ **C43 分派腿后半格（`:queue` 里 `adapter_key → id`）已交，不是未交。** 原行保留只为留下"定义存在 ≠ 有人调用"这条规矩的现场（T-279①），**内容不要照它做**。|
 | T-279 | 记账（不投递） | — | ① **新格规矩（我今晚第四次同类错，但这次形状是新的）**：**定义存在 ≠ 有人在调用**。我 10:30 量的"桥已挂"（`newDropRecorder` 在 `processpipe.go:77` 有调用点）是真的，我据此顺手说"另一格 `ResolveInstance` 你已经在用"——**那句我没量**，把两件事当成了同一件。⇒ **凡我说/别人说"X 已经接上了"，验收形状固定为：`grep -rn X --include=*.go` 去掉 `_test.go`，去掉定义与注释行，剩下的才算调用点**；只到"定义存在"就报"已接"，就是把编译当行为。② **顺带把排期事实钉一句**：Wave-2 现在差的就是这一格 + `LUCERO_REQ_DB2=1` 转 PASS + REQ-L-1 闭合（含 FL-10 量级腿），**三件都在 backend/adapter 手里，没有一件在等我裁**（这句我按 10:33 立的规矩去 grep 过：`grep -c 待投递` = 0、五家头部现量交巡检 10:53④，本轮无新未裁点）。③ T-276 已五家送达、`待投递` 归零；推送方面 origin 与 main 已同步到 `5ce4fbe`，之后我又攒了本地提交——**要不要再推一次等你话**，我不自行二次 push。 |
+
+## 待投递 · 第一百批（09-25 17:5x：Wave-2 只差验证了 —— 两件验证派出去，一处假阳性别再让人绕）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-280 | test | **待投递** | **两件，第一件是判据的、第二件是量级的。**<br>① **`check_ownership.sh` 现在 exit 1，命中的是假阳性，第四例同族**：09-25 17:44 实测 `1 处：attachments@core/internal/session/record.go` —— 那一行是 `json.Marshal(map[string]any{"attachments": cmd.Attachments})`，**`attachments` 是 JSON 键位不是表名**（前面三例：`c.Tasks.Create(` 函数名、复述规则的注释、`/messages` 路径段 + `verb == "messages"`）。**请给 2/9 那一节补"值位排除"：作为 map 字面量键位出现的字符串（`{"name":` 形状）不参与表名比对**，并且⑴**排除项要计数打印**（沿用你 W13 那节的既有做法）、⑵**写腿排在排除之前**（先证明真绕过会红，再谈排除）、⑶一条双向反例：同一个 `attachments` 出现在真 SQL 位置（`Append("attachments"` 或 `FROM attachments`）必须**照旧红**。<br>**我已明确禁止 backend 为这条红改代码**（不改名、不加标记注释、不拆开字面量 —— T-239 那条禁令继续生效），所以**这格只有你能关**。<br>② **REQ-L-1 的代码腿落盘了，量级腿现在可以真跑了**（09-25 我验过：`lock.go` 用 `net.Listen` 端口当锁、`waitForHealth` 有界重试、`ErrPortTakenByOther`、`TestThirdStateBootingCoreIsNotJudgedTakenByOther` 等 6 条用例；全模块 18 包 0 FAIL）。请按 **FL-10** 的形状跑：`single` 档 **122 次**、**带负载条件**、**前后两次可归因戳**（你之前自报过"构建混进别人未跟踪在制品"那一坑，这次用你自己的 `go list -deps` 门）。**只报读数不下结论也行，但请写清 n 是"真跑过的次数"、SKIP 不算样本**。跑完这条，Wave-2 的验证前置就只剩合验发令（我这边）。 |
+| T-281 | backend | **待投递** | **两句，都不新开工。**<br>① **你 09-24 下午那批我 09-25 全量验过才入库（`2c56023`）**：`go build`/`vet`/`gofmt` 清、`LUCERO_TEST_FAKE_ADAPTER=1 go test ./...` **18 包 ok / 0 FAIL**、**`LUCERO_REQ_DB2=1` 那条判据 PASS** ⇒ **REQ-DB-2 那格在契约意义上关闭了**；`TestLifecycleWriterAbsentButShoutPresent` → `TestLifecycleWriterLandsRowAndShouts` 这个"正向换代"做得对（两半一起钉，摘任一半都断），**这就是 §1.1 第 17 条加严后要的形状**。<br>② **`record.go` 里 `attachments` 那个 JSON 键把归属 lint 撞红了 —— 你不要动它**：那是判据的第四例同族假阳性（键位 ≠ 表名），我已派 test 修形状并写明"不许改代码喂判据"。你只需要在交账里带一句"这条红是判据假阳性、已派归、我不自喂"。<br>③ 顺带确认：`POST /executions/{id}/send` 是唯一的消息写入口（yaml `sendExecutionMessage` 早就声明过）⇒ **你没新开契约面上不存在的口**，`message_recorded` 挂在 session 聚合上、payload 四键与 §6:193 一致，这条我逐字核过。 |
+| T-282 | frontend | **待投递** | **你面板链第 7~8 格的前置已经就位，可以复跑了（不用等任何人）。** 09-25 我量到的现状：`GET /api/v1/executions?task_id=` 的读面已实现（`core/api/http/executions.go:66/:78` 两条 mux），装配在 `main.go:338` 也齐；`POST /executions/{id}/send`（yaml `sendExecutionMessage`）已落地，消息写入口就是它；`GET /sessions/{id}/messages` 的读通道装配完成（不再是 501）。⇒ **请把这四格从 blocked 改真跑**，顺序照你 §4：probe → discover → `:manage` → `:sync` → 建任务 → `:queue`（**现在必须带 `{"adapter_key": …}`**，缺 ⇒ 400 `validation_failed`）→ 取 execution id → send → output → approvals。跑不通的照旧记 blocked 并带路径+状态码；**联调记得给 Core 传 `-adapter fake=<路径>`**，否则 501 是环境不是缺陷。 |
+| T-283 | 记账（不投递） | — | ① **本轮我自己的动作里最该留的一条**：用户说"另一个 Agent 做了些事"，我**没有先读它的结论、先读树** —— `build/vet/gofmt/全模块测试/flag 判据/归属 lint` 全部我亲自跑（17:41~17:47），然后才入库；过程中抓出一处需要马上处理的假阳性（T-280①）、一处"我上一轮的更正已经过期"（T-278 就地作废，**它甚至还没被投递** —— 巡检 11:18 就死了）、以及一条我自己立过的规矩被这批实现满足（正向换代那对用例）。<br>② **T-278 的作废方式特意选"改状态 + 留原文"**，不删：它是"定义存在 ≠ 有人调用"这条规矩的现场，删掉就等于把教训一起删了。这条也解释为什么**待投递行必须尽快投**：一条更正挂 30 小时不投递，就会被被更正的那件事实本身超过 —— **巡检熔断期间，我写的"最新事实"会静默变成过期指令**。⇒ 新动作：**下一轮起，写派发行时顺手记一条"若本行超过 N 小时未投，投前先复量前提"**，我把它当成 T-278 的通用化。③ 链上现况：待投 3 条（T-280/281/282）+ 本记账；本地领先 origin **2 个提交**（你 10:5x 授权的那次之后新攒），**要不要再推等你话**。 |
 
 ## 待投递 · 第十八批（13:3x，REQ-F-18 裁定 + 共享临时目录的备份广播）
 
