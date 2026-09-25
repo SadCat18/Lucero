@@ -13,18 +13,17 @@ import (
 
 // 这里补上 T84-7b 等的那半格：`process.Recorder` 在装配侧的实现（契约③ §7.2 第一次把四方法形状写进契约）。
 //
-// 今天四格里只有一格能真写（RecordDrop），生命周期那三格只能出声（依据见 RecordStart 的注释与 T-168）。
-//   - **RecordDrop** 落一行审计，走 `audit` 自己的出口，`event_journal` 零新增（§7.2:310~311 断的就是这一对；
+// 四格现在**都真写**（REQ-DB-2 那条通道 09-24 到位之后），但写的东西分两类：
+//   - **RecordDrop** 落一行审计，走 `audit` 自己的出口，`event_journal` 零新增（§7.2 里那句"写审计不写事件"的断言管的就是这一对；
 //     这里出现 `Tx.Append("audit_entries"` 字面量即 W13-2 红）。
+//   - **生命周期那三格** 每格 = 一笔事务里把 `*db.Tx` 递给 `internal/process` 的写口
+//     （契约① §1.1 第 17 条"落点与角色"：观察语义归 `internal/process`，cmd/core 只装配），
+//     于是"行 + 恰一条事件"是同一笔提交里的事 —— 这正是 T-168 要消灭的那个形状（行写了、事件静默丢掉）的反面。
+//     三格是 void 的（T-62 冻的形状），写不进去**没法向上报失败**，所以成败都喊到日志：
+//     静默归因是 §2.2.1/REQ-A11 在终结的那种假账，而"没人挂桥"与"挂了但没落库"必须是两句话。
 //
-// 生命周期那三格今天**一格都不写**：§1.1 第 12 条把 `process_instances` 列进"故意不发事件的可变表"，
-// 但那是"**除** `process_started`/`process_exited`/`process_crashed` 三个外"—— 排除，不是包含（T-168 收回 T-162①，
-// 我 01:0x 把它读反过一次）。这三件是要发事件的事实，而 `Append` 与 `cmd/core/main.go` 里
-// `tx.Append("principals", …)` 那条通道一样**不写事件**（判据 U13-4），拿它建行 = 行写了、事件静默丢掉，
-// 正是 §1.1 第 13 条 00:41 裁死的形状；退出/崩溃那两格还要**改**同一行，而第 13 条裁定它不进 `narrowTables`。
-// 真正的通道挂在 **REQ-DB-2** 上（"无版本、但要发事件"的表没有写路径，与 `core_ready` 同源）—— 主控明写"不算 backend 欠账"。
-// 那三格是 void 的（T-62 冻的形状，契约③ §7.2 今天照抄了它），写不进去**没法向上报失败**，
-// 所以这里把"这格没落库"喊到日志里，而不是静默 no-op —— 静默归因正是 §2.2.1/REQ-A11 在终结的那种假账。
+// 历史一句（免得下一个人再走一遍）：T-162① 说过"`RecordStart` 走 `Append` 不受影响"，T-168 收回；
+// §1.1 第 12 条那句"`process_instances` 属故意不发事件的可变表"后面还跟着"**除** 那三件外"—— 是排除不是包含。
 
 // dropRecorder 一个 adapter 一个（`cmd/core` 的构造点认识 adapter_key，`DroppedEvent` 里没有任何身份字段：
 // T-155 把 `ProcessRole` 判成零生产者零消费者并删了它）。
@@ -33,35 +32,58 @@ type dropRecorder struct {
 	adapterKey string
 	now        func() int64
 	logf       func(format string, args ...any)
+	// lifecycle 是 `internal/process` 那个写口（契约① §1.1 第 17 条"落点与角色"：语义住在观察方，
+	// cmd/core 只递 `*db.Tx` 并把错误喊出来）。nil = 这一格没装配成（构造点报错等），三格退回"只出声"——
+	// 那不是失败被吞，是**另一种诚实**：喊出来的句子会明写"没装配"，而不是假装落库了。
+	lifecycle *process.LifecycleStore
 }
 
-func newDropRecorder(store auditedStore, adapterKey string, now func() int64, logf func(string, ...any)) *dropRecorder {
+func newDropRecorder(store auditedStore, adapterKey string, now func() int64, logf func(string, ...any),
+	lifecycle *process.LifecycleStore) *dropRecorder {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &dropRecorder{store: store, adapterKey: adapterKey, now: now, logf: logf}
+	return &dropRecorder{store: store, adapterKey: adapterKey, now: now, logf: logf, lifecycle: lifecycle}
 }
 
-// RecordStart 今天**只出声、不写库**（T-168 收回了 T-162① 那句"`RecordStart` 走 `Append` 不受影响"）。
+// writeLifecycle 是三格共用的那一条通道：一笔事务里交给写口落"一行 + 恰一条事件"，喊错不吞错。
+// `process.Recorder` 三格是 void（T-62 冻的形状），报不上去只能喊 —— 但喊的是**真试过的证据**：
+// 成功也喊（带行 id），失败也喊（带原因），这样"没人挂桥"与"挂了但没落库"在日志里是两句话。
+func (r *dropRecorder) writeLifecycle(action string, fn func(tx *db.Tx) error) {
+	if r.lifecycle == nil {
+		r.logf("REQ-DB-2 写口没装配：生命周期那格没落库、只出声 action=%s adapter_key=%q", action, r.adapterKey)
+		return
+	}
+	err := r.store.Write(context.Background(), fn)
+	if err != nil {
+		r.logf("生命周期那格没落库 action=%s adapter_key=%q: %v", action, r.adapterKey, err)
+		return
+	}
+	r.logf("生命周期已落 action=%s adapter_key=%q row=%q", action, r.adapterKey, r.lifecycle.ID())
+}
+
+// RecordStart 落"这一次尝试的一行 + `process_started`"（同一笔事务，§1.1 第 17 条要的就是这个配对）。
 //
-// 我 01:0x 那版读错了 §1.1 第 12 条：那句是"`process_instances` 属故意不发事件的可变表，
-// **除** `process_started`/`process_exited`/`process_crashed` 三个外" —— "除…外"是**排除**，
-// 也就是这三件是**要发事件的事实**，而 `Append` 恰恰不写事件（判据 U13-4 同一形状）。
-// 所以拿 `Append` 建行 = 行写了、`process_started` 静默丢掉 ⇒ 正是 §1.1 第 13 条禁止的那个形状。
-// 三格从今天起同形：等 REQ-DB-2 那条"无版本、但要发事件"的通道，一起走它。
-// 要改成真写需要的是**一条说清"这张表的写归谁"的 REQ**，不是白名单例外，也不是口头豁免（§7.1 尾句）。
+// 历史：T-162① 曾说"`RecordStart` 走 `Append` 不受影响"，T-168 收回了它 —— 拿 `Append` 建行会把已登记的
+// `process_started` 静默丢掉，正是 §1.1 第 13 条禁止的形状。今天有了一条**说清这张表写归谁**的通道
+// （`CreateVersionless` + 写口在 `internal/process`），所以这里不再需要白名单例外或口头豁免（§7.1 尾句）。
 func (r *dropRecorder) RecordStart(ev process.Event) {
-	r.logf("REQ-DB-2 未落：生命周期那格没建行 action=started adapter_key=%q pid=%d", r.adapterKey, ev.PID)
+	r.writeLifecycle("started", func(tx *db.Tx) error {
+		_, err := r.lifecycle.RecordProcessStart(tx, ev)
+		return err
+	})
 }
 
 func (r *dropRecorder) RecordExit(ev process.Event) {
-	r.logf("REQ-DB-2 未落：生命周期那格没改库 action=exited adapter_key=%q pid=%d exit=%d",
-		r.adapterKey, ev.PID, ev.ExitCode)
+	r.writeLifecycle("exited", func(tx *db.Tx) error {
+		return r.lifecycle.RecordProcessExit(tx, ev)
+	})
 }
 
 func (r *dropRecorder) RecordCrash(ev process.Event) {
-	r.logf("REQ-DB-2 未落：生命周期那格没改库 action=crashed adapter_key=%q pid=%d exit=%d crashes=%d",
-		r.adapterKey, ev.PID, ev.ExitCode, ev.Crashes)
+	r.writeLifecycle("crashed", func(tx *db.Tx) error {
+		return r.lifecycle.RecordProcessCrash(tx, ev)
+	})
 }
 
 // RecordDrop 把一次"帧没能归属"落成一行审计。

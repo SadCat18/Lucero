@@ -96,8 +96,13 @@ func TestLauncherCarriesARecorder(t *testing.T) {
 	}
 	// 三格里今天只有 `RecordStart` 会在这条路上被叫到：`Stop` 不发 EXITED（那是 Run() 的事），
 	// 而 `RecordDrop` 要有人读帧才会响 —— 这条如实记在账上，不当成"三格都验过"。
-	if n := strings.Count(joined, "REQ-DB-2 未落"); n != 1 {
+	if n := strings.Count(joined, "action=started"); n != 1 {
 		t.Errorf("生命周期出声该恰好一条（started），实际 %d 条：\n%s", n, joined)
+	}
+	// 第四十九批之后这个装配是"只要桥、不要库"（`auditedStore{}`，`d` 为空）⇒ 写口装不出来，
+	// 三格必须退回**明说的**只出声：既不是静默 no-op，也不是把 nil 递下去 panic。
+	if !strings.Contains(joined, "只出声") {
+		t.Errorf("没递库通道时该喊出「写口没装配、只出声」，实际:\n%s", joined)
 	}
 }
 
@@ -278,5 +283,18 @@ func requireProcessGone(t *testing.T, pid int) {
 			t.Fatalf("Close 之后 pid %d 还活着 ⇒ 留了孤儿子进程", pid)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestOwnerIDRefusesZeroStore 是 §7.3 那个"第二处可达点"的直接反例：`ownerID` 自己拿到零值 `*db.DB`
+// 时必须返回错误（不是 panic、也不是静默返回空串）—— 装配闸之外再钉一次，因为这道闸管的是"任何人调我都有确定结局"。
+func TestOwnerIDRefusesZeroStore(t *testing.T) {
+	l := newLauncher(pipeCommand("echo"), 5*time.Second, nil, auditedStore{}, nil)
+	id, err := l.ownerID("fake")
+	if !errors.Is(err, errNoStore) {
+		t.Fatalf("零值 store 的 ownerID 该返回 errNoStore，实际 err=%v id=%q", err, id)
+	}
+	if id != "" {
+		t.Errorf("返回错误时不该再给一个像样的 id，实际 %q", id)
 	}
 }

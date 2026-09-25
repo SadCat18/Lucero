@@ -388,6 +388,64 @@ func TestCrashKillCoreAndRestart(t *testing.T) {
 	}
 }
 
+// classifySecondBootStderr 把"第二代到底为什么没起来"这一句判决单独拆出来，好让它自己能被测。
+// 它只在红的时候被调用，而红的时候正是没人逐字读 stderr 的时刻 —— 一个会撒谎的分类器比没有分类器更贵：
+// 09-24 07:3x REQ-L-1 的修法 (a) 落盘、`lock.go` 里那套 `os.FindProcess` pid 启发式被整体删除之后，
+// 我这段旧文案还在把读者支去查一段**已经不存在的代码**。三条约定：
+// ① 只按第二代自己打出来的那句分派，对不上就返回空（现场照印，机制不猜）；
+// ② **不许出现具体实现符号**（`os.FindProcess` / `judgeHolder` 这类会随修法腐烂）；
+// ③ 键词与 `cmd/core/lock.go` 两条错误文案的对齐是当天读码核对的（见账本），不写死在这里当断言——
+//
+//	他们改措辞时我的分类器只会退回"不猜"，不会撒谎，也不会红得莫名其妙。
+func classifySecondBootStderr(s string) string {
+	switch {
+	case strings.Contains(s, "已有 Core 在跑"):
+		return "\n>>> 形状判定：第二代判定锁里记的那个端口上**真有一个还在答 /health 的 Core**，" +
+			"于是它拒绝起、也从没写 endpoint。⇒ 上一代没真的退，或那个端口上确实另起了一个 Core。" +
+			"两种都不是判据这边的问题，归 `cmd/core`。"
+	case strings.Contains(s, "端口被别的进程占着"):
+		return "\n>>> 形状判定：第二代**绑不上**锁里记的那个端口、且对该端口的健康探针没拿到应答。" +
+			"崩溃重启撞上这一支有两种现实：占端口的真不是 Core；或它是「还没退干净的上一代」" +
+			"（socket 要等进程终止才回收）。哪一种都不由我从这里猜 —— 归 `cmd/core`，现场在上面。"
+	}
+	return ""
+}
+
+// TestSecondBootShapeClassifierOnlySaysWhatItHeard 钉住上面那条分类器自己：
+// 两个判决各自落地、都对不上时**必须沉默**，以及两句话都不许带上一次修法的实现符号。
+// 这三条都是合成输入 —— 真红一次不需要，因为这里被测的就是"拿到一段 stderr 会说什么"，
+// 而 stderr 是我能自己造的（§1.1 第 16 条：只有真数据能红的不算闭上）。
+func TestSecondBootShapeClassifierOnlySaysWhatItHeard(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantSub string // 空 = 必须沉默
+		mustNot string
+	}{
+		{"活 Core 占着端口", "2026/09/24 07:36:31 core: cmd/core: 已有 Core 在跑同一个数据目录", "真有一个还在答 /health 的 Core", "os.FindProcess"},
+		{"端口被别人占着", "core: cmd/core: 数据目录里记录的端口被别的进程占着，不是 Core（端口 50747）", "绑不上", "os.FindProcess"},
+		{"沉默的失败", "core: 迁移失败：no such table: sessions", "", ""},
+		{"空 stderr 也不许编", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifySecondBootStderr(tc.in)
+			if tc.wantSub == "" {
+				if got != "" {
+					t.Errorf("这段输入里没有锁的形状，分类器却开口了：%q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantSub) {
+				t.Errorf("判决没落地：想要含 %q，实际 %q", tc.wantSub, got)
+			}
+			if tc.mustNot != "" && strings.Contains(got, tc.mustNot) {
+				t.Errorf("判决里出现了会腐烂的实现符号 %q（修法一改它就开始撒谎）：%q", tc.mustNot, got)
+			}
+		})
+	}
+}
+
 // TestCrashRestartSameDataDir 用**同一个数据目录**重启：单实例锁的残留必须被自动识别并回收，
 // 否则真实用户重启电脑后 Core 起不来（这是 §7"重启 Core"的实际含义）。
 func TestCrashRestartSameDataDir(t *testing.T) {
@@ -478,14 +536,7 @@ func TestCrashRestartSameDataDir(t *testing.T) {
 				hv = s
 			}
 		}
-		// 把最常见的那一种失败自己说出来：第二代一旦「以为还有 Core 在跑」，红话就不该只停在
-		// 「没认出新一代 endpoint」这一层 —— 让读者从几百字现场里自己找拒绝原因，等于没分类。
-		shape := ""
-		if strings.Contains(secondLog.String(), "已有 Core 在跑") {
-			shape = "\n>>> 形状判定：第二代进程**拒绝起锁**（它认为残留锁里的 pid 还活着），所以从未写 endpoint。" +
-				"这不是「端口换了没换」的问题，也不是判据这边的问题：存活判定在 `cmd/core/lock.go` 的 " +
-				"`os.FindProcess(pid)` 上，Windows 下它对「已退但句柄未净 / pid 被复用」会给「活着」。"
-		}
+		shape := classifySecondBootStderr(secondLog.String())
 		t.Fatalf("硬杀后同目录重启 25s 内没认出新一代 core.endpoint —— 现场：轮数=%d 文件被改写=%v "+
 			"口令换过=%v 新一代沿用旧端口=%v 且曾答 READY 的轮次=%d 最后一次读到的=%+v health=%v 最近一次读文件=%q"+
 			"\n第一代 stderr 尾部：%s\n第二代 stderr 尾部：%s（旧值：端口=%s 口令前 8 字=%s）%s",
@@ -504,10 +555,68 @@ func TestCrashRestartSameDataDir(t *testing.T) {
 }
 
 // TestCoreReadyEventIsJournalized 契约① §6 登记了 core_ready / core_shutdown（后者还要 Audit）。
-// 实测：两次成功启动（health=READY、迁移已记账）之后 event_journal 仍是 0 行。
+// REQ-T7 落地后的真断言：一次成功 boot（health=READY、迁移已记账）之后
+// event_journal 里必须有且恰有一条 core_ready，aggregate_type=core、principal=system，
+// payload 带 version 与 migration_version（崩溃恢复要能数出"起过几次、各带什么版本"）。
 func TestCoreReadyEventIsJournalized(t *testing.T) {
-	t.Skip("blocked(REQ-T7 给 backend): §6 要求 core_ready 进 journal（principal=system，payload 带 version/migration_version），" +
-		"实测 cmd/core 启动两次并 READY 之后 event_journal 仍为 0 行；补上后本用例改为断言存在 core_ready 且 aggregate_type=core")
+	exe := buildCore(t)
+	if err := db.InitRedaction([]string{"token"}, []string{}, "[REDACTED]"); err != nil {
+		t.Fatal(err)
+	}
+	c := &coreProc{t: t}
+	c.start(exe)
+	e := c.waitEndpoint()
+	got := health(t, e)
+	if got["state"] != "READY" || got["ready"] != true {
+		t.Fatalf("启动没就绪，无法验 core_ready: %v", got)
+	}
+	_ = c.cmd.Process.Kill()
+	if err := c.cmd.Wait(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("等待被杀的进程: %v", err)
+		}
+	}
+	// 重开同一批文件读 journal（与 TestCrashKillCoreAndRestart 同一形状）。
+	dbPath := filepath.Join(c.dataDir, "lucero.db")
+	d := migrate(t, dbPath)
+	ctx := context.Background()
+	var n int
+	if err := d.Read.QueryRowContext(ctx,
+		`SELECT count(*) FROM event_journal WHERE event_type = ?`, "core_ready").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("一次成功 boot 应恰落 1 条 core_ready，实际 %d 条", n)
+	}
+	var aggType, aggID, principal, payload string
+	if err := d.Read.QueryRowContext(ctx,
+		`SELECT aggregate_type, aggregate_id, principal_id, payload_json
+		 FROM event_journal WHERE event_type = ?`, "core_ready").
+		Scan(&aggType, &aggID, &principal, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if aggType != "core" || aggID != "core" {
+		t.Errorf("core_ready 应挂 aggregate_type=core / id=core，实际 %s/%s", aggType, aggID)
+	}
+	if principal != "system" {
+		t.Errorf("core_ready 的 principal 应为 system，实际 %q", principal)
+	}
+	var p map[string]any
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		t.Fatalf("payload 不是合法 JSON: %v (%s)", err, payload)
+	}
+	for _, k := range []string{"version", "migration_version"} {
+		if _, ok := p[k]; !ok {
+			t.Errorf("core_ready payload 缺 %s（REQ-T7 点名的两键）: %s", k, payload)
+		}
+	}
+	// migration_version 必须与 health 报的一致（不写死数字）。
+	if hv, ok := got["migration_version"].(float64); ok {
+		if mv, ok2 := p["migration_version"].(float64); !ok2 || mv != hv {
+			t.Errorf("payload.migration_version=%v 与 health 的 %v 不一致", p["migration_version"], hv)
+		}
+	}
 }
 
 // tailOf 取子进程日志的尾部：失败时最有用的通常是最后几行（panic、拒绝起锁的报错），
@@ -585,3 +694,5 @@ func TestIdempotentReplayBodyIsByteIdentical(t *testing.T) {
 	t.Skip("blocked: 需要 POST /api/v1/tasks 与幂等回读路径可用（backend，§1.1#13 的实现方）；" +
 		"接线后按上面两条写断言，另按 T-66④ 变异必须改变'是否走到回读那一步'")
 }
+
+// 一次性正向对照：改一行注释，让收戳与起戳不同

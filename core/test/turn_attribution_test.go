@@ -266,7 +266,9 @@ func TestDroppedFrameReachesAuditSeam(t *testing.T) {
 		// **黑盒子进程 + 数两张表** —— 起真 Core、造一次矛盾帧、比 `audit_entries`/`event_journal` 的行数差。
 		// 白盒 import 不到是对的，但那条路不需要任何人挪包。
 		//
-		// 摘 SKIP 的三段前提里只有①能被机器判，那就只判①；②③写成名字，不假装我看见了。
+		// 摘 SKIP 的两段前提（T-175 定死，两条同时成立才摘）：①丢弃记账真被装配进生产链的 `Supervisor.Rec`；
+		// ②真链路上有一处能产出"票号绑定 id 与帧内 id 不一致"的矛盾帧。①能被机器判，就只判①；②写成名字与命令，
+		// 不假装我看见了。
 		root := repoRoot(t)
 		if root == "" {
 			t.Skip("仓库根没找到 ⇒ 前提无法判定。宁可 SKIP 也不装作判过（判据看不见东西时最坏的就是给个干净理由）")
@@ -274,22 +276,23 @@ func TestDroppedFrameReachesAuditSeam(t *testing.T) {
 		mounted, evidence := dropRecorderMounted(root)
 		if !mounted {
 			t.Skipf("blocked（触发条件按 T-175 定死两条，两条同时成立才摘）：①%s；"+
-				"②真 Adapter 连接还不存在（probe / `:sync` 未落地），所以『票号绑定 id 与帧内 id 不一致』这一发今天没有真实的产生方式。"+
+				"②真 Adapter 链路上今天产不出矛盾帧（详见下一支的自查命令，判定条件在 `internal/process` 的归属函数里）。"+
 				"T-175 原话：**拿一条走不到的代码路径判绿，比 SKIP 更坏**。"+
-				"（这条门为什么读源码而不是数 grep：01:35 实测 `newDropRecorder(` 排除测试后原始命中 2 处，"+
-				"其中 `dropaudit.go:38` 是函数定义本身、`processpipe.go:30` 是一句注释 ⇒ 真调用点 0。"+
-				"『非 0 命中也要读原文』在这里被写成了代码。）"+
-				"三段前提里曾列的『注入面』T-175 已裁**先不加**：为一条判据新开 `debug/misattribute` 是扩产品结构；"+
-				"重开条件是①②都成立之后仍然造不出矛盾帧，那时再开 REQ 讨论（可能是走真 Adapter 的某条真实错误路径）。",
+				"（这条门为什么读源码而不是数 grep：09-23 01:35 实测 `newDropRecorder(` 排除测试后原始命中 2 处，"+
+				"其中一处是函数定义本身、一处是一句注释 ⇒ 真调用点 0。"+
+				"『非 0 命中也要读原文』在这里被写成了代码。）",
 				evidence)
 		}
-		t.Skipf("前提①已满足（%s），但仍不测：第②条不成立，而且不是「没测」这一档——"+
-			"Core 的生产码里今天没有任何 `CallTurn(` 的调用方（只有定义与测试），"+
-			"`Registry.Probe` 那条路是 `defer pipe.Close()` 的短连接、只握手不发 `session/send`："+
-			"取证帧（`turn/claimed`/`turn/dispatched`）在生产路径上根本不出现 ⇒ 丢弃分支不可达。"+
-			"要等任务/执行那条链装配起来（U13-6 的写端点是它的前置），矛盾帧才有真实的产生方式。"+
-			"**只成立一半不摘 SKIP**（T-175：拿走不到的路径判绿比 SKIP 更坏，反过来拿半条路径判绿也一样）。"+
-			"自查命令：grep -rn 'CallTurn(' core --include=*.go | grep -v _test.go", evidence)
+		t.Skipf("前提①已满足（%s），但仍不测——第②条不成立，而且要把它现在卡在哪一处写清楚（09-24 10:5x 复量）："+
+			"注入面 T-273② 已批、adapter 已落地（`cmd/fake-adapter` 里那个门控环境变量，只改两帧的 id 值、不改协议与帧形状），"+
+			"丢弃判定也早在实现里（`internal/process` 的归属检查第二分支：帧带 execution_id 且与本连接票号绑定的不等 ⇒ 丢弃 + 记账）"+
+			"⇒ **今天缺的只有一件事：Core 生产码里没有任何地方发起 turn**（`CallTurn(` 的调用点为 0，只剩定义与测试），"+
+			"票号没人绑，门开着也没人推。这一段要等任务/执行那条链装配起来（U13-6 的写端点是它的前置）。"+
+			"**只成立一半不摘 SKIP**（T-175：拿走不到的路径判绿比 SKIP 更坏，拿半条路径判绿也一样）。"+
+			"自查命令（谁改坏了这段话，跑这三条就能看出来）：\n"+
+			"  grep -rn 'CallTurn(' core --include=*.go | grep -v _test.go                 # 期望只剩定义\n"+
+			"  grep -rn 'LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID' core/cmd/fake-adapter       # 注入门在不在\n"+
+			"  grep -rn 'RecordDrop(' core/internal/process | grep -v _test.go             # 丢弃到接缝那一跳", evidence)
 	})
 }
 

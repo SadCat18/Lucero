@@ -116,7 +116,7 @@ func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 					"POST /api/v1/adapters/{key}/probe 是有副作用的写，必须带 Idempotency-Key", false)
 				return
 			}
-			// 这一格里 `seg` 就是 **adapter_key**（yaml:176 明写"路径参数 `key` 是 `adapter_key`（非实例 id）"）。
+			// 这一格里 `seg` 就是 **adapter_key**（yaml 的 `probeAdapter` 那一格明写"路径参数 `key` 是 `adapter_key`（非实例 id）"）。
 			probeAdapter(w, r, c, seg)
 		case "sessions:discover":
 			// T-195③/T-198：这一格以前到不了这里 —— `splitAdapterPath` 见整条路径里有冒号就判"不认形状"，
@@ -132,7 +132,7 @@ func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 				return
 			}
 			if r.Header.Get("Idempotency-Key") == "" {
-				// T-204④：yaml 这条腿本来就带 `parameters/IdempotencyKey`（`:217`，而那个参数是 `required: true`），
+				// T-204④：yaml 这条腿本来就带 `parameters/IdempotencyKey`（`discoverAdapterSessions` 那一格，而那个参数是 `required: true`），
 				// §2 的通则也是"有副作用的 POST 必填"——缺这道检查是**代码的缺口**，不是契约没写。
 				// 顺序与话术都照上面那格 probe（405 → 501 → 403），同一件事不许有两种写法。
 				writeError(w, http.StatusForbidden, "idempotency_key_required",
@@ -140,7 +140,7 @@ func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 				return
 			}
 			// 这一格里 `seg` 换了一件事：**它是 `adapter_instances.id`，不是 adapter_key**
-			// （yaml:214 与 probe 那条分开登记，T-204② 复核的结论就是"`{id}` 是对的，别改 yaml"）。
+			// （yaml 的 `discoverAdapterSessions` 与 `probeAdapter` 分开登记，T-204② 复核的结论就是"`{id}` 是对的，别改 yaml"）。
 			discoverAdapterSessions(w, r, c, seg)
 		case "":
 			// GET /api/v1/adapters/{id} 与 GET /api/v1/adapters：declared 未接。
@@ -165,8 +165,8 @@ func registerAdapterProbeRoute(mux *http.ServeMux, c Config) {
 
 // splitAdapterPath 把 `/api/v1/adapters/<那一段>/<尾巴>` 拆成 (seg, tail)。
 // 第一个返回值**故意不叫 key 也不叫 id**：同一棵子树里两条路的路径参数不是同一个东西，
-// 而 yaml 把它们分开登记 —— probe 那一格是 `adapter_key`（`parameters/Key`，yaml:176 明写"非实例 id"），
-// discover 与 capabilities 那两格是 `adapter_instances.id`（`parameters/Id`，yaml:214 明写"不是 adapter_key"）。
+// 而 yaml 把它们分开登记 —— `probeAdapter` 那一格是 `adapter_key`（`parameters/Key`，明写"非实例 id"），
+// `discoverAdapterSessions` 与 capabilities 那两格是 `adapter_instances.id`（`parameters/Id`，明写"不是 adapter_key"）。
 // T-204② 点的就是这个：调用方拿到的 `seg` 该按所在那一格自己决定叫什么。
 // 已知形状三种：`{key}/probe`、`{id}/capabilities`、`{id}/sessions:discover`（T-195③ 点名的那一格：
 // 它整条路径里有冒号，所以"见冒号就不认"的旧写法把它挡在了分流之前）。
@@ -213,9 +213,11 @@ func probeAdapter(w http.ResponseWriter, r *http.Request, c Config, key string) 
 	writeJSON(w, http.StatusOK, view)
 }
 
-// probeErrorOf 把 §15.1 的码映成 §15.2 的 transport 码与状态。**只列 probe 真能产生的那些**：
+// probeErrorOf 把 §15.1 的码映成 §15.2 的 transport 码与状态。**只列 probe 与 send 真能产生的那些**：
 // 抄整张表就会抄出一份和契约各说一套的副本（同"validator 不许内嵌契约快照"那一族）。
 // 认不出的码先经 `Degrade()` 落成 INTERNAL —— 拿别人没给过的数字现编一个名字，就是归因丢了。
+// §15.2 表（adapter-protocol-v0.1.md:504 起）的三行是本批 send 接上后新可达的：
+// delivery_mode_unsupported→422、session_not_found→404、provider_error→502。
 func probeErrorOf(err error) (status int, code string, retryable bool, mapped bool) {
 	var e *adapter.Error
 	if !errors.As(err, &e) || e == nil {
@@ -240,6 +242,13 @@ func probeErrorOf(err error) (status int, code string, retryable bool, mapped bo
 		return http.StatusGatewayTimeout, "timeout", true, true
 	case "internal":
 		return http.StatusInternalServerError, "internal", false, true
+	// §15.2 表：send 接上连接面后新可达的三行。
+	case "delivery_mode_unsupported": // Adapter 明确拒了这个 delivery 态（§5 红线）
+		return http.StatusUnprocessableEntity, "delivery_mode_unsupported", false, true
+	case "session_not_found": // Adapter 侧没有这个远端会话（与 Core transport 的 404 同码不同生产者）
+		return http.StatusNotFound, "session_not_found", false, true
+	case "provider_error": // Provider 真的坏了：502 不是 503（能重试的不是 Core 这一侧）
+		return http.StatusBadGateway, "provider_error", false, true
 	default:
 		return 0, "", false, false
 	}

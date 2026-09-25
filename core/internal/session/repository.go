@@ -123,6 +123,57 @@ func (r *Repository) ListMessages(ctx context.Context, sessionID string, limit i
 		return nil, fmt.Errorf("session: messages of %s: %w", sessionID, err)
 	}
 	defer rows.Close()
+	return scanMessages(rows, sessionID)
+}
+
+// MessageFilter 是 GET /api/v1/sessions/{id}/messages 的条件。
+// AfterSeq 是 yaml 明写的增量位（`after_seq`，"sequence_no > ?"）——
+// 独立于 keyset 游标：给了它就只出比它大的行，NULL 的 sequence_no（本地未编号）在给定 after_seq 时被排除
+// （NULL > 任何整数在 SQL 里都不是 true，这是"增量从编号开始"的语义，不是丢行）。
+// AfterCreatedAt/AfterID 走 keyset（复用 encodeCursor/decodeCursor 那对二元游标）。
+type MessageFilter struct {
+	SessionID      string
+	AfterSeq       int64
+	AfterCreatedAt int64
+	AfterID        string
+	Limit          int
+}
+
+// ListMessagesPage 按 (created_at, id) 升序出一页消息 —— 与 sessions/tasks/projects 那三条 list
+// 同一个序、同一套二元游标形状，所以 transport 复用现成的 encodeCursor/decodeCursor。
+// 选 (created_at, id) 而不是 (sequence_no, created_at) 是**为了复用游标**：sequence_no 可 NULL，
+// 二元组 (created_at, id) 才是全仓那对编解码的形状；after_seq 作为独立过滤叠加。
+func (r *Repository) ListMessagesPage(ctx context.Context, f MessageFilter) ([]Message, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	where := []string{"session_id = ?"}
+	args := []any{f.SessionID}
+	if f.AfterSeq > 0 {
+		where = append(where, "sequence_no > ?")
+		args = append(args, f.AfterSeq)
+	}
+	if f.AfterID != "" {
+		where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
+		args = append(args, f.AfterCreatedAt, f.AfterCreatedAt, f.AfterID)
+	}
+	args = append(args, limit)
+	rows, err := r.q.QueryContext(ctx,
+		`SELECT id, session_id, remote_message_id, role, kind, sequence_no,
+			text_content, created_at, synced_at
+		 FROM messages WHERE `+strings.Join(where, " AND ")+
+			` ORDER BY created_at, id LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session: messages page of %s: %w", f.SessionID, err)
+	}
+	defer rows.Close()
+	return scanMessages(rows, f.SessionID)
+}
+
+// scanMessages 把 ListMessages 与 ListMessagesPage 共用的扫描抽出来：
+// 两处列序相同，抄第二遍迟早分叉（同 decodeStrict 那条口径）。
+func scanMessages(rows *sql.Rows, sessionID string) ([]Message, error) {
 	var out []Message
 	for rows.Next() {
 		var (

@@ -165,8 +165,8 @@ type Launcher func() (*exec.Cmd, error)
 // cited "internal contract §0's direction" for it. §0 (specs/contracts-internal-v0.1.md:13-25)
 // bars only db -> 业务包 and audit -> db, and never names this package - the ban was my
 // inference wearing a clause's name. T-211 and §1.1 第 17 条's 落点与角色 put the lifecycle
-// write cell, "一次观察落成一行 + 恰一条事件", in this package, so platform/db will be
-// imported here; what stays true is the narrower rule: Recorder itself declares no DB type.
+// write cell, "一次观察落成一行 + 恰一条事件", in this package, so platform/db **is** imported
+// here (lifecycle.go only); what stays true is the narrower rule: Recorder itself declares no DB type.
 //
 // These three calls are the lifecycle writes into **`process_instances`**, and they
 // carry no transition number: §14's lifecycle rows do not advance transition_no, so the
@@ -179,11 +179,13 @@ type Launcher func() (*exec.Cmd, error)
 // `process` **is** an AggregateKind now - it just has no version column, and `Append` is not
 // the exit for this table's three facts (第 12 条's "除…外" exclusion + 第 17 条's ① entry).
 // That reading aged inside the same round, so here is the 05:37:20 one: 第 17 条's ①
-// `CreateVersionless` landed at 05:35:54 (touch.go:401) and all three entries now match the
-// contract's signatures 3/3 ⇒ the create leg has a door. What this package has **not** done is
-// write through it: CO-44 (0 rows means two different things) and CO-45 (a restart fires
-// RecordStart a second time against one construction-time id) are still unruled, so there is
-// no write cell here yet - "no door" is no longer a reason anyone can cite.
+// `CreateVersionless` landed at 05:35:54 (touch.go:401) and all three entries match the
+// contract's signatures 3/3 ⇒ the create leg has a door, and both open questions were ruled
+// (T-221 / 契约① §1.1 第 20 条): CO-45 went to "one row per attempt" (id minted here, attempt
+// and previous instance id in metadata_json), CO-44 to "0 rows moves nothing, books nothing,
+// and is never silent". The door is now walked through by LifecycleStore in lifecycle.go,
+// which is the only file in this package allowed to import platform/db
+// (TestOnlyTheWriteCellTouchesThePlatform enforces the boundary the old comment only claimed).
 //
 // What an Event does NOT carry is the other half of the row: 000001's process_instances
 // also requires id, restart_policy and (for an owned process) owner_type/owner_id, plus

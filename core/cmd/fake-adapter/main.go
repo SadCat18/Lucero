@@ -69,6 +69,9 @@ type fake struct {
 	// db is the fake's whole world: sessions, their logs and the approvals a turn
 	// raises. service.go explains why it is compiled in rather than read from disk.
 	db *store
+	// badExecID is read once from the environment at startup (envBadExecutionID). It
+	// changes only what the two CO-8 evidence frames say; see T-275's three limits.
+	badExecID bool
 }
 
 // turn is one CO-8 evidence pair. ref is §6 规则 5's turn_ref: the JSON-RPC id Core
@@ -90,11 +93,28 @@ type injection struct {
 	left int
 }
 
+// envBadExecutionID is T-275's black-box injection door: with it set to "1", the two CO-8
+// evidence frames name an execution_id that is **not** the one Core bound to that ticket,
+// so a test outside this process can finally produce the §4.2 裁定 ① contradiction (today
+// the fake only echoes what Core gave it, and the binding is Core-side state no outsider
+// can bend). Three limits, all of them load-bearing: it lives in this double and nowhere
+// in product code; off (unset or any other value) the frames are byte-identical to before;
+// and only the **value** changes - §4.2's frame keys, ordering and decode rules do not, so
+// this is a fixture switch, not a new capability, and it adds no §10 debug/* method.
+const envBadExecutionID = "LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID"
+
+// conflictingExecutionID is what the door puts in the frames. The shape does not matter to
+// the protocol (§4.2 only requires a non-empty execution_id), so this one is deliberately
+// id-shaped: an audit row that later has to explain itself reads better with a value that
+// could have been real than with "WRONG".
+const conflictingExecutionID = "0194f4c2-7c3e-7fff-8000-000000000bad"
+
 // run serves the protocol until stdin closes. logs receives everything that is not a
 // frame, so a caller can keep stdout and stderr apart the way Core's supervisor does.
 func run(in io.Reader, out io.Writer, logs io.Writer) error {
 	f := &fake{r: adapter.NewReader(in), w: adapter.NewWriter(out), logs: logs,
-		sent: map[string]adapter.SendResult{}, db: newStore(nowMillis())}
+		sent: map[string]adapter.SendResult{}, db: newStore(nowMillis()),
+		badExecID: os.Getenv(envBadExecutionID) == "1"}
 	fmt.Fprintf(logs, "fake-adapter up, pid=%d\n", os.Getpid())
 	// Check the self-declaration up front, against the same validator Core uses.
 	// Doing it per reply instead (as this file used to) turned a second
@@ -403,11 +423,20 @@ func (f *fake) evidence(t *turn, text string) error {
 		fmt.Fprintf(f.logs, "no execution_id on this send (CO-24): emitting no turn/claimed or turn/dispatched\n")
 		return nil
 	}
+	// The gate changes this one value and nothing else: same two frames, same order,
+	// same keys. It says so on the log stream, because a black-box test that trips the
+	// audit seam needs to be able to show *which* id it contradicted.
+	exec := t.executionID
+	if f.badExecID {
+		exec = conflictingExecutionID
+		fmt.Fprintf(f.logs, "%s is on: evidence frames name execution_id %q while Core bound %q to ticket %s\n",
+			envBadExecutionID, exec, t.executionID, t.ref)
+	}
 	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnClaimed,
-		ExecutionID: t.executionID, Accepted: true, ProviderExecutionID: t.providerID}); err != nil {
+		ExecutionID: exec, Accepted: true, ProviderExecutionID: t.providerID}); err != nil {
 		return err
 	}
-	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnDispatch, ExecutionID: t.executionID,
+	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnDispatch, ExecutionID: exec,
 		TurnID: t.turnID, ProviderExecutionID: t.providerID}); err != nil {
 		return err
 	}

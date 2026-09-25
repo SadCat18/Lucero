@@ -34,7 +34,7 @@ type syncResultView struct {
 // 同一条前缀路径上今天有两格能力：`{id}` 的单条读（GET，要 SessionRead）与 `{id}:sync`（POST，要 Sessions）。
 // 各自的"没接线"分支分别回 501 —— 不许因为另一格装上了就拿 405 说"这条路不接受这个方法"，那是假话。
 func registerSessionRoutes(mux *http.ServeMux, c Config) {
-	if c.Sessions == nil && c.SessionRead == nil && c.SessionManage == nil {
+	if c.Sessions == nil && c.SessionRead == nil && c.SessionManage == nil && c.SessionMessages == nil {
 		return
 	}
 	mux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +78,24 @@ func registerSessionRoutes(mux *http.ServeMux, c Config) {
 				return
 			}
 			manageSession(w, r, c, id)
+		case verb == "messages":
+			// 巡检 07:20② 点的就是这一格：`GET /api/v1/sessions/{id}/messages` 是契约③ §3 声明过的路径
+			// （`listSessionMessages`），以前它连 `splitSessionVerb` 都过不去（见那函数的注释），
+			// 于是拿到的是"这条路径的形状我不认识"——那是一句假话。今天的真相是**路由认得、读通道没接**，
+			// 按 C28② 就该回 501 且把理由说成"还没装配"；方法不对才是 405。
+			// 第六十二批：生产者 RecordMessage 已落地（api-contract :113~119 的接线条件满足），
+			// SessionMessages 注入后走真读路径；nil 仍 501（"还没装配"，文案不含"形状"）。
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+					"/api/v1/sessions/{id}/messages 只声明 GET", false)
+				return
+			}
+			if c.SessionMessages == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"GET /api/v1/sessions/{id}/messages 还没装配读通道（增量游标 after_seq/cursor 都在契约里，实现没接）", true)
+				return
+			}
+			listSessionMessages(w, r, c, id)
 		default:
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"没听过的 custom verb 一律 501，不猜它该走哪条腿", true)
@@ -85,11 +103,24 @@ func registerSessionRoutes(mux *http.ServeMux, c Config) {
 	})
 }
 
-// splitSessionVerb 认两种形状：`/api/v1/sessions/{id}:sync` 与 `/api/v1/sessions/{id}`（verb 空）。
+// splitSessionVerb 认三种形状：`/api/v1/sessions/{id}:sync`、`/api/v1/sessions/{id}`（verb 空）、
+// 与声明过的子路径 `/api/v1/sessions/{id}/messages`。
 // 不照抄 splitTaskAction：那条不认"没有 verb"的形状，而这条路径上"没有 verb"是要回 501 的合法输入。
 func splitSessionVerb(path string) (id, verb string, ok bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/sessions/")
-	if rest == "" || strings.Contains(rest, "/") {
+	if rest == "" {
+		return "", "", false
+	}
+	// 子路径今天只有一条：`{id}/messages`（契约③ §3 声明的 `listSessionMessages`）。
+	// 不认它 = 对一条声明过的路径说"形状我不认识"，那是假话（巡检 07:20②；同族旧错见 T-195④ 的 tasks.go）。
+	// 只认这一条，别的多段形状仍然不认 —— 认多了就是替别人决定"这条路径归谁"。
+	if sub, found := strings.CutSuffix(rest, "/messages"); found {
+		if sub == "" || strings.Contains(sub, "/") || strings.Contains(sub, ":") {
+			return "", "", false
+		}
+		return sub, "messages", true
+	}
+	if strings.Contains(rest, "/") {
 		return "", "", false
 	}
 	i := strings.LastIndexByte(rest, ':')
@@ -108,6 +139,14 @@ func splitSessionVerb(path string) (id, verb string, ok bool) {
 type SessionReader interface {
 	Get(ctx context.Context, id string) (session.Session, error)
 	ListPage(ctx context.Context, f session.ListFilter) ([]session.Session, error)
+}
+
+// SessionMessageReader 是 GET /sessions/{id}/messages 的读面：
+// Get 先过 404 闸（session 不存在与"没消息"是两件事），ListMessagesPage 出一页。
+// 由 *session.Repository 直接满足。
+type SessionMessageReader interface {
+	Get(ctx context.Context, id string) (session.Session, error)
+	ListMessagesPage(ctx context.Context, f session.MessageFilter) ([]session.Message, error)
 }
 
 // sessionView 出的是 yaml `Session` 里"必填六个 + 域模型真带着的那几个可空项"。
@@ -231,6 +270,98 @@ func getSession(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	default:
 		serverError(w, r, err)
 	}
+}
+
+// messageView 是 yaml Message（:1055）：required [id, session_id, role, kind, created_at]。
+// **`content` / `provider_raw` 不出键**：域模型不读那两列，"handler 不许补字段"（§7.2）。
+// sequence_no=0 / remote_message_id="" / text_content="" / synced_at=0 折成 null
+// （REQ-F-21 ④ 同族：NULL 与空串是两件事，出口只发 null）。
+type messageView struct {
+	ID              string  `json:"id"`
+	SessionID       string  `json:"session_id"`
+	RemoteMessageID *string `json:"remote_message_id"`
+	Role            string  `json:"role"`
+	Kind            string  `json:"kind"`
+	SequenceNo      *int64  `json:"sequence_no"`
+	TextContent     *string `json:"text_content"`
+	CreatedAt       int64   `json:"created_at"`
+	SyncedAt        *int64  `json:"synced_at"`
+}
+
+func messageViewOf(m session.Message) messageView {
+	return messageView{
+		ID: m.ID, SessionID: m.SessionID,
+		RemoteMessageID: nullableString(m.RemoteMessageID),
+		Role:            string(m.Role), Kind: string(m.Kind),
+		// sequence_no 从 1 起（本地未编号是 NULL → 域里 0）：0 不冒充"知道是第 0 条"。
+		SequenceNo:  nullableSeq(m.SequenceNo),
+		TextContent: nullableString(m.TextContent),
+		CreatedAt:   m.CreatedAt, SyncedAt: nullableMillis(m.SyncedAt),
+	}
+}
+
+// nullableSeq 把域里的 0 折成 null：sequence_no 可 NULL 且编号从 1 起，
+// 0 只可能是"库里是 NULL"的折算，不是合法序号（§12：不拿 0 冒充不知道）。
+func nullableSeq(v int64) *int64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
+// listSessionMessages 是 `GET /api/v1/sessions/{id}/messages`：405 → 501 已在分流里判过，
+// 这里只做 404 闸 → 参数 → 投影。limit 1~200 默认 50；游标复用 encodeCursor/decodeCursor。
+func listSessionMessages(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	if _, err := c.SessionMessages.Get(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "session_not_found", "没有这条 Session", false)
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	q := r.URL.Query()
+	f := session.MessageFilter{SessionID: id, Limit: 50}
+	if v := q.Get("after_seq"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "validation_failed", "after_seq 必须是非负整数", false)
+			return
+		}
+		f.AfterSeq = n
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 200 {
+			writeError(w, http.StatusBadRequest, "validation_failed", "limit 必须是 1~200", false)
+			return
+		}
+		f.Limit = n
+	}
+	if cur := q.Get("cursor"); cur != "" {
+		at, msgID, err := decodeCursor(cur)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "validation_failed", "cursor 不合法", false)
+			return
+		}
+		f.AfterCreatedAt, f.AfterID = at, msgID
+	}
+	items, err := c.SessionMessages.ListMessagesPage(r.Context(), f)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	views := make([]messageView, 0, len(items))
+	for _, m := range items {
+		views = append(views, messageViewOf(m))
+	}
+	next := ""
+	if len(items) == f.Limit && len(items) > 0 {
+		last := items[len(items)-1]
+		next = encodeCursor(last.CreatedAt, last.ID)
+	}
+	// 空页 items 必须是 [] 不是 null（与 inbox/discover 同口径）。
+	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
 }
 
 // SessionManager 是 `POST /api/v1/sessions/{id}:manage` 的业务面。它与 SessionSyncer 分成两个字段：

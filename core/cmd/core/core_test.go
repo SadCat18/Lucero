@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -144,6 +145,10 @@ func TestBootLeavesTheStoreWritable(t *testing.T) {
 }
 
 // 单实例：同一个数据目录不能起第二个 Core（§2.3 第二步）。
+//
+// REQ-L-1 之后这条的**前提要写全**：判活看的是"锁文件里那个端口还在答 /health"，所以第一个 Core 必须真的在服务
+// —— 只 `boot()` 不 `serve()` 的 Core 占着端口却不答话，第二个 Core 会诚实报"端口被别人占了"而不是"已有 Core 在跑"
+// （`TestLockPortHeldByNonCore` 钉的就是那一格）。以前这个测试恰好靠"pid 判活误判成活着"才绿，那是错的绿。
 func TestSecondBootRefused(t *testing.T) {
 	cfg := testConfig(t)
 	core, err := boot(t.Context(), cfg)
@@ -151,6 +156,16 @@ func TestSecondBootRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer core.close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = core.serve(ctx) }()
+	port := core.ln.Addr().(*net.TCPAddr).Port
+	for attempt := 0; attempt < 100 && !healthAnswersAt(port); attempt++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !healthAnswersAt(port) {
+		t.Fatalf("第一个 Core 没答 /health，这条测的就不是「已有活 Core」了")
+	}
 
 	if _, err := boot(t.Context(), cfg); !errors.Is(err, ErrAlreadyRunning) {
 		t.Errorf("第二个 Core 应被单实例锁拒掉，实际 %v", err)
@@ -158,6 +173,7 @@ func TestSecondBootRefused(t *testing.T) {
 }
 
 // 崩溃测试会 kill Core，锁文件必然是死的：必须能自动接管，否则"重启不丢任务"根本没法测。
+// 这一格现在同时是**旧格式/端口没写出来的那一支**：判活不再看 pid，读不出端口就没有资格占锁。
 func TestStaleLockIsTakenOver(t *testing.T) {
 	cfg := testConfig(t)
 	if err := os.WriteFile(filepath.Join(cfg.DataDir, "core.lock"), []byte("2147483646\n"), 0o600); err != nil {

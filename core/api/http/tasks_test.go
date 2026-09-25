@@ -1,7 +1,6 @@
 package httpapi_test
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,7 +14,8 @@ import (
 	"time"
 
 	httpapi "github.com/SadCat18/lucero/core/api/http"
-	"github.com/SadCat18/lucero/core/internal/eventjournal"
+	"github.com/SadCat18/lucero/core/internal/adapter"
+	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
@@ -30,6 +30,10 @@ const (
 	secretShape  = `sk-[A-Za-z0-9_-]{16,}`
 	testSecret   = "sk-abcdefghijklmnop0123456789"
 )
+
+// queueBody 是 `:queue` 的请求体。C43 裁「乙」（T-262）之后 `adapter_key` 必填。
+// harness 会种一行 `adapter_instances(adapter_key='fake')`，所以这个 key 解析得出实例 id。
+const queueBody = `{"adapter_key":"fake"}`
 
 // taskJSON 是响应体的读侧镜像（handler 侧的类型不外露，测试只按 JSON 形状断言）。
 type taskJSON struct {
@@ -61,6 +65,16 @@ func newTaskHarness(t *testing.T) (*httptest.Server, *db.DB) {
 			t.Fatal(err)
 		}
 	}
+	// 分派腿的外部门：`queueBody` 里的 adapter_key='fake' 必须解析得出实例，
+	// 否则 :queue 全走 404、后面所有正向断言都测不到三步状态推进。
+	if _, err := d.Read.Exec(`INSERT INTO adapter_instances (id, adapter_key, display_name, created_at, updated_at)
+		VALUES ('ad-fake', 'fake', 'Fake', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	pstore, err := adapter.NewSQLiteStore(d, func() int64 { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
 	ready := func() string { return httpapi.StateReady }
 	srv := httptest.NewServer(httpapi.NewHandler(httpapi.Config{
 		Token: testToken, Version: "test-1", State: ready,
@@ -69,6 +83,8 @@ func newTaskHarness(t *testing.T) (*httptest.Server, *db.DB) {
 		Tasks:            task.NewService(nil),
 		TaskList:         task.NewRepository(d.Read),
 		Store:            d,
+		Instances:        pstore,
+		ExecutionCreate:  execution.NewService(),
 	}))
 	t.Cleanup(srv.Close)
 	return srv, d
@@ -116,6 +132,17 @@ func codeOf(t *testing.T, body string) string {
 	return e.Error.Code
 }
 
+// msgOf 取错误体里的 message。只有一种情况该断它：**缺陷本身就是一句话**
+// （比如对一条声明过的路径回「形状我不认识」）—— 那种格子只断状态码与 code 对缺陷没有牙。
+func msgOf(t *testing.T, body string) string {
+	t.Helper()
+	var e errEnvelope
+	if err := json.Unmarshal([]byte(body), &e); err != nil {
+		t.Fatalf("错误体形状不符契约③ §2: %q", body)
+	}
+	return e.Error.Message
+}
+
 // mustParseMap 把成功响应读成 map，供"两次响应语义相同"这类断言用（键序不参与比较）。
 func mustParseMap(t *testing.T, body string) map[string]any {
 	t.Helper()
@@ -126,23 +153,20 @@ func mustParseMap(t *testing.T, body string) map[string]any {
 	return m
 }
 
-// requireCatalogued 与 internal/task 的 write_test.go 里那份是同一句话，故意各写一遍：
-// 项目明令禁止 internal/common、shared、utils 这类口袋包（内部契约 §1.1），
-// 所以跨包的测试小工具只能复制，不能建第三个包。
-// 缺的是 C2 那五个事件类型没进 db 的注册表 → REQ-DB-3；补齐后这些 Skip 自动变成真跑。
-func requireCatalogued(t *testing.T, types ...string) {
-	t.Helper()
-	for _, s := range types {
-		if !eventjournal.Registered(s) {
-			t.Skipf("%q 还没进 internal/eventjournal 的注册表（REQ-DB-3 等 db），写它会被 §9.1 判 P0", s)
-		}
-	}
-}
-
 func countRows(t *testing.T, d *db.DB, table string) int {
 	t.Helper()
 	var n int
 	if err := d.Read.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// countEventsOfType 数 `event_journal` 里某一类事件落了几条（表名写死、类型走参数）。
+func countEventsOfType(t *testing.T, d *db.DB, evType string) int {
+	t.Helper()
+	var n int
+	if err := d.Read.QueryRow(`SELECT count(*) FROM event_journal WHERE event_type = ?`, evType).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -210,7 +234,7 @@ func TestCreateThenQueueThenReplay(t *testing.T) {
 
 	// Queue 走 If-Match：带对版本 200，带错版本 409，重复 Queue 409 illegal_transition。
 	id := created.ID
-	if status, out = call(t, srv, http.MethodPost, "/api/v1/tasks/"+id+":queue", "local-user", "", ""); status != http.StatusOK {
+	if status, out = call(t, srv, http.MethodPost, "/api/v1/tasks/"+id+":queue", "local-user", "", queueBody); status != http.StatusOK {
 		t.Fatalf("queue 应 200，实际 %d: %s", status, out)
 	}
 	var q struct {
@@ -220,13 +244,23 @@ func TestCreateThenQueueThenReplay(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &q); err != nil {
 		t.Fatal(err)
 	}
-	if q.Status != "QUEUED" || q.Version != 2 {
-		t.Errorf("queue 后应 QUEUED v2，实际 %+v", q)
+	// 分派腿把 Queue+Create+Prepare 收成一次 :queue：CREATED v1 →（Queue v2 → Prepare v3）
+	// 整笔事务原子推进，对外只见终态 PREPARING v3。
+	if q.Status != "PREPARING" || q.Version != 3 {
+		t.Errorf("queue 后应 PREPARING v3（分派腿三步一笔事务），实际 %+v", q)
 	}
-	if status, out = call(t, srv, http.MethodPost, "/api/v1/tasks/"+id+":queue", "local-user", "", ""); status != http.StatusConflict {
+	if n := countRows(t, d, "executions"); n != 1 {
+		t.Errorf(":queue 应恰建 1 条 Execution，实际 %d", n)
+	}
+	if status, out = call(t, srv, http.MethodPost, "/api/v1/tasks/"+id+":queue", "local-user", "", queueBody); status != http.StatusConflict {
 		t.Errorf("重复 queue 应 409，实际 %d: %s", status, out)
 	} else if c := codeOf(t, out); c != "illegal_transition" {
 		t.Errorf("错误码应为 illegal_transition，实际 %q", c)
+	}
+	// 双 :queue 的事务回滚半边：第二次在 Tasks.Queue 就 illegal ⇒ 整笔回滚 ⇒
+	// executions 不许多第二行（backend.md Next action 点名的用例）。
+	if n := countRows(t, d, "executions"); n != 1 {
+		t.Errorf("被拒的第二次 queue 不该多建 Execution，实际 %d 行", n)
 	}
 
 	stale := `{"title":"并发","priority":"NORMAL"}`
@@ -237,7 +271,7 @@ func TestCreateThenQueueThenReplay(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &second); err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/tasks/"+second.ID+":queue", bytes.NewReader(nil))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/tasks/"+second.ID+":queue", strings.NewReader(queueBody))
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("X-Lucero-Principal", "local-user")
 	req.Header.Set("If-Match", "99")
@@ -254,7 +288,8 @@ func TestCreateThenQueueThenReplay(t *testing.T) {
 		t.Errorf("错误码应为 version_conflict（契约③ §2），实际 %q", c)
 	}
 
-	if status, out = call(t, srv, http.MethodGet, "/api/v1/tasks?status=QUEUED", "", "", ""); status != http.StatusOK {
+	// 分派腿之后 :queue 落到 PREPARING（不是停在 QUEUED），列表过滤跟着改。
+	if status, out = call(t, srv, http.MethodGet, "/api/v1/tasks?status=PREPARING", "", "", ""); status != http.StatusOK {
 		t.Fatalf("列表应 200，实际 %d: %s", status, out)
 	} else {
 		var page struct {
@@ -265,7 +300,7 @@ func TestCreateThenQueueThenReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(page.Items) != 1 || page.Items[0].ID != id || page.NextCursor != "" {
-			t.Errorf("status=QUEUED 列表不对: %s", out)
+			t.Errorf("status=PREPARING 列表不对: %s", out)
 		}
 	}
 }
@@ -348,35 +383,53 @@ func TestTaskVerbRoutingAndBoundedChecks(t *testing.T) {
 		t.Errorf("上面这些被挡掉的调用写出了 %d 行事件", n)
 	}
 
-	// 合法暂停的真实行为也钉一条，免得"接好了"与"接好了但被平台层拒"这两种状态在账上长得一样。
-	// task_paused 还没进 db 的注册表（REQ-DB-3）→ 只能是 500 internal_error：
-	// 既不假装成功，也不假装成 501 未实现。db 补齐后这一支自动翻成 200 的断言。
-	if _, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", ""); out2 == "" {
+	// 合法暂停的真实行为：`task_paused` / `task_resumed` 09-24 已在注册集合内（`events.go` 的 Registered 那一行），
+	// 所以这一支就是**成功路径** —— 以前这里写着"REQ-DB-3 未落地 ⇒ 只能 500"，那是过期前提（T-253② 点名要改的那处）。
+	if _, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", queueBody); out2 == "" {
 		t.Fatal("queue 没返回内容")
 	}
-	if eventjournal.Registered(task.EventPaused) {
-		if status, out3 := call(t, srv, http.MethodPost, vr+":pause", "local-user", "", `{"reason":"注册表已补"}`); status != http.StatusOK {
-			t.Errorf("注册表已补，pause 应 200，实际 %d: %s", status, out3)
+	status, out3 := call(t, srv, http.MethodPost, vr+":pause", "local-user", "", `{"reason":"注册表已补"}`)
+	if status != http.StatusOK {
+		t.Errorf("pause 该走成功路径（200 + Task 体），实际 %d: %s", status, out3)
+	}
+	if !strings.Contains(out3, `"PAUSED"`) {
+		t.Errorf("暂停之后该是 PAUSED（§5.1 那条边），实际 %s", out3)
+	}
+}
+
+// TestPauseResumeWritesBothEvents 是同一件事的事件半边：成功路径要留下**两条**事件，
+// 而不是只把状态改了（第 17 条"行与事件同生同死"在 tasks 这条竖线上的对应物）。
+func TestPauseResumeWritesBothEvents(t *testing.T) {
+	srv, d := newTaskHarness(t)
+	_, out := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-ev", `{"title":"要留两条事件"}`)
+	var created taskJSON
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatal(err)
+	}
+	vr := "/api/v1/tasks/" + created.ID
+	if status, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", queueBody); status != http.StatusOK {
+		t.Fatalf("queue 该 200，实际 %d: %s", status, out2)
+	}
+	for _, reason := range []string{"先看暂停", "再看恢复"} {
+		if status, ev := call(t, srv, http.MethodPost, vr+":pause", "local-user", "", `{"reason":"`+reason+`"}`); status != http.StatusOK {
+			t.Fatalf("pause 该 200，实际 %d: %s", status, ev)
 		}
-	} else {
-		status, out3 := call(t, srv, http.MethodPost, vr+":pause", "local-user", "", `{"reason":"注册表已补"}`)
-		if status != http.StatusInternalServerError {
-			t.Errorf("REQ-DB-3 未落地时 pause 应老实报 500，实际 %d: %s", status, out3)
+		// :resume 要的是 `{"to": …}`（§5.1 的目标态），不是 reason；两轮都走矩阵里那条 PAUSED→QUEUED。
+		if status, ev := call(t, srv, http.MethodPost, vr+":resume", "local-user", "", `{"to":"QUEUED"}`); status != http.StatusOK {
+			t.Fatalf("resume 该 200，实际 %d: %s", status, ev)
 		}
-		if c := codeOf(t, out3); c != "internal_error" {
-			t.Errorf("错误码应为 internal_error，实际 %q", c)
-		}
-		if strings.Contains(out3, "eventjournal") || strings.Contains(out3, "catalogue") || strings.Contains(out3, "SQLITE") {
-			t.Errorf("把平台层细节透给客户端了: %s", out3)
+	}
+	for _, evType := range []string{"task_paused", "task_resumed"} {
+		if n := countEventsOfType(t, d, evType); n < 2 {
+			t.Errorf("%s 该至少落两条（两次 pause/resume），实际 %d 条", evType, n)
 		}
 	}
 }
 
 // TestPauseResumeRoundTripOverHTTP 是 :pause→:resume 的端到端一条。
-// 与 internal/task 那边同一句话：task_paused / task_resumed 还没进注册表（REQ-DB-3），
-// 所以这一段现在会 Skip；db 补齐后自动开始跑。跳过时**不**算交付完成，见 progress 第 78 条。
+// `task_paused` / `task_resumed` 09-24 已在注册集合内（T-253② 量的那一行 `events.go`），
+// 所以这一条**不再需要 Skip 门面** —— 以前那句"这一段现在会 Skip"是过期前提，跟着 `requireCatalogued` 一起撤掉。
 func TestPauseResumeRoundTripOverHTTP(t *testing.T) {
-	requireCatalogued(t, task.EventPaused, task.EventResumed)
 	srv, _ := newTaskHarness(t)
 	_, out := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-p", `{"title":"暂停一下"}`)
 	var created taskJSON
@@ -384,18 +437,19 @@ func TestPauseResumeRoundTripOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	vr := "/api/v1/tasks/" + created.ID
-	if status, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", ""); status != http.StatusOK {
+	if status, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", queueBody); status != http.StatusOK {
 		t.Fatalf("queue 应 200，实际 %d: %s", status, out2)
 	}
-	// QUEUED→PAUSED 合法（§5.1 有这条边）。
+	// 分派腿之后 :queue 已到 PREPARING v3；PREPARING→PAUSED 合法（§5.1）。
+	// 版本链：Create v1 →（Queue v2 + Prepare v3）→ pause v4 → resume v5。
 	if status, out2 := call(t, srv, http.MethodPost, vr+":pause", "local-user", "", `{"reason":"先歇会儿"}`); status != http.StatusOK {
 		t.Fatalf("pause 应 200，实际 %d: %s", status, out2)
-	} else if m := mustParseMap(t, out2); m["status"] != "PAUSED" || m["version"] != float64(3) {
+	} else if m := mustParseMap(t, out2); m["status"] != "PAUSED" || m["version"] != float64(4) {
 		t.Errorf("pause 响应不对: %v", m)
 	}
 	if status, out2 := call(t, srv, http.MethodPost, vr+":resume", "local-user", "", `{"to":"QUEUED"}`); status != http.StatusOK {
 		t.Fatalf("resume 应 200，实际 %d: %s", status, out2)
-	} else if m := mustParseMap(t, out2); m["status"] != "QUEUED" || m["version"] != float64(4) {
+	} else if m := mustParseMap(t, out2); m["status"] != "QUEUED" || m["version"] != float64(5) {
 		t.Errorf("resume 响应不对: %v", m)
 	}
 }
@@ -454,12 +508,14 @@ func TestCancelOverHTTPReachesTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	vr := "/api/v1/tasks/" + created.ID
-	if status, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", ""); status != http.StatusOK {
+	if status, out2 := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", queueBody); status != http.StatusOK {
 		t.Fatalf("queue 应 200，实际 %d: %s", status, out2)
 	}
+	// 分派腿后 :queue 已到 PREPARING v3；PREPARING→CANCELLED 合法，cancel 落 v4。
+	// 事件行数：task_created + task_queued + execution_created + task_preparing + task_cancelled = 5。
 	if status, out2 := call(t, srv, http.MethodPost, vr+":cancel", "local-user", "", `{"reason":"不做了"}`); status != http.StatusOK {
 		t.Fatalf("cancel 应 200，实际 %d: %s", status, out2)
-	} else if m := mustParseMap(t, out2); m["status"] != "CANCELLED" || m["version"] != float64(3) {
+	} else if m := mustParseMap(t, out2); m["status"] != "CANCELLED" || m["version"] != float64(4) {
 		t.Errorf("cancel 响应不对: %v", m)
 	}
 	// 终态之后：:accept 与 :cancel 都是 409 illegal_transition（不是 501、不是 500）。
@@ -476,8 +532,8 @@ func TestCancelOverHTTPReachesTerminal(t *testing.T) {
 	if n := countRows(t, d, "tasks"); n != 1 {
 		t.Errorf("多了任务：%d", n)
 	}
-	if n := countRows(t, d, "event_journal"); n != 3 {
-		t.Errorf("一个版本一行事件，应为 3 行，实际 %d", n)
+	if n := countRows(t, d, "event_journal"); n != 5 {
+		t.Errorf("分派腿后一条链应 5 行事件（created+queued+execution_created+preparing+cancelled），实际 %d", n)
 	}
 }
 
@@ -498,10 +554,25 @@ func TestTaskInputValidation(t *testing.T) {
 			`{"title":"x","priority":"URGENT"}`, http.StatusBadRequest, "validation_failed"},
 		{"body 不是 JSON", http.MethodPost, "/api/v1/tasks", "local-user", "k-c", `not json`,
 			http.StatusBadRequest, "validation_failed"},
-		{"queue 不存在的任务", http.MethodPost, "/api/v1/tasks/nope:queue", "local-user", "", "",
+		// C43 裁乙（T-262）之后 `:queue` 必带 `adapter_key` ⇒ 这两行的 body 必须**合法**，
+		// 否则它们测的就变成"缺 key"这一格（同样是 400 的 `queue 的 If-Match 不是数字` 最容易骗人）。
+		{"queue 不存在的任务", http.MethodPost, "/api/v1/tasks/nope:queue", "local-user", "", queueBody,
 			http.StatusNotFound, "not_found"},
-		{"queue 的 If-Match 不是数字", http.MethodPost, "/api/v1/tasks/x:queue", "local-user", "", "",
+		{"queue 的 If-Match 不是数字", http.MethodPost, "/api/v1/tasks/x:queue", "local-user", "", queueBody,
 			http.StatusBadRequest, "validation_failed"},
+		// 分派腿解析半边：adapter_key 合法形状但库里没有 ⇒ 404（在碰任何聚合之前）。
+		// 用 nope 任务 id 是为了证"解析先于查任务"：若顺序反了这里会回任务的 404 而不是实例的 404，
+		// 但错误码相同；真正区分在下面 TestQueueUnknownAdapterKeyIs404BeforeTouchingTask。
+		{"queue 的 adapter_key 库里没有", http.MethodPost, "/api/v1/tasks/nope:queue", "local-user", "",
+			`{"adapter_key":"no-such-key"}`, http.StatusNotFound, "not_found"},
+		// 下面三行是这一格新立的闸：用**不存在的任务 id** 打，是为了证"闸在读库之前"——
+		// 若闸排在查询后面，这里会回 404 而不是 400。
+		{"queue 没带请求体", http.MethodPost, "/api/v1/tasks/nope:queue", "local-user", "", "",
+			http.StatusBadRequest, "validation_failed"},
+		{"queue 的 body 里没 adapter_key", http.MethodPost, "/api/v1/tasks/nope:queue", "local-user", "", `{}`,
+			http.StatusBadRequest, "validation_failed"},
+		{"queue 的 adapter_key 是空白", http.MethodPost, "/api/v1/tasks/nope:queue", "local-user", "",
+			`{"adapter_key":"   "}`, http.StatusBadRequest, "validation_failed"},
 		{"还没接的动作保持 501", http.MethodPost, "/api/v1/tasks/any:transfer", "local-user", "", "",
 			http.StatusNotImplemented, "not_implemented"},
 		{"status 不在状态集合", http.MethodGet, "/api/v1/tasks?status=NOPE", "", "", "",
@@ -548,6 +619,96 @@ func TestTaskInputValidation(t *testing.T) {
 		if n := countRows(t, d, tbl); n != 0 {
 			t.Errorf("%s 被坏输入写了 %d 行", tbl, n)
 		}
+	}
+}
+
+// TestQueueGateLeavesARealTaskUntouched 是 C43 那一闸的"对真任务也不许做半件事"半边。
+// 上面那张表只证到"任务不存在时回 400 而不是 404"（⇒ 闸在查询之前），
+// 而这一条证的才是主控要的结局：**任务存在、请求没声明调度对象 ⇒ 状态与版本一步都没走、事件一行都没多**。
+// （少这一条，"先跑 Queue 再校验 body 然后回 400"那种写法能骗过整张表。）
+func TestQueueGateLeavesARealTaskUntouched(t *testing.T) {
+	srv, d := newTaskHarness(t)
+	_, out := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-ak", `{"title":"缺 key 也别动我"}`)
+	var created taskJSON
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatal(err)
+	}
+	vr := "/api/v1/tasks/" + created.ID
+
+	for _, body := range []string{"", `{}`, `{"adapter_key":"   "}`, "not json"} {
+		status, resp := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", body)
+		if status != http.StatusBadRequest {
+			t.Errorf("body=%q 该 400（C43：adapter_key 必填），实际 %d: %s", body, status, resp)
+		} else if c := codeOf(t, resp); c != "validation_failed" {
+			t.Errorf("body=%q 错误码该 validation_failed，实际 %q", body, c)
+		}
+	}
+	// `GET /tasks/{id}` 还没接线（501），所以直接读库看这一行有没有被动过 —— 版本没涨是关键那半：
+	// 只回 400 但状态已经走了的写法，光看响应是看不出来的。
+	var status string
+	var version int64
+	if err := d.Read.QueryRow(`SELECT status, version FROM tasks WHERE id = ?`, created.ID).Scan(&status, &version); err != nil {
+		t.Fatal(err)
+	}
+	if status != "CREATED" || version != 1 {
+		t.Errorf("四次被拒的 queue 之后任务竟然动了: %s v%d", status, version)
+	}
+	if n := countEventsOfType(t, d, "task_queued"); n != 0 {
+		t.Errorf("被挡掉的调用写出了 %d 行 task_queued", n)
+	}
+	if n := countRows(t, d, "event_journal"); n != 1 {
+		t.Errorf("除了建任务那一行，被挡掉的调用又写了事件: %d 行", n)
+	}
+
+	// 正向对照：带上 key 就走得通（否则上面那四次"全 400"也可以靠"这个端点永远 400"骗过去）。
+	// 分派腿一笔事务落三行事件：task_queued + execution_created + task_preparing。
+	if status, resp := call(t, srv, http.MethodPost, vr+":queue", "local-user", "", queueBody); status != http.StatusOK {
+		t.Fatalf("带 adapter_key 的 queue 该 200，实际 %d: %s", status, resp)
+	}
+	if n := countRows(t, d, "event_journal"); n != 4 {
+		t.Errorf("成功那一跳该恰好多三行事件（共 4），实际 %d 行", n)
+	}
+	if n := countRows(t, d, "executions"); n != 1 {
+		t.Errorf("成功 queue 应恰建 1 条 Execution，实际 %d", n)
+	}
+}
+
+// TestQueueUnknownAdapterKeyIs404BeforeTouchingTask 钉分派腿解析的失败格：
+// adapter_key 库里没有 ⇒ 404，且在碰任何聚合之前返回 —— 任务状态/版本/事件一行都不许动。
+// （与 TestQueueGateLeavesARealTaskUntouched 的 400 闸是两格：那个是"没声明调度对象"，
+// 这个是"声明了但解析不出实例"。）
+func TestQueueUnknownAdapterKeyIs404BeforeTouchingTask(t *testing.T) {
+	srv, d := newTaskHarness(t)
+	_, out := call(t, srv, http.MethodPost, "/api/v1/tasks", "local-user", "k-ak404", `{"title":"解析不到别动我"}`)
+	var created taskJSON
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatal(err)
+	}
+	vr := "/api/v1/tasks/" + created.ID
+
+	status, resp := call(t, srv, http.MethodPost, vr+":queue", "local-user", "",
+		`{"adapter_key":"no-such-key"}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("库里没有的 adapter_key 该 404，实际 %d: %s", status, resp)
+	} else if c := codeOf(t, resp); c != "not_found" {
+		t.Errorf("错误码该 not_found，实际 %q", c)
+	}
+	var st string
+	var version int64
+	if err := d.Read.QueryRow(`SELECT status, version FROM tasks WHERE id = ?`, created.ID).Scan(&st, &version); err != nil {
+		t.Fatal(err)
+	}
+	if st != "CREATED" || version != 1 {
+		t.Errorf("被 404 挡掉的 queue 不该动任务: %s v%d", st, version)
+	}
+	if n := countEventsOfType(t, d, "task_queued"); n != 0 {
+		t.Errorf("被挡的调用写出了 %d 行 task_queued", n)
+	}
+	if n := countRows(t, d, "executions"); n != 0 {
+		t.Errorf("被挡的调用建出了 %d 条 Execution", n)
+	}
+	if n := countRows(t, d, "event_journal"); n != 1 {
+		t.Errorf("除建任务那一行外不该多事件，实际 %d 行", n)
 	}
 }
 

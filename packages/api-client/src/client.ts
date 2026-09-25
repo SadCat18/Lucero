@@ -109,7 +109,11 @@ export function createCoreClient(cfg: CoreClientConfig = {}) {
     getTask: (id: string) => call<Schemas['Task']>('GET', `/api/v1/tasks/${id}`),
     updateTask: (id: string, body: Schemas['UpdateTaskRequest'], ifMatch: number) =>
       call<Schemas['Task']>('PATCH', `/api/v1/tasks/${id}`, { body, ifMatch }),
-    taskAction: (id: string, verb: 'queue' | 'pause' | 'resume' | 'cancel' | 'accept',
+    // C43（09-24）：`:queue` 的调度对象是调用方声明的事实 ⇒ body 必填，这里不给"省略 body"那条腿。
+    queueTask: (id: string, body: Schemas['QueueTaskRequest'], opts: { ifMatch?: number; idempotencyKey?: string } = {}) =>
+      call<Schemas['Task']>('POST', `/api/v1/tasks/${id}:queue`,
+        { body, ifMatch: opts.ifMatch, idempotencyKey: opts.idempotencyKey ?? key() }),
+    taskAction: (id: string, verb: 'pause' | 'resume' | 'cancel' | 'accept',
       opts: { ifMatch?: number; reason?: string; idempotencyKey?: string } = {}) =>
       call<Schemas['Task']>('POST', `/api/v1/tasks/${id}:${verb}`,
         { ifMatch: opts.ifMatch, idempotencyKey: opts.idempotencyKey ?? key(),

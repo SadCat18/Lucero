@@ -16,7 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/session"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
 
@@ -26,11 +28,25 @@ import (
 type TaskService interface {
 	Create(ctx context.Context, tx *db.Tx, in task.NewTask) (task.Task, error)
 	Queue(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
+	// Prepare 是分派腿第三步（QUEUED→PREPARING），缺 execution_id 在碰库之前就失败（§6）。
+	Prepare(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
 	Pause(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
 	// Resume 的目标态由 handler 传进来：§5.1 有两条合法出边，选哪条是请求里的信息，不是这里该猜的。
 	Resume(ctx context.Context, tx *db.Tx, id string, to task.State, cmd task.Command) (task.Result, error)
 	Cancel(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
 	Accept(ctx context.Context, tx *db.Tx, id string, cmd task.Command) (task.Result, error)
+}
+
+// AdapterResolver 是分派腿的只读门（T-263）：adapter_key → adapter_instances.id。
+// 由 *adapter.SQLiteStore 直接满足；返回 id 而不是整行，把"选哪一列"的归属留在域包里。
+type AdapterResolver interface {
+	ResolveInstance(ctx context.Context, adapterKey string) (string, error)
+}
+
+// ExecutionCreator 是分派腿第二步的写面：在同一笔事务里建 Execution（§6 的 execution_created）。
+// 由 *execution.Service 直接满足。
+type ExecutionCreator interface {
+	Create(ctx context.Context, tx *db.Tx, in execution.NewExecution) (execution.Execution, error)
 }
 
 type TaskLister interface {
@@ -91,7 +107,8 @@ func viewOf(t task.Task) taskView {
 }
 
 // registerTaskRoutes 只在三个依赖都注入时才挂；没注入时保持 §3 里那条"未实现 501"，
-// 不返回半套端点骗前端。
+// 不返回半套端点骗前端。分派腿的两个额外依赖（Instances/ExecutionCreate）不进这道总闸 ——
+// 它们只 gate :queue 这一格（缺了回 501），GET 列表与其它状态动作不受影响。
 func registerTaskRoutes(mux *http.ServeMux, c Config) {
 	if c.Tasks == nil || c.TaskList == nil || c.Store == nil {
 		return
@@ -327,10 +344,106 @@ func taskAction(w http.ResponseWriter, r *http.Request, c Config, id string, bas
 	}
 }
 
+// queueTask 是 C43 裁定的完整落地：前半格由调用方声明 adapter_key（readAdapterKey），
+// 后半格把它解析成 adapter_instances.id 再在同一笔事务里走三步 ——
+// Tasks.Queue（CREATED→QUEUED）→ Executions.Create（恰一行 execution_created）→
+// Tasks.Prepare（QUEUED→PREPARING、task_preparing）—— 成功回 PREPARING v3。
+//
+// 分派依赖（Instances + ExecutionCreate）没注入时回 501（C28②）：路由已在、能力没接线，
+// 不给"能 queue 但建不出 Execution"的半套面。解析走 d.Read（先解析后开事务，别把 SELECT
+// 压在串行的写通道里）；adapter_key 不存在 ⇒ 404，且在碰任何聚合之前返回。
+//
+// 明确不做（backend 第五十八批 Next action 原文）：(a) 不推 execution_starting —— §7 序列
+// 只到 execution_created → task_preparing，且 Started 是 STARTING→RUNNING、要 provider_execution_id，
+// 没有进程起来就写 STARTING 是给日志记一件没发生的事；(b) 501「本机没配起法」/503「有实例连不上」
+// 两臂要接 launcher 的运行时答案，拿不到就不先写。
+//
+// 重复 :queue 不需要幂等键：任务已在 PREPARING ⇒ Tasks.Queue 回 illegal_transition ⇒ 409
+// 且整笔事务回滚 ⇒ execution 不会多第二行（有用例钉这一条）。
 func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	adapterKey, ok := readAdapterKey(w, r)
+	if !ok {
+		return
+	}
+	if c.Instances == nil || c.ExecutionCreate == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented",
+			":queue 的分派腿还没装配（缺 AdapterResolver 或 ExecutionCreator）", true)
+		return
+	}
+	// 先解析后开事务：读走 d.Read，写事务里只做那三步状态推进。
+	instanceID, err := c.Instances.ResolveInstance(r.Context(), adapterKey)
+	if errors.Is(err, db.ErrAggregateNotFound) {
+		writeError(w, http.StatusNotFound, "not_found",
+			"没有这个 adapter_key 对应的实例（先 probe 一次让它登记）", false)
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	executionID := newUUIDv7()
 	taskAction(w, r, c, id, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
-		return c.Tasks.Queue(ctx, tx, id, cmd)
+		// ① CREATED→QUEUED：cmd 带着调用方的 If-Match（WantVersion），在这一步生效。
+		if _, err := c.Tasks.Queue(ctx, tx, id, cmd); err != nil {
+			return task.Result{}, err
+		}
+		// ② 同一笔事务里建 Execution。EventID/Correlation/Causation 复用 cmd 的命令链
+		// （契约① §4：一条命令链共享同一个 correlation_id）；AttemptNo=1、TriggerInitial 由 Create 默认。
+		//
+		// session_id 装配（第六十一批）：links 已有则抄第一条（按 ordinal）；没有则留空不发明 ——
+		// 创建侧 POST /tasks 无 session_id、今天也没有生产写入者建 links（第 264 条上报的缺口）。
+		// send 腿对空 session_id 回 404 session_not_found，不静默造一个会话。
+		sessionID := ""
+		if links, err := session.NewRepository(tx).ForTask(ctx, id); err != nil {
+			return task.Result{}, err
+		} else if len(links) > 0 {
+			sessionID = links[0].Session.ID
+		}
+		if _, err := c.ExecutionCreate.Create(ctx, tx, execution.NewExecution{
+			ID:                executionID,
+			TaskID:            id,
+			AdapterInstanceID: instanceID,
+			SessionID:         sessionID,
+			EventID:           newUUIDv7(),
+			PrincipalID:       cmd.PrincipalID,
+			CorrelationID:     cmd.CorrelationID,
+			CausationID:       cmd.CausationID,
+		}); err != nil {
+			return task.Result{}, err
+		}
+		// ③ QUEUED→PREPARING：execution_id 是这条事件的语义核心（§6）。
+		// WantVersion 清零 —— If-Match 只校验调用方看到的那个起始版本（v1），
+		// 后续两步是同一笔原子操作的内部推进，不能再拿 v1 去撞中间态 v2。
+		prepCmd := cmd
+		prepCmd.WantVersion = 0
+		prepCmd.EventID = newUUIDv7()
+		prepCmd.ExecutionID = executionID
+		return c.Tasks.Prepare(ctx, tx, id, prepCmd)
 	})
+}
+
+// readAdapterKey 读 `:queue` 的请求体。C43 把 `adapter_key` 定成**必填**，所以这里的口径是：
+// 没有体、体不是 JSON、字段缺省、值是空白 —— 四种都算"没声明调度对象"，一律 400 `validation_failed`，
+// 且在碰任何聚合之前返回（与 `readReasonBody` 那三个"reason 可选"的动作不同，那三个的 body 契约里没定义）。
+func readAdapterKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "读请求体失败", true)
+		return "", false
+	}
+	var body struct {
+		AdapterKey string `json:"adapter_key"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "请求体不是合法 JSON: "+err.Error(), false)
+		return "", false
+	}
+	if strings.TrimSpace(body.AdapterKey) == "" {
+		writeError(w, http.StatusBadRequest, "validation_failed",
+			"POST …:queue 必须带 adapter_key（C43：调度对象由调用方声明，Core 不猜默认、不代选实例）", false)
+		return "", false
+	}
+	return body.AdapterKey, true
 }
 
 // readReasonBody 读 :pause / :cancel 那一类"只有一个可选 reason 字段"的请求体。

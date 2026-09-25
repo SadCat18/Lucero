@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/SadCat18/lucero/core/internal/audit"
@@ -115,7 +116,14 @@ type auditedStore struct {
 	checkpoints *audit.CheckpointCounter
 }
 
+// errNoStore 是契约③ §7.3 要的那个"确定结局"：零值 `*db.DB` 不许有能 panic 的可达路径。
+// 它是**返回的错误**、不是 `return nil` 那种静默早退 —— 后者只是把 panic 换成"什么都没发生"，事后一样分不清（CO-44 ② 同一条）。
+var errNoStore = errors.New("cmd/core: 这笔写没装配到库通道（auditedStore.d 是零值）")
+
 func (s auditedStore) Write(ctx context.Context, fn func(tx *db.Tx) error) error {
+	if s.d == nil {
+		return errNoStore
+	}
 	before, err := auditHead(ctx, s.d)
 	if err != nil {
 		return err
@@ -134,7 +142,7 @@ func (s auditedStore) Write(ctx context.Context, fn func(tx *db.Tx) error) error
 }
 
 // auditHead 读链头。**为什么可以拿"提交前后两次读"当 append 条数**：
-// platform/db 的写通道是 `write.SetMaxOpenConns(1)`（db.go:21~25 自己写着"the serialized write channel"），
+// platform/db 的写通道是 `db.Open` 里那句 `write.SetMaxOpenConns(1)`（它自己的注释写着"the serialized write channel"），
 // 所以这两次读之间不会插进另一个提交者，delta 就是本笔事务写进去的审计行数。
 // 一旦哪天写通道不再串行，这个计数就会重复累加 —— 锚点本身仍然有效（Commit 只认递增 seq、
 // 内容是真提交过的行），错的是"第 1000 条"这个时机，不会造成误报篡改。

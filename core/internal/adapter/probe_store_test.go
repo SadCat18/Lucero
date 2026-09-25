@@ -2,7 +2,9 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SadCat18/lucero/core/internal/audit"
@@ -141,5 +143,70 @@ func TestSQLiteStoreHealthChangeIsTheOnlyRepeatedEvent(t *testing.T) {
 	}
 	if got := countRows(t, s, "SELECT count(*) FROM adapter_instances"); got != 1 {
 		t.Errorf("instance rows = %d, want 1", got)
+	}
+}
+
+// T-263's read door: the dispatch leg resolves adapter_key -> instance id through here and
+// nowhere else, so these three cases are the whole contract of that one method.
+func probeOnce(t *testing.T, s *SQLiteStore) string {
+	t.Helper()
+	id, err := s.RecordProbe(context.Background(), ProbeResult{
+		AdapterKey: "fake", DisplayName: "Fake Adapter", VerifiedAt: 1789900000000,
+		HealthState: HealthHealthy, EffectiveBackend: BackendNativeAPI, ProtocolVersion: "1.0",
+	})
+	if err != nil {
+		t.Fatalf("RecordProbe: %v", err)
+	}
+	return id
+}
+
+func TestResolveInstanceNamesTheRowProbeWrote(t *testing.T) {
+	s := openMigrated(t)
+	want := probeOnce(t, s)
+	got, err := s.ResolveInstance(context.Background(), "fake")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	if got != want {
+		t.Errorf("resolved %q, want the id RecordProbe wrote (%q) - a resolver that returns any other string is a second source of truth", got, want)
+	}
+}
+
+// The miss has to be a sentinel transport can recognise (adapters.go maps
+// db.ErrAggregateNotFound / sql.ErrNoRows to 404), and it has to name the key: "not found"
+// without the key is the reading that later turns into "the database is broken".
+func TestResolveInstanceSaysNotFoundForAnUnknownKey(t *testing.T) {
+	s := openMigrated(t)
+	probeOnce(t, s) // a row exists for some other key, so an empty result is really a miss
+	_, err := s.ResolveInstance(context.Background(), "ghost")
+	if !errors.Is(err, db.ErrAggregateNotFound) {
+		t.Fatalf("err = %v, want errors.Is(err, db.ErrAggregateNotFound) so the transport arm stays a 404 and not a 500", err)
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("err = %v, want the message to name the key that was not found", err)
+	}
+	// An empty key is not a special case: it matches no row, so it is the same answer.
+	if _, err := s.ResolveInstance(context.Background(), ""); !errors.Is(err, db.ErrAggregateNotFound) {
+		t.Errorf("empty key err = %v, want the same not-found sentinel", err)
+	}
+}
+
+// A resolver that writes would be the quiet version of the T-168 shape: the read that
+// "just makes sure the row exists" ends up owning half the write path.
+func TestResolveInstanceWritesNothing(t *testing.T) {
+	s := openMigrated(t)
+	id := probeOnce(t, s)
+	instances := countRows(t, s, "SELECT count(*) FROM adapter_instances")
+	events := countRows(t, s, "SELECT count(*) FROM event_journal")
+	for _, key := range []string{"fake", "ghost"} {
+		if _, err := s.ResolveInstance(context.Background(), key); err != nil && key == "fake" {
+			t.Fatalf("resolve %s: %v", key, err)
+		}
+	}
+	if got := countRows(t, s, "SELECT count(*) FROM adapter_instances"); got != instances {
+		t.Errorf("instance rows went %d -> %d: a read may not create or refresh rows", instances, got)
+	}
+	if got := countRows(t, s, "SELECT count(*) FROM event_journal"); got != events {
+		t.Errorf("journal rows went %d -> %d: a read books no event (the id %q proves the hit path found the row)", events, got, id)
 	}
 }

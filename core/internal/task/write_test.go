@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SadCat18/lucero/core/internal/eventjournal"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
@@ -224,20 +223,6 @@ func TestListKeysetCursorNoGapsNoDupes(t *testing.T) {
 	}
 }
 
-// requireCatalogued 检查这几个事件类型有没有进 db 的注册表（internal/eventjournal 的 catalog）。
-// C2 裁定新增的五个（task_paused / task_blocked / task_resumed / execution_paused / execution_resumed）
-// 至今不在里面，写它们会被平台层按 §9.1 判 P0 直接拒 → 已提 REQ-DB-3。
-// 这里用**条件跳过**而不是把断言删掉或注释掉：db 一加进注册表，这些正向用例自己就开始跑，
-// 不需要谁记得回来取消 skip；跳过时会打出等谁，不会被读成"通过"。
-func requireCatalogued(t *testing.T, types ...string) {
-	t.Helper()
-	for _, s := range types {
-		if !eventjournal.Registered(s) {
-			t.Skipf("%q 还没进 internal/eventjournal 的注册表（REQ-DB-3 等 db），写它会被 §9.1 判 P0", s)
-		}
-	}
-}
-
 // newTaskIn 把一条 Task 直接摆在指定状态（openWriteDB 已经种好两个 principals，所以不像
 // service_test.go 的 newTaskAt 那样再插一遍 —— 那会撞 principals 的主键）。
 // 用途：暂停/恢复只关心"从哪个状态动"，不关心它是怎么走到那儿的。
@@ -338,7 +323,6 @@ func TestPauseThenResumeWritesBothEvents(t *testing.T) {
 		t.Errorf("resume 到 CANCELLED 应报 ErrInvalidTask，实际 %v", err)
 	}
 
-	requireCatalogued(t, task.EventPaused, task.EventResumed)
 	var p task.Result
 	if err := d.Write(ctx, func(tx *db.Tx) error {
 		var err error
@@ -492,9 +476,7 @@ func TestResumeRefusesStatesThatWereNeverSuspended(t *testing.T) {
 	}
 
 	// BLOCKED 才是 §6 认的另一种 from，且它到 QUEUED 的边也在矩阵里。
-	// 这一小段要写 task_resumed（还没进注册表，REQ-DB-3），所以放在上面那两条守卫之后：
-	// 上面那两条不依赖注册表，无论 db 有没有补都会真跑。
-	requireCatalogued(t, task.EventResumed)
+	// 这一小段要写 task_resumed，仍排在上面那两条守卫之后（那是夹具顺序的需要，与注册表无关）。
 	newTaskIn(t, d, ctx, "t-blk", task.Blocked)
 	if err := d.Write(ctx, func(tx *db.Tx) error {
 		_, err := svc.Resume(ctx, tx, "t-blk", task.Queued, task.Command{EventID: "ev-rb", PrincipalID: "local-user"})

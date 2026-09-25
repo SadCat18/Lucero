@@ -22,6 +22,8 @@ import (
 type Writer interface {
 	Touch(a db.AggregateKind, id, setSQL string, args []any, ev db.EventDraft) (int64, error)
 	Create(a db.AggregateKind, id string, columns []string, values []any, ev db.EventDraft) error
+	// Append 给 messages 这类非聚合表用（§1.1 第 12 条：不占版本、不发事件行以外的东西）。
+	Append(table string, columns []string, values []any) (int64, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }

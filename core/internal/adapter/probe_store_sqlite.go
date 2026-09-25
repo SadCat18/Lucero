@@ -73,6 +73,42 @@ func lookupInstance(ctx context.Context, tx *db.Tx, adapterKey string) (instance
 	return got, true, nil
 }
 
+// ResolveInstance is the read door for adapter_key -> adapter_instances.id (T-263).
+// The dispatch leg needs that mapping and this store is the only place allowed to read
+// it: returning the id alone (not a row struct) keeps the ownership question out of
+// cmd/core, which per §7 must not carry business decisions - not even which column to pick.
+//
+// A key with no row reports db.ErrAggregateNotFound, wrapped so the message still names
+// the key: errors.Is stays true, which is what transport's 404 arm matches on
+// (api/http/adapters.go). It reads over d.Read like every other read in the tree
+// (approval/permission do the same) - taking the serialized write channel for a SELECT
+// would make a lookup wait behind unrelated writes.
+func (s *SQLiteStore) ResolveInstance(ctx context.Context, adapterKey string) (string, error) {
+	rows, err := s.d.Read.QueryContext(ctx,
+		"SELECT id FROM adapter_instances WHERE adapter_key = ?", adapterKey)
+	if err != nil {
+		return "", fmt.Errorf("resolve adapter %s: %w", adapterKey, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		// rows.Err() first, and only then "not found": a driver error that surfaces on the
+		// first Next() must not be answered with a 404. This branch has no mutant - a normal
+		// single-row SELECT over real SQLite cannot reach it in-process - so it is kept
+		// because getting the attribution wrong is worse than carrying three lines.
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("resolve adapter %s: %w", adapterKey, err)
+		}
+		return "", fmt.Errorf("resolve adapter %s: %w", adapterKey, db.ErrAggregateNotFound)
+	}
+	var id string
+	if err := rows.Scan(&id); err != nil {
+		return "", fmt.Errorf("scan adapter %s: %w", adapterKey, err)
+	}
+	// No trailing rows.Err() here: adapter_key is UNIQUE and the row is already in hand, so
+	// that check is one nobody can make fail.
+	return id, nil
+}
+
 // RecordProbe writes the instance row and one row per verified capability in a single
 // transaction. Atomicity is the point: an Adapter that landed its health but not its
 // capabilities would be advertised as HEALTHY with an empty offer, and §3's effective

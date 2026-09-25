@@ -244,13 +244,18 @@ owner_of_table() { printf '%s\n' "$TABLE_MAP" | awk -F'|' -v t="$1" '$1==t{print
 # kind: write=生产代码里的写、fixture=_test.go 里的写、read=只读引用。
 # 单独成函数只为了 --selftest 能拿合成件验它，而不是信它"应该能抓到"。
 cross_package_refs() {
-  local root="$1" tbl want excl hits line f wmeth wtbl
+  local root="$1" tbl want excl hits line f wmeth wtbl VALUE_SHAPES
   while IFS='|' read -r tbl want; do
     [[ -z "$tbl" ]] && continue
     # 机制表（event_journal/audit_entries/…）也扫：读走 INFO、写才报红。
     # 之前整类跳过，导致 REQ-WS-2 那种"event_journal 的读视图住在 cmd/core/journal.go"看不见。
     excl="^${root}internal/platform/"          # 机制层的映射表本来就该知道所有表名
     for w in $want; do excl="$excl|^${root}${w}/"; done   # 归属包自己引用自己的表 = 正常
+    # "这是个值，不是表名"的四类形状（T-236，详见下面 value 分支的注释）。按表名现算，不留第二份表名清单。
+    VALUE_SHAPES="[\"'\`]/${tbl}"
+    VALUE_SHAPES="$VALUE_SHAPES|(==|!=)[[:space:]]*[\"'\`]${tbl}[\"'\`]|[\"'\`]${tbl}[\"'\`][[:space:]]*(==|!=)|case[[:space:]]+[\"'\`]${tbl}[\"'\`]"
+    VALUE_SHAPES="$VALUE_SHAPES|return[^(]*,[[:space:]]*[\"'\`]${tbl}[\"'\`]"
+    VALUE_SHAPES="$VALUE_SHAPES|strings\.[A-Za-z]+\([^)]*,[[:space:]]*[\"'\`]${tbl}[\"'\`]"
     hits="$(grep -rniE "\b${tbl}\b" "$root" --include='*.go' 2>/dev/null \
              | grep -vE "$excl" \
              | strip_comments \
@@ -276,6 +281,17 @@ cross_package_refs() {
         # 真 SQL 写语句：关键字后面必须跟空白。写成 UPDATE|INSERT|DELETE 不带边界的话，
         # Go 的 UpdateOnce( / DeleteRow( 会被大小写无关地吞进来——16:2x 那条假红就是这么来的。
         printf 'write|%s|%s|%s\n' "$f" "$tbl" "$want"
+      elif printf '%s' "$line" | grep -qE "$VALUE_SHAPES"; then
+        # 形状排除（T-236，主控 08:16：假阳性来自 `messages` 这类"既是表名又是 URL 段/verb 值"的词）。
+        # **只判形状，不许要求代码里留标记，也不许要求注释来喂它**。四条各对应一类"这是个值"的语法位：
+        #   A 前导 `/` 的字面量 = 路径段（`"/messages"`、`"/api/v1/sessions/{id}/messages"`）；
+        #   B 与变量比较的字面量（`verb == "messages"`、`"messages" != x`、`case "messages":`）= verb/token 值；
+        #   C `return` 里非首元素（`return sub, "messages", true`）—— **中间不许出现 `(`**，
+        #     所以 `return tx.Append("a", "quota_accounts")` 走不进这一条，仍会掉进 literal 被报红；
+        #   D `strings.*(..., "messages")` 非首参 = 字符串工具的值参。
+        # 这一支排在 literal **之前**是必须的：A 的形状（引号后紧跟 `/`）本来就不满足"整个字面量等于表名"，
+        # 放在 literal 分支里面它永远不响（我第一次就把它塞错了位置，自测的 path.go 当场没被判成 value）。
+        printf 'value|%s|%s|%s\n' "$f" "$tbl" "$want"
       elif printf '%s' "$line" | grep -qE "[\"'\`]${tbl}[\"'\`]"; then
         # 整个字符串字面量等于表名，还要看它的**语法角色**：
         # Go 结构体 tag（`json:"sessions"`）里的引号是字段序列化名，不是"表名以变量传入"的源头。
@@ -296,11 +312,20 @@ cross_package_refs() {
   done <<< "$TABLE_MAP"
 }
 
+# "表名来自变量的写调用"的形状（REQ-T15 后半 / T-273④：计数留痕、不判红）。
+# **单独成函数是为了 --selftest 能喂合成件验它**：真树上今天读出来是 0 处，
+# 而"0 处"和"这条腿是死的"在同一份输出里长得一模一样（我今晚已经为这个形状栽过两次：
+# `go list` 空清单让指纹永真、`{{$_.Dir}}` 让断言永不命中）。所以必须有"喂得进合成变量件 ⇒ 计数 1"这一腿。
+varpass_sites() {   # varpass_sites <根目录>
+  scan_go '\b(tx|d|db|store|repo)\.(Append|AppendEventOnly|CreateVersionless|TouchTransition|UpdateOnce|Touch|Create)\([a-z_][A-Za-z0-9_]*[[:space:]]*[,)]' "$1" \
+    | grep -v '/platform/db/' | grep -v '_test\.go:' || true
+}
+
 check_2() {
   hdr "2/9 跨包表引用（T-24：按表名查，不看函数名写法）"
   local all kind f tbl want
   all="$(cross_package_refs core/)"
-  local n=0 reads=0 fx=0 lits=0 w13=0 tags=0 readfiles='' fxf='' litfiles='' litwhat='' tagfiles=''
+  local n=0 reads=0 fx=0 lits=0 w13=0 tags=0 vals=0 valfiles='' valwhat='' readfiles='' fxf='' litfiles='' litwhat='' tagfiles=''
   while IFS='|' read -r kind f tbl want snippet; do
     [[ -z "$kind" ]] && continue
     case "$kind" in
@@ -309,6 +334,7 @@ check_2() {
       literal) lits=$((lits+1)); litfiles="$litfiles $f"; litwhat="$litwhat $tbl@$f" ;;
       read)    reads=$((reads+1)); readfiles="$readfiles $f" ;;
       tag)     tags=$((tags+1)); tagfiles="$tagfiles $f" ;;
+      value)   vals=$((vals+1)); valfiles="$valfiles $f"; valwhat="$valwhat $tbl@$f" ;;
       w13-allow) w13=$((w13+1)) ;;
     esac
   done <<< "$all"
@@ -318,8 +344,24 @@ check_2() {
 ' $litwhat | sort -u | tr '
 ' ' ')"
   (( tags > 0 )) && info "另有 $tags 处表名只出现在 Go 结构体 tag 里（序列化名，不是表引用）：$(printf '%s\n' $tagfiles | sort -u | tr '\n' ' ')"
+  # 被形状排除的那几处**必须报出来**，不能静默消失：静默排除与静默放行区分不开，下一条假红来了没人看得见。
+  # 同 W13 那一节的"非表名 $note"计数一个思路（T-236 主控也点了这句）。
+  (( vals > 0 )) && info "另有 $vals 处表名字面量落在**值位**（前导 / 的路径段、与 verb/变量比较、case、return/strings 的非首参），按形状不参与表名比对；定义位（const/var = \"表名\"）不在其中：$(printf '%s\n' $valwhat | sort -u | tr '\n' ' ')"
   (( reads > 0 )) && info "另有 $reads 处只读引用（§1.3/§4 允许跨模块读与 JOIN，不判越界）：$(printf '%s\n' $readfiles | sort -u | tr '\n' ' ')"
   (( n == 0 && reads == 0 && fx == 0 )) && info "没有任何包在自己的目录之外提到别人的表名"
+  # REQ-T15 后半（主控 10:36 T-273④ 当场裁）**：不判红，但要现读 + 计数 + 打出来。**
+  # 形状：写 API 的首参是**标识符**而不是字面量 ⇒ 表名从变量来，本脚本这条"按表名查"的腿天然看不见它。
+  # 为什么不判红：静态上从变量名追不到表名（`tx.Append(t, m)` 里 t 可能是 `"tasks"` 也可能是拼出来的），
+  # 判红就是逼调用方把字面量摊平在调用点——那是拿判据换写法。也不许悄悄放行：悄悄放行=下一个读者以为覆盖过了。
+  local varpass
+  varpass="$(varpass_sites core)"
+  if [[ -n "$varpass" ]]; then
+    info "表名来自变量的写调用 $(printf '%s\n' "$varpass" | grep -c .) 处（**这条腿看不见它们传的是哪张表，计数在此留痕，不当已验**）："
+    printf '%s\n' "$varpass" | head -6 | sed 's/^/      /'
+    info "      （上列前 6 条，总数以上面那个计数为准）"
+  else
+    info "表名来自变量的写调用 0 处（非 platform/db、非测试码；有字面量首参的写调用由 2b/8 那节管）"
+  fi
   local ex
   ex="$(scan_go '\.Exec(Context)?\(' core | grep -v '/platform/db/' | grep -v '_test\.go:' || true)"
   if [[ -n "$ex" ]]; then
@@ -430,6 +472,28 @@ check_w13() {
 
 # --- check 3: dirty paths vs ownership matrix -------------------------------
 FROZEN='core/migrations/000001_core_schema.sql'
+# 给"§7 只有宽行罩住它、操作摘要表另有指名"这类路径生成一句**两边都现读**的话。
+# T-272②（主控 10:32）要改的就是这句。旧文案是：
+#   "[契约冲突] $p：§7 判给主控、orchestration.md 摘要表判给 adapter，且 adapter 已据此在改。"
+# 三处都不该由脚本来说：① 脚本那时**根本没读摘要表**，"判给 adapter"是抄来的断言；
+# ② §7 其实没有针对这行的窄规则，命中的是宽行 `specs/**`→orchestrator —— 说"§7 判给主控"把"宽行罩住"
+#    和"指名归属"混成了一件事；③ 最坏的是"已据此在改"：**判据文案里不许钉"谁正在做什么"这种会腐烂的现状**
+#    （与 §1.1 第 14 条禁行号同族），而这一次改它的恰好是主控自己。⇒ 现在：摘要表真的去读，读不到就说读不到；
+#    谁在改这一维**整段删掉**，不由本脚本判断。
+ownership_conflict_note() {   # ownership_conflict_note <路径> [摘要表文件]
+  local p="$1" tbl="${2:-.qoder/progress/orchestration.md}" d role='' srctext
+  d="${p%/*}"
+  if [[ -f "$tbl" ]]; then
+    # 摘要表行长这样：| `adapter` | `specs/adapter-protocol`、`adapters/fake/`、… | 职责 |
+    # 只认第一格带反引号的行（正文里别的段落也会提这个目录名，不能拿它当"表里判给谁"）。
+    role="$(awk -F'|' -v dir="$d" 'index($0, dir) && $2 ~ /`/ { r = $2; gsub(/[`[:space:]]/, "", r); print r; exit }' "$tbl" 2>/dev/null)"
+  fi
+  # 两段各自成句，别拿 ${role:+…}${role:-…} 拼——那样 role 有值时后一段也会展开，会印出 "adapteradapter"。
+  if [[ -n "$role" ]]; then srctext="操作摘要表里现读为判给 \`$role\`"; else srctext="操作摘要表里没找到这一行（表可能已改版）"; fi
+  printf '%s：§7 没有针对它的窄行（命中的是宽行 `specs/**`→orchestrator）；%s。' "$p" "$srctext"
+  printf ' 冲突时以 §7 为准（本脚本开头就是这么定的），所以本项**不计越界**；要定归属请补 §7 那一行。谁在改不由本脚本判断。'
+}
+
 check_3() {
   hdr "3/9 变更文件 vs 角色所有权矩阵（契约③ §7；基线 $BASELINE）"
   if ! git rev-parse --verify -q "$BASELINE" >/dev/null; then bad "基线 $BASELINE 不存在"; return; fi
@@ -457,8 +521,7 @@ check_3() {
       orchestrator)
         git ls-files --error-unmatch "$p" >/dev/null 2>&1 || \
           bad "主控独占文件以未跟踪状态出现（worker 不得新建，需变更写 Coordination REQ）: $p"
-        [[ "$p" == specs/adapter-protocol/* ]] && \
-          report "  [契约冲突] $p：§7 判给主控、orchestration.md 摘要表判给 adapter，且 adapter 已据此在改。请主控裁定，本项不计越界。" ;;
+        [[ "$p" == specs/adapter-protocol/* ]] && report "  [归属待裁] $(ownership_conflict_note "$p")" ;;
     esac
   done <<< "$ALL"
   (( NM > 0 )) && bad "${NMROOT}node_modules/ 下有 $NM 个第三方文件既没被忽略也没被跟踪——.gitignore 第 4 行是根锚定的 /node_modules/，子目录不吃；任何一次 git add -A 都会把依赖树写进版本库"
@@ -565,18 +628,34 @@ SPEC3='specs/api-contract-v0.1.md'
 SPEC1='specs/events/event-contract-v0.1.md'
 YAML='specs/openapi/core-v1.yaml'
 check_7() {
-  hdr "7/9 /api/v1 面变更的三处同步（契约③ §6.3：yaml + 契约③ + 契约① 事件目录）"
-  # 第一腿（现在就能判）：契约③ §4 提到的事件类型必须已在契约① §6 登记。
+  hdr "7/9 /api/v1 面变更的三处同步（契约③ §6.3：yaml + 契约③ + 事件契约 §6 目录）"
+  # 第一腿（弱形状，只判"有没有登记过"）：契约③ §4 里出现的事件名，必须在**事件契约**
+  # （`specs/events/event-contract-v0.1.md`）里出现过。
+  # T-257②（主控 09:23）改的就是这句文案：原先写"契约① §6"，而**契约①（`contracts-internal-v0.1.md`）只有 §0~§5、
+  # 没有事件目录**（`grep -c '^## 6\.' 契约①` = 0），真正被读的从来是上面那个文件 —— 也就是**代码没扫错，名字写错了**。
+  # ⚠ 诚实交代这一腿的强度：它拿"整份事件契约里出现过"当通过，**不等于"在 §6 目录表里登记过"**。
+  #   真按 §6 收紧要重做一遍"合并行展开"的解析（`execution_cancelled / _failed / _succeeded` 那种），
+  #   而那份解析已经住在我的 Go 用例里（`TestEventCatalogMatchesJournalConstants` / `TestEventTypeTripleEquality`）——
+  #   **同一条规则不在两处各写一份**（写两份迟早分叉，那是第四处真相）。所以 §6 级别的对拍以那两条 Go 用例为准，
+  #   这一腿只当"契约③ 用了一个事件契约里根本没有的名字"的粗筛，并在 INFO 里明说自己有多粗。
   local ev n=0 miss=0
+  CATALOG_SRC="${LUCERO_EVENT_SPEC:-specs/events/event-contract-v0.1.md}"
+  API_FACE_SRC="${LUCERO_API_SPEC3:-specs/api-contract-v0.1.md}"
   while read -r ev; do
     [[ -z "$ev" ]] && continue
     n=$((n+1))
-    if ! grep -qwF -- "$ev" "$SPEC1"; then
-      bad "契约③ §4 用了事件 $ev，契约① §6 目录里没有它"
+    if ! grep -qwF -- "$ev" "$CATALOG_SRC"; then
+      bad "契约③ §4 用了事件 $ev，事件契约（$CATALOG_SRC）里没有它"
       miss=$((miss+1))
     fi
-  done < <(sed -n '/^## 4\./,/^## 5\./p' "$SPEC3" | grep -oE '[a-z][a-z0-9]*_[a-z0-9_]+' | sort -u)
-  (( miss == 0 )) && info "事件目录那一腿：$n 个事件名全部已在契约① §6 登记"
+  done < <(sed -n '/^## 4\./,/^## 5\./p' "$API_FACE_SRC" | grep -oE '[a-z][a-z0-9]*_[a-z0-9_]+' | sort -u)
+  # 下界闸：**空集比空集是最坏的假绿** —— §4 一旦改号/挪走，sed 抓到空区间，这条腿就会
+  # 欢天喜地地报"0 个事件名全部已登记"。5 是"今天 18 个，少到 5 个以下只可能是解析坏了"的经验值。
+  if (( n < 5 )); then
+    bad "事件名只解析出 $n 个（下界 5）⇒ 契约③ 的 §4 区间被截断或改了编号，**这条腿现在什么都看不见**"
+  elif (( miss == 0 )); then
+    info "事件目录那一腿：$n 个事件名全部在事件契约里出现过（粗筛：全文出现即通过，§6 级对拍见 Go 用例）"
+  fi
   # 第二腿（等 frontend）：yaml 的资源前缀集合必须与契约③ §3 双向一致。
   if [[ ! -f "$YAML" ]]; then
     info "未满足→标记：$YAML 尚未生成（frontend 未派）。这一腿本轮不判，等它首次落地即自动生效。"
@@ -824,6 +903,31 @@ type row struct {
 
 const q = `SELECT id FROM quota_accounts`
 ' > "$fx2/quota/own.go"
+  # ↓ T-236（主控 08:16）：`messages` 这类词既是表名又是 URL 段/verb 值，假阳性就出在这里。
+  #   四类**值位形状**必须不参与表名比对，而"定义位"（dyn.go 的 const = "表名"）必须照旧算 literal。
+  printf 'package task\n\nfunc f(p string) bool { return strings.HasSuffix(p, "/quota_accounts") }\n'      > "$fx2/task/path.go"
+  # CutSuffix 那一行是主控 08:16 原话里被点名的形状，逐字对照着写（把表名换成合成表名而已）。
+  printf 'package task\n\nfunc f(rest string) (string, bool) { return strings.CutSuffix(rest, "/quota_accounts") }\n' > "$fx2/task/cut.go"
+  printf 'package task\n\nfunc f(verb string) bool { return verb == "quota_accounts" }\n'                  > "$fx2/task/verb.go"
+  printf 'package task\n\nfunc f() (string, string, bool) { return "sub", "quota_accounts", true }\n'      > "$fx2/task/ret.go"
+  printf 'package task\n\nfunc f(v string) { switch v { case "quota_accounts": } }\n'                       > "$fx2/task/case.go"
+  printf 'package task\n\nfunc f(p string) bool { return strings.EqualFold(p, "quota_accounts") }\n'       > "$fx2/task/fold.go"
+  # ---- 证据顺序按 T-241（主控 08:51 重申）：**先**立"真绕过必须照旧红"，**再**谈形状排除。
+  #      倒过来做就会出现"加了排除、把真绕过一起放走"的判据 —— 所以下面三件红件先写、六件值位件后写，
+  #      并且 M2（把排除改成 `.*`）必须喊出红件之外的漏网（见 selftest 末尾的断言）。
+  # 真绕过归属的三种写法（三种都必须在**任何**排除之下仍然红）：
+  #   · 表名当写口首参传进去（`tx.Append("quota_accounts", m)`）；
+  #   · 裸 SQL 写，语法正确（`UPDATE quota_accounts SET …`）；
+  #   · 裸 SQL 写，**语法不合法**（`UPDATE quota_accounts: SET …`）——判据只看形状，
+  #     不许要求"这串 SQL 能跑"才算绕过；否则一句 `UPDATE tbl:` 就绕过了关键字腿。
+  printf 'package task\n\nfunc f(m any) { _, _ = tx.Append("quota_accounts", m) }\n'                        > "$fx2/task/w2.go"
+  printf 'package task\n\nfunc f() { _ = db.QueryRow("UPDATE quota_accounts: SET label = ?", 1) }\n'        > "$fx2/task/w3.go"
+  # C 类（return 里非首元素）的**边界**：`return` 与字面量之间出现 `(` 就不算值位 ——
+  # 否则 `return tx.Append("x", "quota_accounts")` 会被"排除"掉，那是拿排除开的一个新洞。
+  printf 'package task\n\nfunc f(m any) ([]string, error) { return nil, tx.Append("x", "quota_accounts", m) }\n' > "$fx2/task/ret2.go"
+  # 裸 SQL 读（§1.3 允许跨模块读）：今天落在 read/INFO，**我不擅自升成红**，只把这一格断成"现状是 read"
+  # 并写成 REQ-T22 交主控裁（要红就改契约，别让我在脚本里偷偷加严）。
+  printf 'package task\n\nconst q = "SELECT id FROM quota_accounts WHERE ok = ?"\n'                         > "$fx2/task/sel.go"
   local out; out="$(cross_package_refs "$(dirname "$fx2")/")"
   printf '%s
 ' "$out" | grep -qE '^write\|.*task/w\.go\|quota_accounts\|' ||     { report "  [SELFTEST FAIL] 按表名扫描抓不到 task 包写 quota_accounts"; fails=$((fails+1)); }
@@ -833,6 +937,30 @@ const q = `SELECT id FROM quota_accounts`
     { report "  [SELFTEST FAIL] 结构体 tag 里的表名没被单列成 tag —— literal 腿会把序列化名判成写表（今天实测的第二条假阳性）"; fails=$((fails+1)); }
   printf '%s\n' "$out" | grep -qE 'comment\.go' && \
     { report "  [SELFTEST FAIL] 只在注释里出现的表名被当成了代码（strip_comments 没生效 ⇒ 假红与假绿都会来）"; fails=$((fails+1)); }
+  # ---- T-236 的双向对照：四类值位形状必须**不红**，真写口必须**照旧红** --------------------
+  # 只验"排除生效"不验"排除不吞真越界"，等于交出一条会把真越界一起放行的假宽松判据（§1.1 第 16 条同族）。
+  local vbad vf
+  for vf in path cut verb ret case fold; do
+    printf '%s\n' "$out" | grep -qE "^value\|.*task/${vf}\.go\|quota_accounts\|" || \
+      { report "  [SELFTEST FAIL] 值位形状 ${vf}.go 没被单列成 value —— 它会被 literal 腿判成越界（就是 T-236 那两条假红）"; fails=$((fails+1)); }
+    if printf '%s\n' "$out" | grep -qE "^(literal|write)\|.*task/${vf}\.go\|"; then
+      vbad=1; report "  [SELFTEST FAIL] ${vf}.go 仍被判成 literal/write（排除没生效）"; fails=$((fails+1))
+    fi
+  done
+  printf '%s\n' "$out" | grep -qE '^write\|.*task/w2\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 非归属包里 tx.Append(\"quota_accounts\", …) 没判成 write —— 值位排除把真越界一起放行了"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^write\|.*task/w3\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 语法不合法的裸 SQL 写（UPDATE quota_accounts: SET）没判成 write —— 判据开始要求'SQL 能跑'，那是一句冒号就绕过的门"; fails=$((fails+1)); }
+  # C 类的边界要单独断：排除"值位"不许顺手把 `return 调用(…, "表名")` 也放掉。
+  if printf '%s\n' "$out" | grep -qE '^value\|.*task/ret2\.go\|'; then
+    report "  [SELFTEST FAIL] ret2.go（return 里带调用的表名）被判成了 value —— C 类排除过宽，开了一个新洞"; fails=$((fails+1))
+  fi
+  printf '%s\n' "$out" | grep -qE '^(write|literal)\|.*task/ret2\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] ret2.go 既不是 write 也不是 literal（等于这条形状没人管）"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^literal\|.*task/dyn\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 定义位 const tblName = \"quota_accounts\" 不再是 literal（排除吞掉了变量传表名的正主）"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^read\|.*task/sel\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 裸 SQL 读的归类从 read/INFO 变了（我没授权自己收紧这一格，见 REQ-T22）"; fails=$((fails+1)); }
   printf '%s\n' "$out" | grep -qE '^write\|.*task/trailing\.go\|quota_accounts\|' || \
     { report "  [SELFTEST FAIL] 行内注释之后的真写调用被一起剥掉了（剥过头 ⇒ 漏报比误报更坏）"; fails=$((fails+1)); }
   printf '%s\n' "$out" | grep -qE '^literal\|.*task/tag\.go\|' && \
@@ -898,6 +1026,54 @@ const q = `SELECT id FROM quota_accounts`
   (( VIOL == before + 1 )) || { report "  [SELFTEST FAIL] 前缀差集只报出 $((VIOL-before)) 条，期望 1"; fails=$((fails+1)); }
   VIOL=$before
   grep -qwF project_created "$SPEC1" || { report "  [SELFTEST FAIL] 事件目录那一腿读不到契约①（$SPEC1），它成了永真式"; fails=$((fails+1)); }
+  # ---- 事件名那一腿（check_7 第一腿）的三向对照（T-257② 顺手补的：文案改准之后，强度也要能自证）----
+  # 用 LUCERO_API_SPEC3 / LUCERO_EVENT_SPEC 两个钩子喂合成文档，跑的是出厂实现本身，不是抄一份来比。
+  local e_dir="$tmp/evsync"; mkdir -p "$e_dir"
+  printf '## 4. 面\n\ntask_created quota_exhausted project_created session_updated execution_started zz_probe_event\n\n## 5. 下一节\n' > "$e_dir/api.md"
+  printf '## 6. 目录\n\ntask_created quota_exhausted project_created session_updated execution_started zz_probe_event\n' > "$e_dir/cat_full.md"
+  printf '## 6. 目录\n\ntask_created quota_exhausted project_created session_updated execution_started\n'           > "$e_dir/cat_missing.md"
+  printf '## 3. 没有第四节\n\n随便什么\n'                                                                      > "$e_dir/api_nosec4.md"
+  local o7 nv
+  o7="$(LUCERO_API_SPEC3="$e_dir/api.md" LUCERO_EVENT_SPEC="$e_dir/cat_full.md" check_7 2>&1)"
+  nv="$(printf '%s\n' "$o7" | grep -c '\[VIOLATION\]')"
+  [[ "$nv" == "0" && "$o7" == *"6 个事件名全部在事件契约里出现过"* ]] || \
+    { report "  [SELFTEST FAIL] 事件名全登记时这一腿不干净（VIOL=$nv，期望 0）：$(printf '%s\n' "$o7" | grep VIOLATION | head -1)"; fails=$((fails+1)); }
+  o7="$(LUCERO_API_SPEC3="$e_dir/api.md" LUCERO_EVENT_SPEC="$e_dir/cat_missing.md" check_7 2>&1)"
+  nv="$(printf '%s\n' "$o7" | grep -c '\[VIOLATION\]')"
+  { [[ "$nv" == "1" ]] && printf '%s' "$o7" | grep -q 'zz_probe_event'; } || \
+    { report "  [SELFTEST FAIL] 少登记一个事件名没被点出来（VIOL=$nv，期望 1）"; fails=$((fails+1)); }
+  # 最坏的一种假绿：§4 改号/挪走 ⇒ 解析出空集 ⇒ "0 个全部已登记"。下界闸必须把它拦成红。
+  o7="$(LUCERO_API_SPEC3="$e_dir/api_nosec4.md" LUCERO_EVENT_SPEC="$e_dir/cat_full.md" check_7 2>&1)"
+  printf '%s' "$o7" | grep -q '只解析出 0 个' || \
+    { report "  [SELFTEST FAIL] 空区间没被下界闸拦住 ⇒ 这一腿可以静默失明"; fails=$((fails+1)); }
+  # ---- 归属待裁那句（T-272②）：三段都必须**现读**，且永远不许出现"谁正在改"这种会腐烂的现状 ----
+  printf '| `zzrole` | `specs/fake_dir`、`x/` | 职责 |\n' > "$e_dir/table.md"
+  local n1 n2
+  n1="$(ownership_conflict_note specs/fake_dir/a.md "$e_dir/table.md")"
+  n2="$(ownership_conflict_note specs/not_in_table/a.md "$e_dir/table.md")"
+  printf '%s' "$n1" | grep -q 'zzrole' || \
+    { report "  [SELFTEST FAIL] 摘要表里明明有这一行，那句话却没说出现读到的角色：$n1"; fails=$((fails+1)); }
+  printf '%s' "$n2" | grep -q '没找到这一行' || \
+    { report "  [SELFTEST FAIL] 表里没有这行时它没有老实承认，而是继续编一个归属：$n2"; fails=$((fails+1)); }
+  local rot
+  for rot in '已据此在改' '正在改' '已在改' '已提交待复核'; do
+    if printf '%s\n%s\n' "$n1" "$n2" | grep -qF -- "$rot"; then
+      report "  [SELFTEST FAIL] 归属那句话里又出现了现状断言「$rot」—— 脚本不可能知道谁在改，写死就会腐烂"; fails=$((fails+1))
+    fi
+  done
+  # ---- 表名来自变量那一腿（T-273④ 的计数）：正向必须数到、字面量首参必须不算、归属包自己不算 ----
+  local v_dir="$tmp/vp"; mkdir -p "$v_dir/internal/platform/db"
+  printf 'package a\n\nfunc f(t string, m any) { _, _ = tx.Append(t, m) }\n'                       > "$v_dir/var.go"
+  printf 'package a\n\nfunc f(m any) { _, _ = tx.Append("tasks", m) }\n'                            > "$v_dir/lit.go"
+  printf 'package db\n\nfunc f(t string, m any) { _, _ = tx.Append(t, m) }\n'                       > "$v_dir/internal/platform/db/own.go"
+  local vp; vp="$(varpass_sites "$v_dir")"
+  printf '%s' "$vp" | grep -q 'var\.go' || \
+    { report "  [SELFTEST FAIL] 变量传表名的形状没数到（真树上那条 0 处因此不可信——可能就是腿死了）"; fails=$((fails+1)); }
+  printf '%s' "$vp" | grep -q 'lit\.go' && \
+    { report "  [SELFTEST FAIL] 字面量首参被算进了'变量传表名'计数（两档会互相稀释）"; fails=$((fails+1)); }
+  printf '%s' "$vp" | grep -q 'platform/db' && \
+    { report "  [SELFTEST FAIL] platform/db 自己没被排除（它是唯一合法写口，数进去就是天天有噪声）"; fails=$((fails+1)); }
+  rm -f "$e_dir/table.md"
   rm -rf "$tmp"
   (( fails == 0 )) && report "  [SELFTEST OK] 扫描器都能对合成越界报警"
   return $(( fails > 0 ? 2 : 0 ))

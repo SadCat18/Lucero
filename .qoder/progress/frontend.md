@@ -3,10 +3,14 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-23T03:36:30+08:00（T-191 子轮：巡检要的一行门控诊断已落到 `.qoder/evidence/frontend/chain-gating-t191.md`，
-字段含路径、实测 status/code、命中分支 file:line、归属构建、重跑命令。同一实例 03:34:42 重建后复跑，五条读数与 03:24 那次一致。
-更正本身有三处与现盘不符（discover 是 501 不是 405；manage 有路由、走 default 明确 501；`:sync` 已通到业务层、实测 404），写在正文。
-离线五步链仍是 03:31:00 那份全 0；live 03:30:45 是 1 failed | 19 passed，唯一那条红指向 backend 的 405。更早各轮按原段读。）
+LAST_UPDATED: 2026-09-24T10:54:12+08:00（T-276 子轮：只刷 `## Current checkpoint` 那五行索引（自 09-20 起第一次跟上正文）+ 按新规矩把"等"写成全三问；
+上一轮 T-264（10:14:28 记）：C43 落我这一格 —— `queueTask` 补 `requestBody`（`QueueTaskRequest`，`adapter_key` 必填），
+调用方三处跟上（`client.ts` 新增 `queueTask` 并把 `'queue'` 从 `taskAction` 动词表摘掉、`panel.ts` 用 probe 回执的 key、live 第 6 格两条腿）；
+顺带删掉我在 `GET /executions` 上多声明的 `cursor`/`limit`（Core 400 拒它们，契约正文只有 `?task_id=`）。
+六腿闸门 exit 全 0（含 `C8-13 = 64/64/64`），live 最后一次 **21 passed / 0 skip**（10:10:23，构建 mtime 10:10:13）：
+带 key ⇒ 200、缺 key ⇒ 400 `validation_failed`；**第 7 格的性质换了** —— 从"读面从未注册"变成"200 空清单"，
+卡点移到 `tasks.go:340` 那句 `_ = adapterKey`（等 T-263 的只读接口）。旧读数指针：T-256 09:28:41（yaml 事件枚举补 `execution_starting` ⇒ 64 条、
+C8-13 首跑 64/64/64、并固化 `run-gates.sh`）/ T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。）
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -43,13 +47,21 @@ LAST_UPDATED: 2026-09-23T03:36:30+08:00（T-191 子轮：巡检要的一行门�
 
 ## Current checkpoint
 
-- Stage: T-30 四条裁定 + F-16/F-17 归因全部落地；REST 面真联调绿，WS 面等 backend 一行修复
-- Status: in_progress
-- Last verified action: 本机时间 **2026-09-20 12:52:25 +0800** 四道闸门重跑全绿（validate 全部通过 / codegen 69.9ms /
-  vitest 19 passed + 8 skipped / build ✓），是在「F-16 变异 → 2 红 → 绝对路径回滚 → diff 干净」之后跑的；此后只改了本文件
-- Next action: 等 REQ-F-17 修好 → 跑 `LUCERO_CORE_ENDPOINT_FILE=… LUCERO_WS_READY=1 npx vitest run src/__tests__/live-core.test.ts`
-  取 WS 面正向证据（客户端 hello、票单次使用、hello_ack 抬游标三条已写好）
-- Verification: `cd apps/desktop && npm run validate && npm run codegen && npx vitest run && npm run build`
+> **T-276 规矩（主控 10:45 裁，本册被举成反面例子）**：每次交账**同时**刷下面那五行，`Last verified action` 的时刻必须当场 `date` 实读；
+> "等"这一格写全**等谁 / 等什么 / 谁解锁**；头部与正文不一致时以正文为准，且那次交账记为"头部未刷 = 交账不完整"。
+
+- Stage: T-264 已交账 —— C43 的 `adapter_key` 请求体落进 yaml 并重生生成物，三处调用方跟上；面板链第 1~6 格真绿、第 7 格 **200 空清单**、第 8~10 格 blocked
+- Status: in_progress（**无我这侧的欠工**；剩的两条外部问题都不记 frontend 账：`GET /sessions/{id}/messages` 的归因文案、`:queue` 编排半格）
+- Last verified action: 当场 `date` 实读 **2026-09-24 10:54:12 +0800**（刷这五行的一刻，此刻之后我没再跑任何判据）。
+  **最后一次真跑**：闸门链六腿 **10:09:19 全部 exit=0**（`.qoder/evidence/frontend/gates-t264.txt`，含 `C8-13 三格相等 64/64/64`）
+  + live **10:10:23 → 21 passed / 0 skip**（`live-t264.txt`，归因边界＝构建 mtime `09-24_10:10:13`）。
+  两者之后我只在 10:21:35 做过**只读** git 复量（更正巡检那条归因），没碰源码 —— `find … -newermt "2026-09-24 10:10:23"` 为空。
+- Next action: **等谁**＝backend（T-262 的后半格）＋ adapter（T-263 导出 `adapter_key → adapter_instances.id` 那个只读接口）；
+  **等什么**＝`:queue` 真去建 Execution 并产 `execution_created`，让第 7 格从"200 空清单"变成拿得到 id（`tasks.go:340` 那句 `_ = adapterKey` 就是没落地的字面证据）；
+  **谁解锁**＝主控派单 + 那两位交账，**我这侧不需要预先改任何东西**（C43 方案乙已按裁落地，不存在"乙二版"欠工）。
+  解锁后的动作：`bash .scratch/frontend/run-t264.sh` 量第 8~10 格（`/executions/{id}/send`、`/output`、`approvals/{id}:resolve`），
+  逐跳记 ok/blocked（路径 + 状态码 + 命中分支 `file:line`），**形状不是预期就当场报，不猜 id、不钉 501**。
+- Verification: `bash .scratch/frontend/run-gates.sh`（六腿一次跑完：validate / codegen / vitest / F20-4 / build / go c8-13；两个工具链显式上 PATH、退出码一律无管道取、非零腿数回扫证据文件）；live 面用 `bash .scratch/frontend/run-t264.sh`（自建二进制＋自属数据目录＋起停收尾）
 
 ## Completed
 
@@ -950,3 +962,293 @@ live 仍未重跑：find client.ts/events.ts/stores/components/__tests__ -newerm
 这次是合法内容被渲染成非法字符，反向骗我一次。
 顺带一条给 lint 的提醒：真要扫脏字符，就以字节为准，并且把扫描器自己也当成被测对象。
 本次这个文件自己是干净的吗：写完扫过才算，见报告里的数字。
+
+## T-197 子轮（等待条件改口；两个我自己的断言缺陷被这次改动暴露出来）· 本机 date 2026-09-23T04:57:13+08:00
+
+### 盘上现状（我自己 04:50:35 重建、04:56:40 复跑，不引任何人的推论）
+`:manage` 已经不是 501 了。`sessions.go:68` 现在是 `case verb == "manage"`，装配闸 `:71` 也过了
+（`main.go:263` 注入 `SessionManage: c.sessionSvc`），实测带合法 body 打合成 id 得到 **404 `session_not_found`**，
+错误体三键齐。`:sync` 同样 404。`discover` 与 `probe` 仍 501。
+
+所以 T-197 那句"你的等待条件作废而不是满足"我接受，但要说准：**卡点从"等 `:manage`"改成"等 discover（T-198）"**，
+端到端仍然不通的确切原因是 **Core 里没有任何一条能创建 session 行的路径**。
+
+### 巡检②那四条我独立复量了，成立
+`session.Repository` 方法表实读四条、全是读：`Get:36` / `ForTask:50` / `ListMessages:84` / `ListPage:126`；
+`db.AggSession` 在非测试码只有 4 处：`db/touch.go:27`（枚举定义）、`:43`（表名映射）、
+`session/manage.go:117-118`（`tx.Touch` 对已有行做 UPDATE，不是插行）。
+结论："无可创建路径"这件事不需要靠 `grep Append("sessions"` 字面量 0 命中来撑 —— 那种否定式证据口径太窄，
+换聚合名扫才立得住。这一条我照巡检的口径改成方法表 + 聚合名两条旁证。
+
+### 501 / 404 / 400 是三种不同的红，我在诊断表里分开了
+`.qoder/evidence/frontend/chain-gating-t191.md` 就地更新成 v2（v1 读数在 git 历史里）：
+501 是装配漏件（找 backend/adapter）、404 是数据没到（该格自己没欠工）、**400 是我自己请求不合法**。
+最后这一条是我的账：上一轮我漏了 `managed` 这个 required 字段，Core 回 400，我却差点把它读成"对方不对"。
+
+### 两个我自己的断言缺陷（这次改动才暴露）
+1. **空断言**：`§4 第 2/3/4 格` 那条的 else 分支写的是 `expect([200,201,404]).not.toBe(405)` ——
+   拿**数组字面量**去比 405，无论对方回什么它都真。修法是"先收口状态集 `[200,201,404,501]`、再按状态核形状"。
+   这条比"没断言"更坏：它让"这一格我验过了"看起来成立。
+2. **把自己不合法的请求当成对方的红**（上面那条 400）。
+两处都是**重写断言时才被新断言抓出来**的：400 那次是新断言当场红、空断言那次是重读代码看见。
+顺带记一条有效收益：⑤ 那条 `GET /api/v1/tasks/{id}` 的 405 已被 backend 按 C28② 改成 501（`tasks.go` 注释点名 T-195④），
+我的断言在 04:56:40 **自动转绿**，没有任何人来通知 —— 这就是"漂移安全形 + 形状断言"想要的效果。
+
+### 一条纪律修正：判"脏字符"只信字节扫描，别信回显
+今天三次以为工具往中文行里塞了 U+FFFC。码点扫描的实际结果是：
+`.scratch/frontend/t191-correction.md` 的 v1 **真有 3 处**（所以我拒绝把它拼进台账是对的，v2 重写后为 0）；
+而另外几次（`live-core.test.ts` 的某行、诊断表某行）**文件本身干净**，我看见的是 Read 回显的替身。
+⇒ 固定动作保留：写盘后按码点扫 U+FFFC / U+200B / U+FEFF，并报数量；扫描器自己也扫。
+
+### 证形
+- live 04:56:40：**19 passed (19)、0 skip**（`live-t189.txt`，含 ⑤ 自动转绿、② ③ 的 404 形状、400 那条腿）。
+  测试数从 20 变 19 是因为我删掉了被新断言完全覆盖的那条旧 `:sync` 形状测试，不留两个真相来源。
+- 离线五步链 04:57:13 全 exit=0：`validate` 全部通过（EventType 63 = §6 63、ErrorCode 30）/ `codegen` /
+  `vitest` 26 passed | 19 skipped (45) / F20-4 表内原命令 1 passed / `build`（vue-tsc + vite + check-no-secret）。
+- `find apps/desktop/src apps/desktop/scripts specs/openapi client.ts events.ts -newermt 04:57:14` → 空。
+- 本轮**没有改 yaml / 没有改契约 / 没有改 backend 文件**；只动了 `live-core.test.ts` 与两份我自己的证据、台账。
+
+## T-205 子轮（discover 的寻址我样本用错了变量；两行期望写死，谁先落地都不用重写门控）· 本机 date 2026-09-23T05:04:34+08:00
+
+### 核完的结论：错在我这一侧，yaml 与契约③ 本来就自洽
+- `specs/openapi/core-v1.yaml:207` 这一格是 `/api/v1/adapters/{id}/sessions:discover` + `parameters/Id`，
+  而且 summary 下面紧跟一句自注：路径参数 `id` 是 `adapter_instances.id`（UUIDv7），**不是** `adapter_key`，"与同前缀的 probe 不同，别照抄"；
+  `:171` 的 probe 才用 `parameters/Key`（自注"非实例 id"）。`components.parameters` 里 `Id`（`:710`）与 `Key`（`:716`）两个定义也各自写清了语义。
+- 我 04:5x 的门控样本打的是 `POST /api/v1/adapters/opencode/sessions:discover`，`opencode` 是 **adapter_key** ⇒
+  就算 backend 把 discover 接通，那一发也只能拿到 404，而那条红是我的设图错，不是它的缺陷。
+- `apps/desktop/src/stores/panel.ts:191` 用的是 `adapter.id`，**是对的那一侧**，按 T-205① 保持不动。
+
+### 做了两件小事
+1. `live-core.test.ts` 里 discover 从原来那条混合循环里拆出来，写成**两行期望**：
+   - `①a` 按 id 打（正路）：只许 `[200, 404, 501, 503]`（501=没装配、404=库里无此实例、503=`adapter_unresponsive`、200=通了）；
+   - `①b` 按 key 打（错路，设图守卫）：只许 `[404, 501]`，且**一旦不是 501 就必须是 404 `not_found`** ——
+     防的是"顺手也认 key"把两种寻址悄悄合一。
+2. 门控诊断表更到 v3（`.qoder/evidence/frontend/chain-gating-t191.md`）：第 2 格拆成 ①a/①b 两行，
+   依据带 `yaml:207` / `yaml:171` / `adapters.go:85`。
+
+### 一条要说白的局限（别把这次跑当成"验过寻址"）
+05:04:25 实测 **by-id 与 by-key 都还是 501**（`splitAdapterPath` 先因冒号判"不认形状"，两条路径同因），
+所以这一跑**没有证明**两种寻址能被区分开；①b 那行要等 discover 真接通之后才开始产出信息。
+现在写它是为了不将来改门控，不是"已经抓到什么"。
+
+### 读数与证形
+- live 05:04:25：**20 passed (20)、0 skip**（比上一版多一条就是新拆的 discover 双行腿）；
+  同次输出里 `§4 manage → 404`、`§4 sync → 404`、`discover by-id → 501`、`discover by-key → 501`。
+- 离线五步链 **05:04:34** 全 exit=0（`gates-t205.txt`）：`validate` 全部通过（EventType 63 = §6 63、ErrorCode 30）/
+  `codegen` / `vitest` **26 passed | 20 skipped (46)** / F20-4 表内原命令 1 passed / `build`（vue-tsc + vite + check-no-secret）。
+- `find`（排除生成物）在 05:04:36 之后 → 空。本轮没碰 `specs/`、没碰 backend 文件、没碰 panel.ts 的寻址那一侧。
+- 状态计数：T-205 的 ①②③ 三条都照做 —— ① panel 不动、② 两行期望、③ **不把这条升级成 Blocker**（等 T-204② 裁完 backend 那个变量名）。
+
+## T-222 子轮（discover 真通：第 2/3 格本地跑绿，第 4 格是 C25 那一支的 503）· 本机 date 2026-09-24T07:13:19+08:00
+
+### 先按 T-80 的规矩自己复量，再接受解锁
+主控 04:47 那句"Core 侧没有任何路径能创建 session"**在我这侧正式作废**，但我是自己跑出来才改口的：
+`.scratch/frontend/run-t222.sh` 现建两个二进制（`core-t222.exe` + `fake-adapter-t222.exe`，构建时刻 07:11:20 / 07:13:01 两轮），
+独立数据目录起 Core，**带 `-adapter fake=<路径>`**，然后按契约③ §3 的合法顺序打真链：
+
+- `POST /api/v1/adapters/fake/probe` → **200**，`id = 01a0d08b-3533-…`（UUIDv7）、`health: HEALTHY`；
+- `POST /api/v1/adapters/{id}/sessions:discover` → **200，2 条会话**；
+- 同一把 Idempotency-Key 重放、以及**换一把新键**再拉一次：两次的 `session_id` 集合与首发**完全相同**、零新建
+  ⇒ 实例作用域去重 upsert 是真的，我面板按 `session_id` 去重的前提成立；
+- 错路守卫：`POST /api/v1/adapters/fake/sessions:discover`（拿 key 打 id 位）→ **404 `not_found`**，
+  message 原文"没有这个 Adapter 实例（先 probe 一次让它登记）" ⇒ T-205 那两行期望里的 ①b 从今天起**会说话**了；
+- `POST /sessions/{真 id}:manage` → **200**，回执 `managed: true`；
+- `POST /sessions/{真 id}:sync` → **503 `adapter_unresponsive`**、`retryable: true`、
+  message "没有可用 Provider，本地也没有能回放的增量" ⇒ 这就是 C25 / T-120② 那一支的合法真相，
+  **不是"没接线"**；面板只许记 blocked，不许显示"已同步"。
+
+### 改了什么
+- `live-core.test.ts`：把 discover 那一格从"期望 501/blocked"换成**真链串跑**（probe → discover → 重放两次 → 错路守卫 → manage → sync），
+  合法顺序照 T-222②，**不再拿 `opencode` 这类 key 去打 discover**；sync 只许 `[200, 503]` 两种真相
+  （200 就必须核 `next_cursor` 的同步游标域：只许非空串或 null，空串非法；503 就必须 `retryable: true`，防面板当终态）。
+- 一条自查：我原来的写法在"清单为空"时 `return`，那样**"验到了"和"什么都没验"在计数里长得一样**，
+  所以补了一行分支日志并复跑确认走的是真链那一支（原文：`真链走通到第 4 格：实例 … 拿到 2 条会话，用 … 串 manage/sync`）。
+- 联调坑按 T-222③ 写进门控诊断（`.qoder/evidence/frontend/chain-gating-t191.md` 升到 v4）：
+  **不给 `-adapter fake=` 就是 501，那是我的 harness 缺件不是对方的红**；live 测试里对应处理是 `ctx.skip()`（skip 不等于 pass）。
+- 类型仍然全部来自 `npm run codegen`（本轮没手写第二个接口），`validate-openapi.mjs` 照跑照绿。
+
+### 读数与证形
+- live（07:13:01 那一跑，构建 07:11:20）：**20 passed (20)、0 skip、0 fail**，`Test Files 1 passed (1)`。
+  证据 `.qoder/evidence/frontend/live-t222.txt` + 原始探针 `probe-t222.txt`。
+- 离线五步链 **07:13:19** 全 exit=0：`validate` 全部通过（EventType 63 = §6 63、ErrorCode 30）/ `codegen` /
+  `vitest` 26 passed | 20 skipped (46) / F20-4 表内原命令 1 passed / `build`（vue-tsc + vite + check-no-secret）。
+- 之前那条 live 红（`GET /api/v1/tasks/{id}` 吃 405）**我自己重跑判它转绿了**：现盘 `tasks.go` 已按 C28② 改成"先认形状再按方法分流"，
+  07:13:01 那一跑里 `validate`/live 都没有它。主控说"转没转我自己定"，我这边定：已绿，且钉着不许退回 405。
+- `find`（排除生成物）在 07:13:30 之后 → 空；本轮**没改 yaml、没改契约、没碰 backend 文件**，
+  改动只有 `live-core.test.ts` + 我自己的证据与台账 + 两个 `.scratch` 跑法脚本。
+
+### 还欠的两件事（不阻塞，报上去）
+1. `GET /api/v1/sessions/{id}/messages` 仍 501，且归因文案写的是"这条路径的形状我不认识" —— 它是契约③ §3 的合法路径，
+   面板 Stream Output 那一步要拿它补历史。同一族问题 `tasks.go` 已在 T-195④ 修过一次，希望接这格时顺手把归因改掉。
+2. 第 4 格往后是 task → queue → send → output 那几格，我用同一套跑法逐跳量，能跑的就真绿、跑不通的带路径+状态码+行号记 blocked。
+
+## T-22x 子轮（第 5~6 格真绿；第 7 格 `GET /executions` 是新卡点）· 本机 date 2026-09-24T07:26:02+08:00
+
+### 量的顺序与结果（自属构建 07:24:10；探针 07:24:13，live 复跑 07:25:51）
+`probe(key)` 200 → `discover(id)` 200（2 条）→ `manage` 200 → `POST /projects` 201 → **`POST /tasks` 201 → `tasks/:queue` 200** →
+**`GET /executions?task_id=` 501（catch-all）** ⇒ 拿不到 execution id，第 8~10 格（send / output / approvals）今天只能记 blocked，
+我**不猜 id 也不伪造**。附带两格：`POST /tasks/{id}:accept` 对刚入队的任务回 **409 `illegal_transition`**（message 明写起始态 QUEUED
+不在允许集合、目标 ACCEPTED）—— 这是状态机**正确**拒绝，面板显示 blocked 而不是成功；`GET /tasks/{id}` 仍 501 但归因文案已按 C28② 写对。
+
+### 做了什么
+- `live-core.test.ts` 新增一条"第 5~6 格真链 + 第 7 格起逐跳记 blocked"，形状刻意识别过我自己 04:5x 的错：**不写"必须 501"**
+  （那是把别人的进度钉成我的红），改成两支都有各自断言 —— 200 就核分页出口与 execution 形状、501 就核它是 `not_implemented`；
+  并且**每一次提前 return 都留一行日志**，免得"验到了"与"什么都没验"在计数里长得一样。
+  复跑原文：`第 7 格起 blocked：GET /executions?task_id=01a0d096-… → 501（拿不到 execution id）`、
+  `真链走通到第 4 格：实例 … 拿到 2 条会话，用 … 串 manage/sync`。
+- 门控诊断表加了一节"§4 第 5 格起"（v5），每格一行：路径 + 状态 + 码 + 谁欠 + 未量的为什么。
+- 顺手报一条**文案会误导人**的观察（不记别人缺陷）：catch-all 的 501 message 还写着
+  "Core 目前只提供 /api/v1/health 与 /api/v1/ws-ticket"，现盘早已不止这两条。
+
+### 读数
+- live **07:25:51**：`Tests 21 passed (21)`、**0 skip 0 fail**；`core alive=0 fake alive=0`（两个子进程都我起的、都收了）。
+- 离线五步链 **07:26:02** 全 exit=0：`validate` 全部通过 / `codegen` / `vitest` 26 passed | **21 skipped** (47) /
+  F20-4 表内原命令 1 passed / `build`（vue-tsc + vite + check-no-secret）。
+- 证据：`probe-t223.txt`（逐跳原文，含汇总表）、`live-t222.txt`（已更新为 21 条那一跑）、`gates-t223.txt`。
+- `find`（排除生成物）在 07:26:04 之后 → 空。本轮改动只有 `live-core.test.ts` + 我的证据/台账 + `.scratch` 两个跑法脚本；
+  **没改 yaml、没改契约、没碰 backend 文件**。
+
+### 下一步等谁
+`GET /api/v1/executions?task_id=`（以及 `{id}` / `/output` / `/send` 那条读面）是唯一新卡点。它一通，我这侧断言会自己往第 8~11 格走，
+不用重写门控。巡检 07:21 附带的两句我照办：messages 那格不记我账；`:sync` 的 503 `retryable:true` 按 C25 处理、不当终态。
+
+## T-231 子轮（等待条件换上名字与归属；诊断表里"把 catch-all 文案当话引用"这件事我改了口径）· 本机 date 2026-09-24T07:44:09+08:00
+
+### 巡检那两条我自己复量了，都成立（不是转述）
+- `grep -rn "executions" core/api/http/*.go`（排除 `_test.go`）→ **0 命中**
+  ⇒ `GET /api/v1/executions` 那条读面**从未注册**，不是"注册了但没装配"。这决定第 7 格 blocked 的归因写法：
+  我拿到的 501 来自 catch-all，与那句文案无关，也与"装配漏件"不是一回事。
+- `mux.HandleFunc` 的注册前缀去重后是 12 条：`/`、`/api/v1/health`、`/ws-ticket`、`adapters/`、`notifications(／)`、
+  `projects(／)`、`sessions(／)`、`tasks(／)` —— **里面没有 executions**。
+- 那句过期文案的落点：`core/api/http/handler.go:172`（仍写"只提供 /api/v1/health 与 /api/v1/ws-ticket"）。
+
+### 接受 T-231 的两处纠正
+1. **等待条件从"动作"改成"整格"**：我 07:26 写的是"等 executions 读面脱 501"，方向对、归属缺。
+   现在的等待对象有名字：**backend 的 T-229**（分派三行方案 + 编排腿 + `execution_created` 生产者 + executions 读面同轮交）。
+   读面单独通了也没用——没有编排腿就没有 execution 行，第 7 格照样空。所以我这侧的判定按"整格"来，不盯单个端点。
+2. **catch-all 那句话不是事实**：我上一轮把它当话引了一句（虽然标了"文案会误导人"）。现在把这条规矩写进诊断表：
+   **判定只依据两件事——是否注册（`grep mux.HandleFunc` / 路由分流）+ 实测状态码与 `error.code`；catch-all 的 message 一律标"模板话，不作证据"。**
+
+### 本轮代码零改动，也不去刷一份新绿
+没有可跑的推进（等 T-229），所以我不为了"报告里有个今天的绿"去重跑一遍不变的代码。
+最后一次真实重跑仍然是 **07:26:02** 那条五步链（live 是 07:25:51 的 21 passed / 0 skip），
+并且用字节复核它到现在还成立：
+`find apps/desktop/src apps/desktop/scripts specs/openapi packages/api-client/src -newermt "2026-09-24 07:26:04" -type f -not -path "*/node_modules/*" -not -path "*/dist/*"` → 空
+（本轮只写 `.qoder/` 与 `.scratch/` 下的文本）。这比再造一份绿诚实：**绿的是代码，不是时间戳。**
+
+## T-256 子轮（补 `execution_starting` 那一格；顺带抓出我闸门链里一条"其实没跑"的判据）· 本机 date 2026-09-24T09:28:41+08:00
+
+### 前提自己复量，不引派发的数
+`grep -c execution_starting specs/openapi/core-v1.yaml` = **0**、事件契约 §6 = **3**、`events.go` 里 `ExecutionStarting` = **2**
+⇒ 三格里只欠我这一格，派发不过期。要插的位置也自己看过：yaml 第 872 行那一串 `execution_created, execution_started, …`，
+新 token 落在两者之间（与状态机顺序一致）。
+
+### 先取"修之前的红"，再补
+- 修前 `npm run validate` → **exit=1**，红条原文点名：
+  `FAIL EventType enum 与事件契约 §6 目录不等：目录有而 enum 无=[execution_starting]；enum 有而目录无=[]（目录外的 event_type 属 P0，两向都不许漂）`
+  ⇒ 我那条双向集合判据（运行时解析 §6、按约定①~⑤展开）**本来就是为这种情况写的**，这次是它第一次替别人抓红。
+- 补 token 后 `validate` → **exit=0**，`EventType enum 与 §6 目录双向相等（当场展开 64 类）`；
+  同时 `§7 链的 **23** 类事件全在目录内`（链多了这条起始边，22 → 23，两份都是当场解析的）。
+- `npm run codegen` 重跑：生成物 `EventType` 联合 **64** 条、`execution_starting` 在列。**没有手写第二套类型。**
+- 主控那条 Go 判据我原样跑：`CGO_ENABLED=0 go test -count=1 -v -run TestEventTypeTripleEquality ./test/`（在 `core/` 下）
+  → **exit=0**、`--- PASS`、结论行 `C8-13 三格相等：§6=64 类、yaml=64 条、常量=64 个；四条边全空`。
+
+### 本轮最有价值的一条：我闸门链里那句 `go test` 其实根本没跑
+上一轮我把 go 判据塞进闸门链，但那个 shell 的 `PATH` 里**没有 go**，而且命令写成 `go test … | grep -E …` ——
+`command not found` 被 grep 吞掉，`$?` 取到的是 grep 的 1，于是链里那一格**既没跑也没报错**。
+这正是"fail-closed 的坏命令会长期隐身"和"管道掩码 exit code"两族的合体，而且这次是我自己写的闸门。
+处置：固化成 `.scratch/frontend/run-gates.sh` —— 两个工具链显式上 PATH、**退出码一律在无管道处取**、
+go 输出先落文件再另行 grep，并在开头打印 `node=` / `go=` 的实际路径。本轮 6 步全 exit=0 都出自这份脚本
+（`.qoder/evidence/frontend/gates-t256.txt`：validate / codegen / vitest / F20-4 / build / go c8-13 各一行 exit=0，
+`C8-13 结论行命中数=1`）。以后我不再手抄闸门命令。
+
+### 一条形状说明（免得下一个人以为我漏了）
+`§7` 多了一条瞬时边，面板 11 格不变：`chain.test.ts` 里那条覆盖断言是**单向**（CHAIN 的每步事件 ⊆ §7），
+不是"§7 每条事件都要有一格"—— §4 的客户端调用格没变，多一条 `execution_created → execution_starting → execution_started`
+的中间边不需要第 12 格，也**不该**为了它去改判据方向。我没碰 `panel.ts` 的 CHAIN。
+
+### 读数
+- live 侧本轮未重跑（改动只在 yaml 枚举与生成物，`client.ts` / `events.ts` / stores / components / tests 零改动）；
+  最近一次真跑仍是 07:25:51 的 **21 passed / 0 skip**，其有效性由 `find` 复核。
+- 离线：见上面那份闸门脚本输出；`vitest` 26 passed | 21 skipped (47)，F20-4 表内原命令 1 passed，`build` 全 0。
+
+## T-264 子轮（C43 落 yaml：`:queue` 补请求体；顺带删掉我多声明的两个参数）· 本机 date 2026-09-24T10:10:23+08:00
+
+### 前提自己复量，两处与派发不同
+- 契约③正文我读的是原句：`api-contract-v0.1.md:128`（C43：必带 `{"adapter_key": "..."}`，缺失 ⇒ 400 `validation_failed`）
+  与 `:180`（§4 第 6 行"调度对象由请求体声明"）。yaml 现状也自己量：`queueTask` 那一格**确实没有 `requestBody`** ⇒ backend 那句硬事实成立。
+- **但"谁先谁后都行"到今天下午已经不成立了**：backend 的 T-262 已经落盘 —— `tasks.go:335 queueTask` → `readAdapterKey`（`:349-368`），
+  四种"没声明"（无体 / 非 JSON / 字段缺省 / 值空白）一律 400，且 `tasks_test.go:538-543` 三条反例都在。
+  ⇒ 我这边不是"先交后交都行"，是**已经落后一格**；本轮按补欠做。
+
+### 改了什么（三格契约面 + 三处调用方）
+1. `specs/openapi/core-v1.yaml`：`queueTask` 加 `requestBody.required: true` → 新 `QueueTaskRequest`（`required: [adapter_key]`）。
+   **没加 `minLength`** —— 契约只裁"必填"，"空白值算不算合法"正文没写（Core 判它 400），我不替契约发明要求；
+   也没给 `task_queued` 加 payload 键（`:138` 明写那是另一次登记变更）。
+2. **另一条我自己量出来的漂移**：`GET /api/v1/executions` 我在 yaml 里声明了 `Cursor`/`Limit`，而 Core（`executions.go:78-84`）
+   对这两个参数直接 400，注释里点名的就是"yaml 里声明了但 `ListByTask` 一次给全"。契约③ `:140` 那一格正文只有 `?task_id=`
+   ⇒ 我**删掉这两个参数**并在 description 写清"不分页、`next_cursor` 恒空串、带 cursor/limit 属请求不合法"。
+   这不是我裁决"要不要分页"，是把多声明的删回契约正文的形状；将来要分页是契约先改、我 yaml 再补。
+3. `packages/api-client/src/client.ts`：新增 `queueTask(id, body: Schemas['QueueTaskRequest'], …)`（类型来自生成物，没手写第二套），
+   并把 `taskAction` 的动词联合里 **去掉 `'queue'`** —— 否则调用方"忘了带 key"在编译期没人拦，只有线上 400。
+4. `apps/desktop/src/stores/panel.ts:209`：改用 `core.queueTask(task.id, { adapter_key: adapter.adapter_key }, …)`，
+   key 取 **probe 回执那一格**，不在面板里再写第二个 `'fake'` 字面量。
+5. `apps/desktop/src/__tests__/live-core.test.ts` 第 6 格两条腿：带 key ⇒ `[200,409]`；**缺 key 那条打在第二条 CREATED 任务上**
+   （同一条任务两用会在未收紧时先把 golden path 顶成 409，断言照样"过"但验的东西变了）；400 那一支断 `validation_failed`，
+   另一支不钉别人进度、只 `console.log` 喊出来。
+
+### 我自己这一轮踩了两次同一个坑（值得记）
+双引号包住的 YAML 标量里塞 ASCII 双引号 ⇒ 解析炸。第 384 行先炸过一次（我把 `"唯一 HEALTHY 实例"` 换成「」），
+第 481 行**又**用 `恒为 \`""\`` 犯一次。第一次我靠"改完就单独跑 codegen"抓到，第二次同样是它抓的（`codegen exit=1` +
+`validate FAIL 标准 OpenAPI 解析器读不过`）。⇒ 固定动作不改：**写完 yaml 描述先单跑 codegen，别攒到闸门链**；
+真要写引号就用「」。没给 validator 加"引号配平"判据 —— 两道现成闸门已经 fail-closed，再加一条是重叠。
+
+### 证形（三句）
+- **改了什么**：上面 1~5；`git status --short` 只有我这五个文件（`specs/openapi/core-v1.yaml`、`gen/schema.ts`、`client.ts`、`panel.ts`、`live-core.test.ts`）。
+- **当场命令与原文**：
+  `GATES_FILE=…/gates-t264.txt bash .scratch/frontend/run-gates.sh` → 六腿 `validate/codegen/vitest/f204/build/go c8-13` **exit 全 0**、
+  `vitest` **26 passed | 21 skipped (47)**、F20-4 **1 passed**、`C8-13 三格相等：§6=64 类、yaml=64 条、常量=64 个`、
+  非零退出腿数 **0**（同一份检测器对合成红样本给 **1**、对上一轮 `gates-t256.txt` 给 **0**，两向都验过）。
+  `bash .scratch/frontend/run-t264.sh`（构建 `core-t264.exe` mtime **09-24_10:10:13**）→ **21 passed (21)、0 skip**（10:10:23，最后一次），
+  读数行原文：`  :queue 带 key → 200，缺 key → 400`、`  入队后还没有 execution 行：send / output 记 blocked（0 条是合法结果，不猜 id）`。
+  生成物复核：`QueueTaskRequest: { adapter_key: string; }`（必填、无 `?`）、`listExecutions.parameters.query = { task_id: string }`。
+- **没做的为什么**：第 8~10 格仍 blocked —— 但**卡点性质换了**，诊断表已升 v6：第 7 格不再是"读面从未注册"，
+  而是 **200 空清单**（`executions.go:58` 已挂、`handler.go:148` 已调，闸是 `c.Executions == nil ⇒ 不认领`）；
+  拿不到 id 的原因是第 6 格只落了状态那一步（`tasks.go:340` 那句 `_ = adapterKey` 就是字面证据），
+  等的是 `internal/adapter` 那个只读接口（T-263）。我没去猜 execution id、没提前给分页写判据。
+
+### Coordination（不归我改，只登记）
+- **更正我 10:1x 那两句"回巡检"（巡检 10:20:22 指出，我自己 10:21 同一条命令复量确认）——那两点都不对，账划在我这儿**：
+  ① 巡检从没量过 `core/db/events.go`，他们写的命令一直是 `git show HEAD:core/internal/eventjournal/events.go`。
+     我把他们句首那个"db 的"当成了路径主张 —— **别人原话带时刻、也带落点时，先照引文复现，再判"谁错"**（这次是拿措辞推成了事实，正属我自己登记过的那一族）。
+  ② "HEAD 内 0 命中"也不是假事实，是**两次读数之间隔着一次提交**：`38cafa8 10:03:46` 把那两行入册，HEAD 现在是 `a3b2910 10:04:11`。
+     他们 09:58 量到 0、我 10:07 量到 **2**，两边都对；我当时只 `git show` 没看 `git log -1 -- <路径>` 的时刻，就把时间差读成了口径差。
+  ③ 真的那格换成正确归属：`core/internal/execution/events.go` HEAD 内 `ExecutionStarting` = **0**、工作区 = **2**，同批 ` M ` 还有
+     `execution/events_test.go`、`execution/service.go`、`api/http/tasks.go` ⇒ **backend/adapter 的在途码**，不是我欠的、也不是判据缺陷。
+  ④ 结论不变但理由要说准：**我 C8-13 的 64/64/64 不依赖未提交码**，因为那条判据的"常量"腿读的是 `eventjournal`（10:03:46 起已在 HEAD 内）。
+- `queueTask` 的失败三码（501 / 503 / 404）我写进 yaml 的 description 了；若主控要把它们升成 `responses:` 里的显式条目，那是契约形状的变更，说一声我改。
+
+### Next action（唯一一条）
+等 `:queue` 的编排半格落地（T-263 导出 `adapter_key → 实例 id` 只读接口 + backend 接上并产 `execution_created`）
+→ 复跑 `bash .scratch/frontend/run-t264.sh` 量第 8~10 格（`/executions/{id}/send`、`/output`、`approvals/{id}:resolve`），
+逐跳记 ok/blocked（路径 + 状态码 + 命中分支 `file:line`）；**形状不是预期就当场报，不猜 id、不钉 501**。
+
+## T-276 子轮（只刷头部索引；主控举我这一本当反面例子）· 本机 date 2026-09-24T10:54:12+08:00
+
+### 我先自己复量，确认这一格不是误报
+`grep -n 'Last verified action'` 头部那一行确实停在 **2026-09-20 12:52:25**、`Next action` 确实还写"等 REQ-F-17 修好"
+—— 而正文里最新的等待条件（`:queue` 编排半格）在 `## T-264 子轮`。**指控成立，没有可辩护的余地**：
+我从 T-189 起就一直把状态写在**段尾的新章节**里，抬头那五行自 09-20 之后一次都没刷过。
+代价也已经真实发生过一次：巡检按头部把我算成"等 REQ-F-17"，没报我今天真正等的那半格 —— 这正是"索引滞后但证据没错"的坏法。
+顺带承认第二条：正文里各轮的 `Last verified action` 我其实一直在记（09-21 那两轮的原文是
+  「2026-09-21T11:23:16+08:00 前后两轮 —— live 9/9 与四道闸门 11:20:48」和「12:38:06 四道闸门全绿 + ④-b 变异验证」两行），
+  所以这不是"没数据"，是**有数据没往索引上搬**，纯习惯问题。（这里故意不写行号 —— 行号会被我自己下一次编辑挪走。）
+
+### 改了什么 / 当场读数 / 没做的为什么
+- 只改本文件的 `## Current checkpoint` 那一段：五行全部刷新（`Stage` / `Status` / `Last verified action` / `Next action` / `Verification`），
+  并把 T-276 那三条规矩就近抄在段首，免得下一次又只记得写正文。`Next action` 按新规矩写全**等谁 / 等什么 / 谁解锁**三问。
+  `Verification` 从"手抄四步 npm"换成 `bash .scratch/frontend/run-gates.sh`（六腿那条真命令）—— 旧那行今天已经不完整，少了 go 判据那腿。
+- **时刻是当场 `date` 实读**：`2026-09-24T10:54:12+08:00`。没沿用 10:14:28、没估。
+- **本轮零代码改动**，所以**没重跑闸门**：这是"刷索引"不是"交验证件"，拿 10:09:19 那份六腿 exit=0 冒充本轮跑过才是造假。
+  头部的 `Last verified action` 因此分两句写：刷头部的一刻 ＋ 最后一次真跑的时刻与产物（并附 `find … -newermt "2026-09-24 10:10:23"` 为空这条复核）。
+- 下一次交账（T-2xx）才是这条规矩真正生效的地方：**同一轮里正文与头部一起动**，只动正文＝交账不完整。

@@ -5,7 +5,7 @@ package main
 // 断的还是 `count=0`），我在 03:4x 复量一致（非测试码里 `process_instances` 只出现在注释里，零写调用）。
 //
 // 所以这个文件不能假装"已经把列断言写完了"—— 那张一行都落不了库：
-// `process_instances` 既不在 `aggTable` 里、也没有 `AggProcess`（`internal/process/supervisor.go:164~176`
+// `process_instances` 既不在 `aggTable` 里、也没有 `AggProcess`（`internal/process` 的 `Supervisor` 那段注释
 // 那段就是量出来的），`Touch`/`Create` 表达不了它；而 `Append` 不写事件，拿它建 `process_started` 那一行
 // 就是 T-168 收回 T-162① 时判掉的"行写了、事件静默丢掉"。真正的通道挂在 **REQ-DB-2** 上（外加 **C34** 的词表）。
 //
@@ -25,15 +25,18 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SadCat18/lucero/core/internal/process"
 )
 
 // lifecycleRow 是 §8/§14 要求 `process_instances` 为一台 ADAPTER 进程记下的那半行 ——
 // 半行是因为另外那半（pid / started_at / exited_at / exit_code）来自事件，而这半是**装配期事实**
-// （`supervisor.go:178~190` 那句"the injector is built next to the Supervisor … so it holds the policy and the owner"）。
+// （`internal/process` 的 `Supervisor` 那句"the injector is built next to the Supervisor … so it holds the policy and the owner"）。
 // 字段名逐字对着 000001 的列名，别在这里发明第六列。
 type lifecycleRow struct {
 	processType   string
@@ -221,18 +224,17 @@ func TestLifecycleColumnAssertionsHaveTeeth(t *testing.T) {
 	}
 }
 
-// TestLifecycleWriterAbsentButShoutPresent 把今天的事实钉成一条：真起一个子进程（装配过的 launcher），
-// recorder 那一格**真出声**，而 `process_instances` **一行都没有** —— 两半要一起断，
-// 因为只断 `count=0` 的话，把 `Rec` 摘掉也照样绿（第 ② 批那条挂桥就白做了）。
-func TestLifecycleWriterAbsentButShoutPresent(t *testing.T) {
-	core, err := boot(t.Context(), testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer core.close()
-
-	var mu sync.Mutex
-	var lines []string
+// startOneAttempt 走**装配过的那条桥**起一次真子进程再关掉它（同一个 launcher、同一个写口），
+// 返回那一路喊出来的日志行。为什么不能用夹具代替这一格：只有走真装配才证得到"Rec 挂在桥上 + 桥落得进行"。
+//
+// 注意 `launcher.Start` 不开读帧的泵（那是 `Connect` 的活），所以这里只会看到 STARTED 那一格 ——
+// 断言里"恰好一行、恰好一条事件"就是这件事的正面证据（多出来的一行/事件说明有人在别处补了边）。
+func startOneAttempt(t *testing.T, core *Core, key string) []string {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		lines []string
+	)
 	l := newLauncher(func(string) (*exec.Cmd, error) {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperPipeChild$")
 		cmd.Env = append(os.Environ(), pipeHelperEnv+"=exit")
@@ -243,30 +245,254 @@ func TestLifecycleWriterAbsentButShoutPresent(t *testing.T) {
 		lines = append(lines, fmt.Sprintf(format, args...))
 	}, core.store, func() int64 { return time.Now().UnixMilli() })
 
-	pipe, err := l.Start(context.Background(), "fake")
+	pipe, err := l.Start(context.Background(), key)
 	if err != nil {
 		t.Fatalf("起子进程: %v", err)
 	}
 	if err := pipe.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), lines...)
+}
 
+// onlyProcessRow 读回那一行（顺带断"就一行"）：一次尝试一行是 CO-45(a) 的裁定，两行就是有人重复建了。
+func onlyProcessRow(t *testing.T, core *Core) (lifecycleRow, string) {
+	t.Helper()
+	var id string
+	if err := core.db.Read.QueryRow(`SELECT id FROM process_instances`).Scan(&id); err != nil {
+		t.Fatalf("`process_instances` 该恰好一行（现在 %d 行就读不到唯一那行）: %v",
+			countProcessInstances(t, core), err)
+	}
+	r, ok := readLifecycleRow(t, core.db.Read, id)
+	if !ok {
+		t.Fatal("id 读得到但那一行读不回来")
+	}
+	return r, id
+}
+
+// pidFromShout 从 Sink 那行里取 pid —— 要的是**与库无关的一份观察**，
+// 拿库里的 pid 去期望库里的 pid 就是自证。
+func pidFromShout(t *testing.T, lines []string) int64 {
+	t.Helper()
+	for _, l := range lines {
+		i := strings.Index(l, "kind=STARTED pid=")
+		if i < 0 {
+			continue
+		}
+		rest := l[i+len("kind=STARTED pid="):]
+		j := strings.IndexByte(rest, ' ')
+		if j < 0 {
+			j = len(rest)
+		}
+		n, err := strconv.ParseInt(rest[:j], 10, 64)
+		if err != nil || n <= 0 {
+			t.Fatalf("Sink 那行的 pid 读不出/不合法: %q", l)
+		}
+		return n
+	}
+	t.Fatalf("日志里没有 STARTED 那一格，说明桥没出声:\n%s", strings.Join(lines, "\n"))
+	return 0
+}
+
+// TestLifecycleWriterLandsRowAndShouts 是 `TestLifecycleWriterAbsentButShoutPresent` 的**正向换代**：
+// 那条钉的是"REQ-DB-2 落地前一格都不许写"，而它自己的注释写着落地那天要改成正向断言（原文："把这条改成正向断言并关掉 SKIP"）。
+// 今天通道到了，所以两半要一起成立才算数：**桥真出声**（把 `Rec` 摘掉就断在第一半）＋ **行真落库**（把写口摘掉就断在第二半）——
+// 单断任何一半都能被"另一道 nil 闸给出同样答案"糊过去，这条就是防那个。
+// 两支分别钉归属：库里还没有实例行 ⇒ owner 整个留空（probe 先起进程、后写实例行）；登记过 ⇒ owner_type/owner_id 跟着落。
+func TestLifecycleWriterLandsRowAndShouts(t *testing.T) {
+	t.Run("没登记实例行时 owner 整个留空", func(t *testing.T) {
+		core, err := boot(t.Context(), testConfig(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer core.close()
+
+		lines := startOneAttempt(t, core, "fake")
+		joined := strings.Join(lines, "\n")
+		for _, want := range []string{"action=started", "生命周期已落"} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("这一格该喊出 %q（否则下面那句零行只是「没人尝试过」）:\n%s", want, joined)
+			}
+		}
+		got, _ := onlyProcessRow(t, core)
+		if got.ownerType != "" || got.ownerID != "" {
+			t.Errorf("没登记过实例行时 owner 该整个留空（半个归属比没有更坏），实际 %q/%q", got.ownerType, got.ownerID)
+		}
+		if n := countEvents(t, core); n != 1 {
+			t.Errorf("一行该配恰一条事件，实际 %d 条", n)
+		}
+	})
+
+	t.Run("登记过之后 owner 跟着落", func(t *testing.T) {
+		core, err := boot(t.Context(), testConfig(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer core.close()
+		// 夹具行是测试侧写（§1.3 允许，与本包 `discoverassembly_test.go` 同一形状）：它模拟"这个 key 已经 probe 过一次"。
+		if _, err := core.db.Read.Exec(
+			`INSERT INTO adapter_instances (id, adapter_key, display_name, created_at, updated_at)
+			 VALUES ('ai-owned', 'fake', 'fake', 1, 1)`); err != nil {
+			t.Fatal(err)
+		}
+		startOneAttempt(t, core, "fake")
+		got, _ := onlyProcessRow(t, core)
+		if got.ownerType != "adapter_instance" || got.ownerID != "ai-owned" {
+			t.Errorf("登记过实例行之后 owner 该跟着落（第 18 条：owner_id 是实例行的 id，不是 key），实际 %q/%q",
+				got.ownerType, got.ownerID)
+		}
+	})
+
+	t.Run("没有起手的那次退出：喊没落库，且不造行不造事件", func(t *testing.T) {
+		core, err := boot(t.Context(), testConfig(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer core.close()
+		var (
+			mu    sync.Mutex
+			lines []string
+		)
+		lc, err := process.NewLifecycleStore(process.ProcessRow{Kind: process.KindAdapter, RestartPolicy: process.RestartNever},
+			func() (string, error) { return "pi-no-start", nil }, func() int64 { return 7 }, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := newDropRecorder(core.store, "codex", func() int64 { return 7 },
+			func(f string, args ...any) {
+				mu.Lock()
+				defer mu.Unlock()
+				lines = append(lines, fmt.Sprintf(f, args...))
+			}, lc)
+		// 写口回 `ErrNoLifecycleRow`（库里没有这个实例的行）：这一格**不是**失败被吞，更不是"补一条退出事件"。
+		rec.RecordExit(process.Event{Kind: process.EventExited, PID: 99, ExitCode: 0, Status: process.StatusExited})
+		mu.Lock()
+		joined := strings.Join(lines, "\n")
+		mu.Unlock()
+		if !strings.Contains(joined, "没落库") {
+			t.Fatalf("void 接口报不上去，至少要喊出\"没落库\"，实际:\n%s", joined)
+		}
+		if strings.Contains(joined, "生命周期已落") {
+			t.Errorf("失败的那一次不许喊\"已落\":\n%s", joined)
+		}
+		if n := countProcessInstances(t, core); n != 0 {
+			t.Errorf("查无此行的一格不该造出进程行，实际 %d 行", n)
+		}
+		if n := countEvents(t, core); n != 0 {
+			t.Errorf("也不该造事件，实际 %d 条", n)
+		}
+	})
+}
+
+// TestLifecycleThreeLegsEachMoveTheRow 是契约① 第 17 条末段加严后的**三条腿正面**（T-253③）：
+// 建行腿、改行腿（干净退出）、改行腿（崩溃）各自都要在**装配好的形状**下真驱动一次，
+// 因为"整包绿"不等于每条腿有牙 —— 反例在 `db-mut51.py` 里（摘掉哪条腿，就必须红在对应那条用例上，且三次输出两两不同）。
+//
+// 用同一个 recorder 实例连做两次尝试：CO-45(a) 一次尝试一行，所以第二行不该被第一行的边牵动。
+func TestLifecycleThreeLegsEachMoveTheRow(t *testing.T) {
+	core, err := boot(t.Context(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	if _, err := core.db.Read.Exec(
+		`INSERT INTO adapter_instances (id, adapter_key, display_name, created_at, updated_at)
+		 VALUES ('ai-three', 'fake', 'fake', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		mu    sync.Mutex
+		lines []string
+	)
+	l := newLauncher(pipeCommand("exit"), 5*time.Second, func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}, core.store, func() int64 { return time.Now().UnixMilli() })
+	sup := l.supervisorFor("fake")
+	rec, ok := sup.Rec.(*dropRecorder)
+	if !ok || rec.lifecycle == nil {
+		t.Fatalf("这一格要的是装配好的 recorder（握着写口），实际 %T", sup.Rec)
+	}
+
+	type attempt struct {
+		exitCode int
+		crash    bool
+	}
+	ids := make([]string, 0, 2)
+	for i, a := range []attempt{{exitCode: 3}, {exitCode: 9, crash: true}} {
+		child, err := sup.Start(t.Context())
+		if err != nil {
+			t.Fatalf("第 %d 次起子进程: %v", i+1, err)
+		}
+		ids = append(ids, rec.lifecycle.ID())
+		if a.crash {
+			rec.RecordCrash(process.Event{Kind: process.EventCrashed, PID: child.PID,
+				Status: process.StatusFailed, ExitCode: a.exitCode, Crashes: 1})
+		} else {
+			rec.RecordExit(process.Event{Kind: process.EventExited, PID: child.PID,
+				Status: process.StatusExited, ExitCode: a.exitCode})
+		}
+		if _, err := child.Wait(t.Context()); err != nil {
+			t.Errorf("第 %d 次等子进程退出: %v", i+1, err)
+		}
+		child.CloseStreams()
+	}
+	if ids[0] == "" || ids[0] == ids[1] {
+		t.Fatalf("两次尝试该是两行（CO-45(a)），实际 %q / %q", ids[0], ids[1])
+	}
+
+	first, _ := readLifecycleRow(t, core.db.Read, ids[0])
+	if first.status != "EXITED" || !first.hasExitCode || first.exitCode != 3 {
+		t.Errorf("干净那条腿该把行改成 EXITED/exit_code=3，实际 %s / 有=%v 值=%d", first.status, first.hasExitCode, first.exitCode)
+	}
+	if first.metadata["attempt"] != float64(1) {
+		t.Errorf("第一行的 metadata.attempt 该是 1，实际 %v", first.metadata["attempt"])
+	}
+	second, _ := readLifecycleRow(t, core.db.Read, ids[1])
+	if second.status != "FAILED" || !second.hasExitCode || second.exitCode != 9 {
+		t.Errorf("崩溃那条腿该把第二行改成 FAILED/exit_code=9，实际 %s / 有=%v 值=%d", second.status, second.hasExitCode, second.exitCode)
+	}
+	if second.metadata["attempt"] != float64(2) || second.metadata["crashes"] != float64(1) {
+		t.Errorf("第二行的 metadata 该记 attempt=2 与 crashes=1（§8 的重启预算就住在这里），实际 %v", second.metadata)
+	}
+	// `previous_instance_id` 是写口自己那一份 attempt 语义（`RecordProcessStart` 把 prev/cur 一起设成这一行），
+	// 我这格不去替它定义含义 —— 只断两行各自带 metadata、边没串错行（下面按事件条数校）。
+	for want, n := range map[string]int{"process_started": 2, "process_exited": 1, "process_crashed": 1} {
+		if got := countEventsOfTypeProc(t, core, want); got != n {
+			t.Errorf("%s 该 %d 条，实际 %d 条", want, n, got)
+		}
+	}
 	mu.Lock()
 	joined := strings.Join(lines, "\n")
 	mu.Unlock()
-	if !strings.Contains(joined, "action=started") {
-		t.Fatalf("生命周期那一格该真出过声（否则下面那句零行只是「没人尝试过」）:\n%s", joined)
+	for _, id := range ids {
+		if !strings.Contains(joined, id) {
+			t.Errorf("两条腿的喊话里都没出现行 id %q（那说明写口没真被驱动）:\n%s", id, joined)
+		}
 	}
-	if n := countProcessInstances(t, core); n != 0 {
-		t.Errorf("REQ-DB-2 落地前这里该是 0 行，实际 %d 行（有人绕道写了吗？把这条改成正向断言并关掉 SKIP）", n)
-	}
-	// 五列的读面今天就得存在：按列名 SELECT 一次，列被改名/删掉会在这里响，而不是在合验那天沉默。
-	var dead int
+}
+
+func countEventsOfTypeProc(t *testing.T, core *Core, evType string) int {
+	t.Helper()
+	var n int
 	if err := core.db.Read.QueryRow(
-		`SELECT count(*) FROM process_instances WHERE exit_code IS NOT NULL OR restart_policy <> 'NEVER'
-		   OR owner_type IS NOT NULL OR metadata_json <> '{}' OR status <> 'UNKNOWN'`).Scan(&dead); err != nil {
-		t.Fatalf("五列的读面本身读不动（列名漂了？）: %v", err)
+		`SELECT count(*) FROM event_journal WHERE aggregate_type = 'process' AND event_type = ?`, evType).Scan(&n); err != nil {
+		t.Fatal(err)
 	}
+	return n
+}
+
+func countEvents(t *testing.T, core *Core) int {
+	t.Helper()
+	var n int
+	if err := core.db.Read.QueryRow(`SELECT count(*) FROM event_journal WHERE aggregate_type = 'process'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func countProcessInstances(t *testing.T, core *Core) int64 {
@@ -278,14 +504,52 @@ func countProcessInstances(t *testing.T, core *Core) int64 {
 	return n
 }
 
-// TestLifecycleRowLandsTheFiveColumns 是**升格格**：REQ-DB-2 那条通道（外加 C34 的 owner_type/owner_id 词表）
-// 一落地，`LUCERO_REQ_DB2=1` 就该跑起来并断真行的列值。今天它显式 SKIP，并且把"等谁"写进理由里 ——
-// 判据表引用它时不许把 SKIP 当绿。
+// TestLifecycleRowLandsTheFiveColumns 是 REQ-DB-2 的**升格格**：契约① §1.1 第 17 条把验收命令钉成
+// `LUCERO_REQ_DB2=1 go test -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/` 必须 **PASS**（不是 SKIP、不是这用例里那句 `t.Fatal`）。
+// 不带 flag 时它仍然显式 SKIP —— 这条不是偷懒：真子进程那一格的成本要付在验收那天，而 SKIP 本身带着"等谁"（判据表不许把 SKIP 当绿）。
+//
+// 断的是**真走一次 supervisor 生命周期**落下来的那一行：五个被点名的列 + pid/process_type 过 `assertLifecycleRow`，
+// 外加"恰好一行、恰好一条 `process_started`"（CO-45(a) 的一次尝试一行 + 第 17 条的行与事件同生同死）。
 func TestLifecycleRowLandsTheFiveColumns(t *testing.T) {
 	if os.Getenv("LUCERO_REQ_DB2") != "1" {
-		t.Skip("等 REQ-DB-2（无版本、但要发事件的表的写通道）+ C34（owner_type/owner_id 词表）：" +
-			"设 LUCERO_REQ_DB2=1 才跑；今天生命周期那三格只出声不写库（T-168）")
+		t.Skip("带 LUCERO_REQ_DB2=1 才跑（契约① §1.1 第 17 条的验收命令形状）；不带 flag 的默认跑里这格不算样本")
 	}
-	// 走到这里说明通道已经存在 —— 那时把这段换成真的一次 supervisor 生命周期 + assertLifecycleRow(真行, wantAdapterRow())。
-	t.Fatal("LUCERO_REQ_DB2=1 但这段还没接上真写路径：等 REQ-DB-2 落地的人把它补完（不许改成 SKIP 蒙过去）")
+	core, err := boot(t.Context(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+	if _, err := core.db.Read.Exec(
+		`INSERT INTO adapter_instances (id, adapter_key, display_name, created_at, updated_at)
+		 VALUES ('ai-req-db2', 'fake', 'fake', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := startOneAttempt(t, core, "fake")
+	pid := pidFromShout(t, lines)
+	got, rowID := onlyProcessRow(t, core)
+
+	want := lifecycleRow{
+		processType: "ADAPTER", ownerType: "adapter_instance", ownerID: "ai-req-db2",
+		pid: pid, status: string(process.StatusStarting), restartPolicy: "NEVER",
+		metadata: map[string]any{"attempt": float64(1), "pid": float64(pid), "previous_instance_id": ""},
+	}
+	if bad := assertLifecycleRow(got, want); len(bad) != 0 {
+		t.Errorf("真走一次生命周期落的那一行不对:\n  %s", strings.Join(bad, "\n  "))
+	}
+	// executable 不在那五条里，但 §8 的明细点了它：起不来就没人知道起的是什么。
+	if !got.hasExecutable || got.executable == "" {
+		t.Errorf("executable 该是装配时那份可执行路径，实际有=%v 值=%q", got.hasExecutable, got.executable)
+	}
+	if got.createdAt == 0 || got.updatedAt == 0 {
+		t.Errorf("created_at/updated_at 该是写口自己的时钟（不是事件时刻），实际 %d/%d", got.createdAt, got.updatedAt)
+	}
+	var evType, evAgg string
+	if err := core.db.Read.QueryRow(
+		`SELECT aggregate_type, event_type FROM event_journal WHERE aggregate_id = ?`, rowID).Scan(&evAgg, &evType); err != nil {
+		t.Fatalf("那一行旁边该有恰一条事件: %v（现在 %d 条）", err, countEvents(t, core))
+	}
+	if evAgg != "process" || evType != "process_started" {
+		t.Errorf("事件该是 process/process_started，实际 %s/%s", evAgg, evType)
+	}
 }

@@ -179,7 +179,7 @@ func TestDiscoverUnwiredAndNeighbors(t *testing.T) {
 	}
 }
 
-// TestDiscoverRequiresIdempotencyKey 是 T-204④ 那一格：yaml `core-v1.yaml:217` 本来就挂了
+// TestDiscoverRequiresIdempotencyKey 是 T-204④ 那一格：yaml 的 `discoverAdapterSessions` 本来就挂了
 // `parameters/IdempotencyKey`（那个参数 `required: true`，`:741`），所以缺这道检查是**代码的缺口**、不是契约没写。
 // 三条都要钉：① 缺键 ⇒ 403 `idempotency_key_required` 且**一次都不落到域**（不许先把 Provider 拉起来再说键不对）；
 // ② 补上同一个 harness 的键 ⇒ 正常 200（证明 403 不是别的东西给的）；

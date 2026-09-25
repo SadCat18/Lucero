@@ -90,7 +90,7 @@ func TestEventOfMatchesCatalog(t *testing.T) {
 		from, to State
 		want     string
 	}{
-		{Created, Starting, ""}, // execution_created 属于建行，不属于状态迁移
+		{Created, Starting, EventStarting}, // REQ-DB-4 之后这一条有事件了（execution_created 仍属建行那一腿，不是这条迁移）
 		{Starting, Running, EventStarted},
 		{Running, Succeeded, EventSucceeded},
 		{Running, Failed, EventFailed},

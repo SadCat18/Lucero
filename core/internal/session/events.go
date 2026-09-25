@@ -17,7 +17,7 @@ type DiscoveredPayload struct {
 	AdapterInstanceID string `json:"adapter_instance_id"`
 }
 
-// ManagedPayload 是 §6:177 那一格登记的两键。**`ProjectID` 是指针不是字符串**：
+// ManagedPayload 是事件契约 §6 的 `session_managed` 那一格登记的键。**`ProjectID` 是指针不是字符串**：
 // C41 裁定（09-23 04:1x）要求"两键都必须在、`project_id` 允许显式 `null`"（同 REQ-F-22 的"键必须在、值可空"），
 // 而折成 string 之后"没有归属"会序列化成 `""` —— 那是"绑到一个空串命名的项目"，外键列上根本不存在这种值。
 type ManagedPayload struct {

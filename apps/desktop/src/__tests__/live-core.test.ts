@@ -243,31 +243,139 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
   });
 
   /**
-   * §4 第 2 格 discover 的寻址口径（T-205）：yaml `core-v1.yaml:207` 这一格是 `{id}` +
-   * `parameters/Id`（聚合根 UUIDv7 = `adapter_instances.id`），**同前缀的 `probe` 那格才是 `{key}`**
-   * （`:171`，`parameters/Key`，描述自己写了"非实例 id"，且两处都注了"别照抄"）。
-   * 我 04:5x 的样本拿 `opencode`（那是 adapter_key）去打 ⇒ 就算 backend 接通也只会得到 404，
-   * 那条红属于我设图错，不是它的缺陷。所以这里两行期望都写死，谁先落地都不用重写门控：
-   *   - 按 id 打（正路）：501 = 还没装配；200 = 通了；503 `adapter_unresponsive` = 装配了但没有可用 Provider；
-   *     404 = 库里没有这个实例 id。
-   *   - 按 key 打（错路）：**接通之后必须是 404**，不许"顺手也认 key" —— 那样两种寻址就悄悄合一了。
+   * §4 第 5~6 格（建任务 → 入队）与第 7 格起的 blocked 表。
+   * 09-24 07:24:13 现盘实测（自属构建 07:24:10）：`POST /tasks` 201、`tasks/:queue` 200 都真绿；
+   * `GET /executions?task_id=` 与 approvals / quota / search 都是 catch-all 的 501，
+   * 所以拿不到 execution id —— 第 8~10 格（send / output / resolve）**今天只能记 blocked**。
+   * 这里刻意不写"必须 501"（那是把别人的进度钉成我的红，我 04:5x 才犯过），改成两支都成立、
+   * 但**每一支都各自有断言**（501 那一支也要断它是 not_implemented 而不是别的码），
+   * 免得"提前 return"让"验到了"和"什么都没验"在计数里长得一样。
    */
-  it('§4 第 2 格 discover：按 {id} 寻址才是正路，拿 adapter_key 打接通后必须 404', async () => {
-    const legs = [
-      ['by-id ', '/api/v1/adapters/01TESTNOTEXISTINSTANCE/sessions:discover', [200, 404, 501, 503]],
-      ['by-key', '/api/v1/adapters/opencode/sessions:discover', [404, 501]],
-    ] as const;
-    for (const [label, path, allowed] of legs) {
-      const res = await raw('POST', path, `live-discover-${label}`);
-      const err = await res.json().then((j) => (j as { error?: unknown }).error ?? null) as
-        { code?: string; retryable?: boolean } | null;
-      expect(allowed as readonly number[], `${label} 回了 ${res.status}，只许 [${allowed.join(',')}]`)
-        .toContain(res.status);
-      if (res.status === 501) expect(err?.code, label).toBe('not_implemented');
-      if (label === 'by-key' && res.status !== 501) {
-        expect(err?.code, '按 key 打不得被认成合法寻址').toBe('not_found');
-      }
-      console.log(`  discover ${label} → ${res.status} ${err?.code ?? '<no error>'}`);
+  it('§4 第 5~6 格真链 + 第 7 格起逐跳记 blocked（不许钉 501，也不许假绿）', async (ctx) => {
+    // 一个来源：probe 的寻址键与 :queue 请求体声明的键必须是同一个字面量，别写两遍各自漂。
+    const akey = 'fake';
+    const probe = await raw('POST', `/api/v1/adapters/${akey}/probe`, 't56-probe');
+    if (probe.status === 501) ctx.skip();          // harness 少 -adapter fake= ⇒ 不是我该红的东西
+    expect(probe.status).toBe(200);
+    const instId = (await probe.json() as { id: string }).id;
+    const disc = await raw('POST', `/api/v1/adapters/${instId}/sessions:discover`, 't56-disc');
+    expect(disc.status).toBe(200);
+    const sid = ((await disc.json() as { items: { session_id: string }[] }).items ?? [])[0]?.session_id;
+    if (!sid) ctx.skip();                           // 空清单是合法结果，但后面没得串，skip 而不是假装过
+
+    const proj = await raw('POST', '/api/v1/projects', 't56-proj',
+      { name: `t56-${Date.now()}`, canonical_path: `D:/Project/Lucero/.scratch/frontend/t56-${Date.now()}` });
+    expect(proj.status).toBe(201);
+    const projectId = (await proj.json() as { id: string }).id;
+
+    const task = await raw('POST', '/api/v1/tasks', 't56-task',
+      { title: 't56 slice', project_id: projectId, session_id: sid, mode: 'MANAGED', priority: 'NORMAL' });
+    expect(task.status, await task.clone().text()).toBe(201);
+    const t = await task.json() as { id: string; status?: string; version?: number };
+    expect(typeof t.id).toBe('string');
+
+    const q = await raw('POST', `/api/v1/tasks/${t.id}:queue`, 't56-queue', { adapter_key: akey });
+    expect([200, 409], `queue 回了 ${q.status}`).toContain(q.status);
+    if (q.status === 409) expect((await q.json()).error.code).toBe('illegal_transition');
+
+    // C43（09-24）：`:queue` 的调度对象是**调用方声明的事实** ⇒ 请求体 `{"adapter_key": …}` 必填、缺 ⇒ 400。
+    // 这一条打在**另一条 CREATED 任务**上：若复用上面那条，未收紧时它会先把任务排队掉，
+    // golden path 只剩一个 409 —— 断言照样"过"，但它验的东西已经变了（同一条命令两用是假绿的一种）。
+    const task2 = await raw('POST', '/api/v1/tasks', 't56-task2',
+      { title: 't56 nokey leg', project_id: projectId, session_id: sid, mode: 'MANAGED', priority: 'NORMAL' });
+    expect(task2.status, await task2.clone().text()).toBe(201);
+    const t2 = await task2.json() as { id: string };
+    const qNoKey = await raw('POST', `/api/v1/tasks/${t2.id}:queue`, 't56-queue-nokey');
+    if (qNoKey.status === 400) {
+      expect((await qNoKey.json()).error.code, 'C43 已收紧：缺 key 只能是 validation_failed').toBe('validation_failed');
+    } else {
+      // 两支都有断言，且不钉别人的进度：未收紧时这里合法地放行，但**必须喊出来**，不许静等价。
+      expect([200, 409, 404], `queue 缺 key 回了 ${qNoKey.status}`).toContain(qNoKey.status);
+      console.log(`  C43 未收紧：不带 adapter_key 的 :queue 得到 ${qNoKey.status}（欠工在 backend 那侧，不记我这侧的红）`);
+    }
+    console.log(`  :queue 带 key → ${q.status}，缺 key → ${qNoKey.status}`);
+
+    const ex = await raw('GET', `/api/v1/executions?task_id=${t.id}`);
+    if (ex.status === 501) {
+      expect((await ex.json()).error.code).toBe('not_implemented');
+      console.log(`  第 7 格起 blocked：GET /executions?task_id=${t.id} → 501（拿不到 execution id）`);
+      return;                                       // 到这里为止每一跳都真断言过，不是空跑
+    }
+    expect(ex.status, await ex.clone().text()).toBe(200);
+    const page = await ex.json() as { items: { id: string }[]; next_cursor: string };
+    expect(Array.isArray(page.items)).toBe(true);
+    expect(typeof page.next_cursor).toBe('string'); // REQ-F-19：分页侧只许字符串，空串=没有下一页
+    const exId = page.items[0]?.id;
+    if (!exId) {
+      console.log('  入队后还没有 execution 行：send / output 记 blocked（0 条是合法结果，不猜 id）');
+      return;
+    }
+    const send = await raw('POST', `/api/v1/executions/${exId}/send`, 't56-send', { text: 't56', delivery: 'start_now' });
+    expect([200, 202, 409, 503], `send 回了 ${send.status}`).toContain(send.status);
+    const out = await raw('GET', `/api/v1/executions/${exId}/output`);
+    expect([200, 501], `output 回了 ${out.status}`).toContain(out.status);
+  });
+
+  /**
+   * §4 第 2/3/4 格的真链（T-222 起 discover 已通，样本不再用"期望 501"挡着）。
+   * 合法顺序照契约③ §3：`probe(key)` → 回执 `adapter.id`（UUIDv7）→ `discover(id)` → `items[0].session_id` → `:manage` / `:sync`。
+   * 两个坑一起钉住：
+   *   - 寻址：discover 走 `parameters/Id`，**拿 adapter_key 打必须是 404 `not_found`**（09-24 07:10 实测正是 404，
+   *     所以这一行从今天起是"会说话的守卫"，不再是空期望）；
+   *   - 装配：Core 必须以 `-adapter fake=<路径>` 起，没配就 501（`main.go:91` 的 flag 说明自己写了）——
+   *     那是**我的 harness 缺件**，所以这里 skip 并报出原因，不记成对方的红。
+   */
+  it('§4 第 2~4 格真链：probe 取实例 id → discover 去重 upsert → manage 通 → sync 允许 200/503 两种真相', async (ctx) => {
+    const probe = await raw('POST', '/api/v1/adapters/fake/probe', 'live-t222-probe');
+    if (probe.status === 501) {
+      ctx.skip();   // 没配 -adapter fake= ⇒ 这一格无从跑起，skip 而不是红，也不是绿
+    }
+    expect(probe.status, await probe.clone().text()).toBe(200);
+    const inst = await probe.json() as { id?: string; health?: string };
+    expect(typeof inst.id).toBe('string');
+
+    const disc = (idem: string) => raw('POST', `/api/v1/adapters/${inst.id}/sessions:discover`, idem);
+    const a = await disc('live-t222-a');
+    expect(a.status, await a.clone().text()).toBe(200);
+    const items = (await a.json() as { items: { session_id: string; remote_session_id: string }[] }).items;
+    expect(Array.isArray(items)).toBe(true);
+    if (!items.length) {
+      // 清单空是合法结果（Provider 没历史），但那样第 3/4 格就没法串，如实记下而不是猜一个 id
+      console.log('  discover 返回空清单：第 3/4 格记 blocked（无 id 可用）');
+      return;
+    }
+    // 实例作用域去重：换一把新的 Idempotency-Key 再拉一次，必须回到同一批本地行，不产生新行
+    const b = await disc(`live-t222-b-${Date.now()}`);
+    expect(b.status).toBe(200);
+    const again = (await b.json() as { items: { session_id: string }[] }).items.map((x) => x.session_id).sort();
+    expect(again).toEqual(items.map((x) => x.session_id).sort());
+
+    // 错路守卫：key 打 id 位
+    const wrong = await raw('POST', '/api/v1/adapters/fake/sessions:discover', 'live-t222-key');
+    expect(wrong.status, '按 adapter_key 寻址不得被悄悄接受').toBe(404);
+    expect((await wrong.json()).error.code).toBe('not_found');
+
+    const sid = items[0].session_id;
+    // 这行日志是给自己看的：空清单会提前 return，"通过"和"什么也没验"在计数里长得一样，必须留下走的是哪条分支。
+    console.log(`  真链走通到第 4 格：实例 ${inst.id} 拿到 ${items.length} 条会话，用 ${sid} 串 manage/sync`);
+    const mg = await raw('POST', `/api/v1/sessions/${sid}:manage`, 'live-t222-manage', { managed: true });
+    expect(mg.status, await mg.clone().text()).toBe(200);
+    expect((await mg.json()).managed).toBe(true);
+
+    const sy = await raw('POST', `/api/v1/sessions/${sid}:sync`, 'live-t222-sync');
+    // 09-24 07:10 实测是 503 `adapter_unresponsive`（C25 那一支：无可用 Provider 也不许假"已同步"）。
+    // 两种都是真相：200 必须给得出同步游标；503 必须 retryable=true。501/404/405 才说明这格又漂了。
+    expect([200, 503], `sync 回了 ${sy.status}`).toContain(sy.status);
+    if (sy.status === 200) {
+      const r = await sy.json() as { sync_state?: string; next_cursor?: string | null };
+      expect(typeof r.sync_state).toBe('string');
+      // T-96 口径：同步游标只许"非空串"或 null；空串是第三种"没有"，非法
+      expect(r.next_cursor === null || (typeof r.next_cursor === 'string' && r.next_cursor !== ''),
+        `next_cursor=${JSON.stringify(r.next_cursor)} 不符同步游标域`).toBe(true);
+    } else {
+      const err = (await sy.json()).error;
+      expect(err.code).toBe('adapter_unresponsive');
+      expect(err.retryable, '503 必须可重试，否则面板会把它当终态').toBe(true);
     }
   });
 });

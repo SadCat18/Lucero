@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,8 +28,11 @@ import (
 
 	httpapi "github.com/SadCat18/lucero/core/api/http"
 	wsapi "github.com/SadCat18/lucero/core/api/websocket"
+	"github.com/SadCat18/lucero/core/internal/adapter"
 	"github.com/SadCat18/lucero/core/internal/approval"
 	"github.com/SadCat18/lucero/core/internal/audit"
+	"github.com/SadCat18/lucero/core/internal/eventjournal"
+	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/notification"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/project"
@@ -66,6 +70,11 @@ type Core struct {
 	reporter *rejectionReporter
 	tasks    *task.Service
 	store    auditedStore
+	// instances 是分派腿的只读门（T-263）：adapter_key → adapter_instances.id。
+	// 与 probe 的写通道是两个 SQLiteStore 实例（同库不同视图），probe 那个只在 -adapter 配了时才建。
+	instances *adapter.SQLiteStore
+	// executions 是分派腿的写侧：:queue 在同一笔事务里调 Service.Create 建 Execution。
+	executions *execution.Service
 	// sessionSvc 是同一个 Service 的两次用途（`:sync` 只读 / `:manage` 写），构造一次好过两次：
 	// 两处各自的时钟一旦分叉，`updated_at` 与 `state_confidence` 就会来自两个时刻。
 	sessionSvc *session.Service
@@ -85,7 +94,7 @@ func main() {
 	var cfg config
 	flag.StringVar(&cfg.DataDir, "data-dir", defaultDataDir(), "数据目录：放 lucero.db / core.lock / core.endpoint")
 	flag.StringVar(&cfg.Migrations, "migrations", "migrations", "迁移 .sql 目录（v0.1 不做迁移内嵌，T-33 已撤回 REQ-T-2）")
-	flag.BoolVar(&cfg.TakeOver, "take-over-lock", false, "显式接管上一个进程留下的锁文件")
+	flag.BoolVar(&cfg.TakeOver, "take-over-lock", false, "已多余：单实例锁按 REQ-L-1 改判端口，不再需要人工接管死 pid")
 	var ttl time.Duration
 	flag.DurationVar(&ttl, "ws-ticket-ttl", 30*time.Second, "一次性 WS 短票的有效期（契约③ §1.2 默认 30s）")
 	flag.Var(&cfg.Adapters, "adapter", "登记一个可探测的 Adapter：`key=可执行路径`，可重复给；一个都不给 ⇒ probe 维持 501")
@@ -113,17 +122,29 @@ func defaultDataDir() string {
 	return filepath.Join(".", "lucero-data")
 }
 
-// boot 建目录 → 拿锁 → 开库 → 迁移 → 生成口令 → 写 core.endpoint → 监听回环端口。
-// 顺序里"先迁移再写事件"是硬要求：InitRedaction 必须在 SQLite 之后、事件可用之前（§2.3）。
+// boot 建目录 → 绑回环端口 → 拿锁（锁的内容就是那个端口，REQ-L-1）→ 开库 → 迁移 → 生成口令 → 写 core.endpoint。
+// 顺序里"先绑端口再拿锁"是判活的前提：锁文件必须一发布出来就带着能判活的端口；
+// "先迁移再写事件"是硬要求：InitRedaction 必须在 SQLite 之后、事件可用之前（§2.3）。
 func boot(ctx context.Context, cfg config) (*Core, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("建数据目录: %w", err)
 	}
-	l, err := acquireLock(cfg.DataDir, cfg.TakeOver)
+	if cfg.TakeOver {
+		// 不静默吞掉一个"看起来在做点什么"的 flag：它现在什么都不做，就得当场说一句。
+		log.Printf("core: -take-over-lock 已随 REQ-L-1 变成多余（判活看端口、不看 pid），本次忽略这个 flag")
+	}
+	// 端口由 Core 选定并写进 core.endpoint（契约③ §1.1）：只绑 127.0.0.1。
+	// 提到拿锁之前，是因为"这个端口绑得上"就是"上一个持有者必已死"的那条网络事实（见 lock.go）。
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		return nil, fmt.Errorf("监听回环地址: %w", err)
+	}
+	l, err := acquireLock(cfg.DataDir, ln.Addr().(*net.TCPAddr).Port)
+	if err != nil {
+		ln.Close() // 端口判活刚用这只耳朵借过一次，拿不到锁就还回去，别留一个绑死了又没人听的端口
 		return nil, err
 	}
-	core := &Core{cfg: cfg, lock: l}
+	core := &Core{cfg: cfg, lock: l, ln: ln, endpoint: ln.Addr().String()}
 	booting := httpapi.StateBooting
 	core.state.Store(&booting)
 
@@ -157,15 +178,27 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	core.reporter = &rejectionReporter{notes: notification.NewService(), now: nowMillis}
 	core.tasks = task.NewService(core.reporter)
 	core.store = auditedStore{d: d, checkpoints: core.checkpoints}
+	// 分派腿两个依赖（T-263 的只读门 + execution 写侧）。instances 无条件建 ——
+	// 即使一个 -adapter 都没配也要能回答"这个 key 不存在"（404）而不是 501；
+	// probe 那条腿的写通道仍由 newAdapterServices 按 specs 是否为空决定建不建。
+	core.instances, err = adapter.NewSQLiteStore(d, nowMillis)
+	if err != nil {
+		core.close()
+		return nil, fmt.Errorf("装配 adapter 读通道: %w", err)
+	}
+	core.executions = execution.NewService()
 
 	// session 的那个 Service 只构造一次（读侧 `:sync`、写侧 `:manage`，以及 discover 建行也共用），
 	// 时钟用上面那份 nowMillis。它必须建在下面两个装配之前：discover 的"建行"就在这个 Service 里。
 	core.sessionSvc = session.NewService(session.NewRepository(d.Read), nowMillis)
+	// send 腿两格：task 投影（§5.3）与 session 落消息（message_recorded）。execution→task、
+	// execution→session 依赖无环；反向注入在这里完成，NewService() 签名不变。
+	core.executions.EnableSend(core.tasks, core.sessionSvc)
 
-	// T-181① / T-198：probe 与 discover 两条腿一起装配（同一份 `launcher`、同一套"这个 key 怎么起"）。
-	// 一个 `-adapter` 都没给 ⇒ 两个都是 nil ⇒ transport 那两格维持 501
+	// T-181① / T-198：probe、discover、send 三条腿一起装配（同一份 `launcher`、同一套"这个 key 怎么起"）。
+	// 一个 `-adapter` 都没给 ⇒ 三个都是 nil ⇒ transport 那三格维持 501
 	// （"这台机器没配 Adapter"与"你给错了 key"是两种处置，不许拿 400 伪装成前者，见 probeassembly.go）。
-	probe, discover, err := newAdapterServices(d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
+	probe, discover, sendPipe, err := newAdapterServices(d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
 		func(format string, args ...any) { log.Printf(format, args...) }, core.sessionSvc)
 	if err != nil {
 		core.close()
@@ -173,6 +206,11 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	}
 	core.probe = probe
 	core.discover = discover
+	// 连接半边：send 的 start_now/guide 走这里；nil 时那两态 501 ErrTurnNotWired，queue 照常。
+	// 可以晚于 EnableSend —— 两格独立，NewService 签名不变。
+	if sendPipe != nil {
+		core.executions.EnableTurn(sendPipe)
+	}
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -181,14 +219,7 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	}
 	core.token = base64.RawURLEncoding.EncodeToString(buf)
 
-	// 端口由 Core 选定并写进 core.endpoint（契约③ §1.1）：只绑 127.0.0.1。
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		core.close()
-		return nil, fmt.Errorf("监听回环地址: %w", err)
-	}
-	core.ln = ln
-	core.endpoint = ln.Addr().String()
+	// 端口在拿锁之前就已绑好（见上面那段），这里只负责把它登记成 core.endpoint。
 	if err := core.writeEndpointFile(); err != nil {
 		core.close()
 		return nil, err
@@ -205,7 +236,33 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 		return nil, err
 	}
 	core.reportAuditChain(ctx)
+	// REQ-T7：core_ready 进 journal（契约① §6）。必须在迁移之后 —— 事件表那时才在；
+	// 必须在返回之前 —— serve() 一进就把 state 置 READY，health 报 READY 时这条事件得已经在库里。
+	if err := core.appendCoreReady(ctx); err != nil {
+		core.close()
+		return nil, fmt.Errorf("写 core_ready 事件: %w", err)
+	}
 	return core, nil
+}
+
+// appendCoreReady 落 §6 的 core_ready：aggregate_type=core（versionless，走 AppendEventOnly）、
+// principal=system、payload 带 version 与 migration_version（REQ-T7 点名的两键）。
+// 每次成功 boot 一条 —— 崩溃恢复要能数出"起过几次、各带什么版本"。
+func (c *Core) appendCoreReady(ctx context.Context) error {
+	var mv int64
+	if err := c.db.Read.QueryRow(`SELECT max(version) FROM schema_migrations`).Scan(&mv); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("读迁移版本: %w", err)
+	}
+	return c.db.Write(ctx, func(tx *db.Tx) error {
+		return tx.AppendEventOnly(db.AggCore, "core", db.EventDraft{
+			EventID:     adapter.NewRequestID().String(),
+			Type:        eventjournal.CoreReady,
+			Aggregate:   db.AggCore,
+			AggregateID: "core",
+			PrincipalID: "system",
+			Payload:     map[string]any{"version": Version, "migration_version": mv},
+		})
+	})
 }
 
 // ensurePrincipal 幂等地建一条 principals（非聚合表，按 §1.1 第 12 条用 Append，不占版本号）。
@@ -260,6 +317,9 @@ func (c *Core) handler() http.Handler {
 		},
 		Tickets: c.tickets,
 		Tasks:   c.tasks, TaskList: task.NewRepository(c.db.Read), Store: c.store,
+		// T-229 的读面那一格：`GET /api/v1/executions?task_id=` 是纯读，不注入 Store。
+		// 它同时是"编排腿真建出了 execution"目前唯一能从进程外看到的窗口（写侧 `Service.Create` 今天零调用者）。
+		Executions: execution.NewRepository(c.db.Read),
 		// inbox 那一腿是纯读：不注入 Store，所以它不需要事务通道。
 		Notifications: notification.NewRepository(c.db.Read),
 		// `:read` 是这条竖线第一次真改 notifications 的一行状态（C31 已 GO）：写要事务通道，所以配 Store。
@@ -273,6 +333,9 @@ func (c *Core) handler() http.Handler {
 		Sessions: c.sessionSvc,
 		// 面板的 listSessions 今天打的是 catch-all 的 501，这条把它接成真读路径。
 		SessionRead: session.NewRepository(c.db.Read),
+		// messages 读面（第六十二批格2）：生产者 RecordMessage 已在，api-contract :113~119
+		// 的接线条件满足。与 SessionRead 同一个 Repository 值、两个字段（各管一条路径的 nil 闸）。
+		SessionMessages: session.NewRepository(c.db.Read),
 		// `:manage` 是这条竖线上第二次真改聚合（第一次是 notifications 的 `:read`）：
 		// 同一个 Service 复给读侧与写侧，时钟也复用那份共享的 nowMillis（别在业务包里各取一次时间）。
 		SessionManage: c.sessionSvc,
@@ -281,6 +344,13 @@ func (c *Core) handler() http.Handler {
 		Adapters: c.adaptersField(),
 		// discover 与 probe 同一条腿的两个入口，"没配 Adapter"时同样是 nil ⇒ 501（不是 404、不是 405）。
 		SessionDiscover: c.discoverField(),
+		// 分派腿（T-263 + C43 后半格）：Instances 无条件注入（没配 adapter 也要能回 404 而不是 501），
+		// ExecutionCreate 同理 —— 两个都非 nil，:queue 才走完整分派到 PREPARING v3。
+		Instances:       c.instances,
+		ExecutionCreate: c.executions,
+		// send 腿（yaml :544）：ExecutionSend + Store 都在才挂 POST {id}/send；
+		// 缺任一个落 catch-all 501（C28②）。
+		ExecutionSend: c.executions,
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/ws/v1/events", wsapi.Handler(wsapi.Config{
@@ -391,6 +461,11 @@ func (c *Core) close() {
 	}
 	if c.lock != nil {
 		c.lock.release()
+	}
+	// 端口现在是锁的判据（REQ-L-1），boot 半途失败却不还回端口，下一位 judgeHolder 就会被我自己的耳朵骗成
+	// "端口被占" —— 重复 Close 无害（serve/Shutdown 之后再关只返回一个 error）。
+	if c.ln != nil {
+		c.ln.Close()
 	}
 	if c.db != nil {
 		c.db.Close()

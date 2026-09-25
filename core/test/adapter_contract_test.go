@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -207,9 +208,166 @@ func TestDeliveryModesExplicitNotSilent(t *testing.T) {
 //
 // 主控裁定后本用例改为硬断言：批准=写 → 把 approval/respond 加进 writeMethods 列表；
 // 批准=权限通道 → 在契约② §3 补一句"审批类方法由 Permission Engine 门禁"，并把 §12.11 落进文件。
+// 主控 09-24 10:36 T-273③ 让我自己复量再决定要不要重开 ⇒ 复量结论：**两问都已被裁进契约② §4.1，
+// 代码也跟上（`writeMethods` 现含 approval/respond，注释直接引 §4.1）**，所以本用例从 SKIP 改成硬断言。
+// 三条腿（§1.1 第 16 条）：① §4.1 的写集合 ↔ 代码 `writeMethods` 双向相等；② 两侧 token 数 == 去重数；
+// ③ 合成反例喂进**同一个**比较函数（少一项必须红）。`debug/*` 在代码侧由 `isDebugName` 兑现 ⇒ 单独一判，不静默豁免。
 func TestWriteEntryOpenQuestions(t *testing.T) {
-	t.Skip("blocked: 等主控裁定 Q1/Q2（见本用例注释）；同时需要把被引用的 §12.11 回写进 specs，" +
-		"否则任何角色都无法自查自己是否合规")
+	cpath := contractPath(t)
+	if cpath == "" {
+		t.Fatal("找不到契约② 路径 ⇒ 这条判据看不见东西，不许给干净结论")
+	}
+	specRaw, err := os.ReadFile(cpath)
+	if err != nil {
+		t.Fatalf("读契约② 失败：%v", err)
+	}
+	specSet, err := specWriteMethods(string(specRaw))
+	if err != nil {
+		t.Fatalf("契约② §4.1 的写方法集合解析失败：%v", err)
+	}
+	hsRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "core", "internal", "adapter", "handshake.go"))
+	if err != nil {
+		t.Fatalf("读 internal/adapter/handshake.go 失败：%v", err)
+	}
+	codeSet, err := codeWriteMethods(string(hsRaw))
+	if err != nil {
+		t.Fatalf("代码侧 writeMethods 解析失败：%v", err)
+	}
+
+	// 腿②：任何一侧内部重名都是漂移（集合比较会把重名静默吸收）。
+	if dup, ok := firstDup(specSet); ok {
+		t.Errorf("契约 §4.1 的写集合里 %q 出现两次 ⇒ 清单本身漂了", dup)
+	}
+	if dup, ok := firstDup(codeSet); ok {
+		t.Errorf("代码 writeMethods 里 %q 出现两次 ⇒ 同一个方法两条判定", dup)
+	}
+
+	// 腿①：双向相等。`debug/*` 是契约侧的写法，代码侧由 isDebugName 兑现 ⇒ 比之前先把它摘出来单独核。
+	specNoDebug := diffSets(specSet, []string{"debug/*"})
+	if only := diffSets(specNoDebug, codeSet); len(only) > 0 {
+		t.Errorf("契约 §4.1 判给写方法、代码却没认：%v", only)
+	}
+	if only := diffSets(codeSet, specNoDebug); len(only) > 0 {
+		t.Errorf("代码当写方法、契约 §4.1 却没列：%v", only)
+	}
+	if !containsStr(specSet, "debug/*") {
+		t.Errorf("契约 §4.1 的写集合里没有 debug/* 那一项 ⇒ 下面那条 isDebugName 的核法失效了")
+	}
+	if !containsStr(codeSet, "approval/respond") {
+		t.Errorf("Q1 裁定是「approval/respond 算写方法」，代码 writeMethods 却没它 ⇒ 只读 Adapter 会被放行审批回应")
+	}
+
+	// 腿③：合成反例喂进同一个比较函数（只有真数据能红的不算闭上）。
+	// 两个方向各一条：`diffSets(a,b)` 是"a 有 b 没有"，所以期望值要在**两个方向的并集**里找——
+	// 这样如果哪天有人只实现了一个方向，另一条用例立刻红（我自己第一版就把这条写反了，被本用例当场抓住）。
+	for _, c := range []struct {
+		name     string
+		spec     []string
+		code     []string
+		wantOnly string
+	}{
+		{"代码少一项", []string{"session/send", "approval/respond"}, []string{"session/send"}, "approval/respond"},
+		{"契约少一项", []string{"session/send"}, []string{"session/send", "approval/respond"}, "approval/respond"},
+		{"两边一致", []string{"session/send"}, []string{"session/send"}, ""},
+	} {
+		only := append(diffSets(c.spec, c.code), diffSets(c.code, c.spec)...)
+		if c.wantOnly == "" && len(only) > 0 {
+			t.Errorf("合成反例「%s」本该一致却报了差集：%v", c.name, only)
+		}
+		if c.wantOnly != "" && !containsStr(only, c.wantOnly) {
+			t.Errorf("合成反例「%s」没点名 %q：实际差集 %v", c.name, c.wantOnly, only)
+		}
+	}
+
+	// Q1/Q2 的"钉现状"部分：契约 §4 方法表里必须真有 session/create 那一行（Q2 的原始症状就是代码有、表里没有）。
+	if !strings.Contains(string(specRaw), "| `session/create` |") {
+		t.Errorf("§4 方法表里没有 `session/create` 那一行，而它在代码 writeMethods 里 ⇒ Q2 那个「表少一行、代码多一项」的分裂回来了")
+	}
+	// 生产码不许再引用不存在的条款号（这条正是 Q1 当初被挂住的根因）。
+	prodRefs, err := codeClauseRefs(string(hsRaw))
+	if err != nil {
+		t.Fatalf("解析 handshake.go 的 §引用失败：%v", err)
+	}
+	for _, ref := range prodRefs {
+		if ref == "12.11" {
+			t.Errorf("生产码又引用了 §12.11 —— 那是个不存在的条款号（主控已裁：注释只准引 §4.1 或方法名）")
+		}
+	}
+	t.Logf("§4.1 写集合 %d 项 / 代码 %d 项（debug/* 由 isDebugName 兑现，另核）；§引用 %d 处",
+		len(specSet), len(codeSet), len(prodRefs))
+}
+
+// specWriteMethods 从契约② §4.1 里取「本文口径下的写方法集合」那一段的 `a/b` 形方法名。
+// **限定解析节**（读到下一段加粗标题就停）：整份文档里 backtick 的方法名遍地都是，不限定就会把读方法算进来。
+func specWriteMethods(text string) ([]string, error) {
+	lines := strings.Split(text, "\n")
+	start, end := -1, -1
+	for i, l := range lines {
+		if start < 0 && strings.Contains(l, "口径下的写方法集合") {
+			start = i
+			continue
+		}
+		if start >= 0 && strings.Contains(l, "**读方法") {
+			end = i
+			break
+		}
+	}
+	if start < 0 || end < 0 {
+		return nil, fmt.Errorf("没找到 §4.1 那段写方法清单（锚点「口径下的写方法集合」或「**读方法」被改）：start=%d end=%d", start, end)
+	}
+	var out []string
+	for _, l := range lines[start:end] {
+		for _, m := range methodTokenRE.FindAllString(l, -1) {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("§4.1 那段里一个方法名都没解析出来 ⇒ 形状变了，判据不能对着空集给绿")
+	}
+	return out, nil
+}
+
+var methodTokenRE = regexp.MustCompile(`[a-z]+/[a-z*]+`)
+
+// codeWriteMethods 取 `var writeMethods = map[string]bool{…}` 里的键。
+func codeWriteMethods(src string) ([]string, error) {
+	mark := "var writeMethods = map[string]bool{"
+	i := strings.Index(src, mark)
+	if i < 0 {
+		return nil, errors.New("找不到 writeMethods 的 map 定义（改名或换结构了 ⇒ 回写判据）")
+	}
+	body := src[i+len(mark):]
+	if j := strings.Index(body, "\n}"); j >= 0 {
+		body = body[:j]
+	}
+	var out []string
+	for _, l := range strings.Split(body, "\n") {
+		if k := strings.Index(l, "\""); k >= 0 {
+			if e := strings.Index(l[k+1:], "\""); e >= 0 {
+				out = append(out, l[k+1:k+1+e])
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("writeMethods 里没解析出任何键 ⇒ 形状变了")
+	}
+	return out, nil
+}
+
+var clauseRefRE = regexp.MustCompile(`§(\d+\.\d+)`)
+
+// codeClauseRefs 抽生产码注释里引的条款号（这条判据只管 Q1 那一格：不许再引不存在的 §12.11）。
+func codeClauseRefs(src string) ([]string, error) {
+	var out []string
+	for _, l := range strings.Split(src, "\n") {
+		if !strings.Contains(l, "//") {
+			continue
+		}
+		for _, m := range clauseRefRE.FindAllStringSubmatch(l, -1) {
+			out = append(out, m[1])
+		}
+	}
+	return out, nil
 }
 
 // TestErrorCodeIsJSONRPCNumber §1「JSON-RPC 2.0 语义」+ CO-4：error.code 在线格式上必须是

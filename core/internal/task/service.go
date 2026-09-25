@@ -13,6 +13,11 @@ import (
 // ErrVersionConflict 对应契约③ §2 的 409 version_conflict："我看到的不是你现在的"。
 var ErrVersionConflict = errors.New("task: version conflict")
 
+// ErrProjectionRejected 是"边沿不合法、且没注入 RejectionReporter"的哨兵：
+// §5.4 不许静默吞，没注入就必然失败 —— 但失败形状要让调用方能识别成"状态机拒绝"
+// （409 illegal_transition）而不是 500 装配错误。Report 写失败仍走普通 error（那才是 500）。
+var ErrProjectionRejected = errors.New("task: projection rejected")
+
 // RejectionReport 是 §5.4 要求的那两条记录（Notification + Audit）的全部输入。
 // 三个 id 都由调用方预生成：重试必须复用同一个，否则会发第二条通知（§8 幂等）；
 // AuditID 单独存在是因为 audit_entries.audit_id 有自己的 UNIQUE 命名空间，不能拿事件 id 顶。
@@ -90,7 +95,7 @@ func (s *Service) ApplyExecutionEvent(ctx context.Context, tx *db.Tx, taskID, ed
 	res.Rejection = rej
 	if !ok {
 		if s.rejections == nil {
-			return res, fmt.Errorf("task: 投影被拒（%s）但没注入 RejectionReporter，§5.4 第 3 条不许静默吞", rej.Reason)
+			return res, fmt.Errorf("%w（%s）: 没注入 RejectionReporter，§5.4 第 3 条不许静默吞", ErrProjectionRejected, rej.Reason)
 		}
 		if err := s.rejections.Report(ctx, tx, RejectionReport{
 			Rejection: rej, TaskID: taskID, NotificationID: cmd.Notification,

@@ -3,7 +3,8 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-23T02:02+08:00
+LAST_UPDATED: 2026-09-24T11:00+08:00
+UNCOMMITTED: core/internal/platform/db/versionless_test.go（T-243 的 +3 行注释，10:11:49 实测 HEAD 内 0 命中）——归属 db；`events.go` 那两行已入册（38cafa8 10:03:46）
 
 ## Objective
 
@@ -32,19 +33,237 @@ LAST_UPDATED: 2026-09-23T02:02+08:00
 
 ## Current checkpoint
 
-- Stage: T-179 已补（对拍的重名盲区）；抽 `addNames` 共用累加点后变异才测得出，含正向对照
-- Status: complete
-- Last verified action: eventjournal 五路 PASS（含新 `TestDetectsDuplicateRegistration`）；
-  scoped 门禁 2 包 ok；全仓 `go test ./internal/... -count=1` → **13 包 ok、FAIL 行 0**；`go vet` VET_OK；
-  变异标记 0 命中；基线现取 `f0ed6bf`，`git diff --stat HEAD` 本角色范围**只有 `contract_parity_test.go` (+90/−7)**，
-  `events.go`、`platform/db/`、`core/migrations/` 不在 diff 内 = 与基线逐字节相同
-- Next action: 无待办；账上无未闭合项
+- Stage: **T-219 / T-233+T-243 / T-252 / T-266 / T-276 五批都已落账**（T-276 只刷头部、零代码）——无版本聚合三入口在盘、
+  `AppendEventOnly` 已收紧成只给 `table == noTable`、REQ-DB-4 的 `execution_starting` 常量 + `Registered()` 集合
+  已入册（`38cafa8` 10:03:46）；本轮零代码改动（只有账本与一次守门复跑）。头部五行按 T-276 于 **10:54:23 刷新**
+- Status: complete（本角色账上无待办；唯一悬着的一格在"等"那行，不是我能动）
+- Last verified action: **最后一次重跑 = 10:02:43**（当场 `date` 实读；本行于 10:54:23 刷新）——
+  `./internal/eventjournal/...` **5 条全 PASS**、原文 `contract §6 and the catalogue agree on 64 event types`
+  （这一跑是为了 09:4x 新落的事件契约 §6 表头规矩，见"契约改口径要重推守门"）、
+  `./internal/platform/...` `ok 2.831s`；守门之外的三格是 09:26:42→09:26:47 读的：
+  `C8-13 三格相等 §6=64/yaml=64/常量=64` PASS、`C8-12 目录 64/常量 64` PASS、我两包同批 ok。
+  此后我只做只读核对（10:11:49 入册状态、10:54:23 头部刷新），**没有再跑判据，也不拿旧读数冒充新读数**
+- 等（三问，按 T-276②）：**等谁**＝主控；**等什么**＝把 `core/internal/platform/db/versionless_test.go`
+  那 **+3 行注释**入册（10:11:49 实测：HEAD 内 `grep -c fixture` = 0、工作区 = 1、`git status` = ` M`、
+  该文件最后提交仍是 `1ad0c37` 07:10:24，早于我 07:52:15 的编辑）；**谁解锁**＝主控（红线① 我无 git 写权限，
+  只报不办、也不催）。**这格不改变任何判据结果**（HEAD 那版测试自身是绿的），只是"树里有一格 HEAD 里没有"的形状
+- 范围自证：基线现取 **`a3b2910`（10:04:11）**；`git diff HEAD -- core/internal/platform/db core/internal/eventjournal core/migrations`
+  = **仅 `versionless_test.go +3`**；`events.go`（T-252 的 +4/−1）已在 HEAD 里 = `ExecutionStarting` 命中 **2**；
+  `touch.go` / `core/migrations/` 对 HEAD 零差异；**工作树未跟踪件本角色 0 件**
+- Next action: **跑 scoped 门禁复测基线**（`cd core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`）
+  ——本角色账上**只有这一件**，且它是复测不是待办；其余三格都已闭或不在我手里（见上面"等（三问）"）。
+  - 已作废/已成立的历史层（T-276③：头部只留活动项，历史按"留档"读，勿再当待办）：
+    ① ~~把 T-233 与 adapter 那两处更正按改后口径转告 adapter~~（T-243 08:20 销账：巡检 07:50 已覆盖同一格，
+      且"分开两种错形"本是 **adapter 07:46 先纠出来的**——它按 `landedStatus` 落码在先，
+      第 20 条 ⑤ 是 07:5x 才把它的做法升成规则 ⇒ 我不重发是对的，不造第二份真相）；
+    ② ~~确认 `git show HEAD:core/internal/eventjournal/events.go | grep -c ExecutionStarting` 应为 2~~
+      （10:11:49 实测 = **2**，经 `38cafa8` 10:03:46 入册 ⇒ 成立、划掉，不再复跑）；
+    ③ ~~等 yaml 那一格并专门复跑 C8-13~~（T-258 FYI① 采纳；frontend 09:24:45 已落地、
+      我 09:26:42 一并看到 **C8-13 三格相等 + 两条 PASS**，yaml 由 `b47c14c` 09:35:24 入册，我没碰过它）。
+  - 内容已在正文落实的原文留档（T-233 段）：① 建行写进去的状态 v0.1 是 `STARTING`（`supervisor.go:420`
+    带 `StatusStarting`），不是我 07:33 说的 `RUNNING`（那个值出自契约正文里主控自认编的那一处，
+    已就地改准；第 20 条 ⑤：`guardVal` 只能用"写口自己写进库的那个状态"）；
+    ② 我那句"拿观察态当 guard……第二次还撞 `event_id` 的 UNIQUE"把两种错形合成了一种——
+    固定用观察态 ⇒ 每次干净 0 行 + 一句喊、永远走不到记事件；只有"guard 跟着状态前进"才会撞 `event_id`
+    的 UNIQUE（adapter 用 m3 复现过）。⇒ 本角色代码零改动，改的是我这两次转述。
 - Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
 
 ## Completed
 
+- **T-276（头部五行 = 机器读的索引）已按新规矩执行，零代码改动**（10:54:23 收件 → 10:55:12 刷新完）：
+  - **巡检量到的那两格确实是旧的，我核对后自己承认**：`Stage` 停在 T-219（其后还有 T-233/243、T-252、T-266 三批），
+    `Last verified action` 写的是 **07:18:31→07:18:40**，而我最后一次真跑是 **10:02:43**（为 09:4x 新落的
+    事件契约 §6 表头规矩重推守门那一次）⇒ 头部落后正文约 3.5 小时。**成因不是量法错，是"交账时只刷了
+    `LAST_UPDATED` 与正文、没回头刷那五行"**——`LAST_UPDATED` 每次都新，所以头部自己看起来是新的。
+    - 现在五行都刷了（时刻全部当场 `date` 实读）：`Stage` / `Status` / `Last verified action` / `Next action` /
+    `Verification`（最后一行的命令本轮核过仍正确：就是 scoped 门禁那条），
+    并新增 **`- 等（三问）`** 一行（等谁＝主控、等什么＝`versionless_test.go` 那 +3 行入册、谁解锁＝主控）；
+    头部另加 `UNCOMMITTED:` 字段（原本就有，这轮补上"HEAD 内 0 命中"的实测读数）。
+  - **顺手做了一次"头部瘦身"**：`Next action` 那格被我叠成了三层作废历史（T-243 划掉、判据成立划掉、yaml 那格作废），
+    机器读到第一行就是作废句 ⇒ 按 T-276③ 的意思**只重排不删除**：活动项提到第一行，三层作废史与 T-233 留档
+    降到子项，内容一字未丢（改完回读：以 `- Next action` 开头的行仍只有 1 处、`^## ` 段数仍 = 11）。
+  - **主控那句辟谣我收下但不据此改账**：「`db.md` 头部带着 08:20 那次销账标注、巡检说它停在 T-219 偏严」——
+    这是主控与巡检之间的口径差（那晚 08:20 我确实刷过销账标注，而 `Last verified action` 也确实是旧的），
+    两边说的不是同一行，我不需要选边；**规矩落地按最严的那条**：以后每次交账五行一起刷（含 `Verification` 那行）。
+  - **顺手抓到自己造了一次"第二份真相"**：我先把这条规矩写进了
+    `memory/project-lucero-session-orchestration.md`，随后发现内存里已有专档
+    `lucero-ledger-header-sync.md`（今晨主控那轮建的）⇒ **改回一行指针**，只把我这轮实测出的两条
+    **加进那个单源**：④ `Next action` 第一行只能放活动项（作废史降为子项留档）、
+    ⑤ 只刷 `LAST_UPDATED` 不算刷头部（它每轮都新，所以头部"看起来"新——正是我这次的成因）。
+- **T-266（三句：一句划界 + REQ-T24 已裁 + 主控自己那格背书）已核，零代码改动**（10:02:17 收件）：
+  - **① 划界我认**：`internal/adapter` 与 `adapter_instances` 的读出口归 adapter（T-263），C43 那句"只导出读接口"
+    与我无关；**若今后 `db` 需要动那张表的读出口，我开 REQ，不顺手加**（这句按主控要求明写在账上）。
+  - **② REQ-T24 的答复我这边不用重复问**：权威 = 事件契约 §6，**契约① 不进**（09:12 核过它只有 §0~§5，
+    我 09:24:50 也自己 `grep -n '^## '` 复现过同一结论并记在 T-252 段）。
+  - **②b 新表头规矩 → 我按"契约改口径要重推守门"重跑了自己的判据，不是默认没事**（关键：新 prose 落在
+    `## 6.` 与表头之间，而我那条对拍就是解析这张表）：10:02:43 复跑 `./internal/eventjournal/...` →
+    **5 条全 PASS**、原文仍是 `contract §6 and the catalogue agree on 64 event types`，
+    `./internal/platform/...` `ok 2.831s`（同批 10:02:43）⇒ **规矩 ②（"必须先走 §6 展开约定 ①~⑤ 再比对"）
+    正是我 `contractCatalog`/`eventTypesIn` 已有的做法**（含 ③b 与 token/去重双计数），新 prose 没进表行解析、
+    也没改变计数；**守门与新规矩一致，无需改动**。
+  - **②c 规矩 ①（引用事件名必须写完整名、不许省前缀）我扫了自己的范围**：
+    `grep -rlE '`[a-z_]*`'` 型简写在 `core/internal/platform/db`、`core/internal/eventjournal`、`core/migrations` 里
+    只有 **`contract_parity_test.go` 8 处命中**，且**全部是 `TestEventTypesInExpansion` 的合成反例输入**
+    （形如 `` `execution_cancelled` / `_failed` / `_succeeded` ``——即 §6 允许写在合并行里的形状本身，是解析器的料，
+    不是"拿简写引用一个事件名"）⇒ **除测试料之外 0 命中，规矩 ① 我这边本就合规**，不改注释。
+  - **③ 主控那格（"二选一"里"真去扫契约①"不成立）由 test 与主控收口**，我不参与裁定；
+    入库风险这一格**仍未关**（巡检 09:58:52 与我 09:47:11 同一读数：HEAD 里 `ExecutionStarting` = 0、工作区 = 2、
+    `git log -1 -- …/events.go` = `753900f` 09-23 01:03:04），按红线① 我不提不催，
+    Next action 里那条复测判据保留。
+    **→ 10:10~10:11 已关（三时刻链：09:47:11 我读到 0 / 09:58:52 巡检读到 0 —— 两条当时都为真，
+    悬树约 1 小时；入册发生在 10:03:46）**：我 10:11:49 自己重取，
+    `git rev-parse --short HEAD` = **`a3b2910`（10:04:11）**、
+    `git show HEAD:core/internal/eventjournal/events.go | grep -c ExecutionStarting` = **2**（工作区同为 2），
+    `git log -1 -- …/events.go` = **`38cafa8` 10:03:46**（`snapshot: db 的 REQ-DB-4 常量入册…`）
+    ⇒ Next action 那条"入册后应为 2"的判据**成立、划掉**，守门读数沿用 10:02:43 那次（不必重跑）。
+    **但同一族还剩一格**：`core/internal/platform/db/versionless_test.go` 那 **+3 行注释仍未入库** ——
+    10:11:49 实测 `git show HEAD:…versionless_test.go | grep -c fixture` = **0**（工作区 = 1）、
+    `git status` = ` M core/internal/platform/db/versionless_test.go`、该文件最后一次提交仍是
+    `1ad0c37`（07:10:24，早于我 07:52:15 那次注释编辑）⇒ **HEAD 里现在没有那三行**。
+    它不含行为、不影响任何判据（HEAD 里那版测试自己就是绿的），但**"树里有一格 HEAD 里没有"这个形状**
+    与刚被关掉的那格同源，我照实报、不自己入册（红线①）。
+    **另记我自己刚犯的一次误读**：10:11:05 那次我把 `git status` 的输出读成"我范围全干净"，
+    实际那一行 ` M versionless_test.go` 就在眼前——**换了量法（`git show HEAD:<文件> | grep -c <符号>`）才发现**。
+    ⇒ 结论：判"某格在不在库里"用"读 HEAD 那份内容"，不用"扫 status 有没有我的行"。
+- **T-252（REQ-DB-4：登记 `execution_starting`）已落，只动主控点的两格**（09:02:37 收件 → 09:05:49 复测）：
+  - ① `core/internal/eventjournal/events.go:39` 加常量 `ExecutionStarting = "execution_starting"`
+    （位置按 §7 序列放在 `ExecutionCreated` 与 `ExecutionStarted` 之间）；
+    ② 同文件 `catalog`（`:87`）加 `ExecutionStarting: true`，与 `AggExecution` 那族现有写法同形。**其余一字未动**
+    （`internal/eventjournal/` 里没有 payload struct 那一层，`grep -c struct events.go` = 0，所以没有第三件可改）。
+  - **两边对拍都从"差一条"变成相等**：我包内 `TestCatalogMatchesContract` →
+    `contract §6 and the catalogue agree on 64 event types` PASS；
+    test 角色那条 `TestEventCatalogMatchesJournalConstants`（08:56:18 主控量到 FAIL）→ 09:05 实测 PASS，
+    原文 `C8-12：目录 64 类 / 常量 64 个（扫 1 个非测试 .go）；目录独有 []、代码独有 []`。
+  - **②那一条有见证（我专门变异验过，第一次锚点还是无效的）**：`gofmt -w` 之后 map 那行变成
+    `ExecutionCreated:   true,`（三空格），我第一条变异用两空格锚点 ⇒ **`subs=0` = 根本没改，那次"全绿"不作证**；
+    重做用真锚点（`subs=1`）把 `ExecutionStarting: true` 摘掉 →
+    `--- FAIL: TestCatalogMatchesContract`（原文 `event contract §6 registers [execution_starting]
+    but the catalogue has no entry/constant for them`）＝ **FIRED**。
+    同一次变异里 C8-12 **仍然 PASS**（它只比"目录 ↔ 常量"，看不见 map）⇒ **"注册进 `Registered()` 集合"这一格
+    的唯一见证就是我那条对拍**，别以为 C8-12 绿了就是两件都落。
+  - **我这两件把红往前推了一格，不是消掉了**：`go test ./test/` 现在红在
+    `TestEventTypeTripleEquality`（09:06:40 与 09:07:31 两次同点复现），原文
+    `三格不相等 [§6→yaml]：事件契约 §6 目录里有 execution_starting，core-v1.yaml 的 EventType 枚举里没有` +
+    `C8-13 三格计数：§6=64 / yaml=63 / 常量=64`。缺的那一格在 **`specs/openapi/core-v1.yaml:872`**
+    （`execution_created, execution_started, …` 那一行没有 `execution_starting`），
+    而 契约② §7:233 明写那份 yaml **由 `frontend` 首次生成并长期维护** ⇒ **不是我这一格能补的，我也没碰它**。
+    另：`grep -c execution_starting specs/contracts-internal-v0.1.md` = **0**（09:02 实读），
+    要不要在 契约① 也留一行由主控定（没有判据拿它比对，所以我这边不红）。
+    **→ T-258（09:23）答：不进 契约①。** 我自己重读了顶层节（09:24:50）：`grep -n '^## '
+    specs/contracts-internal-v0.1.md` 只有 **§0 依赖方向 / §1 db 平台层 / §2 Redaction / §3 审批与权限 /
+    §4 跨模块读 / §5 待补** ⇒ 契约① 从来没有"事件目录"那一节，权威登记就是 事件契约 §6（三处命中）；
+    **再抄进 契约① 就是第四处真相，而那正是 C8-13 要防的东西**。我账本里所有 "§6" 都指 事件契约 §6
+    （09:25 把 T-179 段一处裸写的 "§6" 补成 "事件契约 §6"，消除歧义；纯文字、零行为）。
+  - 交付时读数（09:05:49→09:06:09）：`gofmt -l` 空、`go vet` 两包 exit 0、
+    scoped 门禁 `-v` → **49 PASS／0 FAIL／0 SKIP**、`go test ./internal/...` → **13 包 ok、FAIL 0**；
+    信息性 `go test ./...` → 16 ok／5 行 FAIL（`./test/` 那一红 = 上面 C8-13；
+    另一次 `internal/process` 的 FAIL 在 09:06:40 单独重跑是 `ok 4.833s` ⇒ adapter 在写、按"在途"处理、不进我结论）。
+- **T-233 + adapter 07:42 的两处更正落在我的话上，不在代码上（复量：07:51:13 与 07:53:19）**：
+  - **① 那个 `RUNNING` 值是主控正文里编的，我照抄了**：契约① 第 17 条那句"那一行还停在 `RUNNING`"
+    07:4x 已就地改准成"**建行时写进去的那个状态**（v0.1 = `STARTING`）"并写明"那个值是我编的…
+    **错在我这行，不在转述方**"（`grep -n 我编的 specs/contracts-internal-v0.1.md` = 第 345 行，1 命中，07:51:13 我亲读）。
+    我从盘上复核：`supervisor.go:35` 定 `StatusStarting Status = "STARTING"`、`:420` 发
+    `Event{Kind: EventStarted, PID: c.PID, Status: StatusStarting}`，而 `grep -rn StatusRunning --include=*.go core/`
+    排除测试 = **1 命中且就是常量定义 `:36`** ⇒ 全仓没有事件携带 `RUNNING`，三方读数一致。
+    **我犯的是一格更通用的错**：转述一个字面量时我只信了派发行里的引号，没去读发事件那一行——
+    机制我读对了（guard 必须是"自己写进去的值"），值我没读。**已把这条记进记忆（禁编值）并改口**。
+  - **② 我把两种错形合成了一种**："拿观察态当 guard ⇒ 第一次 0 行、`exit_code`/`exited_at` 全丢，
+    **第二次还撞 `event_id` 的 UNIQUE**" —— 后半句错。按 `TouchTransition` 自己的顺序（0 行 ⇒ 直接
+    `return (0, nil)`，**根本走不到记事件**），固定用观察态时每次都是干净的 0 行 + 一句喊，永远不会有第二次 UNIQUE；
+    会撞 `event_id` UNIQUE 的是**另一种**写法：**guard 跟着状态前进**（落边后把 `curStatus` 改成 `ev.Status`，
+    于是同一行第二次 exit 的 guard 正好命中自己 ⇒ 又改一次行、又记一条同 `event_id` 的事件）——
+    adapter 07:1x 就是这么错的，它用变异 m3 复现过原文
+    （`append event process_exited for proc-a v3: UNIQUE constraint failed: event_journal.event_id`，`adapter.md:663/:1510` 我 07:5x 读到原句）。
+    **为什么这条值得单记**：我那句合成会让下一个人去找一个**不会发生的碰撞**，而不是真正的"第一次就 0 行"陷阱。
+  - **代码零改动的自证**：`core/internal/platform/db/touch.go` mtime 仍是 **07:10:37**、
+    `versionless_test.go` 只加了三行注释（说明"fixture 里那个 `RUNNING` 是测试自选数据，
+    本平台层从不读写生命周期状态值"，防下一个人把它当契约值去"改正"）；
+    改完末次重跑 07:52:21→07:52:27：`gofmt -l` 空、scoped 门禁 `-v` **49 `--- PASS`／0 FAIL／0 SKIP**、
+    `ok platform/db 3.695s` + `ok eventjournal 0.678s`；
+    **再跑一次作为交账读数（07:55:15→07:55:21）**：`go build ./...` exit 0、`go vet` 两包 exit 0、
+    同一门禁 **49/0/0**，`ok platform/db 3.048s` + `ok eventjournal 0.640s`；
+    HEAD 现取 **`885f16e`**，本角色范围 `git diff --stat HEAD` = **仅 `versionless_test.go +3`**
+    （那三行就是上面那条注释），`touch.go` 与 `core/migrations/`、`internal/eventjournal/` 对 HEAD 零差异。
+  - **T-243（08:20）口头销账 + 主控给的口径一句，我按它重测后落档**：口径是
+    "**值的来源永远是盘上那个事件带出来的状态，不是任何人的转述**"。08:22:23 我自己重读产生点：
+    `supervisor.go:35` `StatusStarting Status = "STARTING"`、`:420`
+    `s.emit(Event{Kind: EventStarted, PID: c.PID, Status: StatusStarting})`，
+    `grep -rn StatusRunning --include=*.go core/` 排除测试 = **1 命中且就是 `:36` 的常量定义** ⇒ 口径与盘上一致。
+    那格转告**不必再发**（巡检 07:50 已覆盖，且"分开两种错形"本是 adapter 07:46 先纠的）
+    ⇒ 我按"加作废注明、不删历史"把 Next action 划掉、正文转留档，**本角色账上无待办**。
+    销账后复测一次（08:22:23→08:22:27，代码零改动）：scoped `-v` → **49 `--- PASS`／0 FAIL／0 SKIP**，
+    `ok platform/db 2.689s` + `ok eventjournal 0.344s`；`git log -1 --format=%h` 现取 **`378004b`**
+    —— **主控 08:19:50 引用的 `598c3f3` 到我 08:22:27 读时已被 `378004b` 取代**，
+    与他自报的 `5f4f81c` 那次同类：**HEAD 只能现取、不能转抄**。
+- **T-219（`AppendEventOnly` 那一格确实还开着）已偿清**：入口 ③ 今天只判"是不是无版本聚合"，
+  于是 `AppendEventOnly(AggProcess, …)` 也放行 —— 而"事件落了、行还停在 `RUNNING`"正是契约① 第 12/13 条
+  （**07:55 标作废：这句里的 `RUNNING` 是主控正文当时的错值，v0.1 实为 `STARTING`；洞的形状不变，值以第 20 条 ⑤ 为准**）
+  那个洞的**反方向**。主控 05:32 写下这条、因巡检熔断挂了 25 小时，09-24 07:0x 直投过来。
+  - **收紧**：`AppendEventOnly` 现在要求 `spec.table == noTable`，否则拒
+    （原文 `append-event process: it owns table process_instances, so an event with no row move would
+    desync them — use TouchTransition or CreateVersionless (契约 §1.1 item 17)`）。
+    函数注释同步改掉那句 "or a fact observed without a row to move"，写成"只有 `core` 能走这里；
+    '进程退了但库里没有它的行'是审计登记（`RecordDrop` 那一族），不是聚合事件"。
+  - **双向判据**（派发点名"只有真数据能红的不算闭上"）：新 `TestAppendEventOnlyRefusesAggregatesThatOwnRows`
+    两侧都断 —— `AggProcess` 必须报错**且**行与事件计数一字不动（回读 `status` 与 `eventLog`），
+    `AggCore` 必须成功**且**事件真落（`1:core_ready`）。
+  - **变异补两条、都是双向**：`n1` 把闸写成 `&& false`（`process` 被放过）→ 新用例红；
+    `n2` 把条件反成 `== noTable`（谁都进不来）→ 新用例**与** `TestAppendEventOnlyNumbersCoreEvents` 一起红。
+    加上 T-207 的 13 条，共 **15 条全 FIRED、0 SILENT**。
+  - **哨兵按 T-219① 补、且只改名不动行为**：`const noTable = ""` + 注释点明"`core` 的 `table` 就是空的、这是设计"，
+    四处比较（`versionlessTables` 反转 `:85`、`CreateVersionless:411`、`TouchTransition:461`、`AppendEventOnly:529`）
+    统一用它；`noTable` 的值就是 `""`，所以这一格**没有**夹带任何行为改动 —— 变异与全量门禁都是在改名之后重跑的。
+  - **一句要留给主控核对的（我没动别人范围）**：`AppendEventOnly` 的这道闸，契约① 第 17 条今天的正文只有
+    代码注释那句「③ 没有表的聚合（`core`）：只落事件」，**没有**"只准给 `table == noTable` 的用、否则拒"
+    这句规范文字（`grep -n "只准给\|绕过改行" specs/contracts-internal-v0.1.md` = 0 命中，07:12 实读）；
+    而第 20 条 CO-44 段末尾把它称作"第 17 条末段对 `AppendEventOnly` 的收紧"⇒ **那半句还在裁定里、没进契约正文**。
+    文本我备在 Coordination，贴不贴由主控定。
+- **T-207（REQ-DB-2）已落地，按契约 §1.1 第 17 条 *05:14/05:18 更正后* 的文本做，不是按派发那版**：
+  派发（05:07 之前的口径）只点了两个入口 + "显式声明无版本聚合"，而盘上契约在我动手期间被主控改过：
+  ① 新增 `CreateVersionless`（建行 + 恰一条事件），② 并**作废**了"因为不进 `aggTables` 所以 `Append` 建行继续合法"
+  那一句。我按盘上契约实现，adapter 在 05:22~05:26 的复量也独立记录了"`CreateVersionless` 在 `core/` 下 0 命中、
+  建行那条腿还没有门"（`.qoder/progress/adapter.md` 第 12 轮 / CO-39 段），两边读数一致。
+  - **注册表**：`AggProcess = "process"` / `AggCore = "core"` 两个 kind，**不进 `aggTable`**（因而也不进 `aggTables`）；
+    另立 `versionlessAgg = map[AggregateKind]versionlessAggSpec{table, guards}`
+    （`process → {process_instances, {status}}`、`core → {"", {}}`）。
+    **`AggCore.table == ""` 是有意的，不是没填完的 TODO**（05:15 那问、05:22 巡检记"随 T-213 转告 db"，此处回话）：
+    000001 冻结件里 Core 根本没有表，第 17 条 ③ 就是"只落事件"，所以空串 = "没有行可改"，
+    `TouchTransition`/`CreateVersionless` 见到空表都拒绝并指向 `AppendEventOnly`，`guards` 空集，
+    两条都有测试钉（`TestVersionlessAggregatesStayOutOfAggregateRegistry` 数 `len(guards)==0`；
+    `core has no table` 两条拒绝用例）。
+  - **版本号住在事件流里**：`nextEventVersion` = `SELECT count(*)+1 FROM event_journal WHERE aggregate_type=? AND aggregate_id=?`，
+    在同一事务内取。并发算出同号 ⇒ 后提交者撞 `UNIQUE(aggregate_type, aggregate_id, aggregate_version)` ⇒ **整笔回滚**；
+    `TestVersionlessEventConflictRollsBackTheWholeWrite` 用"预置一条 version=3 的事件造出空洞"把这个形状演出来，
+    断的三件：错误里含 `UNIQUE`、`status` 仍是回滚前的 `RUNNING`（行改与事件一起退回）、回滚后写通道没被 parked
+    （同一条边随后正常落成 `2:process_exited`）。
+  - **`TouchTransition` 的 0 行**：SQL 固定 `UPDATE <table> SET <set> WHERE id = ? AND <guardCol> = ?`，
+    `guardCol` 走 `versionlessAgg` 的逐表白名单（v0.1 只有 `process_instances:status`），
+    **0 行 ⇒ 返回 `(0, nil)` 且不插事件**（重放不生成幽灵迁移）。
+  - **`Append` 对 `process_instances` 关闭**：`versionlessTables`（由 `versionlessAgg` 反推）命中即拒，
+    错误点名 `CreateVersionless`。契约那句"入口存在的意义就是把'两行拼一步'变成不可能"落成了机械闸；
+    破坏面当场数清：全仓（含测试）`Append("process_instances"` 只有我自己那条断言，**无外部调用方**；
+    `principals` 这类"合法无事件建行"的表仍走 `Append`，同一测里留了正向对照，防它变成"什么都红"。
+  - **注册表形状断言（派发第 ④ 项）**：`process`/`core` 不在 `aggTable`、在 `versionlessAgg`，
+    外加一条**schema 事实**（`process_instances` 至今没有 `version` 列，谁补列这条就红并写明"那就把它搬进 `aggTable`"）。
+    变异 `m01`（顺手把 `AggProcess: "process_instances"` 加进 `aggTable`）→ **只有这一条红**，
+    而这恰恰证明它必须存在：fixture 已改走 `CreateVersionless`，别的路径不会替它报警。
+- **本轮自己撞到的三个"看起来绿其实没牙"（比实现更值得记）**：
+  ① `AppendEventOnly` 的 `empty id` 用例是**哑的**——我在表里写了 case 名却仍传 `"core-a"` 进去，
+    第一次跑就因为它没红我才发现（红的是"事件多了一条"）；修法是给用例带 `aggID` 字段。
+  ② **"参数与 SET 列数对不上"这一类，驱动只帮你挡一半**：临时探针实测（`modernc.org/sqlite`，跑完即删，
+    原文见 Verification evidence 的 T-207 段）——**多绑的参数被静默忽略**（`err=<nil>` 且 UPDATE 已经生效），
+    只有**少绑**才报 `missing argument with index N`。所以"SET 里漏写一列而 args 还带着那一列的值"
+    在 SQL 层**没有任何见证**，平台层那句 `len(cols) != len(args)` 才是承重的（变异 m12 摘掉它 ⇒ ① 那条立刻红）。
+    配套改法：状态边的 SET 固定带一个**非 guard 的事实列**（`restart_policy`）并把它读回来断言，
+    否则"漏一列"永远伪装成成功。第一版 fixture 的 SET 只有 `status`/`updated_at` 两列真实值，
+    根本没有这种错位可测——那才是它当时"看起来绿"的真实原因。
+  ③ 变异 `if len(columns) < 0` 那一次报 `[setup failed]`，**不是编译失败而是我 cwd 错了**：
+    在 `.../platform/db` 目录里跑 `go test ./internal/platform/db/` ⇒
+    `stat ...\internal\platform\db\internal\platform\db: directory not found`。
+    从模块根 `core/` 重跑同一变异 → `--- FAIL: TestCreateVersionlessBooksRowAndEventTogether`（FIRED）。
+    教训：`[setup failed]` 要先读它自己的那一行，别顺手记成 BUILD-BROKEN。
 - **T-179 已补（对拍的重名盲区，一行变三处）**：`contractCatalog` 原先 `out[n] = true` 会把
-  §6 里出现两次的同一名字**静默吸收**，照样报 "agree on 63"。现在按 token 累计与去重数对拍：
+  事件契约 §6 里出现两次的同一名字**静默吸收**，照样报 "agree on 63"。现在按 token 累计与去重数对拍：
   解析改为经**唯一累加点 `addNames(counts, cell)`** 计数，收尾用 `duplicated(counts)` 点名并 `t.Errorf`
   （附带 `tokens=N distinct=M` 两个数），只 Errorf 不 Fatalf，后面的差集照跑。
   - **新增 `TestDetectsDuplicateRegistration` 三条合成例，两侧都有**：① 合并格自己撞自己
@@ -432,6 +651,8 @@ LAST_UPDATED: 2026-09-23T02:02+08:00
 
 - 未做（本次四项判据之外，未获指令）：`blobs` 大对象存储路径、迁移文件 `fs.FS`/embed 入口、
   `Tx` 内读方法。任一需要请直接说，各约 10~20 行。
+  **（T-24/T-44/T-20 已把后两项做掉：`fs.FS` 入口收为包内 `migrateFS`、`Tx.QueryRowContext`/`QueryContext` 已在；
+  仍开放的就只剩 `blobs` 那一件，且它没有消费方。）**
 - 已知上限：本机 CGO 不可用 → `-race` 跑不了，并发用例只能证明"逻辑不产生重复版本"，
   不能证明无数据竞争。
 
@@ -541,9 +762,94 @@ LAST_UPDATED: 2026-09-23T02:02+08:00
   ```
 - → `cmd/core` 接线：`Migrate` 目前接收**迁移目录路径**（`embed` 需要 `core/migrations` 有包文件，越界）。
   生产要内嵌的话，请主控在 cmd/core 侧建 embed 并传 `fs.FS`，本角色可加一个 `fs.FS` 版入口。
+  **此条已闭（T-24 落 `fs.FS` 半边、T-44 裁"收为包内 `migrateFS`，导出面砍掉"）**：embed 那一半边仍在主控/backend，
+  本包 `d.Migrate(dir)` 与内部 `migrateFS(fsys, dir, label)` 两条都在，拿哪一份 `fs.FS` 都无需再改平台层。
+- **T-207 → adapter / backend（三个入口现在都在盘上，`supervisor.go:182` 那句"`CreateVersionless` 仍 0 命中"可以划掉了）**：
+  `tx.CreateVersionless(AggProcess, id, columns, values, ev)` / `tx.TouchTransition(AggProcess, id, "status", from, setSQL, args, ev)` /
+  `tx.AppendEventOnly(AggCore, id, ev)`。三条共同点：都走既有 `appendEvent`（`Registered()` + REQ-B-1 的
+  `aggregate_type` 闸一并生效）、参数与 payload 都过 `scrubArgs`/`redactValue`（脱敏在密封之前）、
+  版本号都是"该聚合已有事件数 + 1"。**`process_instances` 的建行腿从这一轮起不能再走 `Append`**（会直接被拒并点名
+  `CreateVersionless`）；`id` 仍由调用方预生成 UUIDv7，平台层不铸号。
+- **T-207 → 主控：两条未裁的语义我按"调用方的处置不改变平台层形状"实现，不替谁裁**
+  - **CO-44**（`internal/process` 的账上第 11 轮提出）：`status` 有 6 个取值，而 `guardVal` 只能一个 ⇒
+    "行还停在 `STARTING`（从没收到 start）"与"`EXITED` 已落过"在同一个 0 行里**不可区分**。
+    平台层今天的答复是两种都给 `(0, nil)` 且不插事件，`TestTouchTransitionZeroRowsBooksNoEvent` 把**两种都钉住**
+    （replay 一支 + 行根本不存在的一支）。若裁定要求可区分，最小改动是 `TouchTransition` 在 0 行时补一次
+    `SELECT status`（同事务）并把区别放进返回值——那是**新签名**，等裁再动，不自扩。
+  - **CO-45**：同一个 Supervisor 第二次拉起若仍用构造期那个 id，`CreateVersionless` 会撞
+    `PRIMARY KEY`（`process_instances.id`）。平台层今天的表现是整笔回滚、不留孤儿事件
+    （`TestCreateVersionlessBooksRowAndEventTogether` 末尾那条断言就是它）。(a) 一次尝试一行 / (b) 一个 Supervisor 一行
+    两条路我这边都通：(a) 只要调用方带新 id，(b) 只要第二次起改走 `TouchTransition("FAILED" → "RUNNING")`。
+- **T-207 回答 05:15 那问（巡检记"随 T-213 转告 db"）**：`versionlessAgg` 里 `AggCore: {table: ""}` **是有意设计**，
+  不是没填完的 TODO —— Core 在冻结的 000001 里没有表，第 17 条 ③ 就是"只落事件"。空串的语义是"没有行可改"，
+  所以 `CreateVersionless`/`TouchTransition` 见到它都拒并指向 `AppendEventOnly`，`guards` 是空集。
+  今天已落进代码注释（`versionlessAggSpec` 上方）与两条测试，不必再挂问号。
+- **T-219 → adapter（请主控转告，并写回你那行疑问里，别让它再落在我自己账本里）**：
+  `AppendEventOnly` 已收紧为**只接受 `table == noTable` 的聚合**，也就是只有 `core`；对 `AggProcess` 现在会拒。
+  我 07:13 实读过你 `internal/process/lifecycle.go`（未跟踪，mtime 07:11:32）：建行走 `CreateVersionless:126`、
+  状态边走 `TouchTransition:199`，**没有一处调 `AppendEventOnly(AggProcess, …)`** ⇒ 这次收紧不打断你。
+  若你后面需要"观察到退出但库里没有那一行"，按契约第 20 条 CO-44① 走**审计登记**（`RecordDrop` 那一族），
+  不要拿聚合事件补。
+- **T-219 → 主控：契约正文缺那一小句**（不是要你改实现，是实现比正文严的那一格该补文）。
+  第 17 条正文目前只有代码注释「③ 没有表的聚合（`core`）：只落事件」；第 20 条 CO-44 段把它称为
+  "第 17 条末段对 `AppendEventOnly` 的收紧"。建议贴在 §1.1 第 17 条那个 go 代码块之后：
+  ```markdown
+  **入口 ③ `AppendEventOnly` 只准 `versionlessAgg` 里 `table == noTable`（即 `core`）的聚合用**：
+  有行的聚合走这里 = "事件落了、行没动"，是第 12/13 条那个"行改了、事件丢了"的**反方向**，
+  平台层直接拒。"观察到退出但库里没有那一行"走审计登记（第 20 条 CO-44①），不许洗成聚合事件。
+  ```
+  （按第 14 条用符号引用、不写行号；`noTable` 是我包里的常量名，契约里要不要出现这个名字你定。）
+- **T-219 → 主控，一条证据形状的提醒（我没有要谁改，只是这一格今后会反复坑人）**：
+  `1ad0c37`（07:10:24，消息写的是"09-23 05:54 收工态入册"）把我**当时正在写**的 `touch.go` 与
+  `versionless_test.go` 一并入了册——我那次收紧落盘约 07:09、门禁重跑在 07:10:54，**提交发生在中间**。
+  后果：worker 交账里"`git diff --stat HEAD` = 我的范围干净"这句话在这一刻**失去含义**（空 diff 不再是"我没碰"，
+  而是"我的东西已在 HEAD 里"）。我已在 Current checkpoint 改成用 `git diff 97d0a21 HEAD` + 逐标记命中数框改动面。
+  建议以后 snapshot 前扫一眼各角色 mtime 在 5 分钟内的文件，或者把这类提交写成
+  `snapshot: 含 db 07:0x 在制品`——**日期写错的那半句我按"记账错"处理，不追究**（`1ad0c37` 标的是 09-23 05:54，
+  实际提交 09-24 07:10:24）。
+- **CO-44/CO-45 裁定已收到（契约① 第 20 条）——本角色零改动**：CO-44③ 否决了我提的"0 行时补一次
+  `SELECT status` 并把区别放进返回值"，平台层签名不动，今天的形状（两种都给 `(0, nil)`、不插事件、
+  双向用例）就是裁定要的；CO-45 裁 (a) 一次尝试一行 ⇒ `CreateVersionless` 的 `id` 仍由调用方预生成、
+  平台层不铸号（本来就这样），`metadata_json` 记 attempt 也不落在我这层。
+- **T-252 → frontend + 主控（NEEDS YOU，一个 token，我不代改）**：`execution_starting` 已进 事件契约 §6 与
+  `internal/eventjournal`（常量 + `Registered()` 集合；09:05:49 两边对拍 64/64 相等），
+  但 **`specs/openapi/core-v1.yaml:872` 的 `EventType` 枚举还没有它** ⇒ `./test/` 的
+  `TestEventTypeTripleEquality` 现在红在这里（原文 `C8-13 三格计数：§6=64 / yaml=63 / 常量=64`，
+  09:06:40 与 09:07:31 两次同点复现）。契约② §7:233 写明那份 yaml 归 `frontend` 长期维护
+  ⇒ **补一个 token 即三格齐**；我没碰 yaml、也没改判据去绕过它。
+  另提请主控：`grep -c execution_starting specs/contracts-internal-v0.1.md` = **0**（09:02 实读）
+  ——没有判据拿 契约① 比对所以不红，要不要补一行由你定。
+  **（T-258 09:23 已答：不补，契约① 没有事件目录那一节，抄进去就是第四处真相 ⇒ 本条问句作废，
+  `specs/` 我不动。）**
+  **（同批 T-256 已把那一 token 派给 `frontend`；巡检 09:22:09 实量 `grep -c execution_starting
+  specs/openapi/core-v1.yaml` 仍 = 0 ⇒ 这一格现在等 frontend 交账，不由我跑。）**
+  **→ 09:26:42 我自己复量，那一格已经到了**：`core-v1.yaml` mtime **09:24:45**、`:872` 现在写着
+  `execution_created, execution_starting, execution_started, …`、`grep -c execution_starting` = **1**，
+  于是 `./test/` 两条一起转绿：`C8-13 三格相等：§6=64 类、yaml=64 条、常量=64 个；四条边全空` PASS、
+  `C8-12：目录 64 类 / 常量 64 个` PASS；我两包同时 `ok eventjournal 0.573s` / `ok platform/db 2.967s`（09:26:47）。
+  **注意归属与状态（两时刻都带，按 T-220 的规矩）**：yaml 那一行是 **frontend 按 T-256 自己动手的交付**，
+  我 09:26 读到的是它**未提交**的工作树改动（`git status` = `M specs/openapi/core-v1.yaml`）；
+  **09:44:17 复量已入库** —— 现取 HEAD = **`b47c14c`（09:35:24，`snapshot: frontend 的 T-256 交付入册…`）**，
+  `git show HEAD:specs/openapi/core-v1.yaml | grep -c execution_starting` = **1**，工作树同一文件干净。
+  ⇒ 我 09:26 那句"仍未入库/不替它宣布合验"当时为真、现已过期，按"标过期不删除"就地补这段。
+  **T-260 的更正落不到我账上**：主控说"你账上那行'主控 09:24:45 补的'请改成'frontend 交付'"——
+  我全文只有一处写这个归属（本节 + Next action 各一次），两处**原文都写的是 frontend**：
+  "`specs/openapi/core-v1.yaml` 我没碰、那是 frontend 的未提交改动"（09:26 写下），没有一句把改动记到主控头上；
+  所以我**没有可改的错句**，改的是那半格**状态**（未提交 → 已入册 `b47c14c`）。
+  成因我认同主控自认的那一半：**从"最后一次写的时间"推"是谁在写"**——`mtime 09:24:45` 只证它被写过，
+  不证谁写的（我记忆里那条老规矩的第三次复现）。**我这边补一条动作**：今后引用别人的改动只写
+  "盘上现读是 X（路径+行号+时刻）"，**归属要么查 `git log` 要么标"未证"**，不从 mtime 推。
+  - **顺手量到一格只有主控能关（09:47:11 读数，我只报不办）**：`b47c14c` 把 frontend 那半边入册了，
+    而我那半边还在工作树里 —— `git show HEAD:core/internal/eventjournal/events.go | grep -c ExecutionStarting` =
+    **0**（工作区 = 2），三份 `execution_starting` 计数在 HEAD 是 **§6=3 / yaml=1 / events.go=0**，
+    工作区才是 3/1/2。⇒ **干净检出 HEAD 时 C8-13 是 64/64/63 的红**，正是它自己那条提交信息里写的
+    "红已在盘上闭、却未入库这一格随时可能被别人的下一批覆盖掉"——**现在被覆盖的风险还留在我这一格上**。
+    我无 git 写权限（红线①），**只能把它报给主控按角色入册**；我不因此重跑或改动任何东西。
 
 ## Changed files
 
+- `core/internal/eventjournal/events.go`（T-252 改，+4/-1）— 常量 `ExecutionStarting` 进 `events.go:39`、`catalog`（`:87`）加一条；
+  只为 REQ-DB-4 登记的 `execution_starting`（事件契约 §6 第 202 行），其余一字未动
 - `core/internal/platform/db/db.go`（新建）— Open / PRAGMA 分层 / 读池 + 单连接写通道
 - `core/internal/platform/db/migrate.go`（新建）— 迁移器 + VACUUM INTO 备份
 - `core/internal/platform/db/touch.go`（新建）— Write / Tx.Touch / Tx.Create / Tx.Append / 列白名单
@@ -556,6 +862,13 @@ LAST_UPDATED: 2026-09-23T02:02+08:00
 - `core/internal/platform/db/migratefs_test.go` + `testdata/migrations/00000{1,2}_probe_*.sql`（T-24 新建）
   — 真 `embed.FS`、真实迁移集走 FS 入口、空 FS 不回退磁盘、两种偏差各一条
 - `core/internal/platform/db/grant_test.go`（T-12 新建）— grant/capability 生命周期 + policy 缺口钉桩
+- `core/internal/platform/db/touch.go`（T-207 + T-219 改，`97d0a21..HEAD` = +210）— `AggProcess`/`AggCore`、
+  `versionlessAgg` + `versionlessTables` + `noTable` 哨兵、`CreateVersionless` / `TouchTransition` /
+  `AppendEventOnly`（③ 只准 `table == noTable`）/ `nextEventVersion`、
+  `Append` 对非版本聚合表关闭、`aggregateTable` 的指向性错误
+- `core/internal/platform/db/versionless_test.go`（T-207 新建、T-219 增一条，`97d0a21..HEAD` = +572 新档）— 9 条：
+  注册表形状、① 行与事件同生同死、② 每条边恰一事件、② 0 行不插事件、②③ 白名单外一律拒、
+  ③ core 逐聚合编号、**③ 只准无表聚合（双向）**、UNIQUE 冲突整笔回滚、脱敏在密封前
 - `core/migrations/000002_aggregate_version.sql` — **未改**（实测通过）
 - `core/migrations/000001_core_schema.sql` — **未改**（红线①）
 - `core/go.mod`、`core/go.sum` — **未改**（归主控；无新依赖需求）
@@ -878,13 +1191,140 @@ LAST_UPDATED: 2026-09-23T02:02+08:00
     现场读到的 `cmd/core/main.go:59` 已写着"迁移 .sql 目录（go:embed 归属未定，见 progress REQ-T-2）"，
     说明 backend 自己也没落成 embed，目前走的是 `-migrations` 磁盘目录参数。
 
+- **T-207（REQ-DB-2 三个入口）实测**（`date` 实读 05:47:29 后收尾重跑；下列计数都出自最后那一次）：
+  - **scoped 门禁 `-v`**：`go test -v -count=1 -timeout 300s ./internal/platform/... ./internal/eventjournal/...`
+    → `gate_exit=0`、**`--- PASS` 48 条（顶层 48 / 嵌套 0）、`--- FAIL` 0、`--- SKIP` 0**，
+    `ok platform/db 3.118s` + `ok eventjournal 0.799s`。**"全"= 这两个包**（`go list` 确认
+    `./internal/platform/...` 只含 `platform/db` 一个包）；本角色范围内没有跳过任何包、没有 SKIP 用例。
+    `gofmt -l` 两个目录都是空输出；`go vet` 两包 exit 0；`go build ./...` exit 0。
+  - **本轮新增 8 条逐条**：
+    ```
+    --- PASS: TestVersionlessAggregatesStayOutOfAggregateRegistry (0.03s)
+    --- PASS: TestCreateVersionlessBooksRowAndEventTogether       (0.03s)
+    --- PASS: TestTouchTransitionBooksOneEventPerEdge             (0.03s)
+    --- PASS: TestTouchTransitionZeroRowsBooksNoEvent             (0.03s)
+    --- PASS: TestTouchTransitionRefusesOutsideItsWhitelist       (0.04s)
+    --- PASS: TestAppendEventOnlyNumbersCoreEvents                (0.03s)
+    --- PASS: TestVersionlessEventConflictRollsBackTheWholeWrite  (0.03s)
+    --- PASS: TestTouchTransitionRedactsBeforeSeal                (0.03s)
+    ```
+  - **拒判的原文（`t.Logf` 打出来的，不是我照格式串推的）**：
+    ```
+    append to process_instances: these rows carry a lifecycle event, so they go through CreateVersionless (契约 §1.1 item 17)
+    create-versionless task: not a versionless aggregate (see 契约 §1.1 item 17)
+    create-versionless core: this aggregate has no table, use AppendEventOnly
+    touch-transition process: restart_policy is not a guardable column on process_instances
+    touch-transition: id is the row key, not a settable column
+    column version belongs to the platform, not to a caller
+    event type "process_restarting" is not in the event journal catalogue
+    create-versionless process proc-cv: constraint failed: UNIQUE constraint failed: process_instances.id (1555)
+    append event process_exited for proc-4 v3: constraint failed:
+      UNIQUE constraint failed: event_journal.aggregate_type, event_journal.aggregate_id, event_journal.aggregate_version (2067)
+    ```
+    最后一条就是第 17 条要的"后提交者整笔回滚"：断言 `status` 仍是回滚前的 `RUNNING`、
+    预置那条 version=3 的事件也一起消失（同一事务），且回滚后单写通道没被 parked
+    （同一条边随后落成 `2:process_exited`）。
+  - **一次性探针（05:4x，跑完即删，不在交付面上）**：想记"绑定参数与占位符数不一致会怎样"，
+    临时建 `argcount_probe_test.go` 打在真库上，原文：
+    ```
+    more args than placeholders:  err=<nil>                          status=EXITED
+    fewer args than placeholders: err=missing argument with index 4  status=RUNNING
+    guard alone, no id in args:   err=missing argument with index 3  status=RUNNING
+    ```
+    ⇒ 结论按字面收窄：**多绑的静默忽略、少绑的才报错**，所以 `len(cols) != len(args)` 那类 Go 侧检查是承重的。
+    探针文件同轮 `rm`（`ls` 确认不存在）后重跑整包 → `ok platform/db 3.116s`。
+  - **变异判决 13 条，全 FIRED、0 SILENT**（每条：备份 → 改 → 跑整包 → 还原，同一命令内完成；
+    收尾 `md5sum -c` 与 `grep -Fc <marker>` = 0 双重自证）：
+    | 变异 | 红的是 |
+    | --- | --- |
+    | m01 `AggProcess` 加进 `aggTable` | 注册表形状那条（且只有它 ⇒ 证明它必须存在） |
+    | m02 `AppendEventOnly` 的 empty-id 改成 `return nil` | ③ 编号那条 |
+    | m03a `count(*)+1` → `max(aggregate_version)+1` | 7 条一起红 |
+    | m03b 数号不看 `aggregate_id` | ③ 编号那条（"另一个 core 从 1 起"） |
+    | m04 0 行分支改成返回 error | 0 行不插事件那条 |
+    | m05 `guardCol` 白名单 `&& false` | 白名单外一律拒那条 |
+    | m06 ② 绕过 `scrubArgs` | 脱敏那条 |
+    | m07 `aggregateTable` 退回 `unknown aggregate` | 注册表形状那条（指向性错误） |
+    | m08 `if changed == 0` → `< 0`（改了行也算 0、事件照插） | 0 行不插事件那条 |
+    | m09 `Append` 的版本聚合闸 `&& false` | 注册表形状那条（`Append` 关闭 + `principals` 正向对照） |
+    | m10 ① 不插事件 | 6 条红（含 ① 与全部用 ① 建行的 fixture） |
+    | m11 ① 绕过 `scrubArgs` | 脱敏那条 |
+    | m12 ① 的列/值长度校验 `&& false` | ① 同生同死那条 |
+  - **注册表变更的规定动作（§1.1 第 10 条）**：`go test ./internal/... -count=1` → **13 包 ok、`^FAIL` 0**；
+    新晋被禁的写点全仓 grep（含测试）：`grep -rn --include=*.go 'Append(\s*"process_instances"' .` →
+    **1 命中，且就是我自己那条断言**（`versionless_test.go:155`）⇒ 无外部调用方被打断；
+    `internal/process`、`cmd/core` 只余注释与读操作（`cmd/core/lifecyclecolumns_test.go:137` 是它自己的
+    裸 `INSERT` 夹具，不经 `Append`，不受影响）。
+  - **信息性全仓**：`go test ./... -count=1` → 18 包 ok、`^FAIL` 0、`no test files` 0；
+    **未带 `LUCERO_REQ_DB2=1`**（按契约那句"落地之前不要顺手带 flag 跑全仓"），
+    实读 `cmd/core` 默认跑仍是 `--- SKIP: TestLifecycleRowLandsTheFiveColumns`，我没有为变绿去动它。
+  - **越界自检**：`bash scripts/check_ownership.sh` → exit 0、结论行"本次扫描 0 项越界"，
+    其中依赖方向那一节确认 `platform/db: 仅 internal/eventjournal`。
+  - **范围自证**：基线现取 `git log -1 --format=%h` = **`97d0a21`**（本轮内主控又落了一次盘，`f841335` → `97d0a21`），
+    `git diff --stat HEAD -- core/internal/platform/db core/internal/eventjournal core/migrations` →
+    **只有 `touch.go` 一条：+194 / −1**；`versionless_test.go` 是未跟踪新档；
+    `core/migrations/`、`internal/eventjournal/` 零 diff。
+    diff 只能证明"我没碰别的文件"，不证明"我没弄坏别人"——后一句靠上面那 13 包全绿。
+
+- **T-219（`AppendEventOnly` 收紧 + `noTable` 哨兵）实测**（计数出自 `date` 实读的 07:10:54 与末次 07:18:31 两轮，读数一致：49 PASS / 0 FAIL / 0 SKIP）：
+  - scoped 门禁 `-v` → **49 条 `--- PASS`（顶层 49 / 嵌套 0）、0 FAIL、0 SKIP**，
+    `ok platform/db 2.568s` + `ok eventjournal 0.447s`；`gofmt -l` 空、`go build ./...` exit 0、`go vet` 两包 exit 0；
+    `go test ./internal/...` → **13 包 ok、FAIL 0**；信息性 `go test ./...` → 18 包 ok（未带 `LUCERO_REQ_DB2=1`）；
+    `bash scripts/check_ownership.sh`（07:12:06）→ exit 0"本次扫描 0 项越界"。
+  - 新用例两侧都跑到了，拒判原文（`t.Logf` 打出来的，不是我照格式串推的）：
+    ```
+    --- PASS: TestAppendEventOnlyRefusesAggregatesThatOwnRows
+    refused as expected: append-event process: it owns table process_instances, so an event with no row
+      move would desync them — use TouchTransition or CreateVersionless (契约 §1.1 item 17)
+    ```
+    正向那一侧同时要求事件真落：`core-gate events = [1:core_ready]`。
+  - **两条新变异（双向，对应"只有真数据能红的不算闭上"）**：
+    | 变异 | 判决 | 红的是 |
+    | --- | --- | --- |
+    | `n1` 闸写成 `spec.table != noTable && false`（`process` 被放过） | FIRED | `TestAppendEventOnlyRefusesAggregatesThatOwnRows` |
+    | `n2` 条件反成 `== noTable`（谁都进不来） | FIRED | 同上 **+** `TestAppendEventOnlyNumbersCoreEvents` |
+    两条都 `subs=1`、跑整包、还原后 `md5sum -c` 与改前一致，且 `grep -Fc 'noTable && false'` = 0；
+    `spec.table == noTable` 的 2 处命中是本来就该有的挡（`CreateVersionless`/`TouchTransition`）。
+    连同 T-207 的 13 条：**15 条全 FIRED、0 SILENT**。
+  - **收紧的破坏面当场数清**：`grep -rn --include=*.go 'AppendEventOnly(' .` 排除我自己包内 = **0 命中**；
+    adapter 在写的 `internal/process/lifecycle.go`（未跟踪、mtime 07:11:32）只用
+    `CreateVersionless:126` 与 `TouchTransition:199` ⇒ 这一格收紧不打断任何在飞的工作。
+  - **收紧之后又复量一次（07:17:20，为的是不把"我绿的"当成"合起来绿"）**：
+    `go test -count=1 ./internal/...` → **13 包全 ok**，其中 `internal/process 5.460s` 就是 adapter 那对
+    未跟踪新档（`lifecycle.go`/`lifecycle_test.go`，07:11:32 / 07:13:20）所在的包
+    ⇒ 我的 `AppendEventOnly` 闸与他们的写口**同盘并存是绿的**，不是各绿各的。
+  - **范围自证换了写法**（原因见 Coordination 那条 snapshot）：基线现取 `34074a0`，本角色范围 `git diff HEAD`
+    **为空并不表示"我没改"**——`1ad0c37`（07:10:24）把在制品入了册。改由
+    `git diff --stat 97d0a21 HEAD -- core/internal/platform/db core/internal/eventjournal core/migrations`
+    框出：`touch.go +210` / `versionless_test.go +572`，**2 files changed, 781 insertions(+), 1 deletion(-)**；
+    `it owns table`/`noTable`/`RefusesAggregatesThatOwnRows`/`CreateVersionless` 四个标记在 `97d0a21` 各 0 命中
+    （那里还没有 `versionless_test.go` 这个文件），在 HEAD 分别 1 / 4 / 1 / ≥1 命中；
+    `core/migrations/`、`internal/eventjournal/` 在 `97d0a21..HEAD` 零改动；工作树的未跟踪件里没有我的东西
+    （只有 `internal/process/lifecycle{,_test}.go`，adapter 的）。
+  - **契约正文差半句**：`grep -n "只准给\|绕过改行" specs/contracts-internal-v0.1.md` → **0 命中**（07:12 实读）
+    ⇒ 第 20 条引用的"第 17 条末段对 `AppendEventOnly` 的收紧"目前只在裁定与代码里；文本备在 Coordination，贴否由主控定。
+    **（T-226 已闭合，两时刻都带上：07:12 我量到 0 命中为真，主控 07:2x 把规范句补进第 17 条。）**
+    07:31:37 复量：`grep -c 只准给 specs/contracts-internal-v0.1.md` = **1**，原文在第 343 行
+    「**`AppendEventOnly` 只准给"没有表的聚合"用**（v0.1 即 `table == ""` 的那一个：`core`）」，
+    且随句带了"配套判据双向"与"这一格不进事件流、走 `RecordDrop` 那一族审计登记"；
+    `git show HEAD:specs/contracts-internal-v0.1.md | grep -c 只准给` = **1**（07:32:15）⇒ 该句已在 HEAD `319f00d` 里
+    （巡检 07:27 那次量的"+15 行未提交"在它那一刻为真，之后被 07:27:52 的提交追上了）。
+    **我的实现那三行（`spec.table != noTable` + 拒判文案 + 注释禁令）与新句逐条对齐，未回改。**
+  - **T-226 只要求回一句确认，代码零改动**；我仍按自己的规矩把三件读数自己重取了一遍（07:31:37）：
+    `or a fact observed without a row to move` 在 `core/internal/platform/db/` **0 命中**、
+    `TestAppendEventOnlyRefusesAggregatesThatOwnRows` 在 `core/` 内 **1 处**（定义即用例本体），
+    并末次重跑 scoped 门禁（07:32:00→07:32:05）→ `go build ./...` exit 0、
+    **49 `--- PASS`／0 FAIL／0 SKIP**，`ok platform/db 2.924s`、`ok eventjournal 0.617s`；
+    我范围两个文件 mtime 仍是 07:10:37 / 07:10:04 ⇒ 这轮没有新代码，确认建立在这次的读数上而不是旧结论上。
+
 ## Recovery note
 
-- Interruption point: db-platform 全部判据 + T-6/T-7/T-12/T-20/T-24 均已落地实测；
-  本角色范围内无未完事项，开放项只剩需要别人动的：REQ-A4（`go:embed` 归属，主控拍板）、
-  REQ-A3（无事件表清单文本待贴进契约）、Q6（audit 收窄 `IsVaultRef` 注释）
+- Interruption point: db-platform 全部判据 + T-6/T-7/T-12/T-20/T-24/T-27/T-33/T-44/T-48/T-57/T-60/T-66/T-72/
+  T-107/T-115/T-125/T-136/T-142/T-149/T-161/T-179/T-219 均已落地实测；本角色范围内无未完事项。
+  开放项全在别人手里：REQ-A4（`go:embed` 归属，主控拍板）、Q6（audit 收窄 `IsVaultRef` 注释）、
+  C34 词表的落地（backend/adapter），以及主控自己要不要把 CO-44/CO-45 裁成"平台层要多返回一格"
 - First action after recovery: 跑 scoped 门禁 `go test ./internal/platform/... ./internal/eventjournal/...`
-  确认仍绿；若 `cmd/core` 的迁移装载要改成 embed，按 REQ-A4 选定的那一份 `embed.FS`
-  调 `d.MigrateFS(fsys, ".")` 即可，平台层不需再改
+  确认仍绿；`adapter`/`backend` 一旦接上三个入口，`LUCERO_REQ_DB2=1 go test -run TestLifecycleRowLandsTheFiveColumns ./cmd/core/`
+  那一条该由他们跑到 PASS（本角色不带 flag 跑，也不为它改实现）
 - 历史包袱提醒：Q4 已把 `AggQuota` 定为 `"quota"`，若谁又报"未知聚合"，先查它是否还在写旧字符串
   `"quota_account"`

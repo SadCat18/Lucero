@@ -15,6 +15,9 @@
 #   四档都不红                       ⇒ 未复现：报采样时刻与次数，**不写成"已绿"**
 #   任一档 探测失败（编译不过 / 用例名不存在） ⇒ 探测不成立，exit 2 —— 不许在坏探针上下结论
 # 每次 go test 之前都取一次 date：没有时刻的采样数字不算证据（T-43）。
+# 电池前后各取一次**可归因戳**（`scripts/build_stamp.sh`：编译输入清单的 md5 + 构建时刻 + HEAD）。
+#   契约① §1.1 第 19 条验收② 的补句：无指纹的 0 红不算证据。两戳不同 ⇒ 这批直接判"探测不成立"（exit 2），
+#   哪怕 40/40 全绿 —— 09-24 07:20 那批 122/122 绿就是这么被作废的（当时还只有我本地的做法）。
 #
 # 用法：bash scripts/flaky_watch.sh [-r 用例名] [-p 主包] [-n 次数] [一起跑的包...]
 #        **是 -r，不是 go test 的 -run**：getopts 不认长选项，`-run TestX` 会被拆成
@@ -107,6 +110,13 @@ probe() {  # probe <档位名> <go test 参数...>
     [[ -z "$reason" ]] && reason="输出里没有这个用例的任何 --- 行（用例改名了？还是把 -r 写成了 -run？）"
   fi
   printf '  %s  %-9s %-7s 包退出码=%s%s\n' "$stamp" "$label" "$mark" "$rc" "${reason:+  ← ${reason:0:120}}"
+  # 红与 SKIP 都必须自带现场。05:1x 那条 `io.Discard` 的教训在这里的下一级：07:36 那批采到 1 次真红，
+  # 而我这个采样器只留了一个 "FAIL" 字、把整份 `go test` 输出丢了 ⇒ 我知道"红过一次"却说不出它为什么红。
+  # SKIP 同样要印：`buildCore` 的 skip 理由（"cmd/core 编不过"）正是判断"这批能不能要"的依据。
+  case "$mark" in
+    FAIL|SKIP)
+      printf '%s\n' "$out" | grep -vE '^[[:space:]]*$' | tail -n 16 | sed "s/^/      │ ${mark} 现场 /" ;;
+  esac
   case "$mark" in
     PASS)   eval "${label}_GREEN=\$(( ${label}_GREEN + 1 ))" ;;
     FAIL)   eval "${label}_RED=\$(( ${label}_RED + 1 ))" ;;
@@ -181,12 +191,15 @@ classify() {
   # 每一档的计数都可能**压根没被赋值**（`-m single` 就只跑一档），所以全部走 ${x:-0}：
   # 05:50:39 实测旧写法在 `set -u` 下直接 `shuffle_BROKEN: unbound variable` 崩掉，
   # 屏幕上没有判决、退出码 1 —— 一个"看起来像红"的崩溃比漏判更坏，因为它会被读成结论。
-  single_RED=${single_RED:-0}; single_BROKEN=${single_BROKEN:-0}
-  shuffle_RED=${shuffle_RED:-0}; shuffle_BROKEN=${shuffle_BROKEN:-0}
-  isolated_RED=${isolated_RED:-0}; isolated_BROKEN=${isolated_BROKEN:-0}
-  parallel_RED=${parallel_RED:-0}; parallel_BROKEN=${parallel_BROKEN:-0}
+  # ⚠ 这一批补齐了 *_SKIP：旧版只兜 RED/BROKEN，而自测从来不喂 SKIP ⇒ 自测走不到的分支就是没验的分支
+  #   （07:33 那批 122 次里 9 次 SKIP，正是这条漏判第一次被真数据抓住，不是我提前想到的）。
+  single_RED=${single_RED:-0}; single_BROKEN=${single_BROKEN:-0}; single_SKIP=${single_SKIP:-0}
+  shuffle_RED=${shuffle_RED:-0}; shuffle_BROKEN=${shuffle_BROKEN:-0}; shuffle_SKIP=${shuffle_SKIP:-0}
+  isolated_RED=${isolated_RED:-0}; isolated_BROKEN=${isolated_BROKEN:-0}; isolated_SKIP=${isolated_SKIP:-0}
+  parallel_RED=${parallel_RED:-0}; parallel_BROKEN=${parallel_BROKEN:-0}; parallel_SKIP=${parallel_SKIP:-0}
   SAMPLES=${SAMPLES:-1}
   local total_broken=$(( single_BROKEN + shuffle_BROKEN + isolated_BROKEN + parallel_BROKEN ))
+  local total_skip=$(( single_SKIP + shuffle_SKIP + isolated_SKIP + parallel_SKIP ))
   if (( total_broken > 0 )); then
     printf '判决：探测不成立 —— 有 %s 次采样没拿到该用例的 --- 行（多半是别人的包此刻编不过）。\n' "$total_broken"
     printf '      这种时候既不能报 flaky 也不能报绿；先按 T-68 查被验文件的 mtime 分清"在制品"与"回归"。\n'
@@ -204,7 +217,33 @@ classify() {
       printf '      但**不是"稳定复现"**：按发生率与归属记档，复采次数要配得上这个量级（§1.1 第 19 条）；\n'
       printf '      也别反过来把它记成 flaky —— 单进程串行就红，说明它不是"跑在一起"造成的。\n'
     fi
+    # 红是**有**证据，SKIP 是**没**证据：两者并存时红那一腿照样成立，但样本量必须按跑过的次数报，
+    # 否则"1/40"这种读数会把实际只有 31 次可用采样说成 40 次。
+    (( total_skip > 0 )) && printf '      另有 %s 次采样返回 SKIP（没跑到用例）⇒ 有效样本 %s 次，发生率按 %s/%s 算。\n' \
+      "$total_skip" "$(( SAMPLES - total_skip ))" "$single_RED" "$(( SAMPLES - total_skip ))"
+    (( ${FP_MISMATCH:-0} == 1 )) && printf '      ⚠ 且这批跨版本（前后编译指纹不同）⇒ **红落在哪一版说不清**，只能当线索、不能当验收。\n'
     return 1
+  fi
+  # 跨版本 ⇒ 连"没红"这句话都没资格说。这一格与 FL-8 不重复：FL-8 问"窗口里有没有人在改 .go"，
+  # 这里问"**改的是不是我验的那份码**"（别人改另一个包的 `_test.go` 会误伤前者、伤不到我的编译输入）。
+  # 出生现场：09-24 07:20 那批 122/122 全绿，事后发现那台二进制里编进了别人**未提交**的在途码 ——
+  # 同一版没修的 `lock.go` 上"0 红"可以成立 ⇒ **没有指纹的 0 红不算证据**（契约① 第 19 条验收② 补句）。
+  if (( ${FP_MISMATCH:-0} == 1 )); then
+    printf '判决：探测不成立 —— 这批采样的**编译输入前后不一致**（或戳压根没取到）。\n'
+    printf '      没有可归因戳的 0 红不算证据；重跑请在同一版码上采，或让改动方交"还原之后"的带戳复采\n'
+    printf '      （`bash scripts/build_stamp.sh` 前后各一次，两次的指纹要逐字相同）。\n'
+    return 2
+  fi
+  # SKIP **不是绿**，它连样本都不是。这一格是 07:33 那批实抓的漏判：`buildCore` 在 cmd/core 编不过时
+  # 按设计 `t.Skipf`（"不拿桩绿冒充真跑"，我的用例写得没错），于是 122 次采样里 9 次什么都没执行，
+  # 而 classify 把它印成了"各 122 次都没红"。**一条能被"整批没执行"满足的验收判据不是判据** ——
+  # §1.1 第 19 条验收② 的 n 必须是**跑过的次数**。
+  if (( total_skip > 0 )); then
+    printf '判决：探测不成立 —— 有 %s 次采样返回 SKIP，也就是那几次**根本没跑到用例**\n' "$total_skip"
+    printf '      （串行档最常见的原因是被验对象此刻编不过：`buildCore` 按设计 skip，不是绿）。\n'
+    printf '      这批 %s 次里有效样本只有 %s 个 ⇒ 不能报成"%s 次都没红"，量级判据的 n 要重跑补齐。\n' \
+      "$SAMPLES" "$(( SAMPLES - total_skip ))" "$SAMPLES"
+    return 2
   fi
   if (( shuffle_RED > 0 )); then
     printf '判决：FLAKY（同二进制并发）—— shuffle 红 %s 次而 single 全绿；不计绿也不计回归。\n' "$shuffle_RED"
@@ -230,11 +269,14 @@ classify() {
 if (( SELFTEST_RUN )); then
   fails=0
   SELFTEST_CASES=0   # 实际断言条数；收尾那句不许再手写"五句"（05:53 时它已经过期）
-  check_verdict() {  # check_verdict <期望关键字> <s RED> <sh RED> <is RED> <pa RED> <broken>
+  check_verdict() {  # check_verdict <期望关键字> <s RED> <sh RED> <is RED> <pa RED> <broken> [s SKIP]
     local want="$1"
     SELFTEST_CASES=$((SELFTEST_CASES + 1))
     single_RED=$2; shuffle_RED=$3; isolated_RED=$4; parallel_RED=$5
     single_BROKEN=$6; shuffle_BROKEN=0; isolated_BROKEN=0; parallel_BROKEN=0
+    # SKIP 计数每一支都要显式归零，否则上一条用例的 SKIP 会漏到下一条（那会让"全绿判未复现"永远测不到）。
+    single_SKIP=${7:-0}; shuffle_SKIP=0; isolated_SKIP=0; parallel_SKIP=0
+    FP_MISMATCH=0   # 每条表驱动用例都从"同版码"起步，否则上一支的跨版本标记会漏成下一支的判决
     local got; got="$(classify | head -1)"
     if [[ "$got" != *"$want"* ]]; then
       printf '  [SELFTEST FAIL] 计数(%s,%s,%s,%s,b=%s) 判成「%s」，期望含「%s」\n' "$2" "$3" "$4" "$5" "$6" "$got" "$want"
@@ -248,7 +290,7 @@ if (( SELFTEST_RUN )); then
   check_verdict "REGRESSION（间歇"      1 0 0 0 0
   # 反面对：部分红里出现"稳定复现"就是我在撒谎，所以这一条不许含那个词。
   partial=$(SAMPLES=3; single_RED=1; shuffle_RED=0; isolated_RED=0; parallel_RED=0; \
-            single_BROKEN=0; classify | head -1)
+            single_BROKEN=0; single_SKIP=0; shuffle_SKIP=0; isolated_SKIP=0; parallel_SKIP=0; classify | head -1)
   SELFTEST_CASES=$((SELFTEST_CASES + 1))
   case "$partial" in
     *稳定复现*) printf '  [SELFTEST FAIL] 1/3 的样本被判成"稳定复现"：%s\n' "$partial"; fails=$((fails + 1)) ;;
@@ -258,11 +300,50 @@ if (( SELFTEST_RUN )); then
   check_verdict "FLAKY（跨包并发）"   0 0 0 1 0
   check_verdict "FLAKY（未定维度）"   0 0 1 1 0
   check_verdict 未复现              0 0 0 0 0
+  # 未复现那一支的**措辞不变量**（契约① §1.1 第 19 条验收② 的钉子：不许拿"再跑 100 次没红"
+  # 单独当"已修"）。上面 check_verdict 只读判决第一句，限定语在第二、三句里 —— 谁把这一支改简了，
+  # 这里必须红，而不是等到 REQ-L-1 验收那天才发现工具自己把话说满了。
+  SELFTEST_CASES=$((SELFTEST_CASES + 1))
+  allgreen=$(SAMPLES=100; MODES=single; single_RED=0; shuffle_RED=0; isolated_RED=0; parallel_RED=0; \
+             single_BROKEN=0; shuffle_BROKEN=0; isolated_BROKEN=0; parallel_BROKEN=0; \
+             single_SKIP=0; shuffle_SKIP=0; isolated_SKIP=0; parallel_SKIP=0; classify)
+  case "$allgreen" in
+    *不等于已绿*) printf '  [ok] 全绿判决自带"不等于已绿"  ← %s\n' "$(printf '%s\n' "$allgreen" | tail -n +2 | head -1 | sed 's/^ *//' | cut -c1-52)" ;;
+    *) printf '  [SELFTEST FAIL] 全绿判决丢了限定语，会被读成"已修"：\n%s\n' "$allgreen"; fails=$((fails + 1)) ;;
+  esac
   check_verdict 探测不成立           0 0 0 0 1
+  # ↓↓↓ 07:33 那批实抓的漏判（不是我预设要防的）：122 次采样里 9 次返回 SKIP —— `buildCore` 在
+  #     cmd/core 编不过时按设计 skip，所以那 9 次**什么都没执行**，而旧 classify 照样印"各 122 次都没红"。
+  #     一条能被"整批没执行"满足的验收判据不是判据（§1.1 第 19 条验收② 的 n 是**跑过的次数**）。
+  check_verdict 探测不成立           0 0 0 0 0 9
+  SELFTEST_CASES=$((SELFTEST_CASES + 1))
+  skiponly=$(SAMPLES=122; single_RED=0; single_SKIP=9; single_BROKEN=0; shuffle_RED=0; isolated_RED=0; parallel_RED=0; \
+             shuffle_SKIP=0; isolated_SKIP=0; parallel_SKIP=0; shuffle_BROKEN=0; isolated_BROKEN=0; parallel_BROKEN=0; classify)
+  case "$skiponly" in
+    *探测不成立*"有效样本只有 113 个"*) printf '  [ok] SKIP 折成有效样本数     ← 122-9=113（不许报成 122 次没红）\n' ;;
+    *) printf '  [SELFTEST FAIL] 纯 SKIP 批没报出有效样本数：\n%s\n' "$skiponly"; fails=$((fails + 1)) ;;
+  esac
+  SELFTEST_CASES=$((SELFTEST_CASES + 1))
+  redskip=$(SAMPLES=40; single_RED=1; single_SKIP=2; single_BROKEN=0; shuffle_RED=0; isolated_RED=0; parallel_RED=0; \
+            shuffle_SKIP=0; isolated_SKIP=0; parallel_SKIP=0; shuffle_BROKEN=0; isolated_BROKEN=0; parallel_BROKEN=0; classify)
+  case "$redskip" in
+    *"有效样本 38 次"*) printf '  [ok] 红+SKIP 按跑过的次数报  ← 1/40 另注"有效样本 38 次"\n' ;;
+    *) printf '  [SELFTEST FAIL] 红与 SKIP 并存时没换算样本量：\n%s\n' "$redskip"; fails=$((fails + 1)) ;;
+  esac
+  # 全绿 + 跨版本 ⇒ 必须是"探测不成立"，不能是"未复现"（这一支就是 07:20 那批 122/122 绿的处境）。
+  SELFTEST_CASES=$((SELFTEST_CASES + 1))
+  crossver=$(SAMPLES=122; FP_MISMATCH=1; MODES=single; single_RED=0; shuffle_RED=0; isolated_RED=0; parallel_RED=0; \
+             single_BROKEN=0; shuffle_BROKEN=0; isolated_BROKEN=0; parallel_BROKEN=0; \
+             single_SKIP=0; shuffle_SKIP=0; isolated_SKIP=0; parallel_SKIP=0; classify)
+  case "$crossver" in
+    *探测不成立*"编译输入前后不一致"*) printf '  [ok] 无指纹的 0 红不算证据     ← 全绿跨版本被拒判，不写成"未复现"\n' ;;
+    *) printf '  [SELFTEST FAIL] 跨版本的全绿没被拒判：\n%s\n' "$crossver"; fails=$((fails + 1)) ;;
+  esac
   # `-m single` 的形状：另外三档连变量都不存在。旧写法在这里直接崩（unbound variable），
   # 现在必须照样给出判决。
-  onlyone=$(unset shuffle_RED isolated_RED parallel_RED shuffle_BROKEN isolated_BROKEN parallel_BROKEN; \
-            MODES=single SAMPLES=2 single_RED=0 single_BROKEN=0; classify | head -1)
+  onlyone=$(unset shuffle_RED isolated_RED parallel_RED shuffle_BROKEN isolated_BROKEN parallel_BROKEN \
+                  shuffle_SKIP isolated_SKIP parallel_SKIP; \
+            MODES=single SAMPLES=2 single_RED=0 single_BROKEN=0 single_SKIP=0; classify | head -1)
   SELFTEST_CASES=$((SELFTEST_CASES + 1))
   case "$onlyone" in
     *未复现*) printf '  [ok] 只跑一档也有判决     ← %s\n' "${onlyone:0:70}" ;;
@@ -275,6 +356,20 @@ if (( SELFTEST_RUN )); then
 fi
 
 SAMPLES="$N"
+# 可归因戳（契约① §1.1 第 19 条验收② 的补句：采样要同时交"被验树指纹 + 构建时刻"，无指纹的 0 红不算证据）。
+# 判据本体不在这里，这里只是把 `build_stamp.sh` 在电池前后各取一次；两次数的是**同一份编译输入清单**，
+# 所以"窗口里有人改了文件"（FL-8 那一问）与"改的是不是我验的那份码"（这一问）是分开的两件事。
+STAMP0="$(bash "$ROOT/scripts/build_stamp.sh" --sh 2>/dev/null)"; stamp_rc=$?
+if (( stamp_rc != 0 )); then
+  printf '★取不到可归因戳（`scripts/build_stamp.sh` exit %s）⇒ 这批采样天生不能当验收证据，先修它。\n' "$stamp_rc"
+  FP0="(取不到)"; FP1=""
+else
+  eval "$STAMP0"
+  FP0="$STAMP_FP"
+  printf '起：构建时刻=%s HEAD=%s 未提交=%s处 编译输入=%s个 指纹=%s\n' \
+    "$STAMP_AT" "$STAMP_HEAD" "$STAMP_DIRTY" "$STAMP_FILES" "$STAMP_FP"
+fi
+FP_MISMATCH=0
 RUN_FROM="$(date -Iseconds)"
 printf 'flaky_watch  用例=%s  主包=%s  每档 %s 次  并发跑的包：%s  窗口起点=%s\n\n' "$RE" "$MAIN" "$N" "${PEERS[*]}" "$RUN_FROM"
 
@@ -291,6 +386,23 @@ if want_mode isolated; then
 fi
 if want_mode parallel; then
   run_mode parallel "$N" -count=2 -shuffle=on -v -timeout "$TMO" -run "$RUNRE" "$MAIN" "${PEERS[@]}"
+fi
+# 收戳：电池结束后再取一次。**只有前后一致，这批采样才谈得上"测的是哪一版码"**。
+if [[ "$FP0" != "(取不到)" ]]; then
+  STAMP1="$(bash "$ROOT/scripts/build_stamp.sh" --sh 2>/dev/null)"; stamp_rc1=$?
+  if (( stamp_rc1 != 0 )); then
+    FP_MISMATCH=1
+  else
+    eval "$STAMP1"
+    FP1="$STAMP_FP"
+    printf '收：构建时刻=%s HEAD=%s 未提交=%s处 指纹=%s\n' "$STAMP_AT" "$STAMP_HEAD" "$STAMP_DIRTY" "$STAMP_FP"
+    [[ "$FP1" != "$FP0" ]] && FP_MISMATCH=1
+  fi
+else
+  FP_MISMATCH=1
+fi
+if (( FP_MISMATCH == 1 )); then
+  printf '★跨版本：起=%s 收=%s ⇒ 这批采样期间**被验的那份码变了**（不只是"有人写过文件"，而是改到了我的编译输入里）。\n' "${FP0:0:12}" "${FP1:0:12}"
 fi
 timeline "$RUN_FROM" "$(date -Iseconds)" cmd/core internal/adapter
 

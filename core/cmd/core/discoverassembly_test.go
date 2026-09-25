@@ -89,7 +89,7 @@ func TestListAllSessionsRefusesToTruncate(t *testing.T) {
 	}
 }
 
-func newBareDiscover(t *testing.T, specs []adapterSpec) (*probeService, *discoverService, *db.DB) {
+func newBareDiscover(t *testing.T, specs []adapterSpec) (*probeService, *discoverService, *sendPipe, *db.DB) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "lucero.db"))
 	if err != nil {
@@ -110,19 +110,19 @@ func newBareDiscover(t *testing.T, specs []adapterSpec) (*probeService, *discove
 	}
 	now := func() int64 { return 4_000 }
 	svc := session.NewService(session.NewRepository(d.Read), now)
-	probe, discover, err := newAdapterServices(d, auditedStore{d: d}, specs, probeAttemptDeadline, now,
+	probe, discover, pipe, err := newAdapterServices(d, auditedStore{d: d}, specs, probeAttemptDeadline, now,
 		func(string, ...any) {}, svc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if probe == nil || discover == nil {
-		t.Fatal("给了 specs 就该两个都装配出来")
+	if probe == nil || discover == nil || pipe == nil {
+		t.Fatal("给了 specs 就该三个都装配出来")
 	}
-	return probe, discover, d
+	return probe, discover, pipe, d
 }
 
 func TestDiscoverDistinguishesUnknownInstanceFromUnconfiguredKey(t *testing.T) {
-	_, discover, d := newBareDiscover(t, []adapterSpec{{key: "other", displayName: "other", command: "does-not-matter"}})
+	_, discover, _, d := newBareDiscover(t, []adapterSpec{{key: "other", displayName: "other", command: "does-not-matter"}})
 
 	// ① 实例根本不存在 ⇒ sql.ErrNoRows（transport ⇒ 404）
 	if _, _, err := discover.DiscoverSessions(context.Background(), "no-such-instance"); !errors.Is(err, sql.ErrNoRows) {
@@ -158,8 +158,8 @@ func TestDiscoverEndToEndOverFakeAdapter(t *testing.T) {
 		t.Skip("未开 LUCERO_TEST_FAKE_ADAPTER=1：不 build、不起真子进程（交付前必须开着跑一遍）")
 	}
 	exe := buildFakeAdapterHere(t)
-	// 两个服务只构造一次、共用同一份 specs 与 launcher（造两遍就是给漂移留位置）。
-	probe, discover, d := newBareDiscover(t, []adapterSpec{{key: "fake", displayName: "Fake Adapter", command: exe}})
+	// 三个服务只构造一次、共用同一份 specs 与 launcher（造两遍就是给漂移留位置）。
+	probe, discover, _, d := newBareDiscover(t, []adapterSpec{{key: "fake", displayName: "Fake Adapter", command: exe}})
 	ctx := context.Background()
 
 	view, err := probe.Probe(ctx, "fake")

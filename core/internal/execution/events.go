@@ -12,6 +12,7 @@ const (
 	EventOutputFlushed = "execution_output_flushed"
 	EventPaused        = "execution_paused"
 	EventResumed       = "execution_resumed"
+	EventStarting      = "execution_starting" // REQ-DB-4（09-24）：CREATED→STARTING 由它表达，§6 那行 payload 只有 `from`
 	EventSucceeded     = "execution_succeeded"
 	EventFailed        = "execution_failed"
 	EventCancelled     = "execution_cancelled"
@@ -24,6 +25,8 @@ const (
 // 事件存在与否与"是否驱动 Task"是两件事：§5.3 之外的事件一律不驱动 Task。
 func EventOf(from, to State) string {
 	switch to {
+	case Starting:
+		return EventStarting
 	case Succeeded:
 		return EventSucceeded
 	case Failed:
@@ -91,6 +94,12 @@ type PausedPayload struct {
 
 // ResumedPayload 的 from 区分 PAUSED / WAITING_INPUT / INTERRUPTED 三种恢复来源。
 type ResumedPayload struct {
+	From State `json:"from"`
+}
+
+// StartingPayload 是 §6 的 `execution_starting` 那一行：目录里只登记了 `from` 一个键。
+// 不复用 ResumedPayload（键集今天相同是巧合，§6 是两行，以后改一行不该牵动另一行）。
+type StartingPayload struct {
 	From State `json:"from"`
 }
 

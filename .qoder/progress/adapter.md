@@ -5,7 +5,7 @@ SCOPE: Core↔Adapter 协议实现（帧编解码/握手/capability/三态/流�
 EVIDENCE_DIR: .qoder/progress/adapter.md（本轮为纯单测证据，不落 .qoder/evidence/）
 SCRATCH_DIR: D:\Project\Lucero\.scratch\adapter\（T-47：一次性产物只准落这里，仓库已 ignore；
              永不碰 /tmp、%TEMP%、$env:TEMP 的通配删除；只删自己建的具体文件名）
-LAST_UPDATED: 2026-09-23T03:30:43+08:00  # 本机 date 实读（T-193 收窄合验范围）
+LAST_UPDATED: 2026-09-24T10:59:46+08:00  # 本机 date 实读（第 19 轮收尾：头部五字段各 =1、^## =12、旧五段降级留档未删）
    # 自纠两处（T-43）：① 本行上一度写成 `14:36:20`，那**不是** `date` 读出来的、是估的（当时最后一次实读是
    # 14:31:49）；② 09-21 11:11 我用一条 `\S+` 的正则改这行，把 `LAST_UPDATED:` 前缀 itself 吃掉了，
    # 当场用 Edit 修回 —— 记账本自己的教训：**改标头行必须锚全文，不能用 `^KEY: \S+` 这种吞前缀的写法**。
@@ -49,7 +49,33 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 
 ## Current checkpoint
 
-- Stage: 第 5 轮 B 段完成 = **§10 的 11 项全部到齐**（新落地 `session/list`、`session/read`、`session/stop`、
+- Stage: **第 18 轮已交付（09-24 10:46）= 生命周期写口 + 只读解析出口 + 黑盒注入门三件都在盘上**。
+  `internal/process/lifecycle.go`（`LifecycleStore`，按契约① §1.1 第 20 条三句裁定落码）、
+  `internal/adapter` 的 `(*SQLiteStore).ResolveInstance`（T-263）、
+  `cmd/fake-adapter` 的 `LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID` 门（T-275，默认关、只在 fake、不改帧形状）。
+  **backend 已把写口接进 `cmd/core`（10:01 复量 5 命中、10:42:56 整包带 flag `ok`）⇒ `LUCERO_REQ_DB2=1` 那格已转 PASS**。
+- Status: **idle（等令，无阻塞）**。
+- Last verified action: **起 09-24 10:54:03、收 10:54:11（两个时刻各自 `date -Iseconds` 求值），`exit=0`**，
+  `CGO_ENABLED=0 go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...` ⇒
+  **469 PASS / 6 SKIP / 0 FAIL、17 个包全 `ok`、`build failed` 0、无 `panic: test timed out`**；
+  逐包 `internal/adapter` 53/0/0、`internal/process` 32/1SKIP/0、`cmd/fake-adapter` 26/1SKIP/0；
+  `grep -rn ZMUT core/` = 0、`gofmt -l` 我三目录空；HEAD 实取 `978a72e`（10:46:22）。
+  **"全" = 17 包，不含 `core/test/`（`test` 的门）与 `scripts/`**——这条集合口径是 T-255 之后新加的，
+  因为 09:03 主控点名的红正好在我没扫的那个目录里。
+- Verification: 最新一条在 `## Verification evidence` 顶部 = **"第 19 轮（T-276 落规）"**，
+  其判据命令就是上面 `Last verified action` 那一行（10:54:03→10:54:11，日志 `.scratch/adapter/final-r19.log`）；
+  再往上是第 18 轮（T-275 门控 + 6 发变异）与第 17 轮（T-263 只读解析 + 5 发变异）的三项交账。
+- Next action: **idle。三格"等"，每格都写谁解锁（10:54 复量）**：
+  ① **等主控发合验令** —— 等什么：`test` 侧的 Wave-2 合验开跑；谁解锁：主控（我这边协议侧与三件交付随时能交，
+  不需要任何人先动码）；② **等 backend 补终态边判据** —— 等什么：§1.1 第 17 条"三条腿 + 每腿反例"里
+  "改行腿在装配好的形状下被驱动"那一腿（10:46 复量：`cmd/core` 里 `RecordExit/RecordCrash` 只 1 处、且那是 nil-store 支）；
+  谁解锁：backend（配方在他手里：先 start 再落边、断 `status`/`exited_at`/`exit_code`，反例 = 摘掉 `TouchTransition` 那条腿必须红）；
+  ③ **等 backend 用 `ResolveInstance` 接完分派腿** —— 谁解锁：backend，我不催、不替他接。
+  **不需要我再动码的任何一件**；T-275 那扇门已交付（默认关、只在 fake、不改帧形状，用法见第 18 轮）。
+- 【以下三段（旧 `Stage` / 旧 `Status` / 旧 `Last verified action`，写于 09-22 22:5x）按 T-276 **原样留档、不当现状读**：
+  巡检 10:53:00 量到我头部比正文旧约 1.5 天，事实成立、我照规矩把新索引放上来、旧的搬下来，不删】
+
+  - （**旧 `Stage`，09-21~22 写的，按 T-276 留档不当现状**）：第 5 轮 B 段完成 = **§10 的 11 项全部到齐**（新落地 `session/list`、`session/read`、`session/stop`、
   `model/list`、`approval/list`、`approval/respond`）+ §6 规则 1"必发面"补 `stream/state`/`stream/item`
   （六类通知各至少一帧，且**分"正常轮次段 / 收尾段"两段断言**——这个拆法是变异 n1 第一次 SILENT 逼出来的：
   `session/stop` 也发 `stream/state`，混在一起断言会被它顶包）+ §6.3 状态机链用例。
@@ -63,8 +89,8 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   `^### 6.6` 仍为 **0**，所以我继续引 `§6 规则 5` + `§4.2 裁定 ①/②`；
   §4 方法表**已有** `session/create` 一行（REQ-T8 闭），互校用例里那条豁免与"代码有契约没有"的状态一并撤掉，
   现在 `writeMethods` 的每个名字都必须能在 §4 找到、且 §4.1 声明的写必须都在我集合里（双向对拍，t5 会红）。
-- Status: in_progress
-- Last verified action: 交付前最后一次全仓跑 **09-22 22:56:35 起 / 22:56:43 收**（`date` 实读），
+  - （**旧 `Status`**，留档）：in_progress
+  - （**旧 `Last verified action`，09-22 22:5x 写的，按 T-276 留档不当现状**）：交付前最后一次全仓跑 **09-22 22:56:35 起 / 22:56:43 收**（`date` 实读），
   `-v` + `-timeout 900s` 的 `go test -count=1 ./internal/... ./cmd/... ./api/...` =
   **338 PASS / 6 SKIP / 1 FAIL、16 包 ok**，且**日志里没有 `panic: test timed out`** —— 这就是 T-132 的 P0
   （"probe 让 `go test ./...` 整仓挂死"）已经消除的直接证据，不是"我看它不挂了"。
@@ -75,11 +101,72 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   说明 Recorder 第四方法没有打断它的实现）。`gofmt -l` 我三目录空、`grep -rn ZMUT core/` = 0。
   **今天(09-22)我一度 6 小时没交报告**：15:19 被唤醒、15:54 还在写文件，账本停在 09-21 16:05 ——
   T-132 点得对，"代码在盘 ≠ 验收闭口"是我前天自己立的。这一段就是补账。
-- Next action: **等主控发"开始合验"这一句**（T-185 明说由它主动发、我不用去问；
-  **T-193 已按我 03:19 那组实测把范围收窄：行级落库五条判据归 backend 的 T-192②，合验只剩协议侧
-  ——握手与能力核定、`CarriesTurnRef` 六条范围、票号↔execution_id 一致/矛盾两侧、丢弃到达接缝、
-  fake 的 claimed→dispatched→close→下轮链——外加黑盒能观察的部分**），发令即跑
-  `bash .scratch/adapter/verify-req-t12.sh`（03:11 已试跑通，可重入、只读、不碰别人文件）。
+  - （**旧 `Next action`，08:44~10:46 写的，同样按 T-276 留档不当现状**；live 的那条在本节顶部）：
+  "idle，等三件、没有一件要我再动码"。"等 backend 接 `cmd/core` 装配"与
+  "等 `LUCERO_REQ_DB2=1` 转 PASS"**两格都已过**：08:42:56 `cmd/core` 整包带 flag `ok`，08:44:16→08:44:24 全量
+  **457 PASS / 6 SKIP / 0 FAIL、17 包全跑、0 build failed**（08:13 那条 build-red 与 08:18 那条 panic 都不复存在）。
+  现在等的是：**① `test` 侧的合验发令（主控）**；~~② backend 删掉那份字面量抄本~~ ⇒ **10:01 复量已闭**
+  （`core/cmd/core/` 非测试里 `"adapter_instance"` 字面量 **0**、`OwnerTypeAdapterInstance` 引用 **2 处**）；
+  **③ CO-50① 那条终态边判据落地**（T-248 判归 backend，我不动 `cmd/core`；08:43 复量的事实是
+  "摘掉改行腿 ⇒ `cmd/core` 整包仍 `ok`"，配方已交给他们）。
+  **④ 已交付、等 backend 用它**：T-263 要的只读解析出口 `(*SQLiteStore).ResolveInstance` 本轮落完
+  （交付跑 10:06:19→10:06:28，三条用例 + 五条变异，见第 17 轮）；分派腿解析 `adapter_key` 现在不必再自己抄 SQL。
+  **我不催，也不替它接。**
+  **⑤ 已交付、等 `test` 用**：T-275 那扇门 10:46 落完（`LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID=1`，
+  默认关、只在 fake、不改帧形状，正反例与 6 发变异都在第 18 轮）。**用法一句话**：起子进程时把这个环境变量设成 `1`，
+  那条 `session/send` 的两帧取证信号里的 `execution_id` 就会与 Core 为同一张票绑定的值矛盾；
+  子进程 stderr 会同时喊出"注入值"与"原本绑定的值"，`test` 不必自己反推。**我没有替 `test` 写那条 T84-7b 的断言**
+  （那格在 `core/test/`，归他，T-273② 已直接通知到他）—— 我俩各实现一遍的形状就此避开。
+  **合验那一刻我有一腿要陪验**（§17 现在明写三条腿，验收方是 backend + adapter）：摘我改行腿 ⇒ 对应用例必须红、
+  且与基线两两不同——这一腿**要等 backend 先把"装配好的形状下驱动终态边"落下来**才存在，我今天量它还不存在（见第 16 轮 ②）。
+  **报绿口径更新**：以后每一句"全仓绿"都必须带"= 17 包，**不含 `core/test/` 与 `scripts/`**"，
+  并且别人报的红若在我日志里 0 命中，**先怀疑我的集合**（09:03 那次就是这么撞上的）。
+  我 08:17/08:43 两轮双向自证的结论都在 `## Coordination` 的 CO-50 里，**`cmd/core` 的红绿由 backend 交账**，我不去改他们的文件。
+  历史一句（08:14 那次写的，保留）：当时我以为整包红在 `TestLauncherCarriesARecorder` 需要等回来才重取读数——
+  **它 08:42 就绿了，我等的是别人交付、不是等一个已经消失的现象**。
+  **T-240 更正后的 Wave-2 我那一半已无需新形状**：`session/send` 下发 + `turn/claimed`/`turn/dispatched` 取证两帧
+  都在盘上（`stream.go:31-32`、`send.go` 载荷校验、`CarriesTurnRef` 集合），**要连接生命周期或崩溃注入配合就开 CO，不自扩对外形状**（T-230 原话）。
+  **09-24 07:2x 更新：禁令解除的那句话已经用完——`internal/process/lifecycle.go` 落完了**（`LifecycleStore` 三方法、
+  9 条变异全 FIRED、全仓 exit=0 447 PASS），形状与消费点已写进 `## Coordination` 的 CO-46 转告 backend。
+  **我不去碰 `cmd/core`、也不提前跑合验**（那两格分别是 backend 的与主控发令的）。协议侧那一半仍随时能交。
+  **T-230 立的前置检查挂在这一格上**：backend（或主控）的方案带 Coordination 进我账本时，
+  **动手前先对契约核"那个方法名/端点存不存在"**，0 命中就不动手、开 CO 等回话——第一次执行已经是 CO-48
+  （`turn/dispatch` 在 `specs/` 全树 0 命中 ⇒ 我按 `session/send` 准备，不写迎合的代码）。
+  **并且口径要写清**：我第一次用 `specs/*.md` 量的 0 命中是**假否定**（契约② 在 `specs/adapter-protocol/`），
+  递归 `specs/` 才是这条检查的正确扫法。
+  **以下两段是 05:2x/05:40 那一头的读数，原样留着（它们当时为真）**：等主控对 CO-44/CO-45 的一句话，
+  以及 T-211 那条"等 db 交三个入口"的前置在 05:37:20 就已消失——**"前提消失 ≠ 禁令解除"这一条我执行到位了，主控也认了**。
+  **05:2x 复量（本轮，`date` 两个端点 05:22:46 / 05:26:07）**：
+  ① 第 ① 个入口 `CreateVersionless` 仍 **0 命中**（`grep -rn "CreateVersionless" core/ --include=*.go` = 0，
+  含测试文件；它目前只存在于契约① `:327` 的签名和派发里）⇒ 建行那条腿没有门，我这格不动。
+  ② 第 ②③ 个 `TouchTransition`(`touch.go:384`)/`AppendEventOnly`(`:446`) 在盘上，且
+  `AggProcess`/`AggCore`(`:42-43`) 与 `versionlessAgg{process:"process_instances", guards:{status}, core:""}`(`:68-69`)
+  也已经出现 ⇒ **上一轮"db 那五个名字 0 命中"现在只对第 ① 个成立**，引用它的人要按这一条改口。
+  ③ db 仍在写：`touch.go` mtime **05:22:45(21814B) → 05:22:56(21790B)**，另有未跟踪新文件
+  `versionless_test.go`(05:21:41)；`git status --porcelain core/internal/platform/db/` = `M touch.go` + `?? versionless_test.go`。
+  ⇒ 顺序"db → 我 → backend"里我这一格仍未解锁。本轮我只做了两件不落实现的事：
+  把 `supervisor.go` 那段**比代码强、并且引用了一条不存在的契约条款**的注释改成实测现状（见 Completed 末条），
+  以及把写口的形状预研记进账本——CO-44/CO-45 两问未裁，所以**一行实现都没写**。
+  **以下是 05:13:39 那一轮的读数，原样留着（它当时为真）；只有①里"那两个入口"这半句被 T-211/213 的"三个入口"取代**：
+  **05:13:39 我自己复量后，T-209 那句等待条件要说得更准**（主控的"不发令"结论不变，但①这一半的依据已经过期）：
+  ① "等 db 交第 17 条那两个入口"——**正在交，还没停**：`tx.TouchTransition` 在
+  `internal/platform/db/touch.go:384`、`tx.AppendEventOnly` 在 `:446`，注册表 `versionlessAgg`
+  里 `AggProcess: {table: "process_instances", guards:{status:true}}` 已出现；
+  该文件 mtime **05:13:15 → 05:13:31**（我 30 秒内两次采到不同值）⇒ db 此刻仍在写，
+  巡检 05:09 那次"五个名字 0 命中"是**当时为真、现在已假**的快照，不能当现状引用。
+  ② "等 backend 把三格 Recorder 改过去"——**一行都没改**：`grep -rn "TouchTransition|AppendEventOnly|AggProcess" cmd/core/ --include=*.go`
+  排除测试后 **0 命中**，`cmd/core/dropaudit.go` mtime 仍是 **01:30:01**。
+  ⇒ 合验的真实前置收缩成"**backend 那一半**"，db 那半落地稳定后我不用再做任何事。
+  **顺带一问（不主张、不改动）**：`versionlessAgg` 里 `AggCore: {table: ""}` 是空表名——若这是"`core_ready`
+  没有聚合行、只发事件"的有意设计，建议在注释里点明，否则下一个人会读成没填完的 TODO；这是 `db`/主控的判断，我不碰。
+  协议侧我随时能交：握手与能力核定、`CarriesTurnRef` 六条范围、票号↔execution_id 一致/矛盾两侧、
+  丢弃到达接缝、fake 的 claimed→dispatched→close→下轮链；行级那五条在 backend 改完之前只会是
+  "skip（flag 未开）/ 显式 `t.Fatal`（flag 开了但没接上）"——两者都**不算绿**，我不会拿它当覆盖交。
+  **T-199 的两个归属结论我照办**：`.scratch/adapter/verify-req-t12.sh` 只当私量工具（随清理消失可接受），
+  我**不往 `scripts/` 或 `core/test/` 落任何文件**（契约③ §7 归 `test`）；
+  而且**我不另开那条 REQ**——理由：判据的长期落点已经在 `cmd/core/lifecyclecolumns_test.go` 里以 `go test`
+  形式存在（含双向断言与 flag 门），再造一道 `scripts/` 门就是第二份真相，正是今晚一直在防的东西。
+  主控若仍要它进 `test` 的持久门，说一声我再写那一行。
   **上一版这句已过期并划掉**："把 probe 交给 backend 接线 / 真子进程那条腿要等 backend 递进真 Supervisor"——
   03:10 实测前置条件已经成立：`core/api/http/adapters.go:32 registerAdapterProbeRoute`、
   `core/cmd/core/probeassembly.go`、`core/cmd/core/processpipe.go:76 Rec: newDropRecorder(l.store, adapterKey, l.now, l.logf)`、
@@ -89,10 +176,14 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   **预备时发现的那条缺口**（不等发令就能报）：REQ-T12 五条判据是**行级**判据，而 `cmd/core` 全部测试里
   真读 `process_instances` 的只有 **1 处**（`dropaudit_test.go:146`，断言 `count(*)=0`，即"丢弃不写生命周期行"）；
   `exit_code` / `restart_policy` / `owner_type` / `metadata_json` / `status` 在**该查询里各 0 处**
+  **【09-23 05:13 作废注明】下面这句是 03:19 当时的状态，已被后续复量取代：backend 的五条测试确实写进了 `lifecyclecolumns_test.go`（03:48:56，双向断言 + flag 门），缺的收窄成"backend 把三格改过去 + db 那半停笔"；保留原文是因为它记的是"我如何发现合验验不到落库层"这个过程。**
   ⇒ 判据 ①②③④ 今天无人断言，⑤ 由我包内 `TestEnumsFitTheFrozenProcessInstancesTable` 前置挡住枚举漂移、
   但"真写一次没被 CHECK 拒"仍需 ① 那条用例。落点只能在 `cmd/core`（`package main` 不可被我 import），
   所以我交的是判据与命令，不是那一半测试。
-- Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/adapter/... ./internal/process/... ./cmd/fake-adapter/...`
+  - （**旧 `Verification`**，按 T-276 留档不当现状；它那条命令我今天 10:58 实测**仍可跑**，
+    只是包集是旧的（三点形式 `./dir/...` 合法，我上一轮记的"这条命令 `[setup failed]`"指的是当时 `internal/process` 还不存在，
+    不是形式错））：
+    `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 ./internal/adapter/... ./internal/process/... ./cmd/fake-adapter/...`
 
 ## Completed
 
@@ -564,6 +655,262 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   ③ 变异批 `mut-r10.py` 第一次 x1 报 **BUILD-BROKEN**（我又一次往多行 Sprintf 里插行尾 `/*…*/` 改坏参数表），
   改成整串替换后才是有效判决。
 
+- **第 12 轮（09-23 05:2x，`date` 两个端点 05:22:46 / 05:26:07）· T-211 收单：归属更正 + 写口形状预研，未抢跑实现。**
+  - **T-211 我照收，并且它改的是我账本里的归属**。契约① §1.1 第 17 条已按此重写（`specs/contracts-internal-v0.1.md:343-344`
+    "落点与角色"、`:360` 文末更正记录②），不是我口头认领：`internal/process` 是 adapter 的包，
+    "把一次生命周期观察落成一行 + 恰一条事件"的语义住这里；`cmd/core/dropaudit.go` 只做装配（递 `db.Tx`、把错误喊出来），归 backend；
+    **`process_instances` 这个表名字面量仍不许进 `cmd/core`（W13 不变）**。
+    顺序 = `db` 三入口 → 我这一格 → backend 装配 → 才谈合验，所以本轮**一行实现都没写**。
+  - **等待条件按字复量（三处，不是引用上轮）**：第 ① 个入口 `CreateVersionless` 在 `core/` 下 **0 命中**
+    （`--include=*.go`，**含测试文件**；仓库内只有两处提到它：契约 `:327` 的签名、orchestration 的 T-213 派发行）
+    ⇒ 建行那条腿没有门。第 ②③ 个 `TouchTransition`(touch.go:384)/`AppendEventOnly`(:446) 与
+    `AggProcess`/`AggCore`(:42-43)、`versionlessAgg{AggProcess:{table:"process_instances",guards:{status:true}}, AggCore:{table:""}}`(:68-69) **已在盘上**。
+    db 还在写：`touch.go` mtime **05:22:45(21814B) → 05:22:56(21790B)**（我两次 `stat`/`ls -lt` 采到不同值），
+    未跟踪新文件 `versionless_test.go`(05:21:41)。⇒ **T-209 那轮"db 五个名字 0 命中"里，只有 `CreateVersionless` 这一半还成立**，
+    下一个读者要按这一条改口，别拿 05:09 的快照当现状。
+  - **写口的形状（预研，供主控先裁 CO-44/CO-45 再落码）**：
+    落点 `core/internal/process/`（文件名暂定 `lifecycle_store.go`）；
+    装配期事实进一个 `ProcessRow{ID, Kind, OwnerType, OwnerID, Executable, RestartPolicy, Metadata}`
+    （`OwnerType` 在 v0.1 只有 `'adapter_instance'`、`OwnerID = adapter_instances.id`，按 §1.1 第 18 条），
+    构造时校验枚举 membership（复用 `TestEnumsFitTheFrozenProcessInstancesTable` 那把尺，别新增第二份表）；
+    三个方法**返回 `error`**——void 那三条冻的是 `Recorder` 那道接缝、不是写口，写口若也 void 就和"把错误喊出来"自相矛盾；
+    `Start` 走 `tx.CreateVersionless(db.AggProcess, id, cols, vals, db.EventDraft{Type: eventjournal.ProcessStarted, Aggregate: db.AggProcess, AggregateID: id, ...})`，
+    `Exit`/`Crash` 走 `tx.TouchTransition(..., guardCol: "status", guardVal: <from>, setSQL: "status = ?, exited_at = ?, exit_code = ?, updated_at = ?", args, ev)`；
+    状态取 `RUNNING` / `EXITED` / `FAILED`（000001 的 CHECK 六值之内，`crashes` 无列 ⇒ 继续走 `metadata_json`）；
+    测试用真库（`db.Open` + `Migrate(../../migrations)`，与 `probe_store_test.go` 同一套），断"一行 + 恰一条事件"两侧。
+    **一个省下来的结论**：入口收的是 `AggregateKind` 而不是表名 ⇒ 我这格**本来就不必出现 `process_instances` 字面量**，
+    W13 那把尺天然满足，不需要为它再设计什么。
+  - **我自己那处"注释比代码强"（本轮唯一动过的代码，`supervisor.go:158-191`，+27/−17，纯注释）**：
+    旧文写 "internal/process **must not** import platform/db or eventjournal (**internal contract §0's direction**)，
+    so the row shapes stay the injector's business"。**两处错**：
+    ① §0 原文（`:13-25`）只禁 `db → 业务包` 与 `audit → db`，全篇没出现过 `internal/process`——
+    **我把自己的推断写成了条款引用**，正是我自己那条"引用了某个契约条款而 `grep` 在 `specs/` 里查不到 ⇒ 该条款不构成判据"在防的事；
+    ② "row shapes stay the injector's business" 就是 T-211 刚判错归属的那半句，留着它会把这一格又推回 `cmd/core`。
+    同段另一条实测作废：`AggProcess` 现在**在** registry 里（我 13:34:37 那次读的是"没有 process kind"），
+    所以 CO-39 那问被裁成了反方向（`process` 是真聚合、只是没有 version 列）。
+    改法：把"没有 DB import"收窄成它真正成立的那句——**`Recorder` 接缝不出现 DB 类型**（T-62 冻的形状），
+    包级 import 由写口承担；并注明"0 命中"的准确边界（`core/` 下、含测试）。
+    `go build ./...` exit=0、`gofmt -l` 我三目录空（编译即时复验，防"替换右端吃掉整行"那一族）。
+
+
+- **第 13 轮（09-24 07:0x~07:18，T-221 禁令解除）· `internal/process` 生命周期写口落地**。
+  先读 T-221 原文与**契约① §1.1 第 20 条**（完整裁定在契约正文，派发是三句摘要），再动手；落点两个新文件：
+  `core/internal/process/lifecycle.go`（226 行）+ `lifecycle_test.go`（430 行，8 条顶层用例 + 6 条子用例）。
+  - **形状**：`ProcessRow{Kind, OwnerType, OwnerID, Executable, RestartPolicy}` = 装配期事实；
+    `NewLifecycleStore(row, newID func() (string,error), now func() int64, logf)` **构造期**就把不可落库的形状拒掉
+    （kind 不在我能监督的两个值里、owner_type 不是第 18 条登记的 `adapter_instance`、有 owner_type 没 owner_id、
+    restart_policy 不在 CHECK 表里、没有 id 源、没有时钟）；三个方法**返回 error**（`RecordProcessStart` 还返回它铸出来的 id）：
+    `void` 冻的是 `Recorder` 接缝、不是写口，写口静默就是 §2.2.1 那种假账。
+  - **三条裁定各自落在哪一行**（不是"实现了 CO-45"这种空话）：
+    ① 一次尝试一行 = 每次 `RecordProcessStart` 现铸 id、`attempt` 自增、`metadata_json` 带
+    `attempt` + `previous_instance_id`（**没开新列**，000001 一个字没动）；
+    ② 0 行不插事件、不换 guard 再试 = `takeEdge` 里 `changed == 0` 之后**只喊、不重试、直接返回**；
+    ③ 0 行不许静默 = `logf` 一行必须含**期望的 from-state 与 row key**（用例钉这两样都在，缺一就是空喊）。
+    外加"根本没行可改"那一格：不写任何行/事件，返回哨兵 **`ErrNoLifecycleRow`** 让装配方去登记审计
+    （**我没有开审计出口**：`audit_entries` 的字面量与出口不归我，W13-2 那条对我也成立）。
+  - **实现期我自己抓到两处、都写成了用例或变异**：
+    ① `created_at`/`updated_at` 一开始跟着 `ev.Timestamp` 走 ⇒ 把"行的出生"与"观察时刻"缝成一个数，
+    晚记的 start 会伪装成"当时就写了"；现在 created/updated 走 `s.now()`、`started_at` 才走观察的 ms（m9 变异专咬这条）。
+    ② **guard 跟着状态前进 ⇒ 重放会移动自己的后态**：我原来在落边后做 `s.curStatus = ev.Status`，
+    于是同一行第二次 exit 的 guard 变成 `EXITED`、正好命中自己 ⇒ 又改一次行、又记一条事件，
+    **只被 `event_journal.event_id` 的 UNIQUE 拦住**（m3 复现原文：`append event process_exited for proc-a v3: UNIQUE constraint failed`）。
+    改成 `landedStatus`（**=this cell 当初写进去的状态，永不前进**），幂等闸才真的咬得住。
+    通用一条：**幂等 guard 的 from-state 必须是"我写进去的那个值"，不能跟着观察走。**
+  - **不 fudge 状态**：`status` 直接取 `ev.Status`（`supervisor.go` 发的是 `STARTING` + 真 pid），
+    不在库里把它升成 `RUNNING`；第 20 条 Recovery 的口径把 `STARTING` 算活，所以没什么需要补。
+    **副作用要交给别人**：`exit_code`/`exited_at` 的可断言面只在"先落了 started 那一行"之后存在（契约④已经写了），
+    ⇒ `TestLifecycleRowLandsTheFiveColumns`（backend/test 的格）**必须先建再落 exit**，我已列进 Coordination 转告。
+  - **包内边界从注释变成测试**：`TestOnlyTheWriteCellTouchesThePlatform` 用 `go/parser` 读真实 import，
+    只许 `lifecycle.go` import `platform/db`/`eventjournal`，并带一条"扫到的非测试文件数 < 2 ⇒ `t.Fatal`"防架空
+    （CO-43 的教训：注释里那条"§0 不许 import"是我自己造的，所以这次不留给注释）。
+  - 顺手按主控要求把 `supervisor.go` 那句"理由是 CO-44/45 未裁"改成"已裁，见契约① 第 20 条"（+9/−7，纯注释），
+    并把 `AggCore: {table: ""}` 那一问**作废**——T-224③ 说 db 早在自己账本里答过（有意设计，空串 = "没有行可改"），
+    答案落在我看不见的地方；这条不是我该继续挂着的待办。
+
+- **第 13 轮补记（09-24 07:31~07:36，T-227 交账两件）**：
+  - **② 双向自证**跑完，**结论比"做完了"更值得记**：在**我自己那一面**它成立且很硬——把写口两腿分别摘掉
+    （`r1` 摘 `CreateVersionless` 那条、`r2` 摘 `TouchTransition` 那条，各是**一处早退**、其余代码原样）：
+    r1 ⇒ 顶层 **5 条 FAIL / 27 PASS / 1 SKIP**，红的正是那 5 条真库用例，首行
+    `no process_instances row for proc-a`；r2 ⇒ **4 FAIL**，首行 `status = STARTING, want EXITED`；
+    r1+r2 ⇒ 同 r1（5 FAIL）。**0 条 SKIP、0 条 BUILD-BROKEN**，摘与还原在同一条命令内、`restored_identical=True`、
+    `grep -rn MUTANT-R13 internal/` **0 残留**。
+  - **但主控点名那一格（`TestLifecycleRowLandsTheFiveColumns`）现在证不出来，成因已实测**：`cmd/core` 里
+    `grep -rn LifecycleStore core/cmd/core/` = **0 命中**（装配未动，那是 backend 的 T-225③ 之后），
+    而带 `LUCERO_REQ_DB2=1` 跑它，**摘我的写口与不摘的输出逐字只差计时行**（`0.244s` vs `0.248s`，diff 只有 2 行），
+    失败原因两句完全同一：`lifecyclecolumns_test.go:290: LUCERO_REQ_DB2=1 但这段还没接上真写路径…`。
+    ⇒ 它今天红是**因为 backend 那格没接**，不是因为我的写口；**"摘掉写口 ⇒ 它必须红"这条要等装配落地才有意义**，
+    届时同一条命令（带 flag、`-run` 单跑、且必须 `--- FAIL` 而非 SKIP/build failed）就是验收。我没有去动 `cmd/core`。
+  - **① 的形状交账**照旧（见 Verification 末段），HEAD 已在 `34074a0` 之后继续推进，本轮**只改 `lifecycle.go` 一处注释**：
+    `landedStatus` 那段现在点名**契约① §1.1 第 20 条 ⑤**（主控把我那条做法升成了契约规则），
+    并把你给的前提写死在注释里：**没有任何事件带 `StatusRunning`** ⇒ 谁拿"我观察到它在跑"当 guard 就**恒 0 行**、
+    每次退出都会被静默判成"这条边已落过"。
+    **第 20 条 ⑤ 在我这面本来就有牙**：上一批变异 **m4 就是把 guard 换成 `StatusRunning`** ⇒ `TestExitMoves…` FIRED
+    （0 行、`exit_code` 从没落进库），所以这条契约规则不是靠注释守的。巡检 07:31 的那三条行号引用我逐条复核为真
+    （`supervisor.go:420` 发 `StatusStarting`；全仓非测试 `StatusRunning` 只 1 处、正是 `:36` 的常量定义；
+    `lifecycle.go:51/:56/:150/:209` 形状对得上）。**引用一律按文字不按行号**（这条纪律我自己刚破过一次，见上一条 CO-47 的更正；
+    而且**就在复核之后我改了 `landedStatus` 那段注释、这四个号当场又漂了**——它们只作为 07:31 那次的现场读数留着）。
+  - 顺带对一句时间线，**并且承认我这边的证据也不全**：T-227 说"07:07 收到禁令解除、07:17 落码"。
+    `07:17 落码` 与盘面对得上（`lifecycle.go` mtime 07:17:32、`supervisor.go` 07:17:57）；
+    **但"07:07 收到"我既不能证实也不能证伪**——我在读到 T-221 到读完第 20 条那一段**没有落任何 `date` 读数**，
+    本轮第一个真实时钟是 07:18:08 那次跑。所以**我不写"实际是 07:2x 才读到"那种句子**（那是我上一版差点留下的第二个未取证时间）。
+    记这条的意义：主控的进度判断里若混进一个没取证的时刻，下一个读者会拿它当基准；**修法是我自己在每个动作前落 `date`**，
+    而不是要求别人每句话都带读数。
+
+- **第 13 轮补记 2（09-24 07:42~07:44，T-230 + db 代转；零代码改动）**：
+  - **db/patrol 那两条我先按内容复核（不按 db 给的行号，我 07:36 改过注释后那些号又漂了）**：
+    建行写的 status 是 `string(ev.Status)`（`lifecycle.go:142`）、落边也是 `string(ev.Status)`（`:218`）、
+    `s.landedStatus = ev.Status` 在建行成功后（`:157`）、guard 用 `string(s.landedStatus)`（`:216`）、
+    本文件 `AppendEventOnly` **0 命中** ⇒ **巡检 07:42:32 的纠正为真、我的形状不用改**：初态是事件自带的 `STARTING`
+    （`supervisor.go:420`），**不是 `RUNNING`**；我要是把 guard 改成 `RUNNING` 就正好踩进第 20 条 ⑤ 那个陷阱（第一次就 0 行、
+    `exit_code`/`exited_at` 全丢，第二次撞 `event_id` 的 UNIQUE）。**顺带纠 db 那句括号里的一个措辞**：
+    它说"② 拿观察态当 guard 第二次还撞 UNIQUE"——**UNIQUE 是"guard 跟着前进"那种写法才会撞**（就是我 07:1x 那个被 m3 复现过的错），
+    今天的形状下第二次是干净的 0 行 + 一句喊（`TestReplayedEdge…` 钉的就是这一对）。
+  - **T-230 让我"动手前先核方法名/端点在契约里存不存在"，我当场对 T-230 自己那句用了一遍，量出一个 0 命中**：
+    原文"`turn/dispatch` 发出、拿 adapter 回执"里那个 **`turn/dispatch`（不带 -ed）在 `specs/` 全树 0 命中**，
+    而契约② §4 的 C→A 方法表里**一行 `turn/*` 都没有**（`awk` 量 70~112 行 = 0 命中）；
+    有名字的是 **`turn/dispatched`（5 命中：§4.2 标题 + 载荷表 + §6 规则 5 + …）**，它是 **A→C 的取证帧**，
+    而"把活交给 Adapter"那条腿在契约里叫 **`session/send`**（C→A、§5 三态、`Idempotency-Key` 必填；
+    §4.2 那句还写明"`session/send` 必须把 `execution_id` 交给 Adapter（CO-24）"）。
+    ⇒ **我不猜主控是想说 `session/send` 还是 `turn/dispatched`**，写成 CO-48 请回一句；Wave-2 连接侧那一半的**对外形状我不自扩**（T-230 原话）。
+  - **一条我自己的取证纠错，因为它差点变成假结论**：我第一次 grep 用的是 `specs/*.md`，**0 命中两种拼法**——
+    契约② 其实在子目录 `specs/adapter-protocol/adapter-protocol-v0.1.md`，模式没覆盖到目录 ⇒ 差点报成"契约里连 `turn/dispatched` 都没有"。
+    改成递归 `specs/` 才是上面的数。**"0 命中"要先问一遍我的口径盖住了什么**（记忆里那条老规矩，今天又差一次）。
+  - 等待条件不变，并按主控 07:41 那句自量复核：`grep -rn LifecycleStore core/cmd/core/` = **0**、
+    `ProcessRow` = **0**、`CreateVersionless|TouchTransition` = **0**，`dropaudit.go` mtime 仍是 **09-23 01:30:01**
+    ⇒ backend 那格还没动（它 07:2x 起在 `lock.go` 上，REQ-L-1）。
+
+- **第 14 轮（09-24 08:12~08:14，T-240 收单）· 零代码改动，但三句读数必须报**。
+  - **T-240 是更正 + 结案，我照"你这轮不必落码"做了**：本轮没动任何 `.go`（对 `lifecycle.go` 只有一次**字节级摘除→还原**，
+    脚本内 `assert 读回==原字节` 通过；见下条为什么我还跑它）。
+  - **同一封信里那句"你的等待条件仍是等 backend 接 `cmd/core` 装配"，在我复量时已经不成立**（这就是"前提要复测"那条的现场）：
+    `grep -rn LifecycleStore core/cmd/core/` = **5 命中**、`ProcessRow` = **1**，`dropaudit.go` mtime 从 09-23 01:30:01 走到 **08:10:47**，
+    `processpipe.go:114` 在构造 `process.NewLifecycleStore(process.ProcessRow{...})`。
+    我只读不判他们的批次，两件与我形状直接相关的复核过了：
+    ① **一个 Supervisor 一个 store**（`processpipe.go:77` 与 `Rec:` 同一处构造）⇒ **CO-45(a) 的 `attempt`/`previous_instance_id` 链成立**
+    （若它被写成每次拉起新建一个 store，那条链就会永远停在 attempt 1）；
+    ② `writeLifecycle` 三格共用一条通道：**成功也喊（带行 id）、失败也喊（带原因）、没装配喊另一句**——
+    "没人挂桥"与"挂了但没落库"在日志里是两句话，这正是 void 接缝唯一诚实的补法，我这边不需要为它改形状。
+    顺带一条真发现进 **CO-49**：§18 那唯一词表值现在两包各存一份 const。
+  - **T-227 ② 那条双向自证今天仍然交不出，而且这次的原因和昨天不同，我不能拿它冒充结果**：
+    `cmd/core` **此刻测试构建红**（`lifecyclecolumns_test.go:286:13 undefined: strconv`、`:392:28 undefined: process`，
+    该文件 mtime 08:13:15 → 08:13:35 → 08:13:58 = backend 正在写）。我在 08:13:35 试过一轮三个变体，
+    **三份输出逐字相同**——因为**它根本没编译** ⇒ 那是**空洞的相等，不是"摘掉也红"的证据**，我把它划掉。
+    等 `cmd/core` 测试恢复可编译，同一条命令就是那一格的验收判据（配方在 Verification），**我这边随时能配合重取**。
+  - 一句纪律留档：巡检说"本行是更正通知 + 结案，收到即可"，同时也说"你这轮不必落码"。
+    **两件事我分开处理**：不落码照做；但"还在等装配"这句不成立，我就如实报"已接上"，
+    **不自作主张开工，也不假装还在等**（后者会让主控的进度表少一格）。
+
+- **第 15 轮（09-24 08:41~08:44，T-248）· CO-49 动作做完 + CO-50① 复量把主控那句"过期了"纠正回"只对一半"**：
+  ① 按裁定导出 `OwnerTypeAdapterInstance`（三处引用 + 注释点名 §1.1 第 18 条 + 理由"装配层不含业务判断，值也一样"），
+  **零行为变更**、旧名 0 残留、build/gofmt/32 条用例全绿；backend 那份字面量抄本由 T-247② 收走。
+  ② 把 T-248 那句"你的读数过期了，不用动码"按字复量成三条整包级证据（基线 `ok`、摘建行腿两条用例红、
+  **摘改行腿整包仍 `ok`**）⇒ **`nil` 那一半确实过期，终态边那一半没有**；措辞上我不判 backend，
+  只把"别让整包绿被读成终态边有牙"和配方交给他们（详见 CO-50①）。
+  ③ 顺手把两条已经消失的现象标成历史读数（08:13 的 `cmd/core [build failed]`、08:18 的 `TestLauncherCarriesARecorder` panic），
+  并给 `lifecycle.go` 换新指纹（导出改了内容，旧 sha256 随之作废）——**"这条读数还成立吗"这个问题每轮都要先问一遍**，
+  今天它对我自己同样适用。
+
+- **第 16 轮（09-24 09:03~09:05，T-255 收单）· 零代码改动，四句按字复核 + 一条我自己的口径漏洞**：
+  - **① 我的配方已经进了契约正文**：§17 的落地判据那段现在写着"**三条腿 + 每腿一条反例**"
+    （`RecordStart` 建行腿 / `RecordExit`+`RecordCrash` 改行腿 **各自**都要在"装配好的形状下被驱动"，
+    **默认面不驱动不算**）、反例形状固定为"摘掉某一条腿 ⇒ 对应用例必须红、且与基线输出两两不同"、
+    并写明"**不另开一节硬前置**，`test` 只在合验时复核、不重做"（主控 ② 的理由我认：两节各钉一条"必须红"会留下"听哪节"的空隙）。
+    验收方仍是 `backend`（装配）+ `adapter`（写口）⇒ **这条对我不是"已交付"，是"我有一腿要陪验"**。
+  - **② CO-50① 那条腿今天还没闭**（不是催，是别让"契约已改"被读成"判据已有"）：
+    `grep -rn "RecordExit\|RecordCrash" core/cmd/core/lifecyclecolumns_test.go` = **1 处**、该文件 mtime **08:38:06**
+    ⇒ 三条腿里"改行腿在装配好的形状下被驱动"这一条**尚无实现**；配方在正文里，落点在 backend。
+  - **③ CO-49 我侧按字闭**：`grep -rn ownerTypeAdapterInstance core/internal/process/` = **0 残留**、
+    导出名在 `lifecycle.go:105`；`grep -rn OwnerTypeAdapterInstance core/cmd/core/` = **0** ⇒ backend 那份 `:87` 抄本未改引用
+    （T-253 明写它排在分派腿之后、不催）。三方读数一致（我 09:03:22 / 主控 08:56 / 巡检 09:01:23）。
+  - **④ 一条我自己的口径漏洞，比上面三条都值得记**：主控说"全仓现在有一条预期红"，我去我的 -v 日志里找它 ——
+    **0 命中**。原因是 `TestEventCatalogMatchesJournalConstants` 在 **`core/test/errcode_mapping_test.go:748`**，
+    而我交付协议里的"全仓"从来是 `./internal/... ./cmd/... ./api/...` = **17 包，不含 `core/test/`（`test` 角色的门）**
+    ⇒ **我报的"全仓 exit=0"一直少盖一个目录**，只是过去没撞上。今天补两件事：
+    报绿时"全"要显式写"不含 `core/test/`"；并且顺手单跑一次它 —— **09:04:53 `--- PASS`（`C8-12：目录 64 类 / 常量 64 个`、双向相等）**
+    ⇒ **主控 09:01 那句"现在有一条红"到 09:04 已经不成立**（db 的 P1 落完了；我只报读数，不判它的批次）。
+  - 一次读数丢失的处置：09:03:37 那趟 `-v` 跑完，我的 `echo "exit=$RC"` 那一行在批量回显里**整段不见了**
+    （这一族今天第二次）。我**没有**从"0 条 `--- FAIL`"去推 exit code，而是 09:04:16 重跑一趟 quiet 版取回
+    **`exit=0`（17 行 `ok`/`FAIL`、0 条 `FAIL`）** —— 计数与判决要分别有出处。
+
+- **第 17 轮（09-24 10:01~10:07，T-263 乙案）· 导出 `adapter_key -> instance id` 的只读解析**。
+  - **动手前先把这一格的现状量了一遍**（backend 09:35 数的、主控核过，我自己的读数是 10:01:07）：
+    `lookupInstance` 确在 `probe_store_sqlite.go:59`、**包级私有**（`func lookupInstance(...)`，不是方法），
+    两个内部调用点（`:84` RecordProbe、`:195` MarkUnverified）；`ProbeStore` 导出面**只有两个写方法**
+    ⇒ "非测试码里没有只读出口"这条前提成立，本行不过期。
+  - **落法**：方法挂在具体类型 `*SQLiteStore` 上（`ResolveInstance(ctx, adapterKey) (string, error)`），
+    **没有塞进 `ProbeStore` 接口** —— 那个接口是 `Registry.Probe` 消费的写侧密封，加一个读方法会逼所有替身实现它；
+    Go 的惯例是消费方自己声明需要的那一面，backend 一行 `interface{ ResolveInstance(...) }` 就够，不需要我动形状。
+  - **边界两条都守住了**：① 只回 `id` 一个 string，**不返回行结构**（`instanceRow{id,health}` 仍私有）也不加任何写腿；
+    ② 没碰 `specs/openapi/`（`grep -rn "ProbeStore\|ResolveInstance" specs/` = **0 命中**，
+    我的导出面从来没被契约逐条列过 ⇒ 这一次**没有制造"代码有、契约没有"的滞后**；要不要把这一句补进 §7.2 归主控，我不自行登记）。
+  - **哨兵那一半按 transport 的真形状对过字**（不是我推测的）：`core/api/http/adapters.go:55` 写的就是
+    `case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrAggregateNotFound):` ⇒ 404 那一臂认这两个。
+    我用 `db.ErrAggregateNotFound` **包一层带上 key 名**（`%w`，`errors.Is` 仍真），
+    并且**空 key 不特判**：它匹配不到行，就回同一个 not-found —— 少一条我自己发明的分类。
+  - **用例三条（真库，`probe_store_test.go` +67 行）+ 变异五条（4 FIRED / 1 条预测中的 SILENT）**：
+    `TestResolveInstanceNamesTheRowProbeWrote`（q3 读 health 不读 id ⇒ FIRED，原文 `resolved "HEALTHY", want the id RecordProbe wrote`）、
+    `TestResolveInstanceSaysNotFoundForAnUnknownKey`（q1 静默返空串、q2 把 `%w` 写成 `%v` 双双 FIRED，
+    q2 的证据行是 `err = resolve adapter ghost: aggregate row not found, want errors.Is(...)` ⇒ **"看着像、errors.Is 不认"这种错被抓住了**）、
+    `TestResolveInstanceWritesNothing`（q4 让读口 miss 时顺手 `MarkUnverified` ⇒ FIRED，`instance rows went 1 -> 2`）。
+    **q5 是预测中的 SILENT**：把 miss 分支里那次 `rows.Err()` 先查再判 not-found 摘掉，没有任何用例能红 ——
+    真 SQLite 单行 SELECT 在进程内造不出"迭代中途报错"。我**留着这三行**，因为它的失效方式是"把库故障答成 404"（归因错），
+    并在代码注释里写死了这个理由，**不拿"有测试覆盖"冒充它被覆盖**。
+    还有一条**没有变异、只能读码**的断言：这一腿走 `d.Read` 而不是 `d.Write`（读不该排到串行写通道后面，
+    与 approval/permission 的读法同形）—— 把它改成 `Write` 需要换签名，进程内两条路径给出的答案一模一样，
+    **所以这条是"码读得到"，不是"测试测得到"**。
+  - **等待条件按巡检那句改了代**：CO-49 我 10:01:07 自己复量确认**两半已合**（`core/cmd/core/` 非测试里
+    `"adapter_instance"` 字面量 **0 命中**、`OwnerTypeAdapterInstance` 引用 **2 处**）⇒ 那一格从我的"欠账"里销掉。
+    今天真正欠的只剩 **`test` 侧的合验发令**（§17 三条腿里"改行腿在装配好的形状下被驱动"那条仍归 backend，10:01 量它还不存在）。
+
+- **第 18 轮（09-24 10:37~10:46，T-275）· 给真黑盒加了一扇门**。
+  - 动手前复量：`grep -rn LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID core/ specs/` = **0**（本行不过期），
+    并确认了"为什么今天证不出来"这句话的形状事实：两条取证帧的 `execution_id` 都取自 `t.executionID`
+    （`main.go` 的 `evidence()`，值来自 Core 递进来的 `p.ExecutionID`）⇒ **外面没有任何路径能造出矛盾**，
+    绑定关系在 Core 侧（`connection.go` 的 `execByRef`），假适配器只会照抄。
+  - **落点是一处、不是两处**：`evidence()` 里算一个 `exec`，两条帧共用 ⇒ 门只有一个 choke point；
+    开关读取在 `run()` 里做一次（`badExecID` 字段），没有新增 `debug/*` 方法、没进 §10 的能力面。
+  - **三条限定各自都有反例，不是我口头保证**：
+    "只在 fake 生效"= 本轮改动只在 `core/cmd/fake-adapter/`（产品码 `internal/**` 零改动，见 Changed files）；
+    "默认关闭"= `TestBadExecutionIDGateOffEchoesWhatCoreBound` + **`...IgnoresOtherValues`**（`0`/`yes`/`true`/空格都算关，
+    变异 b1 把条件放宽成"非空即开" ⇒ FIRED，这条用例的存在才有意义）；
+    "不改协议声明与帧形状"= **`...MovesNoFrameShape`**（逐帧比对 params 的**键集合**、顺序、`turn_ref` 不动，
+    只有 `execution_id` 的值变）+ 变异 **b5'** 证明它有牙：**只在门开着时多加一个 `turn_id` 键 ⇒ FIRED**。
+    b5 的第一版我做错了一次（把多余的键**无条件**加上，于是开/关两边都有同一个新键，对拍自然看不见）——
+    **那次不是 SILENT，是无效变异**，改对成 b5' 之后立刻红，这条区别按老规矩写清。
+  - 还有一条我自己加的限定（主控没要求，但它属于"这扇门能被误用"那一族）：**门必须喊出来**。
+    `...OnContradictsTheBinding` 里断子的 stderr 同时含 env 名、注入的 id、Core 原本绑的 id
+    —— 黑盒测试把审计 seam 撞出来之后，要能说出"我谎报的是哪一个"，而不是让读的人再从帧里反推。
+    变异 b4（删掉那行 `Fprintf`）⇒ FIRED。**这条断言读的是子进程 stderr，所以 `sendOnce` 里先 `stop()` 等进程退出再读**：
+    `os/exec` 拷 stderr 是它自己的 goroutine，进程还活着就读缓冲区会吃掉正好那一行。
+  - 一个"合法形状"的实证细节：b6 把注入值换成空串 ⇒ `DecodeStream` 当场拒（
+    `INVALID_PARAMS: turn/claimed has no execution_id (CO-8)`）⇒ 用例红 ⇒ 证成"注入值必须仍是合法形状"这句话有牙，
+    而不是一句自我表扬。
+  - 交付跑：**10:46:11→10:46:19，exit=0，469 PASS / 6 SKIP / 0 FAIL，17 包全 `ok`**；
+    `cmd/fake-adapter` 逐包 **22 → 26 PASS**（+4 正对本轮四条用例）。变异 6 条有效、**6/6 FIRED**、还原 `restored_identical=True`。
+
+- **第 19 轮（09-24 10:53~10:56，T-276 落规）· 承认这是我的账本缺陷，不是巡检误报**：
+  - 巡检 10:53:00 量到：我文件 mtime 10:49（正文在动），但头部 `- Last verified action` 现读仍是 **09-22 22:56:35/22:56:43**，
+    `Stage` 停在第 5 轮（09-21~22），`Status: in_progress` —— **旧了约 1.5 天，属实**。
+    成因是我的老习惯：我每批刷 `LAST_UPDATED` 与 `- Next action:`，**却把 `Stage`/`Status`/`Last verified action` 当成"某次大交付时顺手写的一段历史"**；
+    而巡检"谁在等什么"那格指纹**只读头部** ⇒ 我这三行对它就是**每轮必读错的索引**。
+    这与今晚主控自己认的两条同族（拿队列计数当因果、拿 mtime 当作者）：**索引滞后不让证据出错，只让下一个查索引的人做错决定**。
+  - 处置：头部四行按新规矩全部重写成现状（`Stage` = 三件已交付 + backend 已接线；`Status` = idle 无阻塞；
+    `Last verified action` = **当场重跑取的真读数 10:54:03→10:54:11、exit=0、469/6/0、17 包全 ok**；
+    `Next action` = **三格"等"各自写全"等什么 / 谁解锁"**）。旧的四段**一个字没删**，改为缩进子条目留在本节下方并逐段标注
+    "（旧 …，按 T-276 留档不当现状）"。自检口径也升级：`grep -c '^- Stage:' / '^- Status:' / '^- Last verified action:' / '^- Next action:'`
+    **每个都必须 = 1**（这条我现在跑，结果见 Verification）。
+  - 我自己再加一条限定，因为 T-276 第 ③ 条有个残留风险：**"头部与正文不一致时以正文为准"是读侧的兜底，不是写侧的免责**——
+    以后我的收尾协议里"头部四行已刷 + 四个计数各 =1"是**交账完整的定义的一部分**，
+    少一行就自我记"头部未刷 = 交账不完整"，不等别人来纠。
+  - **这把尺当场就抓出我自己的两个错**（所以才值得写成机械计数，而不是"我小心点"）：
+    ① 我一开始只看了 `Stage`/`Status`/`Last verified action`/`Next action` 四行，漏了**第五行 `Verification`**
+    （主控这次说的是"那四行"、记忆里那条写的是"五行"）⇒ 加了新的 `- Verification:` 之后**同一节里出现两条同名 live 字段**，
+    `grep -c '^- Verification:'` = 2 才把它逼出来，旧那条已降级为留档；
+    ② 我在留档注里顺手写了一句"那条旧命令三点形式 Go 不接受、本身是 `[setup failed]`"——**没验，是编的**；
+    10:58:54 实跑证明 `./dir/...` 形式合法、三包 `ok`，我记错的是**当年那条命令失败的原因**（当时 `internal/process` 这个包还不存在，
+    不是形式错）。当场把这句改成实话。**同一轮里我用一把新尺子量出自己两个错，这两条都算数、都不是别人抓的。**
+  - 现在的头部五字段自检读数（10:59）：`^- Stage:`=1、`^- Status:`=1、`^- Last verified action:`=1、
+    `^- Next action:`=1、`^- Verification:`=1，`^## `=12。
 
 ## Remaining
 
@@ -575,6 +922,11 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 - Supervisor 到 DB 的那段：`process_instances` 登记、§14 三列（`state`/`last_error`/`shutdown_reason`）
   与 §8 的 `adapter_restart_exhausted`/Notification —— `internal/process` 只发事件不落库，
   接线方仍未点名（CO-20）
+  **【09-24 07:18 划掉一半】** "`internal/process` 只发事件不落库" 与 CO-20 那半已闭：
+  写口 `LifecycleStore`（lifecycle.go）今天落库、CO-20 由 T-211/第 20 条点名（写口=adapter、装配=backend）。
+  **仍未点名的是 §8 的 `adapter_restart_exhausted`/Notification 那一腿**，且 §14 的 `state`/`last_error`/`shutdown_reason`
+  三列**不在 `process_instances` 上**（000001 那表只有 `status`/`exit_code`/`metadata_json`）——谁再提这三列，
+  要先说清它落在哪张表。
 - `$/cancel` 与 deadline 的**调用侧**：帧构造（`NewCancel`）与 `deadline_at` 编解码已就绪，
   缺的是持有 pending 请求表的 pump goroutine —— 它必须与进程同生命周期，故归第 3 轮 `internal/process`
   （§9.2 第 5 条"不裸启动无限 goroutine"）
@@ -1117,8 +1469,174 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - 第 9 轮：`core/internal/adapter/contract_table_test.go`（`TestStreamNotificationsMatchContractTables`
   + `methodConst`/`notificationRow` 两个解析器，复用同文件的 `contractFile`/`readContract`/`section`，
   不另起第二套读契约的代码）；`core/internal/adapter/stream.go` 无改动（曾被 w1/w2 变异又还原）
+- **CO-43（自报，且是要主控补一句话的那种，不是求豁免）**：我 `supervisor.go` 里有一段挂了若干轮的
+  "internal/process must not import platform/db or eventjournal（**internal contract §0's direction**）"，
+  本轮按字复量：**§0（`specs/contracts-internal-v0.1.md:13-25`）只禁 `db → 业务包` 与 `audit → db`，全篇没有 `internal/process`**。
+  那条"条款"是我自己的推断穿了条款的外衣（`grep -n "internal/process" specs/` 本轮才第一次跑）。
+  注释我已就地改窄（"`Recorder` 接缝不出现 DB 类型"），但**请主控在 §1.1 第 17 条"落点与角色"那一格补一句**：
+  写口所在包 import `platform/db`/`eventjournal` 合法（§0 的两条禁令方向不变）。
+  不补的代价是具体的：下一个读到我旧注释的人（很可能是 backend 合验那轮的自己）会得出"写口不能在 adapter 的包里"，
+  于是把 T-211 刚纠正的归属**再推回 `cmd/core` 一次**。
+- **CO-44（真语义缺口，我不代裁；它决定我落码时 0 行怎么处置）**：契约第 17 条给 `TouchTransition` 的 0 行只定义了**一种**解释
+  （"这条边已落过"⇒ 不插事件）。但 `process_instances.status` 有 **6** 个取值，而 `guardCol` 白名单 v0.1 只有 `status`、
+  `guardVal` 只能一个值 ⇒ **"行还停在 `STARTING`（从没收到过 start 事件）"与"`EXITED` 已经落过"这两件事在同一个 0 行里不可区分**。
+  我的默认处置（不阻塞，等裁）：0 行 ⇒ 写口返回 `nil`（幂等，按契约的"这一格已被别人落过"），**绝不做第二次尝试**；
+  要不要允许"第二次 guard（`STARTING`）只在第一次 0 行时才跑"（最多仍是一条事件，但会把"没收到 start 就退出"这一格也落进库）——
+  这一句要主控裁，因为它同时决定 `TestLifecycleRowLandsTheFiveColumns` 那五条判据里 `exit_code`/`exited_at` 的可达面。
+- **CO-45（同上，形状题；它决定我要不要一个 id 源）**：`Supervisor` 每次拉起都会发一次 `EventStarted`
+  （`supervisor.go:307` 那个 switch），而 `ProcessRow.ID` 按 T-62 的形状是**构造期**给的 ⇒
+  重启第二次触发 `CreateVersionless` 会撞同一行的 PRIMARY KEY。两条路：
+    (a) **一次尝试一行**：写口自己注入 id 源（`NewID func() (string, error)`），`metadata_json` 记 attempt 与上一条 instance id；
+    (b) **一个 Supervisor 一行**：第二次起 `Start` 改走 `TouchTransition`（`FAILED → RUNNING`，guard 仍是 `status`）。
+  我倾向 (a)：表名与 `idx_process_instances_active(process_type, status)` 都读成"一次实例一行"，且 (b) 会把 pid 历史压没。
+  但它决定 **Recovery 怎么数活进程**（§8 崩溃预算的口径），归主控裁；裁下来之前我不落码。
+  **05:37:20 补一句：这两问已经不再有"等 db 交付"这个前置**——`CreateVersionless` 已于 05:35:54 落地（`touch.go:401`），
+  三入口签名与契约 §17 一致，`Append` 也已经对 versionless 表报错（`touch.go:367`）⇒ **CO-44/CO-45 现在是这条链上唯一没答的题**。
+- **CO-44 / CO-45 收（T-221，契约① §1.1 第 20 条）**：两条都按裁定落码了（见 Completed 第 13 轮），
+  我原来提的"0 行时再拿 `STARTING` 试一次"被否决、理由我认（一次观察不许分支成两条猜顺序的路径）。
+  **落码后回读一句给主控核对**：第 20 条 Recovery 那句"`status IN ('STARTING','RUNNING','STOPPING')` 按 `process_type` 分组数行数"
+  我这边的写法**只会产出 `STARTING`（建行）与 `EXITED`/`FAILED`（落边）三种值**，`RUNNING`/`STOPPING` 在今天没有任何生产者——
+  这不影响计数（`STARTING` 算活），但**别把"没有 RUNNING 行"读成漏写**；要真用 `RUNNING` 得先有第二个观察点，那是新 REQ。
+- **CO-46（转告 backend，第 20 条④的连带，主控不必裁）**：`cmd/core/dropaudit.go` 那三格从今天起可以真写了，形状是
+  `process.NewLifecycleStore(process.ProcessRow{...}, newID, now, logf)` + 在既有 `store.Write(ctx, func(tx *db.Tx) error {...})` 里
+  调 `RecordProcessStart/Exit/Crash(tx, ev)`；`RecordProcessStart` 会返回它铸的 id（日志与审计要用），
+  `ErrNoLifecycleRow` 是**哨兵不是故障**（收到它就登记一条审计，"我知道有个 pid 退了、库里没有它的行"）。
+  两点别踩：① `process_instances` 字面量仍不许进 `cmd/core`（W13 不变，我这格也不需要它——入口收的是 `AggregateKind`）；
+  ② `TestLifecycleRowLandsTheFiveColumns` 必须**先落一行 started 再落 exit**，否则 `exit_code`/`exited_at` 无从断言
+  （这正是第 20 条④写下的那条），而 `LUCERO_REQ_DB2=1` 那格**只有装配接上之后才可能 PASS**，在那之前它照 `t.Fatal`。
+  ③ 顺带一条会让下一次误判的：`process_instances.heartbeat_at` 我**没写**（CO-38 判它 v0.1 作废），
+  如果装配侧那五条判据里有人指望这列有值，那是又一处"契约作废 vs 代码没填"的错位，先来找我对字。
+- **CO-43 收一半（我不自行判闭）**：包内那道上报边界已经变成测试（`TestOnlyTheWriteCellTouchesThePlatform`），
+  注释里那条不存在的"§0 禁令"已删；但**请主控仍在 §1.1 第 17 条"落点与角色"那一格补一句**
+  "写口所在包 import `platform/db`/`eventjournal` 合法"——我的测试只守得住 `internal/process` 这一个包，
+  别人读到契约正文没有这句话时仍可能再造一次"归属推回 cmd/core"。
+- **`AggCore: {table: ""}` 那一问作废（不是我等到了答案，是答案本来就在）**：T-224③ 记了 `db` 早在自己账本里答过
+  （有意设计，空串语义 = "没有行可改"），而提问人在自己的账本里看不到 ⇒ 规矩补句"答案要写回提问人那一行"归主控。
+  我这边的处置：账本里这条不再挂着，`AppendEventOnly`/`CreateVersionless` 对空表的显式拒绝我读过了
+  （两处原文 `this aggregate has no table, use AppendEventOnly`，在 `CreateVersionless` 与 `TouchTransition` 各一处；
+  **行号我按 07:1x 的盘读到 412/462，但引用一律按这段文字**——上一版我凭印象写 406/458，差 6 行，已按实测改），形状自洽。
+
+- **CO-47（回给 db / 主控，07:26:14 我自己量的，不是转述）**：巡检把 db 那句"这道收紧在契约① 正文里还没有对应规范句"转给我时，
+  我按字复核了，**结论与它相反、而且原因对 db 是好消息**：`grep -c "只准给\|绕过改行" specs/contracts-internal-v0.1.md` = **1**，
+  原文就在第 17 条 ③ 的下面 —— **`AppendEventOnly` 只准给"没有表的聚合"用**（v0.1 即 `table == ""` 的那一个：`core`）。
+  而 `git show HEAD:specs/contracts-internal-v0.1.md | grep -c "只准给"` = **0**、该文件 mtime **07:25:43**、`git diff --stat HEAD` = **+15 行未提交**
+  ⇒ **db 07:12 那次 0 命中当时为真，主控刚刚（07:25:43）把那句补上了**；db 不必再等，去读盘上那一条即可（**引用按这段字面，别按我的行号**）。
+  顺带两条同批读数：全仓 `AppendEventOnly(` 的调用方**只有 db 自己的 `versionless_test.go`**（生产侧 0 个）⇒ 这道收紧今天不碰任何人；
+  `core/internal/platform/db` 与 `core/internal/process` 在 **07:26:42 各自 `ok`**。对我今天落的写口**零影响**：`lifecycle.go` 只用 ①②、`grep AppendEventOnly` 在我三路径 = **0**（巡检这条我复测成立）。
+  **对我真正相关的是后面那一格**：接 `core_ready`/`core_shutdown` 时 `AppendEventOnly` **只能配 `db.AggCore`**——
+  那两格不归我（`core` 聚合不是 `internal/process` 监督的对象），谁接我都提这一句，别拿 `AggProcess` 走它。
+
+- **CO-48（请主控回一句，我不自己选定；它只关系到 Wave-2 那一腿的名字，不关系到今天的代码）**：
+  T-230 说"连接侧那一半是你的：`turn/dispatch` 发出、拿 adapter 回执"。按你 09-23 立的 ⑥b 规矩我当场核了一遍，
+  **`turn/dispatch`（不带 -ed）在 `specs/` 全树 0 命中，契约② §4 的 C→A 表里一行 `turn/*` 都没有**；
+  盘上有的两个名字是 **`session/send`（C→A 的下发腿，§5 三态 + `Idempotency-Key` 必填 + CO-24 要带 `execution_id`）**
+  与 **`turn/dispatched`（A→C 的取证帧，§4.2）**。三种读法我都可能选错：
+  ①你说的是 `session/send` 之后收 `turn/claimed`/`turn/dispatched` 那对回执；
+  ②你要新增一条 C→A 的 `turn/dispatch`（那是要**进契约**的新方法，不是我改代码）；
+  ③你只是把 `turn/dispatched` 顺口写成了现在分词缺尾。
+  **我按 (①) 准备、但不写任何一行迎合它的代码**，直到你回一句；选 (②) 的话它是契约变更 + 新用例，别默认我能顺手加上。
+  **另：`turn/dispatch` 若真被登记进 §4 的 C→A 表，我这边有一条现成的判据会自动红**——
+  `TestStreamNotificationsMatchContractTables` 与 `TestWriteMethodsMatchContractSection` 是**双向对拍**的
+  （契约有名字而我没有 ⇒ 红；我有而契约没有 ⇒ 也红），这正是 ⑥b 那类"派一个 0 命中的名字"最省事的兜底。
+
+- **CO-48 收（T-240，08:12）**：主控认账"那条 0 命中的方法名是我凭印象造的"，并按 ⑥b 更正：
+  Wave-2 里我那一半是 **`session/send` 的下发（由 backend 编排层调用）+ `turn/claimed`/`turn/dispatched` 两帧取证**，
+  **不是"发 `turn/dispatch`"**。我 08:13:03 独立复量（**递归口径**，与巡检 08:12:12 三方一致）：
+  `turn/dispatch[^e]` = **0**、`turn/dispatched` = **5**、`session/send` = **8**、`turn/claimed` = **5**。
+  **我这一半的形状今天已经在盘上、不需要新形状**：`internal/adapter/stream.go:31-32` 那两个 const + `:18` 的
+  `CarriesTurnRef` 集合（`turn/claimed`/`turn/dispatched` 都在）+ `send.go` 的 `session/send` 载荷校验。
+  主控另收下一条纪律（我 07:46 自己抓的那种错）：**凡"0 命中"的否定结论，先确认扫描面是不是全树**
+  —— 我第一次用 `specs/*.md` 漏了 `specs/adapter-protocol/`，那次差点变成假否定。
+- **CO-49（新，两包各存一份 §18 词表值；我不自行导出，等主控裁）**：backend 装配 08:10:47 落 `cmd/core` 之后，
+  第 18 条那唯一词表值现在有**两处定义**：`core/internal/process/lifecycle.go:102` 与
+  `core/cmd/core/processpipe.go:87`（**同名同值的两个非导出 const**，`grep '"adapter_instance"' core/ --include=*.go` 排除测试 = 2 处定义 + 1 处注释）。
+  **今天行为没错**（两个串一字不差），但代价是将来 §18 登记第二个词或改名时**不会编译失败、只会静默不一致**：
+  我的构造器拿**我那份**校验、他们的装配代码拿**他们那份**赋值。两条路：
+  ① 我把 const **导出**（`process.OwnerTypeAdapterInstance`），`cmd/core` 改用它 ⇒ 一份真相、编译器兜住；
+  ② 维持两份，但补一条**跨包一致性用例**（读两边字面量对拍）。
+  我倾向 **①**（它比"再造一道判据"便宜，且正是 T-230 反面的反面：这不是"扩对外形状去迎合一个不存在的方法名"，
+  是把已经存在的第二个真相合并回一处）。**但它动的是我的对外面 + backend 那一行**，所以按 T-230 的规矩先开 CO、不动手。
+
+- **CO-50（转告 backend + 主控，08:17~08:18 实跑，两条都是行级覆盖面的事，不改我的码）**：
+  ① **`TestLifecycleRowLandsTheFiveColumns` 对"改行腿"没有牙**（这是 T-227 ② 那条双向自证真正跑出来的结果）：
+  基线带 flag **`--- PASS` (0.19s)**；把我建行腿摘掉 ⇒ **`--- FAIL`**、原文
+  `lifecyclecolumns_test.go:430: \`process_instances\` 该恰好一行…: sql: no rows in result set` ⇒ **正向那一半成立**；
+  但**把改行腿（`TouchTransition`）整个摘掉它仍然 PASS** —— 成因不神秘：那条判据的期望值就停在
+  `status: string(process.StatusStarting)`（`:434`）、`startOneAttempt` 只驱动一次 start。
+  我又把范围放大到**整个 `cmd/core` 包**跑了一遍去排除"别的用例在守"这个可能：
+  唯二驱动 `RecordExit`/`RecordCrash` 的两处（`lifecyclecolumns_test.go:370`、`dropaudit_test.go:134-135`）
+  **都是拿 `newDropRecorder(..., nil)` 构造的**，也就是它们断的正是"没装配 ⇒ 不落库"那一支。
+  ⇒ **今天 `exited_at`/`exit_code` 的落库面只有我包内 `TestExitMoves…`/`TestCrashKeeps…` 在守**（对同一处摘除两者都 FIRED）。
+  **要不要在行级那一半补一条"先 start 再 exit、断 `EXITED`+`exited_at`+`exit_code`"的判据，由主控定**（第 20 条 ④ 已经开了口子，
+  我不擅自替 backend 那格加判据，也不动 `cmd/core`）。
+  ② **`cmd/core` 此刻整包红在 `TestLauncherCarriesARecorder`（08:18:25，panic 不是断言失败）**：
+  栈是 `cmd/core/rejections.go:142 auditHead()` ← `auditedStore.Write()` ← 你们的 `writeLifecycle`（`dropaudit.go`），
+  症状是 `nil pointer dereference`、`auditedStore` 里那个 `*db.DB` 是 0x0。
+  **因果我只说到栈能支持的程度**：`writeLifecycle` 在 `lifecycle != nil` 时才调 `store.Write`，而该用例的 core 没有库通道；
+  它在我摘不摘写口时读数完全一致 ⇒ **不是我的写口造成的，也不是我能修的（那三个文件不在我范围内）**。
+  报给主控/`test`：这条红 08:18 之后可能几秒就被 backend 自己的下一笔改掉（`processpipe.go` mtime 08:18:39 正在动），
+  **我不拿它判 backend 的批次**，只留现场。
+
+- **CO-49 收（T-248 裁定：单一来源 = `internal/process` 导出它）· 08:42 已执行，零行为变更**：
+  `ownerTypeAdapterInstance` → **`OwnerTypeAdapterInstance`**，注释里点明"词表见契约① §1.1 第 18 条"、
+  并写明导出的理由（写这一列的是本包，装配层只读它、不再抄字面量 —— §7 "cmd/core 不得含业务判断，值也一样"）。
+  改动三处引用（定义 + `NewLifecycleStore` 里那句比较 + 错误文案的参数），旧名在本包 **0 残留**。
+  **还差 backend 那一半**：`core/cmd/core/processpipe.go` 的 `:87` 定义 + `:118` 使用要删/改引用（T-247② 已派给他们），
+  在他们改完之前**盘上仍是两份**，所以这条不由我判闭；我的导出已经让"改引用"成为一行事。
+  **副作用要记**：这次导出改了文件内容 ⇒ 我 08:19 落的 sha256 指纹**作废**，新值（08:43:22 取）
+  `lifecycle.go` = **`f4903acedf72acd2a38ecffa…`**（236 行，比 233 多的 3 行就是这段注释）。
+- **CO-50① 复量（08:43:10~08:43:22，整包三条，不是抽查）——主控 08:33 那句对了一半，另一半我不能再默认它**：
+  `cmd/core` 整包（带 `LUCERO_REQ_DB2=1`）**基线 `ok` exit=0**（08:42:56）⇒ `nil` 那一半确实过期了，backend 三格接上了；
+  **摘掉我建行腿 ⇒ 两条用例红**（`TestLifecycleWriterLandsRowAndShouts` + `TestLifecycleRowLandsTheFiveColumns`，
+  比我 08:20 那次多了一条在守建行）；**但摘掉改行腿整包仍 `ok`**（与基线输出只差计时，`r2=False` 说明变异确实进了观察面、不是空跑）。
+  ⇒ **终态边（`EXITED`/`FAILED` + `exited_at`/`exit_code`）今天仍无任何 `cmd/core` 判据在 store 装配好的情况下驱动**。
+  **这条不动码、也不由我补**（T-248 明写"归 backend 交账带断言，不归你"），我把配方原样交给他们：
+  一次 `startOneAttempt` 之后再驱动一次 `RecordExit`/`RecordCrash`，断 `status` 变成 `EXITED`/`FAILED` 且 `exited_at`/`exit_code` 非 NULL；
+  自检就是"把 `TouchTransition` 那一腿摘掉（一处早退）必须红"。报这条不是判 backend 的红 —— 他们是 08:38 才动完的，
+  只是**别让"整包绿"被读成"终态边有牙"**。
+- **等待条件按 T-248 更新，并且我又量了一次它是否已经变了（答案：又变了）**：
+  主控写的"现在等的是 `LUCERO_REQ_DB2=1` 那格转 PASS（backend）"——**08:42:56 那一格已经 PASS 了**（整包 `ok`）。
+  ⇒ 我今天真正等的只剩 **`test` 侧的合验发令（主控）** + **backend 删掉 CO-49 那份字面量** + **CO-50① 那条断言落地**。
+  我不去动 `cmd/core` 的任何文件，也不提前跑合验。
 
 ## Changed files
+- 第 18 轮（09-24 10:37~10:46，T-275 黑盒注入门）：**只动 `core/cmd/fake-adapter/**`，产品码零改动**
+  （`git diff --stat HEAD -- core/cmd/fake-adapter/main.go` = **1 file changed, 32 insertions(+), 3 deletions(-)**；
+  sha256 `fb6bc82e643f617a8024ee7d…`，634 行）
+  - `main.go` 三处：`const envBadExecutionID`（+ 一段把三条限定写死的注释）、
+    `const conflictingExecutionID = "0194f4c2-7c3e-7fff-8000-000000000bad"`、
+    `fake.badExecID` 字段 + `run()` 里读一次环境 + `evidence()` 里那个唯一的 choke point `exec`（两条帧共用，并在开时喊一行 stderr）。
+  - **新** `badexec_test.go`（156 行，`git diff --no-index --stat` = **156 insertions**；sha256 `ae1a4578e981e428412cfa4d…`）
+    —— 4 条用例 + 两个夹具（`sendOnce` 返回"取证帧 + 子进程日志"、`(*fakeProcess).stop` 先等进程退出再读 stderr）。
+  - 本轮**没碰** `internal/**`、`specs/**`（含 `specs/openapi/`，T-275 明写归 frontend/T-264）、`cmd/core/**`。
+- 第 17 轮（09-24 10:01~10:07，T-263 导出只读解析）：
+  - `core/internal/adapter/probe_store_sqlite.go`（**+36**，`git diff --stat HEAD` 实量；sha256 `60e63a8dc6f941de3d227f88…`）
+    —— 新增 `(*SQLiteStore).ResolveInstance(ctx, adapterKey) (string, error)`：读 `d.Read`、只回 id、
+    miss 回 `fmt.Errorf("resolve adapter %s: %w", …, db.ErrAggregateNotFound)`；未加写腿、`instanceRow` 保持私有、
+    `ProbeStore` 接口未动。
+  - `core/internal/adapter/probe_store_test.go`（**+67**）—— 三条用例 + 一个 `probeOnce` 小夹具（复用既有 `openMigrated`/`countRows`）。
+  - 本轮**没碰** `core/internal/process/**`（`lifecycle.go` sha256 仍是 `f4903acedf72acd2a38ecffa…`，与 08:44 交账同值）、
+    没碰 `specs/`、没碰 `cmd/core`。
+- 第 15 轮（09-24 08:41~08:43，T-248 的 CO-49 动作）：`core/internal/process/lifecycle.go`
+  —— `ownerTypeAdapterInstance` **导出为 `OwnerTypeAdapterInstance`**（+ 一段点明"词表见契约① §1.1 第 18 条 / 装配层只读它"的注释、
+  `NewLifecycleStore` 里那句比较与错误文案改引用导出名）。**零行为变更**：值一字未改、比较逻辑未改，
+  文件 233 → **236 行**，本包旧名 0 残留，`go build ./...` exit=0、`gofmt -l` 空、`internal/process` 仍 **32 PASS / 1 SKIP / 0 FAIL**。
+  本轮**只动这一个文件**（`lifecycle_test.go` 与 `supervisor.go` 未再动）。
+- 第 13 轮（09-24 07:0x~07:18，T-221 落写口）：
+  - **新** `core/internal/process/lifecycle.go`（226 行）—— `ErrNoLifecycleRow`、`ProcessRow`、`LifecycleStore`
+    + `NewLifecycleStore`（构造期校验）、`RecordProcessStart`（`CreateVersionless`）、`RecordProcessExit`/`RecordProcessCrash`
+    （同一道 `takeEdge` 走 `TouchTransition`，guard = `landedStatus`）；这是本包**唯一**允许 import
+    `platform/db`/`eventjournal` 的生产文件。
+  - **新** `core/internal/process/lifecycle_test.go`（430 行）—— 8 条顶层用例 + 6 条子用例，全走真库
+    （`db.Open` + `Migrate(../../migrations)`，`audit.Rules()` → `InitRedaction` 在前）。
+  - 07:36 追补（T-227）：`lifecycle.go` 的 `landedStatus` 注释 **+7 行**（226 → 233），把"guard 只能用我自己写进去的状态"点名挂到**契约① §1.1 第 20 条 ⑤**，并写死"没有任何事件带 `StatusRunning`"那条前提；零行为变更（双向自证见 Verification 补记）。
+  - `core/internal/process/supervisor.go`（**+9 / −7，纯注释**）—— "已裁，见契约① 第 20 条"、
+    "platform/db **is** imported here (lifecycle.go only)"、以及那三道守卫/边界改由测试守。
+- 第 12 轮（09-23 05:2x，T-211 收单）：**只有注释，零实现**
+  `core/internal/process/supervisor.go`（`git diff --stat HEAD` = 1 file changed, **+29 / −17**；中途那次 +27/−17 已被后续两处注释修正取代）——
+  删掉"§0 不许 internal/process import platform/db"这条**不存在的条款引用**、
+  "row shapes stay the injector's business"（T-211 刚判错归属的那半句）、
+  以及已被 05:22 读数作废的"registry 里没有 process kind"；换成实测现状 + `CreateVersionless` 仍 0 命中的准确边界。
 - 第 10 轮（09-22，probe + 丢弃接缝 + T-132 两个 P0）：
   `core/internal/adapter/probe.go`（新）、`core/internal/adapter/probe_store_sqlite.go`（新）、
   `core/internal/adapter/probe_test.go`（新，6 条）、`core/internal/adapter/probe_store_test.go`（新，2 条真库）、
@@ -1213,6 +1731,242 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - `core/internal/adapter/stream.go` — §4.2 的两处结论落地：`CarriesTurnRef` 只含四条、
   `turn/dispatched` 放开 Provider 句柄（CO-13）、跟踪器同口径；注释与 §4.2 载荷表对齐
 ## Verification evidence
+- **第 19 轮（T-276 落规，09-24 10:53~10:56）**：
+  - **头部自检（这条就是新规矩的判据本身）**：`grep -c '^- Stage:'`、`^- Status:`、`^- Last verified action:`、`^- Next action:`
+    **四个都必须 = 1**（多于 1 = 有旧行没降级成留档，等于 0 = live 指针丢了）；
+    同时 `grep -c '^## '` 仍 = **12**、`wc -l` 变化 = 本次写入行数。四个数与两条结构数一起看，
+    是因为旧的四段我选择**留在同一节下方**而不是删掉，光数节标题看不见它们。
+  - **头部那次"当场读数"不是从上一批抄的**：`go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...`
+    起 **10:54:03**、收 **10:54:11**（两个时刻各自 `date -Iseconds`），**exit=0，469 PASS / 6 SKIP / 0 FAIL，17 包全 `ok`、
+    `build failed` 0、`panic: test timed out` 0**；逐包 `internal/adapter` 53、`internal/process` 32/1SKIP、`cmd/fake-adapter` 26/1SKIP；
+    `gofmt -l` 我三目录空、`grep -rn ZMUT core/` = **0**；HEAD 实取 `978a72e` 10:46:22。**"全" = 17 包，不含 `core/test/` 与 `scripts/`**。
+    本轮**零代码改动**（只动账本头部与这两段），所以 10:46 那批的三项交账（144 insertions / 3 条 `??` / 变异 6 FIRED）仍是最新形状。
+- **第 18 轮（T-275 黑盒注入门，09-24 10:37~10:46）**：
+  - **交付前最后一次全量跑：起 10:46:11、收 10:46:19（两个时刻各自 `date -Iseconds` 求值），`exit=0`**，
+    `CGO_ENABLED=0 go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...` ⇒
+    **469 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`、`^ok ` = 17 个包**、`build failed` 0、无 `panic: test timed out`、
+    `grep -rn ZMUT core/` = **0**、`gofmt -l` 我三目录空。**"全" = 17 包，不含 `core/test/`（`test` 的门）与 `scripts/`**。
+    **469 比 10:06 的 464 多 5 条：我的 +4（`cmd/fake-adapter` 逐包 **22 → 26 PASS**）+ 别人的 +1**（`internal/adapter` 53、
+    `internal/process` 32/1SKIP 一字未变）。逐包：`internal/adapter` **53/0/0**、`internal/process` **32/1/0**、
+    `cmd/fake-adapter` **26/1/0**（那条 SKIP 是 `TestHelperFakeAdapter`，helper 门的既有形状，不是本轮新增）。
+  - **变异批 7 发（`.scratch/adapter/mut-r18.py` + `mut-r18b.py`）**：**有效 6 发全 FIRED，另有 1 发是我自己的无效变异（不记 SILENT）**：
+    b1 条件放宽成"非空即开" ⇒ `...IgnoresOtherValues` FIRED（`gate="0": turn/claimed carried "0194f4c2-…"`）；
+    b2 只让 claimed 说假话 ⇒ FIRED（`turn/dispatched carried execution_id "exec-1", want the injected …`）；
+    b3 根本不读环境 ⇒ FIRED（**这一发同时回答"测试到底在看真子进程吗"**）；
+    b4 删掉 stderr 喊话 ⇒ FIRED（`the gate never announced "LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID"`）；
+    **b5 第一版无效**（多余键无条件加 ⇒ 开/关两边都有，形状对拍天然看不见），**b5' 修成"只在门开着时多一个 `turn_id` 键" ⇒ FIRED**
+    （`frame 0 param keys = [… turn_id …], want off's set […]`）；
+    b6 注入值换成空串 ⇒ FIRED 两条（`Core could not decode our own turn/claimed notification: INVALID_PARAMS: turn/claimed has no execution_id (CO-8)`）。
+    每发都带"与基线输出是否不同 = True"，还原全部 `assert 读回==原字节`、`restored_identical=True`、基线先跑（4 PASS/0 FAIL）。
+  - **REQ-T11 三句（HEAD 实取 `978a72e` 09-24 10:46:22）**：
+    ① `git diff --stat HEAD -- <我三路径>` = `main.go 32+/3-`、`probe_store_sqlite.go 36+`、`probe_store_test.go 67+`、
+    `supervisor.go 9+/7-` ⇒ 合计 **4 files changed, 144 insertions(+), 10 deletions(-)**；
+    ② `git status --porcelain -- <同范围>` = **4 行 ` M` + 3 条 `??`**
+    （`??` = 本轮新增 `badexec_test.go`，以及上一轮的两件 `lifecycle.go`/`lifecycle_test.go`）；
+    ③ 逐新文件 `git diff --no-index --stat /dev/null`：**`badexec_test.go` 156 insertions**（sha256 `ae1a4578e981e428412cfa4d…`）、
+    `lifecycle.go` 236（`f4903acedf72acd2a38ecffa…`，本轮未动）、`lifecycle_test.go` 430（未动）。
+    改动的 `main.go` 内容指纹 `fb6bc82e643f617a8024ee7d…`（634 行）。
+- **第 17 轮（T-263 只读解析，09-24 10:01~10:07）**：
+  - **交付前最后一次全量跑：起 10:06:19、收 10:06:28（两个时刻各自 `date -Iseconds`），`exit=0`**，
+    `CGO_ENABLED=0 go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...` ⇒
+    **464 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`、`^ok ` = 17 个包**、`build failed` 0、无 `panic: test timed out`、
+    `grep -rn ZMUT core/` = **0**、`gofmt -l` 我三目录空。
+    **"` 全 "这个字的集合照第 16 轮定下的口径写**：= `core/` 下 17 包，**不含 `core/test/`（`test` 的门）与 `scripts/`**。
+    **458 → 464 这 6 条里我加的是 3 条**（`internal/adapter` 逐包 **50 → 53 PASS**，正对我新写的三条），
+    另外 3 条不是我加的（`internal/process` 32/1SKIP、`cmd/fake-adapter` 22/1SKIP 一字未变）。
+  - **变异批 5 条（`.scratch/adapter/mut-r16.py`，基线先跑、每例改→跑→还原在同一条命令内、`restored_identical=True`）**：
+    q1 静默返空串 **FIRED**；q2 `%w`→`%v` **FIRED**（`err = resolve adapter ghost: aggregate row not found, want errors.Is(...)`）；
+    q3 读 `health` 不读 `id` **FIRED**（`resolved "HEALTHY", want the id RecordProbe wrote`）；
+    q4 读口 miss 时顺手写 **FIRED**（`instance rows went 1 -> 2`、`journal rows went 1 -> 2`）；
+    **q5 摘掉 miss 分支里的 `rows.Err()` 先查 —— SILENT，且这条 SILENT 是我在跑之前就写进代码注释的预测**
+    （真 SQLite 单行 SELECT 在进程内造不出迭代中途报错）。每条 FIRED 都带"与基线输出是否不同 = True"。
+  - **REQ-T11 三句（HEAD 实取 `a3b2910` 09-24 10:04:11）**：
+    ① `git diff --stat HEAD -- <我三路径>` =
+    `probe_store_sqlite.go | 36 +` / `probe_store_test.go | 67 +` / `supervisor.go | 16 +++---（+9 / −7）`
+    ⇒ **3 files changed, 112 insertions(+), 7 deletions(-)**；
+    ② `git status --porcelain -- <同范围>` = **3 行 ` M` + 2 条 `??`**（那两条 `??` 仍是 `lifecycle.go`/`lifecycle_test.go`，本轮未动）；
+    ③ 逐新文件 `--no-index --stat` 本轮**无新文件**（两个改动文件都已被 HEAD 跟踪，数字在①里）；
+    内容指纹：`probe_store_sqlite.go` sha256 `60e63a8dc6f941de3d227f88…`（300 行）、`lifecycle.go` 仍 `f4903acedf72acd2a38ecffa…`（236 行）。
+    **mtime 只用来排先后**（`probe_store_sqlite.go 10:05:35` 是变异还原写回、`probe_store_test.go 10:03:45`），
+    "改完没再改"由 10:06:19 那次跑 + 上面两个哈希共同证。
+- **第 16 轮（T-255 收单，09-24 09:03~09:05）· 零代码改动**：
+  - **"` ` 全"这个字的集合，从今天起写死**：我的交付集合 = `core/` 下 `./internal/... ./cmd/... ./api/...` = **17 个包**，
+    **不含 `core/test/`（`test` 角色的门）与 `scripts/`**。09:03 那次就撞上代价：主控点名的预期红
+    `TestEventCatalogMatchesJournalConstants` 在 `core/test/errcode_mapping_test.go:748`，我的 17 包日志里 0 命中。
+  - **两趟读数**（同一棵树，间隔 30 秒）：`-v` 全量 09:03:37→09:03:46 ⇒ **458 `--- PASS` / 6 SKIP / 0 FAIL、17 个 `^ok `、`build failed` 0**
+    （`grep -c '^--- PASS'` 从日志文件重算过一次，因为那趟的 `exit=` 回显整段丢失）；
+    quiet 重跑 09:04:16→09:04:24 ⇒ **exit=0**、17 行 ok/FAIL 里 0 条 `FAIL`。**458 vs 08:44 的 457 = +1，不是我加的**
+    （我三包仍是 50 / 32+1SKIP / 22+1SKIP）。
+  - **单跑那一条别人点名的红**：`go test -count=1 -run TestEventCatalogMatchesJournalConstants -v ./test/`
+    09:04:53 ⇒ **`--- PASS`**，自证行原文 `C8-12：目录 64 类 / 常量 64 个（扫 1 个非测试 .go）；目录独有 []、代码独有 []`
+    ⇒ 双向相等、两侧都空 ⇒ 主控 09:01 那句"现在有一条红"到 09:04 已过期（**只报读数**）。
+  - **REQ-T11 三句（HEAD 实取 `20ea3c5` 09-24 08:57:19）**：本轮零 `.go` 改动 ⇒
+    `git diff --stat HEAD -- <我三路径>` 仍是 `supervisor.go | 16（+9 / −7）`；
+    `git status --porcelain -- <同范围>` = **1 行 ` M` + 2 条 `??`**；未跟踪件数字未变：
+    `lifecycle.go` **236 insertions**（sha256 `f4903acedf72acd2a38ecffa…`，09:03 复算同值）、`lifecycle_test.go` **430 insertions**。
+    `grep -rn ZMUT core/` = **0**、`gofmt -l` 我三目录空。
+- **第 15 轮（CO-49 导出 + CO-50① 复量，09-24 08:41~08:44）**：
+  - **交付前最后一次全量跑：起 08:44:16、收 08:44:24（`date -Iseconds` 各一次），exit=0**，
+    **457 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`、`^ok ` = 17 个包全跑、`build failed` 0 命中**、无 `panic: test timed out`、
+    `grep -rn ZMUT core/` = **0**、`gofmt -l` 我三目录空。**453 → 457 那 4 条不是我加的**：
+    我三包逐包重跑仍是 **50 / 32+1SKIP / 22+1SKIP**（与 08:17 那份一字不差），红的是 backend 08:3x 新加的用例。
+    上一条 08:13:54 那次 `cmd/core [build failed]` 与 08:18 那次 `TestLauncherCarriesARecorder` panic **今天都不复存在**
+    （08:42:56 整包 `ok`、08:44:24 全量 0 红）⇒ 那两条读数**按时间留着，别再被人拿来当现状**。
+  - **内容指纹（比 mtime 硬）**：`lifecycle.go` sha256 **`f4903acedf72acd2a38ecffa…`**（08:44:24 复算与 08:43:22 同值），
+    236 行；mtime 08:43:22 是"摘除→还原"写回的痕迹，**它早于 08:44:16 那次跑**，而"内容没被偷改"由哈希证、不由 mtime 证。
+  - **双向自证（CO-50① 的那三条，整包级、非抽查）**：基线 `cmd/core` 带 flag **`ok` exit=0**；
+    摘建行腿 ⇒ **`--- FAIL: TestLifecycleWriterLandsRowAndShouts` + `--- FAIL: TestLifecycleRowLandsTheFiveColumns`**；
+    摘改行腿 ⇒ **整包仍 `ok`**。两次变异与基线的输出**都不是逐字相同**（`r1=False`、`r2=False`，只差计时行），
+    所以"仍 ok"不是变异没生效，而是**那条判据面真的没人断终态边**。还原全部 `assert 读回==原字节`、`restored_identical=True`、标记 0 残留。
+  - **REQ-T11 三句（HEAD 实取 `064b383` 09-24 08:33:41）**：
+    ① `git diff --stat HEAD -- <我三路径>` = `core/internal/process/supervisor.go | 16 +++++++-------（+9 / −7）`
+    （`lifecycle.go`/`lifecycle_test.go` 未跟踪，不进 diff，见②③）；
+    ② `git status --porcelain -- core/internal/adapter core/internal/process core/cmd/fake-adapter adapters/fake` =
+    **1 行 ` M`（supervisor.go）+ 2 条 `??`（`lifecycle.go`、`lifecycle_test.go`）**；
+    ③ 逐未跟踪件 `git diff --no-index --stat /dev/null` = `lifecycle.go` **1 file changed, 236 insertions(+)**（导出那轮从 233 涨到 236）、
+    `lifecycle_test.go` **430 insertions**（未动）。
+- **第 14 轮补（08:17~08:19）· T-227 ② 那条双向自证这次是真跑完的，不是配方**：
+  `CGO_ENABLED=0 LUCERO_REQ_DB2=1 go test -count=1 -timeout 300s -run TestLifecycleRowLandsTheFiveColumns -v ./cmd/core/`
+  三份读数：**基线 `--- PASS (0.19s)`** → **摘掉建行腿 `--- FAIL`**（`lifecyclecolumns_test.go:430: process_instances 该恰好一行…: sql: no rows in result set`）
+  → **摘掉改行腿仍 `--- PASS`**。第三份不是坏消息藏着不报，它量出一个覆盖面缺口，已放大范围排除"别的用例在守"之后写进 **CO-50①**。
+  摘除都是一处早退、**每份都带"与基线逐字是否相同"的比对**（`False`/`False`，即三次输出确实不同 ⇒ 变异进了判据的观察面），
+  还原全部 `assert 读回==原字节`、标记零残留。
+  **顺手补一条比 mtime 更硬的凭据**：本轮反复"字节级摘除→还原"之后，`lifecycle.go` 的 mtime 已经是 08:18:25，
+  拿它证明"我没改过码"失效了 ⇒ 现在给内容落指纹（08:19 取，`sha256sum`）：
+  `lifecycle.go` = **`f5c5e9fa8ffc1a32c4e16e0d…`**、`lifecycle_test.go` = **`68eec9216bd4815054daf151…`**，
+  同框的还有行数 **233 / 430** 与我三包用例数 **50 / 32+1SKIP / 22+1SKIP**。
+  **一条自报（同族第四次的变体）**：我本来要把这段用 `python -c "…"` 写进账本，**正文里的反引号在双引号 shell 串里被当命令替换执行**，
+  当场炸出 `go: command not found` / `syntax error near unexpected token '('` 一串 —— 那正是 09-23 把我账本从 12 段写成 24 段的同一族。
+  这次没造成破坏（python 在拼接前就失败、文件未被写；`grep -c '^## '` 仍是 12、无"第 14 轮补"残段），
+  改法是**账本一律走 Edit/Write**（这次就是），bash 里永远不携带含反引号的正文。
+- **第 14 轮（T-240 收单，09-24 08:12~08:14）**：
+  - **我对盘上最后一次的读数不是绿的，而且红不在我这**：全量跑 起 08:13:54 / 收 08:14:02（`date -Iseconds` 各取一次），
+    **exit=1，413 `--- PASS` / 2 `--- SKIP` / 0 `--- FAIL`，`^ok ` = 16 个包**，第 17 个是
+    **`FAIL github.com/SadCat18/lucero/core/cmd/core [build failed]`**（`undefined: strconv` / `undefined: process`）。
+    `CGO_ENABLED=0 go build ./...` **exit=0** ⇒ 坏的是**测试构建**，生产码不缺件；`PASS` 从 453 掉到 413 就是
+    `cmd/core` 那 ~38 条今天压根没跑。**这是 08:14 的现场，不是谁的判决**——backend 那一刻正在写这个文件（三次 mtime 移动）。
+    **我只报读数、不据此判 backend**（记忆里那条"别拿别人的红判别人的批次"）。
+  - **我三包在 08:14:02 那次全量里都是 `ok`**：`internal/adapter 2.166s`、`internal/process 5.778s`、`cmd/fake-adapter 3.563s`；
+    **我最后一次"作为交付凭据的全绿跑"仍是 07:46:28→07:46:36（exit=0，453 PASS / 6 SKIP / 0 FAIL，17 包全 `ok`）**。
+    `grep -rn ZMUT core/` = **0**、`grep -rn MUTANT-R13 core/` = **0**（自证脚本的临时早退没留残）。
+  - **一条 mtime 的用法纠错（因为它会影响别人判断"你有没有改过码"）**：本轮那次"摘除→还原"把 `lifecycle.go` 的
+    **mtime 推到了 08:13:36**，而内容仍是 07:36:23 那份（脚本内 `assert 读回==原字节`）。⇒ **从现在起，"我没改码"只能靠 `cmp`/字节 assert 证，
+    不能再拿 mtime 早于某次跑当证据**；这条正是记忆里"mtime 只证最后写过、不证正在写"的加强版。
+  - **留给 `cmd/core` 恢复可编译后的那一条判据（T-227 ② 的真正形态，配方写死在这里）**：
+    ① `CGO_ENABLED=0 LUCERO_REQ_DB2=1 go test -count=1 -timeout 300s -run TestLifecycleRowLandsTheFiveColumns -v ./cmd/core/`
+    ⇒ 必须 **`--- PASS`**；② 临时把我 `lifecycle.go` 的建行腿摘掉（一处早退）再跑同一条 ⇒ 必须 **`--- FAIL`**，
+    且**不许变成 SKIP、不许变成 build failed**；③ 还原按字节、`cmp` 证一次。
+    **两步都要跑，只跑 ① 就是"绿过一次"的旧病**；我这边随时配合重取，不需要主控或 backend 猜我的形状。
+  - **REQ-T11 三句（HEAD 实取 `bc1fa9b` 09-24 08:00:38）**：本轮零代码改动 ⇒
+    `git diff --stat HEAD -- <我三路径>` 仍是 `supervisor.go | 16（+9 / −7）`；
+    `git status --porcelain -- <同范围>` = **1 行 ` M` + 2 条 `??`**（`lifecycle.go` 233 行、`lifecycle_test.go` 430 行，
+    `--no-index --stat` 两处数字与 07:3x 那次相同）；**本轮没有新文件**，`--no-index` 那一问无新对象。
+- **第 13 轮补记（T-227 两件交账，09-24 07:31~07:37）**：
+  - **交付前最后一次全量跑：起 07:37:23、收 07:37:34（两个时刻各自 `date -Iseconds`），exit=0**，
+    `CGO_ENABLED=0 go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...` ⇒
+    **452 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`、17 个包全 `ok`、一个都没跳**、无 `panic: test timed out`。
+    `grep -rn ZMUT core/` = **0**、`grep -rn MUTANT-R13 core/` = **0**（自证脚本的标记不留盘）、`gofmt -l` 我三目录空。
+    **447 → 452 那 5 条不是我加的**：我这三包一条没变（`internal/process` 重跑仍是 **32 PASS / 1 SKIP / 0 FAIL**），
+    `internal/adapter`/`cmd/fake-adapter` 本轮**没有文件改动**（mtime 07:17:57 之后我只动过 `lifecycle.go` 的注释），
+    所以只重跑了 `internal/process` 一包 + 全量 17 包；那 5 条来自别人在 07:23 之后的推进，我不认领。
+    源文件 mtime 全部早于起跑：`lifecycle.go 07:36:23`、`lifecycle_test.go 07:21:17`、`supervisor.go 07:17:57`。
+  - **REQ-T11 三句（HEAD 实取 `f3c845a` 09-24 07:37:07）**：
+    ① `git diff --stat HEAD -- <我三路径>` = `core/internal/process/supervisor.go | 16（+9 / −7）`；
+    ② `git status --porcelain -- <同范围>` = **1 行 ` M` + 2 条 `??`**（`lifecycle.go`、`lifecycle_test.go`）；
+    ③ 逐未跟踪件 `git diff --no-index --stat /dev/null core/internal/process/lifecycle.go` =
+    **1 file changed, 233 insertions(+)**（07:18 交账时是 226，多的 7 行就是 ② 那条 `landedStatus` 引到契约第 20 条 ⑤ 的注释），
+    `lifecycle_test.go` 仍 **430 insertions**（本轮一字未动）。
+  - **双向自证（07:3x 跑，脚本 `.scratch/adapter/selfproof-r13.py`）——两句分开写**：
+    **在我自己那一面成立**：`r1` 摘建行腿 ⇒ 顶层 **5 FAIL / 27 PASS / 1 SKIP**，红的正是 5 条真库用例，
+    首行 `no process_instances row for proc-a`；`r2` 摘改行腿 ⇒ **4 FAIL**，首行 `status = STARTING, want EXITED`；
+    `r1+r2` ⇒ 5 FAIL。**0 SKIP、0 BUILD-BROKEN**、还原在同一条命令内 `assert` 字节相同、`restored_identical=True`。
+    **在主控点名那一格今天证不出来（成因已实测，不是我偷懒）**：`grep -rn LifecycleStore core/cmd/core/` = **0**，
+    带 `LUCERO_REQ_DB2=1` 单跑 `TestLifecycleRowLandsTheFiveColumns` 时**摘与不摘我的写口，输出逐字只差计时行**
+    （`diff` 只有 2 行：`0.244s` vs `0.248s`），两句失败原文完全同一：
+    `lifecyclecolumns_test.go:290: LUCERO_REQ_DB2=1 但这段还没接上真写路径…` ⇒ 它红是红在 **backend 那格没接**，
+    不是红在写口。装配落地后同一命令（带 flag、`-run` 单跑、要求 `--- FAIL` 且不许变 SKIP / build failed）就是那一格的验收判据；
+    **我没有去动 `cmd/core`**（T-227 明写那三格归 backend，T-225③ 已告诉他上一格不等了）。
+- **第 13 轮（写口落地）的交付证据**：
+  - **交付前最后一次全量跑（认这条）：起 09-24 07:23:48、收 07:23:56（两个时刻各自 `date -Iseconds` 求值），exit=0**
+    ⇒ **447 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`、17 个包全 `ok`、无 `panic: test timed out`、`ZMUT` 0、`gofmt -l` 空**，
+    逐包 50 / **32** / 22 PASS（`internal/process` 含 1 条既有 SKIP）。
+    三个源文件的 mtime 全部早于起跑：**`lifecycle.go 07:17:32`、`lifecycle_test.go 07:21:17`（那个 mtime 是负向对照还原回来的时间，字节与 07:18 那次跑的对象 `assert` 相同）、`supervisor.go 07:17:57`**。
+    上一条 07:18:08→07:18:16 的同款跑法读数完全一致（447/6/0/17），它现在是"负向对照之前那一次"，两段都留着因为中间我动过测试文件。
+  - **交付前最后一次全量跑：起 09-24 07:18:08、收 07:18:16（两个时刻各自 `date -Iseconds` 求值），exit=0**，
+    `-count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...` ⇒ **447 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`**、
+    `^ok ` = **17 个包、一个都没跳**、`panic: test timed out` 0、`grep -rn ZMUT core/` **0**、`gofmt -l` 我三目录空。
+    日志 `.scratch/adapter/final-r13.log`；`supervisor.go`/两个新文件 mtime 均 **< 07:18:08**。
+    **438 → 447 这 9 条的来历分开写**：我自己 +8（`internal/process` 24 → **32 PASS**，正对我新写的 8 条顶层用例），
+    另外 **+1 不是我的**（db/backend 在 07:10 之后自己推进的），我没去认领它。
+  - **逐包单跑**（`-count=1 -timeout 300s -v`，各自 exit=0）：`internal/adapter` **50/0/0**、
+    `internal/process` **32 PASS / 1 SKIP / 0**、`cmd/fake-adapter` **22/1/0** ⇒ 我的三包 **104 PASS / 2 SKIP / 0 FAIL**。
+    含子用例的 `--- PASS` 总数在 `internal/process` 是 38（32 顶层 + 6 子用例），两个数别混着报。
+  - **变异批 9 条，9/9 FIRED、0 条 SILENT、0 条 BUILD-BROKEN，`restored_identical=True`**
+    （`.scratch/adapter/mut-r13.py`：字节级备份 + **还原在同一条命令内** + 还原后 assert）：
+    m1 create 记错事件类型→FIRED(`TestStartLands`)；m2 0 行变静默→FIRED，原文
+    `shout = [], want exactly one 0-row line (幂等 and 从来没成功过 must stay separable)`；
+    m3 guard 跟着状态走→FIRED，原文 `append event process_exited for proc-a v3: UNIQUE constraint failed: event_journal.event_id`
+    （**这条就是我原来的写法**，红得对、错在我）；m4 guard 用我没写过的状态→FIRED(`TestExitMoves`)；
+    m5 attempt 不自增→FIRED；m6 第二次尝试复用上一行 id→FIRED，原文
+    `create-versionless process proc-a: UNIQUE constraint failed: process_instances.id`；
+    m7 崩溃预算不进 metadata→FIRED；m8 无行返回 nil→FIRED，原文 `err = <nil>, want ErrNoLifecycleRow`；
+    m9 行的出生跟观察时刻走→FIRED(`TestStartLands` 的 `created_at`)。
+    **四条我另外单独取了失败详情**（`.scratch/adapter/mut-r13-detail.py`），确认咬在所声称那一层而不是顺带撞红。
+  - **合成反例（不架空）之一：import 守卫的负向对照**。**这里要先纠正我自己**：上一版这句我写成"落码前跑过它红过一次"，
+    那是**没跑过的说法**（凭"应该会红"写下的），发现后当场补跑，下面是补跑的真实读数：
+    把 `allowed` 那张白名单临时清空（`map[string]bool{}`）⇒ **exit=1**、原文
+    `lifecycle.go imports .../internal/eventjournal - the persistence surface is lifecycle.go only (T-211/CO-43)`
+    与 `.../internal/platform/db` 同形两条 ⇒ 守卫确实看得见 import，不是只看文件名的摆设；
+    还原在同一条命令内完成，`assert 读回==原字节` 通过（脚本 `.scratch/adapter/` 内联那次），
+    所以 07:18 的全量读数对它依然有效。**常驻的那把闸**是 `扫到的非测试文件数 < 2 ⇒ t.Fatal`（正向现在扫到 3 个生产文件）。
+  - **REQ-T11 的 git 形状（HEAD 实取 `34074a0` 09-24 07:10:40）**：
+    `git diff --stat HEAD -- <我三路径>` = `core/internal/process/supervisor.go | 16 +++++-----（+9 / −7）`；
+    `git status --porcelain -- <同范围>` = **1 行 ` M` + 两条 `??`**（`lifecycle.go`、`lifecycle_test.go`，本轮新文件全在这里）；
+    逐新文件 `git diff --no-index --stat /dev/null <file>` = `lifecycle.go **226 insertions**`、
+    `lifecycle_test.go **430 insertions**`。`wc -l` 复核同数（226 / 430）。
+  - **一处计数自纠**：上一段"引用 db 空表拒绝"我凭印象写了 `touch.go:406-408 / :456-458`，实测在 **412 / 462**（差 6 行）
+    ⇒ 已改成按**原文字面**引用（`this aggregate has no table, use AppendEventOnly`），行号只留作 07:1x 的现场读数。
+- **第 12 轮（T-211 收单）的读数与交付跑**：
+  - **交付前最后一次全量跑（真正的最后一次）：起 05:38:14、收 05:38:22（两个时刻各自 `date -Iseconds` 求值），exit=0**。
+    命令 = `CGO_ENABLED=0 go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...`（在 `core/`），
+    日志 `.scratch/adapter/final-r12c.log`；**438 `--- PASS` / 6 `--- SKIP` / 0 `--- FAIL`，`^ok ` = 17 个包、一个都没跳**，
+    `panic: test timed out` 0 命中。源文件 mtime `supervisor.go 05:38:00 < 05:38:14` ⇒ 跑完之后我没再改我的码。
+    **PASS 从 395 涨到 438 不是我加的**（我本轮零用例）：多出来的 43 条是 `internal/platform/db` 自己的
+    （它 05:30 那次 build-red、一个用例都没跑，05:35:54 db 把缺的辅助函数补齐之后就都算了）⇒ **报"全"要连这个来源一起报**。
+    - **同一批文件更早那一次全量跑（05:30:10 收，exit=1）留作现场证据、不删**：那次唯一的红是
+      `internal/platform/db [build failed]`，错误全在 db 自己未跟踪的 `versionless_test.go` 里
+      （`:145/221/224 undefined: countRows`、`:303/398/439 undefined: newProcessRow`、`:428 not enough arguments in call to transition`）。
+      **我差点把它写成交付证据，靠的是"再跑一次"而不是"我记得它红了"**：那次读数里我另外误记过一对起止时刻
+      （`echo` 里两个 `$(date)` 都在命令结束后求值 ⇒ 打印出同一个 05:30:10，我却写成"起 05:30:10 / 收 05:30:19"），
+      该值**作废**，正确读数是上面那对 05:38:14 / 05:38:22。
+  - **我自己三包逐包单跑**（紧随其后，日志 `pkg-adapter.log`/`pkg-process.log`/`pkg-fake-adapter.log` mtime 05:30，
+    `-count=1 -timeout 300s -v`，各自 exit=0）：
+    `internal/adapter` **50 PASS / 0 / 0**，`internal/process` **24 PASS / 1 SKIP / 0**，
+    `cmd/fake-adapter` **22 PASS / 1 SKIP / 0** ⇒ 合计 **96 PASS / 2 SKIP / 0 FAIL**。
+    两条 SKIP 都是既有的显式门（不是本轮新增，也不被我当覆盖交）。
+  - **本轮无变异批**（只改注释），所以没有 `.orig`/还原对，`cmp` 那一步没有对象可证；
+    `grep -rn "ZMUT" core/` = **0 命中**，`gofmt -l internal/process internal/adapter cmd/fake-adapter` **输出为空**，
+    `go build ./...` exit=0（改完注释立刻编译，防"替换右端吃掉整行"那一族）。
+  - **两处"等"的复量（05:22:46 与 05:26:07 两端点之间取的数）**：`grep -rn "CreateVersionless" core/ --include=*.go` = **0**
+    （含测试 ⇒ "没落地"这句成立）；`versionlessAgg` 的 `AggProcess{table:"process_instances", guards:{status:true}}`
+    与 `TouchTransition`/`AppendEventOnly` 已在 `touch.go:68/384/446`；`touch.go` mtime 两次读数
+    **05:22:45(21814B) → 05:22:56(21790B)** ⇒ db 仍在写；`git status --porcelain core/internal/platform/db/`
+    = `M touch.go` + `?? versionless_test.go`。**结论当时：我这格仍未解锁，本轮零实现。**
+  - **⚠ 上面那条在同一轮里就过期了（05:37:20 复量，`date` 实读）——等待条件已经消失**：
+    `grep -rn "CreateVersionless" core/ --include=*.go` 现在 **15 命中**（非测试 6 条，定义在 `touch.go:401`，
+    另有 `Append` 对 versionless 表直接报错 `touch.go:367`，正是 T-213 判据②），`touch.go` mtime **05:35:54(24519B)**。
+    **三入口与契约① §17 的签名逐字对过 = 3/3 一致**（`CreateVersionless(a,id,columns,values,ev) error` /
+    `TouchTransition(a,id,guardCol,guardVal,setSQL,args,ev) (int64,error)` / `AppendEventOnly(a,id,ev) error`），
+    `versionlessAgg` 的 `guards` 仍只有 `status`。**⇒ "等 db 交入口"这句从 05:37:20 起不再成立。**
+    **我没有因此开写**（项目规矩：前提消失 ≠ 禁令解除）——CO-44/CO-45 两问未裁，且它们是形状题不是实现细节：
+    一个决定 0 行怎么处置、一个决定 Recovery 怎么数活进程。要动我这一格，主控一句话即可（裁完或明写"按你的默认落码"）。
+    连带把 `supervisor.go` 里我 05:2x 刚写的那句"create leg has no door yet"也当场改了（**我自己写的注释十分钟内就变陈旧**），
+    新文案明写"门有了、写口仍未落、理由是 CO-44/45 未裁"，免得下一个人拿"没门"当理由把这一格推回 `cmd/core`。
+  - **REQ-T11 的 git 形状（HEAD 实取 `09a0c88` 05:26:25）**：
+    `git diff --stat HEAD -- <我三路径>` = `core/internal/process/supervisor.go | 46 ++++++----（**+29 / −17**）`
+    （**上一条里那个 +27/−17 是本轮中途的数，已被后两次注释修改取代**）；
+    `git status --porcelain -- core/internal/adapter core/internal/process core/cmd/fake-adapter adapters/fake`
+    = **一行 ` M`、`??` 0 条** ⇒ 本轮我没有新文件；`git diff --no-index --stat /dev/null <新文件>` 那一问本轮无对象。
 - **T-145 的落文与我盘上的形状逐字对过（09-23 00:10 复采）**：契约③ 第 302-303 行写
   RecordStart / RecordExit / RecordCrash / RecordDrop 与 DroppedEvent 的 Kind、ProcessRole、Method、
   TurnRef、FrameExecutionID、BoundExecutionID、Reason、Timestamp；我用

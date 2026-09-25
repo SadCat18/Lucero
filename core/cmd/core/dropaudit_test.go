@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SadCat18/lucero/core/internal/audit"
 	"github.com/SadCat18/lucero/core/internal/process"
@@ -27,7 +28,7 @@ func TestRecordDropWritesOneAuditRowAndNoEvent(t *testing.T) {
 	journalBefore := countRowsBy(t, core, `SELECT count(*) FROM event_journal`)
 	var logged []string
 	rec := newDropRecorder(core.store, "codex", func() int64 { return 1234 },
-		func(f string, args ...any) { logged = append(logged, f) })
+		func(f string, args ...any) { logged = append(logged, f) }, nil)
 
 	rec.RecordDrop(process.DroppedEvent{
 		Kind: process.KindAdapter, Method: "session/prompt", TurnRef: "turn-9",
@@ -79,7 +80,7 @@ func TestRecordDropWritesOneAuditRowAndNoEvent(t *testing.T) {
 	if !strings.Contains(drop.DetailsJSON, audit.Rules().Marker) {
 		t.Errorf("落库的 details 里没有脱敏标记，这条用例没验到东西: %s", drop.DetailsJSON)
 	}
-	// §7.2:310~311 断的那一对：只写审计行、不写 event_journal。
+	// §7.2 断的那一对：只写审计行、不写 event_journal。
 	if n := countRowsBy(t, core, `SELECT count(*) FROM event_journal`); n != journalBefore {
 		t.Errorf("丢弃不该产生事件行：event_journal 从 %d 变成 %d", journalBefore, n)
 	}
@@ -106,7 +107,7 @@ func TestRecordDropRefusesToBlameNobody(t *testing.T) {
 
 	var logged []string
 	rec := newDropRecorder(core.store, "", func() int64 { return 1 },
-		func(f string, _ ...any) { logged = append(logged, f) })
+		func(f string, _ ...any) { logged = append(logged, f) }, nil)
 	rec.RecordDrop(process.DroppedEvent{Method: "session/prompt", Reason: "没身份的那次丢弃"})
 
 	if n := countRowsBy(t, core, `SELECT count(*) FROM audit_entries WHERE action = 'frame_dropped'`); n != 0 {
@@ -129,7 +130,7 @@ func TestLifecycleMethodsShoutInsteadOfSilentlyPassing(t *testing.T) {
 
 	var logged []string
 	rec := newDropRecorder(core.store, "codex", func() int64 { return 1 },
-		func(f string, args ...any) { logged = append(logged, fmt.Sprintf(f, args...)) })
+		func(f string, args ...any) { logged = append(logged, fmt.Sprintf(f, args...)) }, nil)
 	rec.RecordStart(process.Event{Kind: process.EventStarted, PID: 40, Status: process.StatusStarting})
 	rec.RecordExit(process.Event{Kind: process.EventExited, PID: 41, ExitCode: 0})
 	rec.RecordCrash(process.Event{Kind: process.EventCrashed, PID: 42, ExitCode: 1, Crashes: 3})
@@ -149,8 +150,9 @@ func TestLifecycleMethodsShoutInsteadOfSilentlyPassing(t *testing.T) {
 	if n := countRowsBy(t, core, `SELECT count(*) FROM audit_entries`); n != 0 {
 		t.Errorf("生命周期那三格今天无权写任何东西，实际 %d 行审计", n)
 	}
-	if n := countRowsBy(t, core, `SELECT count(*) FROM event_journal`); n != 0 {
-		t.Errorf("同上，事件侧也不许有东西： %d 行", n)
+	// 事件侧：boot 写的那条 core_ready（REQ-T7）是唯一合法行，生命周期三格一格都不许多。
+	if n := countRowsBy(t, core, `SELECT count(*) FROM event_journal WHERE event_type != 'core_ready'`); n != 0 {
+		t.Errorf("同上，事件侧除 core_ready 外不许有东西： %d 行", n)
 	}
 }
 
@@ -163,7 +165,7 @@ func TestNewAuditIDIsUniqueEnoughToInsert(t *testing.T) {
 	}
 	defer core.close()
 
-	rec := newDropRecorder(core.store, "codex", func() int64 { return 1 }, nil)
+	rec := newDropRecorder(core.store, "codex", func() int64 { return 1 }, nil, nil)
 	for i := 0; i < 3; i++ {
 		rec.RecordDrop(process.DroppedEvent{Method: "session/prompt", TurnRef: "t", Reason: "重复丢弃"})
 	}
@@ -178,5 +180,74 @@ func TestNewAuditIDIsUniqueEnoughToInsert(t *testing.T) {
 	}
 	if withTask != 0 {
 		t.Errorf("有 %d 行被挂到了 Task 上，那是凭空归属", withTask)
+	}
+}
+
+// TestNilDBLifecycleShoutsInsteadOfPanicking 是 T-247①(c) + 契约③ §7.3 要的那条反例：把 store 换回零值
+// `auditedStore{}`（`d == nil`）⇒ 四格（生命周期三格 + `RecordDrop`）都必须有**确定结局**：
+// 返回错误 + 喊出来，不写库（连事务都开不出来）、**不许 panic**。
+// 走到断言本身就证到"没 panic"（panic 会让整包红在栈上，而不是红在这些行）。
+// §7.3 还有一条"不许顺手做的事"：不能为了"永远不 nil"在每个入口加 `if d == nil { return }` 静默早退 ——
+// 所以这里唯一的那道兜底放在 `auditedStore.Write`（返回错误），喊由调用方负责，两处都不吞。
+func TestNilDBLifecycleShoutsInsteadOfPanicking(t *testing.T) {
+	lc, err := process.NewLifecycleStore(process.ProcessRow{Kind: process.KindAdapter, RestartPolicy: process.RestartNever},
+		func() (string, error) { return "pi-nil-db", nil }, func() int64 { return 1 }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	rec := newDropRecorder(auditedStore{}, "codex", func() int64 { return 1 },
+		func(f string, args ...any) { lines = append(lines, fmt.Sprintf(f, args...)) }, lc)
+
+	rec.RecordStart(process.Event{Kind: process.EventStarted, PID: 11, Status: process.StatusStarting})
+	rec.RecordExit(process.Event{Kind: process.EventExited, PID: 11, Status: process.StatusExited})
+	rec.RecordCrash(process.Event{Kind: process.EventCrashed, PID: 12, Status: process.StatusFailed, Crashes: 1})
+
+	joined := strings.Join(lines, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("三格各该喊一次（不许静默跳过），实际:\n%s", joined)
+	}
+	for _, line := range lines {
+		// §7.3 的"确定结局"两半都要在：喊出来了 + 说的是"没落库"这一件事实（含错误原文，不是空话）。
+		if !strings.Contains(line, "没落库") || !strings.Contains(line, "没装配到库通道") || !strings.Contains(line, "codex") {
+			t.Errorf("喊的话要说清\"没落库 + 为什么（没库通道）+ 是谁的进程\"：%q", line)
+		}
+		if strings.Contains(line, "生命周期已落") {
+			t.Errorf("没库的那几次不许喊\"已落\"：%q", line)
+		}
+	}
+	// 第四格（`RecordDrop`）走的是同一条 `auditedStore.Write` —— 它也必须有确定结局，不是 panic。
+	// 这一格原来会红在栈上（`auditHead` 里 nil 解引用），现在该红在一句"没落库"上。
+	rec.RecordDrop(process.DroppedEvent{Method: "session/prompt", Reason: "零值 store 也要老实喊"})
+	if len(lines) != 4 {
+		t.Fatalf("RecordDrop 那一格也要喊一次，实际 %d 条:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	last := lines[3]
+	if !strings.Contains(last, "没落库") || !strings.Contains(last, "没装配到库通道") {
+		t.Errorf("丢弃审计在零值 store 上该喊\"没落库（没装配到库通道）\"，实际:%q", last)
+	}
+}
+
+// TestProductionRecorderActuallyHoldsWriter 是 T-247③ 要的那句断言：别让人从测试里那些 `nil` 形参推出"其实没接"。
+// 真装配（有库的 `auditedStore`）下，`supervisorFor` 交出去的 `Rec` 必须**手里握着写口**——这一格只看装配结果，不起子进程。
+func TestProductionRecorderActuallyHoldsWriter(t *testing.T) {
+	core, err := boot(context.Background(), testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.close()
+
+	l := newLauncher(pipeCommand("exit"), 5*time.Second, nil, core.store, nil)
+	rec, ok := l.supervisorFor("fake").Rec.(*dropRecorder)
+	if !ok || rec == nil {
+		t.Fatalf("真装配下 Rec 必须是 *dropRecorder，实际 %T", l.supervisorFor("fake").Rec)
+	}
+	if rec.lifecycle == nil {
+		t.Fatal("生产路径上的 recorder 没拿到生命周期写口（那三格就还是只出声）")
+	}
+	// 反过来也要成立：没有库通道的装配**不该**拿到写口（那是 `lifecycleFor` 那道闸的行为，两处结局各断一条）。
+	bare := newLauncher(pipeCommand("exit"), 5*time.Second, nil, auditedStore{}, nil)
+	if b, ok := bare.supervisorFor("fake").Rec.(*dropRecorder); !ok || b.lifecycle != nil {
+		t.Errorf("零值 auditedStore 的装配不该拿到写口，实际 %v", b)
 	}
 }

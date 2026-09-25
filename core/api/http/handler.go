@@ -122,12 +122,28 @@ type Config struct {
 	SessionRead SessionReader
 	// SessionManage + Store 都在时才挂 POST /api/v1/sessions/{id}:manage（写侧要事务通道）。
 	SessionManage SessionManager
+	// SessionMessages 注入时才挂 GET /api/v1/sessions/{id}/messages（读面；
+	// RecordMessage 落地后生产者已在，api-contract :113~119 的禁令条件满足）。nil ⇒ 501。
+	SessionMessages SessionMessageReader
 
 	// 注入时才挂 POST /api/v1/adapters/{key}/probe（§7.2 的 backend 半边：只投影，不写）。
 	Adapters AdapterProber
 	// SessionDiscover 在时才挂 POST /api/v1/adapters/{id}/sessions:discover
 	// （它是面板链第 2/3/4 格共用的那把锁：Core 侧今天没有第二条路能建出 sessions 行）。
 	SessionDiscover SessionDiscoverer
+
+	// 注入时才挂 GET /api/v1/executions?task_id=（T-229 的读面那一格：Wave-2 要看 execution 真建出来了）。
+	Executions ExecutionLister
+
+	// ExecutionSend + Store 都在时才挂 POST /api/v1/executions/{id}/send（yaml :544；写侧要事务通道）。
+	// 缺任一个则该路径落 catch-all 的 501（C28②：能力没接线不给半套面）。
+	ExecutionSend ExecutionSender
+
+	// 分派腿（T-263 + C43 后半格）：Instances 解析 adapter_key → adapter_instances.id；
+	// ExecutionCreate 在同一笔事务里建 Execution。两个都注入时 :queue 才走完整分派到 PREPARING v3；
+	// 缺任一个则 :queue 维持 501（C28②：能力没接线不给半套面）。
+	Instances       AdapterResolver
+	ExecutionCreate ExecutionCreator
 }
 
 // NewHandler 装出 /api/v1 面：除 /health 外全部要求 Bearer；带 Origin 的外部请求 403；
@@ -142,6 +158,7 @@ func NewHandler(c Config) http.Handler {
 	registerSessionRoutes(mux, c)
 	registerSessionListRoute(mux, c)
 	registerAdapterProbeRoute(mux, c)
+	registerExecutionRoutes(mux, c)
 
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -167,9 +184,11 @@ func NewHandler(c Config) http.Handler {
 	})
 
 	// 其余 /api/v1 与 /ws/v1 都还没接：明确 501，不假装成功（契约③ §8 不做的事之一）。
+	// T-229 顺手那一格：**这里不列举清单** —— 列一次就要有人维护一次，过期比缺更坏
+	// （上一版写着"只提供 /api/v1/health 与 /api/v1/ws-ticket"，现盘早已不止这两条）。
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "not_implemented",
-			"该端点尚未实现；Core 目前只提供 /api/v1/health 与 /api/v1/ws-ticket", true)
+			"这条路径 Core 没登记；已登记的端点看契约③ §3（specs/api-contract-v0.1.md）", true)
 	})
 
 	return decorate(mux, c)

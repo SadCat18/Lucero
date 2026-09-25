@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -336,5 +337,39 @@ func TestSessionManageIsNotAuthFree(t *testing.T) {
 	}
 	if managed, _, version := sessionRow(t, d, "sh-6"); managed != 0 || version != 1 {
 		t.Errorf("被鉴权挡住的那发不该动库，实际 %d v%d", managed, version)
+	}
+}
+
+// TestMessagesPathIsRecognizedButUnwired 钉巡检 07:20②那一格：`GET /api/v1/sessions/{id}/messages` 是契约③ §3
+// 声明过的路径（yaml 的 `listSessionMessages`），而它以前连 `splitSessionVerb` 都过不去（那条规则是"含斜杠就不认形状"），
+// 于是拿到一句「这条路径的形状我不认识」的 501 —— 那是**假话**，同族的旧错在 tasks.go 上是 T-195④ 修的。
+// 现在三格分开：认得但没接线 ⇒ 501 `not_implemented`；方法不对 ⇒ 405；**别的**多段形状仍然不认（只放开这一条）。
+func TestMessagesPathIsRecognizedButUnwired(t *testing.T) {
+	srv, _ := newManageHarness(t, true)
+	// 这一格的**实质就是那句话**：状态码与 error.code 在"形状不认识"和"没接线"两格里一模一样（都是 501/not_implemented），
+	// 所以只断码的判据对这条缺陷没有牙 —— 要断的是"它说的是不是实话"。
+	code, body := call(t, srv, "GET", "/api/v1/sessions/s-1/messages", "", "", "")
+	if code != http.StatusNotImplemented || codeOf(t, body) != "not_implemented" {
+		t.Errorf("messages 这条声明过的路径该 501 not_implemented，实际 %d %s", code, body)
+	}
+	if m := msgOf(t, body); !strings.Contains(m, "还没装配") || strings.Contains(m, "形状") {
+		t.Errorf("理由必须是「读通道没接」而不是「形状不认识」，实际 %q", m)
+	}
+	for _, m := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
+		if code, body := call(t, srv, m, "/api/v1/sessions/s-1/messages", "local-user", "k-m", ""); code != http.StatusMethodNotAllowed ||
+			codeOf(t, body) != "method_not_allowed" {
+			t.Errorf("%s messages 该 405（它只声明 GET），实际 %d %s", m, code, body)
+		}
+	}
+	// 别的多段/畸形形状必须仍然「不认」——认多了就是替别人决定这条路径归谁。
+	// （不列 `//messages` 那种：ServeMux 会先清洗路径，守卫看不见双斜杠，那条在 handler_test.go 里另有断言。）
+	for _, p := range []string{"/api/v1/sessions/a/b/messages", "/api/v1/sessions/a:sync/messages",
+		"/api/v1/sessions/a/messages/1", "/api/v1/sessions/a/messagez"} {
+		if code, body := call(t, srv, "GET", p, "", "", ""); code != http.StatusNotImplemented ||
+			codeOf(t, body) != "not_implemented" {
+			t.Errorf("畸形 %s 该 501，实际 %d %s", p, code, body)
+		} else if m := msgOf(t, body); !strings.Contains(m, "形状") {
+			t.Errorf("畸形 %s 的理由该是「形状不认识」那一格，实际 %q", p, m)
+		}
 	}
 }

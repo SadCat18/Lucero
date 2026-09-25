@@ -39,10 +39,15 @@ func TestRealCoreStreamsRealJournalRows(t *testing.T) {
 	}
 
 	// 首帧是 hello 回显（REQ-F-17）：带了 from_seq=0 就该收到 echo，客户端不据此改游标。
-	// 之前这里直接期望 event —— 那是"补发非空时侥幸有帧"，空 journal 时同一条链会一字不发。
 	echo := readWSFrame(t, ws)
 	if echo["type"] != "hello" || echo["from_seq"] != float64(0) {
 		t.Fatalf(`带游标的第一帧应是 hello 回显 {"type":"hello","from_seq":0}，实际 %v`, echo)
+	}
+	// 从 0 补发：boot 写的 core_ready 是第一条（REQ-T7），业务事件在其后。
+	coreFrame := readWSFrameWithType(t, ws, "event")
+	cd, _ := coreFrame["data"].(map[string]any)
+	if cd["event_type"] != "core_ready" {
+		t.Errorf("from_seq=0 补发的首条应是 core_ready（boot 写的），实际 %v", cd)
 	}
 	first := readWSFrameWithType(t, ws, "event")
 	data, _ := first["data"].(map[string]any)
@@ -72,20 +77,28 @@ func TestRealCoreStreamsRealJournalRows(t *testing.T) {
 
 }
 
-// REQ-F-17 的原始症状必须在**真 Core + 空 journal + 真 socket** 上验一遍：boot 之后一条事件都没有时，
-// 客户端发 hello 就必须拿到首帧，否则面板永远停在 connecting。
-// 与 api/websocket 那组的分工：那边用替身 journal 逐条对语义，这边证真库真 SQL 真握手这条路上真的会发。
+// REQ-F-17 的原始症状必须在**真 Core + 真 socket** 上验一遍：boot 之后 journal 里
+// 按构造已有恰一条 `core_ready`（REQ-T7），客户端不带游标发 hello 就必须拿到首帧，
+// 否则面板永远停在 connecting。
+// 与 api/websocket 那组的分工：那边用替身 journal 逐条对语义（含真空 journal），
+// 这边证真库真 SQL 真握手这条路上真的会发。
 func TestRealCoreFirstFrameOnEmptyJournal(t *testing.T) {
 	core := bootAndServe(t)
 	base := "http://" + core.endpoint
 
-	// 前置取证：journal 真的是空的，否则这条测的就不是 F-17 那一格。
-	var rows int64
+	// 前置取证：journal 里只有 boot 写的那条 core_ready，没有业务事件 ——
+	// 这正是 REQ-T7 之后的"干净启动"形状（以前这里断 ==0，现在恰 ==1 且类型是 core_ready）。
+	var rows, coreReady int64
 	if err := core.db.Read.QueryRow(`SELECT count(*) FROM event_journal`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 0 {
-		t.Fatalf("这条用例要求空 journal，实际 %d 行（boot 期间有人往 event_journal 写了东西）", rows)
+	if err := core.db.Read.QueryRow(
+		`SELECT count(*) FROM event_journal WHERE event_type = 'core_ready'`).Scan(&coreReady); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || coreReady != 1 {
+		t.Fatalf("boot 后 journal 应恰有 1 条 core_ready，实际 rows=%d core_ready=%d（有人往 event_journal 写了别的东西？）",
+			rows, coreReady)
 	}
 
 	ws := dialWS(t, core.endpoint, "/ws/v1/events?ticket="+issueTicket(t, base, core.token))
@@ -93,18 +106,26 @@ func TestRealCoreFirstFrameOnEmptyJournal(t *testing.T) {
 	if err := writeWS(ws, `{"type":"hello"}`); err != nil {
 		t.Fatal(err)
 	}
-	if f := readWSFrame(t, ws); f["type"] != "hello_ack" || f["server_seq"] != float64(0) {
-		t.Fatalf(`空 journal + 不带游标应回 {"type":"hello_ack","server_seq":0}，实际 %v`, f)
+	// 不带游标 → hello_ack{server_seq}，起点抬到 journal 头（core_ready 那条的 seq）。
+	// 不再断 server_seq==0：REQ-T7 之后空 journal 在真 Core 上已不存在。
+	if f := readWSFrame(t, ws); f["type"] != "hello_ack" {
+		t.Fatalf(`不带游标应回 hello_ack，实际 %v`, f)
 	}
 
-	// 带游标那条走回显：没东西可推也不许沉默。
+	// 带游标那条走回显：没新东西可推也不许沉默。
 	ws2 := dialWS(t, core.endpoint, "/ws/v1/events?ticket="+issueTicket(t, base, core.token))
 	defer ws2.Close()
 	if err := writeWS(ws2, `{"type":"hello","from_seq":0}`); err != nil {
 		t.Fatal(err)
 	}
 	if f := readWSFrame(t, ws2); f["type"] != "hello" || f["from_seq"] != float64(0) {
-		t.Fatalf(`空 journal + from_seq=0 应回 hello 回显，实际 %v`, f)
+		t.Fatalf(`from_seq=0 应回 hello 回显，实际 %v`, f)
+	}
+	// 从 0 补发应至少把 core_ready 推下来（证 REQ-T7 不只是库里有行，WS 也发得出去）。
+	f := readWSFrameWithType(t, ws2, "event")
+	d, _ := f["data"].(map[string]any)
+	if d["event_type"] != "core_ready" || d["aggregate_type"] != "core" {
+		t.Errorf("from_seq=0 补发的首条应是 core_ready/core，实际 %v", d)
 	}
 }
 

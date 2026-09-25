@@ -356,7 +356,7 @@ export interface paths {
         put?: never;
         /**
          * 状态动作（custom verb，不硬套 REST）：CREATED → QUEUED
-         * @description 产 `task_queued`，并触发调度 → `execution_created` → `task_preparing`。矩阵外的迁移按 §5 拒绝。
+         * @description 产 `task_queued`，并触发调度 → `execution_created` → `task_preparing`。矩阵外的迁移按 §5 拒绝。C43（09-24）裁定：调度对象由**请求体** `adapter_key` 声明——不猜默认、不取「唯一 HEALTHY 实例」，否则同一输入两次排队可选到不同 Adapter、幂等与重放当场失效。失败复用既有码不新增：本机没配起法 501、有实例连不上 503 `adapter_unresponsive`、key 库里没有 404。
          */
         post: operations["queueTask"];
         delete?: never;
@@ -478,7 +478,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 该任务全部 Execution（含 attempt_no/trigger_type/predecessor） */
+        /**
+         * 该任务全部 Execution（含 attempt_no/trigger_type/predecessor）
+         * @description 这一格**不分页**：`ListByTask` 一次给全、没有可续的游标 ⇒ 响应的 `next_cursor` 恒为空串，带 `cursor`/`limit` 属请求不合法（400 `validation_failed`，不是默默收下）。要分页得先给 executions 建读游标那一格。
+         */
         get: operations["listExecutions"];
         put?: never;
         post?: never;
@@ -1041,6 +1044,10 @@ export interface components {
             description?: string | null;
             priority?: components["schemas"]["TaskPriority"];
             mode?: string;
+        };
+        /** @description 契约③ §3 C43（09-24）：**「选谁调度」是调用方声明的事实**，不是运行期健康集合的函数 ⇒ `adapter_key` 必填、不猜默认。审计不需要新登记：`execution_created` 的 payload 本来就带 `adapter_instance_id`；`task_queued` 的 payload 只有 `priority`，**没加键**（那是另一次登记变更，要另裁）。 */
+        QueueTaskRequest: {
+            adapter_key: string;
         };
         ReasonRequest: {
             reason?: string | null;
@@ -1912,7 +1919,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueueTaskRequest"];
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {
@@ -2103,9 +2114,6 @@ export interface operations {
         parameters: {
             query: {
                 task_id: string;
-                /** @description 不透明游标；禁止 offset 分页 */
-                cursor?: components["parameters"]["Cursor"];
-                limit?: components["parameters"]["Limit"];
             };
             header?: never;
             path?: never;

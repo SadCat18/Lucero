@@ -381,8 +381,11 @@ paths:
       operationId: queueTask
       tags: [task]
       summary: "状态动作（custom verb，不硬套 REST）：CREATED → QUEUED"
-      description: 产 `task_queued`，并触发调度 → `execution_created` → `task_preparing`。矩阵外的迁移按 §5 拒绝。
+      description: "产 `task_queued`，并触发调度 → `execution_created` → `task_preparing`。矩阵外的迁移按 §5 拒绝。C43（09-24）裁定：调度对象由**请求体** `adapter_key` 声明——不猜默认、不取「唯一 HEALTHY 实例」，否则同一输入两次排队可选到不同 Adapter、幂等与重放当场失效。失败复用既有码不新增：本机没配起法 501、有实例连不上 503 `adapter_unresponsive`、key 库里没有 404。"
       parameters: [{ $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/IdempotencyKey' }, { $ref: '#/components/parameters/Principal' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/QueueTaskRequest' } } }
       responses:
         "200":
           description: 成功
@@ -475,13 +478,12 @@ paths:
       operationId: listExecutions
       tags: [execution]
       summary: 该任务全部 Execution（含 attempt_no/trigger_type/predecessor）
+      description: "这一格**不分页**：`ListByTask` 一次给全、没有可续的游标 ⇒ 响应的 `next_cursor` 恒为空串，带 `cursor`/`limit` 属请求不合法（400 `validation_failed`，不是默默收下）。要分页得先给 executions 建读游标那一格。"
       parameters:
         - name: task_id
           in: query
           required: true
           schema: { type: string }
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
       responses:
         "200":
           description: 成功
@@ -1111,6 +1113,12 @@ components:
         description: { type: [string, "null"] }
         priority: { $ref: '#/components/schemas/TaskPriority' }
         mode: { type: string }
+    QueueTaskRequest:
+      type: object
+      description: 契约③ §3 C43（09-24）：**「选谁调度」是调用方声明的事实**，不是运行期健康集合的函数 ⇒ `adapter_key` 必填、不猜默认。审计不需要新登记：`execution_created` 的 payload 本来就带 `adapter_instance_id`；`task_queued` 的 payload 只有 `priority`，**没加键**（那是另一次登记变更，要另裁）。
+      required: [adapter_key]
+      properties:
+        adapter_key: { type: string }
     ReasonRequest:
       type: object
       properties:

@@ -44,9 +44,27 @@ type Result struct {
 }
 
 // Service 是 Execution 的写路径。它不自己开事务，也不自己生成 id（§3 要 UUIDv7，重试要复用同一个）。
-type Service struct{}
+// send 腿的三格依赖（投影 / 落消息 / 连接面）走 consumer-side 注入，NewService() 签名不变。
+type Service struct {
+	projector TaskProjector
+	recorder  MessageRecorder
+	turn      TurnCaller
+}
 
 func NewService() *Service { return &Service{} }
+
+// EnableSend 接上 send 腿的两格依赖。装配方（cmd/core / 测试 harness）在构造后调一次；
+// 未接线时 Send 明确失败，不静默跳过任何一格（那会造出"事件序列少一半"的半真历史）。
+func (s *Service) EnableSend(p TaskProjector, r MessageRecorder) {
+	s.projector = p
+	s.recorder = r
+}
+
+// EnableTurn 接上连接半边（CallTurn）。可以晚于 EnableSend 调 —— 两格独立，
+// 未接时 start_now/guide 明确 501 ErrTurnNotWired，queue 照常（它不走连接面）。
+func (s *Service) EnableTurn(c TurnCaller) {
+	s.turn = c
+}
 
 // NewExecution 是建首行的输入。ModelID / SessionID 可空（进库是 NULL，不是空串）。
 type NewExecution struct {
@@ -185,6 +203,8 @@ func eventPayload(from, to State, cmd Command) (map[string]any, error) {
 	switch EventOf(from, to) {
 	case EventStarted:
 		v = StartedPayload{ProviderExecutionID: cmd.ProviderExecutionID, ModelSnapshotSHA256: cmd.SnapshotSHA256}
+	case EventStarting:
+		v = StartingPayload{From: from}
 	case EventResumed:
 		v = ResumedPayload{From: from}
 	case EventPaused:

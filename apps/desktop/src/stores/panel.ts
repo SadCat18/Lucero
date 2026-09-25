@@ -206,8 +206,10 @@ export async function runChain() {
       () => core.createTask({ title: `panel chain ${stamp}`, project_id: project?.id }, idem('task')));
     if (!task) return;
 
+    // C43：调度对象由调用方声明 ⇒ `adapter_key` 取 probe 回执里那一格，不在面板再写一个字面量。
     const queued = await call('execution', `POST /tasks/${task.id}:queue`,
-      () => core.taskAction(task.id, 'queue', { ifMatch: task.version, idempotencyKey: idem('queue') }));
+      () => core.queueTask(task.id, { adapter_key: adapter.adapter_key },
+        { ifMatch: task.version, idempotencyKey: idem('queue') }));
 
     const executions = await call('execution', 'GET /executions?task_id=',
       () => core.listExecutions({ task_id: task.id! }));

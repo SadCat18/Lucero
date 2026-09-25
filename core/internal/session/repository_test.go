@@ -215,6 +215,71 @@ func TestListMessagesOrdersBySequenceThenTime(t *testing.T) {
 	}
 }
 
+// TestListMessagesPageKeysetAndAfterSeq 钉消息读面的两道过滤：
+// keyset 游标按 (created_at, id) 续页（复用 encodeCursor 那对形状）、after_seq 按 sequence_no > ? 增量。
+// seed 里 m-1(100)/m-2(200)/m-3(300，seq NULL)。
+func TestListMessagesPageKeysetAndAfterSeq(t *testing.T) {
+	db := openSchema(t)
+	seed(t, db)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	// 整页：按 (created_at, id) 升序 —— 与 ListMessages 的 COALESCE 序不同，这是有意的
+	// （游标形状全仓统一；增量另走 after_seq）。
+	all, err := repo.ListMessagesPage(ctx, MessageFilter{SessionID: "sess-qoder", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].ID != "m-1" || all[1].ID != "m-2" || all[2].ID != "m-3" {
+		var got []string
+		for _, m := range all {
+			got = append(got, m.ID)
+		}
+		t.Fatalf("created_at,id 序该 m-1,m-2,m-3，实际 %v", got)
+	}
+
+	// keyset：从 m-1(100, m-1) 之后续 ⇒ 只剩 m-2、m-3。
+	rest, err := repo.ListMessagesPage(ctx, MessageFilter{
+		SessionID: "sess-qoder", AfterCreatedAt: 100, AfterID: "m-1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 2 || rest[0].ID != "m-2" || rest[1].ID != "m-3" {
+		var got []string
+		for _, m := range rest {
+			got = append(got, m.ID)
+		}
+		t.Errorf("游标后该 m-2,m-3，实际 %v", got)
+	}
+
+	// after_seq=1：sequence_no > 1 ⇒ m-2(seq2) + m-3？m-3 的 seq 是 NULL，NULL > 1 不是 true ⇒ 只 m-2。
+	inc, err := repo.ListMessagesPage(ctx, MessageFilter{SessionID: "sess-qoder", AfterSeq: 1, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inc) != 1 || inc[0].ID != "m-2" {
+		var got []string
+		for _, m := range inc {
+			got = append(got, m.ID)
+		}
+		t.Errorf("after_seq=1 该只 m-2（NULL seq 不参与增量），实际 %v", got)
+	}
+
+	// limit 生效。
+	if limited, err := repo.ListMessagesPage(ctx, MessageFilter{SessionID: "sess-qoder", Limit: 2}); err != nil || len(limited) != 2 {
+		t.Errorf("limit 没生效: %d %v", len(limited), err)
+	}
+
+	// 空页是 nil 切片（transport 侧负责折成 []）。
+	empty, err := repo.ListMessagesPage(ctx, MessageFilter{SessionID: "sess-codex", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("没消息的 session 该空页，实际 %d 条", len(empty))
+	}
+}
+
 // strPtrForTest 给 payload 夹具造字符串指针：C41 裁定（09-23 04:1x）之后 `ManagedPayload.ProjectID` 是 `*string`
 // —— 键必须在、值可以是 null，所以表里那份手抄样例也得能表达"绑着"与"没绑"两种。
 func strPtrForTest(s string) *string { return &s }

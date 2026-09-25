@@ -13,6 +13,9 @@ import (
 
 // startProcess runs entry ①: the row and its process_started event are one
 // transaction, which is the only legal way to create this table's rows.
+// The status here is this fixture's own choice; what the real write cell stores
+// is ev.Status (STARTING in v0.1, 契约 §1.1 item 20 clause ⑤) — this package
+// never reads or writes a lifecycle status value, so no test here pins one.
 func startProcess(t *testing.T, d *DB, id string) {
 	t.Helper()
 	startProcessAt(t, d, id, "RUNNING", "ps-"+id)

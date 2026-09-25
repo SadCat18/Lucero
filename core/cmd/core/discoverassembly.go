@@ -5,7 +5,7 @@ package main
 // 三件事决定了它长这样：
 //   - **协议与连接不在我手里**：`internal/process.Connection` 已经有 `Connect`/`Initialize`/`Call`，
 //     那两个包按设计不写库（包注释自说），所以"拉清单"用它们、"建行与发事件"回 `internal/session`。
-//   - **路径参数是实例 id，不是 adapter_key**（yaml `:207` 那条用的是 `parameters/Id`；probe 那条明写 `key`）。
+//   - **路径参数是实例 id，不是 adapter_key**（yaml 的 `discoverAdapterSessions` 那一格用 `parameters/Id`；`probeAdapter` 那一格明写 `key`）。
 //     所以这里要先 `adapter_instances` 反查出 `adapter_key`，再去查"这个 key 本机有没有起法"。
 //     反查不到 = 404（对象不存在）；有实例但本机没配起法 = 501（这台机器上从来没有过这条能力）——
 //     两者与 503（那个 Adapter 病了）是三件事，混成一个就是把处置信息丢给调用方。

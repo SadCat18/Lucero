@@ -22,7 +22,7 @@ type DiscoveredRemote struct {
 	UpdatedAt       int64
 }
 
-// Discovered 是一次发现之后本地那一行的身份：`DiscoveredSession`（yaml:1017）要的就是这两格。
+// Discovered 是一次发现之后本地那一行的身份：yaml 的 `DiscoveredSession` 组件要的就是这两格。
 type Discovered struct {
 	SessionID       string `json:"session_id"`
 	RemoteSessionID string `json:"remote_session_id"`
@@ -52,7 +52,7 @@ type DiscoverCommand struct {
 // 同页两条同样的 `remote_session_id` ⇒ 整批拒 `ErrInvalidCommand`（T-204③ 收这项，并把 transport 那一格定在
 // **400 `validation_failed`** —— 见 `api/http/adapters.go` 的 discover 分流）。
 //
-// `project_id` 留空是**契约原意**：§6:176 那一格 `session_discovered` 的 payload 只有
+// `project_id` 留空是**契约原意**：事件契约 §6 的 `session_discovered` 那一格，payload 只有
 // `remote_session_id` `adapter_instance_id` 两键，没有归属；绑项目是 `:manage` 的事（C41/T-196 已裁）。
 // 所以这里既不查项目、也不接 `project_id` —— 顺手绑上就是拿一次"拉清单"去做归属改动。
 func (s *Service) UpsertDiscovered(ctx context.Context, tx Writer, cmd DiscoverCommand) (DiscoverResult, error) {

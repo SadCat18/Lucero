@@ -85,19 +85,19 @@ func (p *probeService) Probe(ctx context.Context, adapterKey string) (*adapter.A
 	return &view, nil
 }
 
-// newAdapterServices 装配 probe 与 discover 两条腿。specs 为空 ⇒ 返回 (nil, nil, nil)：
-// **一个 Adapter 都没配，就没有可探/可发现的东西**，transport 那两格因此维持 501 而不是给每个 key
+// newAdapterServices 装配 probe、discover 与 send 三条腿。specs 为空 ⇒ 返回 (nil, nil, nil, nil)：
+// **一个 Adapter 都没配，就没有可探/可发现/可送的东西**，transport 那三格因此维持 501 而不是给每个 key
 // 回一个"未知 adapter_key"的 400 —— 后者会把"这台机器上没配 Adapter"伪装成"你给错了名字"，是两种完全不同的处置。
-// 两条腿共用同一个 `launcher`：`Supervisor` 的配置（Restart / Rec / Sink）只该有一处（见 `supervisorFor`）。
+// 三条腿共用同一个 `launcher`：`Supervisor` 的配置（Restart / Rec / Sink）只该有一处（见 `supervisorFor`）。
 func newAdapterServices(d *db.DB, store auditedStore, specs []adapterSpec, deadline time.Duration,
 	now func() int64, logf func(string, ...any),
-	sessionSvc *session.Service) (*probeService, *discoverService, error) {
+	sessionSvc *session.Service) (*probeService, *discoverService, *sendPipe, error) {
 	if len(specs) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	pstore, err := adapter.NewSQLiteStore(d, now)
 	if err != nil {
-		return nil, nil, fmt.Errorf("装配 probe 的写通道: %w", err)
+		return nil, nil, nil, fmt.Errorf("装配 probe 的写通道: %w", err)
 	}
 	launch := newLauncher(commandFor(specs), deadline, logf, store, now)
 	entries := make([]adapter.Entry, 0, len(specs))
@@ -109,12 +109,13 @@ func newAdapterServices(d *db.DB, store auditedStore, specs []adapterSpec, deadl
 	reg, err := adapter.NewRegistry(
 		adapter.Version{Major: adapter.ProtocolMajor, Minor: adapter.ProtocolMinor}, entries, pstore, now)
 	if err != nil {
-		return nil, nil, fmt.Errorf("装配 adapter.Registry: %w", err)
+		return nil, nil, nil, fmt.Errorf("装配 adapter.Registry: %w", err)
 	}
 	discover := &discoverService{
 		dbh: d, read: d.Read, launch: launch, byKey: byKey, svc: sessionSvc, logf: logf,
 	}
-	return &probeService{reg: reg}, discover, nil
+	pipe := &sendPipe{read: d.Read, launch: launch, byKey: byKey, logf: logf}
+	return &probeService{reg: reg}, discover, pipe, nil
 }
 
 // commandFor 把"这个 key 该怎么起"做成 launcher 要的闭包。没配起法的 key 理论到不了这里
