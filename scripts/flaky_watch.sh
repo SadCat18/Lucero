@@ -265,6 +265,30 @@ classify() {
   return 0
 }
 
+# FL-10 门①（契约② FL-10 行 09-25 18:4x 补的两条前置门里第一条）：**预检先于采样**。
+# 出生现场：09-25 下午同一条命令连烧三批 122，其中一批 116 次、一批 39 次根本没拿到 `---` 行 ——
+# 根因不是判据太严，是那一刻被验树编不过（别人正在写 `internal/task`）。量级判据烧在编不过的树上
+# 不产生任何证据，所以这一格不许靠"采样的人记得先 build 一下"兜住：门要长在采样器里，谁采样都过它。
+# 故意**没有**"跳过预检"的开关 —— 一条能被躲掉的门不叫门（和上面那条指纹门同理）。
+preflight() {
+  local out rc
+  out="$("$GO" build ./... 2>&1)"; rc=$?
+  if (( rc != 0 )); then
+    printf '★预检不通过（FL-10 门①）：`go build ./...` exit %s ⇒ 被验树此刻编不过，采样不起。\n' "$rc"
+    printf '%s\n' "$out" | grep -vE '^[[:space:]]*$' | head -12 | sed 's/^/      /'
+    printf '      ⇒ 按契约② FL-10 行：报"哪个包、哪一行编不过 + 等当事人交账"，别把量级判据烧在这棵树上。\n'
+    return 2
+  fi
+  out="$("$GO" vet "$MAIN" 2>&1)"; rc=$?
+  if (( rc != 0 )); then
+    printf '★预检不通过（FL-10 门①）：`go vet %s` exit %s ⇒ 目标包自己站不住，采样不起。\n' "$MAIN" "$rc"
+    printf '%s\n' "$out" | grep -vE '^[[:space:]]*$' | head -12 | sed 's/^/      /'
+    return 2
+  fi
+  printf '预检（FL-10 门①）：go build ./... exit 0、go vet %s exit 0 ⇒ 起采样。\n' "$MAIN"
+  return 0
+}
+
 # 反向用例：喂五组合成计数，判决必须各不相同。跑这个不需要等真的红一次。
 if (( SELFTEST_RUN )); then
   fails=0
@@ -349,6 +373,38 @@ if (( SELFTEST_RUN )); then
     *未复现*) printf '  [ok] 只跑一档也有判决     ← %s\n' "${onlyone:0:70}" ;;
     *) printf '  [SELFTEST FAIL] 只跑一档时没拿到判决：%s\n' "$onlyone"; fails=$((fails + 1)) ;;
   esac
+  # FL-10 门①（预检先于采样）三条腿：build 红要拦、vet 红要拦、两个都绿要放行。
+  # 只证"会拦"不够 —— 一条永拦的门看着也像尽职，它只是把采样彻底锁死了。
+  STUBDIR="$ROOT/.scratch/flaky_watch-selftest"; mkdir -p "$STUBDIR"
+  REAL_GO="$GO"; REAL_MAIN="$MAIN"; MAIN="./test"
+  for leg in build-fail vet-fail ok; do
+    case "$leg" in
+      build-fail) BODY='[[ "$1" == "build" ]] && exit 3' ;;
+      vet-fail)   BODY='[[ "$1" == "vet" ]] && exit 4' ;;
+      ok)         BODY='exit 0' ;;
+    esac
+    printf '#!/usr/bin/env bash\n%s\nexit 0\n' "$BODY" > "$STUBDIR/go-$leg"
+    chmod +x "$STUBDIR/go-$leg"
+    GO="$STUBDIR/go-$leg"; PRE_OUT="$(preflight 2>&1)"; PRE_RC=$?
+    SELFTEST_CASES=$((SELFTEST_CASES + 1))
+    case "$leg" in
+      ok)
+        if (( PRE_RC != 0 )) || [[ "$PRE_OUT" != *起采样* ]]; then
+          printf '  [SELFTEST FAIL] 预检把能编过的树也拦了（rc=%s）⇒ 这条门会永拦，采样做不成了：\n%s\n' "$PRE_RC" "$PRE_OUT"
+          fails=$((fails + 1))
+        else
+          printf '  [ok] 预检放行能编过的树（不是永拦）  ← %s\n' "${PRE_OUT:0:52}"
+        fi ;;
+      *)
+        if (( PRE_RC != 2 )) || [[ "$PRE_OUT" != *预检不通过* ]]; then
+          printf '  [SELFTEST FAIL] 假 go 让 %s 失败时预检没拦下（rc=%s）：\n%s\n' "$leg" "$PRE_RC" "$PRE_OUT"
+          fails=$((fails + 1))
+        else
+          printf '  [ok] %s 失败时预检拦下并 exit 2  ← %s\n' "${leg%-fail}" "${PRE_OUT:0:46}"
+        fi ;;
+    esac
+  done
+  GO="$REAL_GO"; MAIN="$REAL_MAIN"; rm -rf "$STUBDIR"
   (( fails == 0 )) && printf '
   [SELFTEST OK] %s 条断言各就各位（分类器不是永真式；条数由自增算出，不手写）
 ' "$SELFTEST_CASES"
@@ -356,6 +412,8 @@ if (( SELFTEST_RUN )); then
 fi
 
 SAMPLES="$N"
+# FL-10 门①：预检排在取戳之前 —— 戳是"这批采样属于哪一版码"的凭据，烧在一棵编不过的树上取的戳没有归属价值。
+if ! preflight; then exit 2; fi
 # 可归因戳（契约① §1.1 第 19 条验收② 的补句：采样要同时交"被验树指纹 + 构建时刻"，无指纹的 0 红不算证据）。
 # 判据本体不在这里，这里只是把 `build_stamp.sh` 在电池前后各取一次；两次数的是**同一份编译输入清单**，
 # 所以"窗口里有人改了文件"（FL-8 那一问）与"改的是不是我验的那份码"（这一问）是分开的两件事。
