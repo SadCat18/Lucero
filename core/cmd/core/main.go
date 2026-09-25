@@ -320,6 +320,9 @@ func (c *Core) handler() http.Handler {
 		},
 		Tickets: c.tickets,
 		Tasks:   c.tasks, TaskList: task.NewRepository(c.db.Read), Store: c.store,
+		// `GET /tasks/{id}` 与列表同用一个读侧实现（同一个 repo 类型、同一条读池），
+		// 不在这里再造第二份查询 —— 两份迟早一处改了另一处没改。
+		TaskGet: task.NewRepository(c.db.Read),
 		// T-229 的读面那一格：`GET /api/v1/executions?task_id=` 是纯读，不注入 Store。
 		// 它同时是"编排腿真建出了 execution"目前唯一能从进程外看到的窗口（写侧 `Service.Create` 今天零调用者）。
 		Executions: execution.NewRepository(c.db.Read),

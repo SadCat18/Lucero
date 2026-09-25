@@ -104,7 +104,10 @@ type Config struct {
 	// 三个都注入时才挂 /api/v1/tasks；缺任何一个就维持"未实现 501"，不给前端半套端点。
 	Tasks    TaskService
 	TaskList TaskLister
-	Store    TaskStore
+	// TaskGet 是 `GET /api/v1/tasks/{id}` 的读面（yaml `getTask`）。单列一个字段而不是塞进
+	// TaskLister：列表那半早就装配好了，今天才接读面，合并接口会把"没接"与"接了但缺方法"混成同一种错。
+	TaskGet TaskGetter
+	Store   TaskStore
 
 	// 注入时才挂 GET /api/v1/notifications（读侧一口，不需要 Store）。
 	Notifications NotificationLister

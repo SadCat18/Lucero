@@ -53,6 +53,13 @@ type TaskLister interface {
 	List(ctx context.Context, f task.Filter) ([]task.Task, error)
 }
 
+// TaskGetter 是 `GET /api/v1/tasks/{id}`（yaml `getTask`）的读面，由 *task.Repository 满足。
+// 与 TaskLister 分成两个字段而不是并成一个接口：列表已经装配了很久，读面今天才接 ——
+// 合并会让"只有列表"那种装配看起来缺一个方法，而它其实是完整的。
+type TaskGetter interface {
+	Get(ctx context.Context, id string) (task.Task, error)
+}
+
 type TaskStore interface {
 	Write(ctx context.Context, fn func(tx *db.Tx) error) error
 }
@@ -137,14 +144,22 @@ func registerTaskRoutes(mux *http.ServeMux, c Config) {
 			return
 		}
 		if action == "" {
-			// **T-195④ 的那处真 bug 就修在这里**：`GET /api/v1/tasks/{id}`（yaml `getTask`，09-22 LAG-1 写进 §3）
-			// 与 `PATCH /api/v1/tasks/{id}`（`updateTask`）都是**合法方法**，而这两条今天没接线 ⇒
-			// 按 C28② 该回 501，不是 405。原来第一句就 `r.Method != POST → 405`，等于叫客户去换方法，
+			// **T-195④ 的那处真 bug 就修在这里**：`GET`（yaml `getTask`，09-22 LAG-1 写进 §3）
+			// 与 `PATCH`（`updateTask`）都是**合法方法**，所以"没接线"该按 C28② 回 501，不是 405。
+			// 原来第一句就 `r.Method != POST → 405`，等于叫客户去换方法，
 			// 而它换哪个方法都一样没接线 —— 那正是 §15.2 那格禁止的互换。
 			switch r.Method {
-			case http.MethodGet, http.MethodPatch:
+			case http.MethodGet:
+				// 读面没注入 ⇒ 还是那句"能力不在"，不是"路径不存在"（C28② 的三态不许被装配进度打乱）。
+				if c.TaskGet == nil {
+					writeError(w, http.StatusNotImplemented, "not_implemented",
+						"GET /api/v1/tasks/{id} 还没装配（读面 TaskGet 没注入）", true)
+					return
+				}
+				getTask(w, r, c, id)
+			case http.MethodPatch:
 				writeError(w, http.StatusNotImplemented, "not_implemented",
-					"GET / PATCH /api/v1/tasks/{id} 都还没接线（declared 在 yaml 里，缺的是实现）", true)
+					"PATCH /api/v1/tasks/{id} 还没接线（declared 在 yaml 里，缺的是实现）", true)
 			default:
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 					"/api/v1/tasks/{id} 只接受 GET 与 PATCH", false)
@@ -311,6 +326,23 @@ func listTasks(w http.ResponseWriter, r *http.Request, c Config) {
 		next = encodeCursor(last.CreatedAt, last.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
+}
+
+// getTask 是 `GET /api/v1/tasks/{id}`：一条读，零业务判断（形状与列表项共用 `viewOf`，
+// 所以同一个 task 在两个出口里长得一样 —— 前端不必为单条读学第二套字段）。
+// 库里没有那一行 ⇒ 404 `not_found`（不是 501：能力已在、资源不在，§15.2 的那条分界）。
+// 带 Principal 头但本口不查权限：§3 里 getTask 的 parameters 只有路径 id，没有鉴权面。
+func getTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	t, err := c.TaskGet.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "没有这条 Task", false)
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, viewOf(t))
 }
 
 // taskAction 是 :queue / :pause / :resume 共用的外壳：解析 If-Match → 一个事务里跑那一步 → 统一映射错误码。

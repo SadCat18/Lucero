@@ -48,6 +48,15 @@ type taskJSON struct {
 // 而这些只有跑真库才作数（假 tx 类型我根本造不出来，platform/db 不供 ExecContext）。
 func newTaskHarness(t *testing.T) (*httptest.Server, *db.DB) {
 	t.Helper()
+	// 默认**不**注入读面：`TestTaskItemPathFollowsC28Ruling` 钉的就是"declared、方法合法、能力没接线 ⇒ 501"，
+	// 注入进去那条钉子会静默变成"404"，那是另一种对。
+	return taskHarness(t, false)
+}
+
+// taskHarness 的两个开关只差一件事：`GET /api/v1/tasks/{id}` 的读面注不注入。
+// 写成参数而不是复制第二个 harness：那 40 行迁移与夹具一旦分两份，迟早一处改了另一处没改。
+func taskHarness(t *testing.T, withGet bool) (*httptest.Server, *db.DB) {
+	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "lucero.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +85,7 @@ func newTaskHarness(t *testing.T) (*httptest.Server, *db.DB) {
 		t.Fatal(err)
 	}
 	ready := func() string { return httpapi.StateReady }
-	srv := httptest.NewServer(httpapi.NewHandler(httpapi.Config{
+	cfg := httpapi.Config{
 		Token: testToken, Version: "test-1", State: ready,
 		MigrationVersion: func() int64 { return 2 },
 		Tickets:          httpapi.NewTickets(30*time.Second, nil),
@@ -85,7 +94,11 @@ func newTaskHarness(t *testing.T) (*httptest.Server, *db.DB) {
 		Store:            d,
 		Instances:        pstore,
 		ExecutionCreate:  execution.NewService(),
-	}))
+	}
+	if withGet {
+		cfg.TaskGet = task.NewRepository(d.Read)
+	}
+	srv := httptest.NewServer(httpapi.NewHandler(cfg))
 	t.Cleanup(srv.Close)
 	return srv, d
 }
