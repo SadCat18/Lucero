@@ -509,6 +509,38 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       经 `Core.discoverField()` 注入，没配 Adapter 时给 nil ⇒ 501）。名单改成"两条 + 一条新补"，原文按"历史不静默改"留档不删。
 
 
+23. **REQ-S-1 裁定（09-25 19:55）：写事务里不许有网络往返、起子进程 —— 这条是 Wave-2 闸门上的产品缺陷，不是测试噪声。**
+    触发事实（`frontend` 19:22 交的红，证据在 `.qoder/evidence/frontend/probe-t286lk.txt` / `live-t286lk.txt`）：
+    `POST /executions/{id}/send` 期限内不回应，**随后 `POST /projects` 也不回应，而 `GET /health` 仍 200**。
+    - **结构性的那半我 19:54 直接读代码量到，不依赖任何计时**：`api/http/executions.go` 的 send handler 把
+      `svc.Send` 整段包在 `h.store.Write(...)` 里，而 `execution.Service.Send` 在**同一个 `tx` 上**调
+      `CallSendTurn`（其注释就写着"`CallSendTurn` 排在 seal 之前：失败 ⇒ 整笔回滚"），`cmd/core` 的 `sendPipe` 那一步做的是
+      `Connect`（**起子进程**）→ `Initialize`（握手）→ `CallTurn`（等回执）。而写通道是 `internal/platform/db` 的
+      **`write.SetMaxOpenConns(1)`** —— 一条串行的写腿。**⇒ 一次 send 能把整个 Core 的写停住**，
+      读面与 `/health` 走另一条池所以照答。这不是"某个 Adapter 慢了"，是**形状**问题。
+    - **期限那一层今天没有真的界住（这一半不由我判成因）**：`sendPipe.CallSendTurn` 只在**入参 ctx 没有期限**时
+      才套 `probeAttemptDeadline`（那是 **probe 的 10 秒常量**，语义是"一次探针尝试"，不是"用户等一次投递"）。
+      `frontend` 的读数是"挂住 >20 秒仍未恢复"（它那两条用例的客户端超时分别 5s 与 20s，20s 那条也红）
+      ⇒ **要么兜底没生效、要么 10 秒之后还有别的东西持着写腿**。两种都还没排除，**所以修之前先量**（见"要交的读数"）。
+    - **裁定：修，且排在 Wave-2 闸门之前**（崩溃注入那半条腿要的就是"Adapter 挂住 / 崩掉时 Core 还能活着答话"，
+      拿今天这个形状去跑，测到的会是"整个 Core 停摆"，那不是我们要断言的东西）。
+      **不变量**：`db.Tx` 的生命周期内不许出现 ①起子进程 ②协议握手 ③等对端回执。适用于**所有**走连接面的腿
+      （`send` / `probe` / `discover`）—— 后两条今天是否同形，**由当事人自己量了回报，我不猜**。
+    - **修法边界（三条，越界即退回）**：
+      ① **不许靠调大/调小期限糊过去** —— 那只是把停摆从"无限"改成"N 秒"，面板上仍是一次假死；
+      ② **两段式要明写幂等语义**：第一笔事务落"意图"（消息 + 状态边 + 事件）并**提交**，第二笔落连接面的结果
+      （成功推进、超时/失败落 `UNKNOWN`）。**重试拿到的答案不许悄悄变** —— 今天"失败整笔回滚 ⇒ 重试得到新答案"这条
+      语义（`internal/execution/send.go` 注释里写明的）如果要改，**改本条并登记**，不许只改代码；
+      ③ **挂住的 Adapter 一律落 `UNKNOWN`，不许 `FAILED`**（契约② 三态口径），且 Core 其余的写必须在**一个明确上界内**恢复。
+    - **要交的读数（先归因、后动码）**：`backend` 交"兜底为什么没界住"的三段分别计时 —— `Connect`（起子进程 + 等 hello）、
+      `Initialize`（握手）、`CallTurn`（等回执）在 ctx 取消后各多久返回；`adapter` 交它包里那两段的"吃不吃 ctx"事实。
+      **谁持锁谁量**，我不替任何一方判成因。
+    - **落地判据（必须走 handler 层，低层证据不算证到这一格）**：真起 fake adapter + `debug/hang` 注入，
+      在 `send` 挂住期间另发一条 `POST /projects`，**断它 1 秒内 201**（N = 1s：不变量的意思是别的写**根本不该等**，
+      不是在等一个期限到期）；再加一条反例 —— **把连接面那一步搬回写事务里，用例必须红**（证明它有牙，不是装饰）。
+      **`--- SKIP` 不算样本**，注入不生效的用例不许报绿。
+
+
 
 ## 2. Redaction：规则归 audit，强制点在 db
 
