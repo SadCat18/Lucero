@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-20T12:37+08:00
+LAST_UPDATED: 2026-09-27T12:11:20+08:00
 
 ## Objective
 
@@ -173,6 +173,29 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 - 放弃 sqlite3 CLI：Go 侧 `modernc.org/sqlite` 内置引擎，`integrity_check` 由 test 从 Go 里跑。
 
 ## Current checkpoint
+
+- Stage: **Wave-2 进行中，闸门未降；停摆 47 小时后复活**。投递通道这一轮换过一次：巡检 09-25 22:19:49
+  被平台 `failureCircuit` 静默禁用（`consecutiveFailures:3`、`lastError:{"type":"session-failed"}`）⇒
+  第一百零七～一百一十七批共 11 条派发里，**T-345 / T-346 从未送达**，直到本批由主控直投。
+  Wave-2 仍**只剩第 8 格端到端**（`backend` 两笔短事务 + 那条 handler 层判据待落）。
+- Status: in_progress
+- Last verified action: **第一百一十八批**（本机 `date` 实读 2026-09-27 12:11:20）：T-345 直投 `backend`
+  （`370101c0`）、T-346 直投 `test`（`5aee940a`），两次 `send_message` 均回 `messageSent`、目标转 `opening`；
+  巡检 `qoder_cron enable` 成功（`pauseReason:null`、`consecutiveFailures` 归 0、`nextRunAt` 已排）。
+- Verification（**取证，不是验收**）：2026-09-27 12:11:20 现量 `git rev-parse --short HEAD` = `af30a9a`；
+  `git rev-list --count origin/main..HEAD` = **28，仍未 push**；`git status --porcelain -- core/` =
+  **空输出** ⇒ 自 09-25 22:04 无人动过 `core/`，那两笔短事务**盘上不存在**（所以 T-345 不是重复派工）；
+  `grep -rl "go/ast" core/test/` = **0** ⇒ T-346② 也未开工。投前七家 worker 会话全部 `cold` /
+  `pendingInteractionCount:0`，进度文件 mtime 最晚是 `adapter` 09-25 21:54:22 ⇒ 这两条"待投递"确实压了 47 小时。
+- Next action: ① 等 `backend`、`test` 这两轮交账（判据＝各自台账新段落 + 现读 `numstat` + 一次全包复跑，
+  不带"截至某时刻某棵树"的读数不采信）；② 巡检 12:2x 那一轮若真跑起来，恢复它作投递通道，
+  **主控停止顶投、历史行一律不补投**（停摆期我顶投过的重投就是第二份真相）；
+  ③ `frontend` 第 8 格端到端要等 ① 落盘才谈；④ **push 仍未做**（28 个提交），挂 NEEDS YOU 等用户，我不催。
+
+
+
+**留档 · 09-25 22:1x 那代头部（原文照录，已降级为历史）**
+
 
 - Stage: **Wave-2 进行中，闸门未降**。三件验证的当前形状：**FL-10 量级腿**盘上已有带指纹的 122/122 读数
   但 `test` **还没交账** ⇒ 不算闭；**合验**（`adapter` 第 22 轮）判决型那一半我 19:3x **采纳**、
@@ -1050,9 +1073,16 @@ LAST_UPDATED: 2026-09-20T12:37+08:00
 
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
-| T-345 | backend | **待投递** | **你第 276 / 281 条压着的那两裁都给了，定稿在契约① 第 25 条；你"不动码等一句"这一步做得对。**<br>① **`UNKNOWN` 那一档：裁丙，并把第 23 条③的字收窄**。同步失败/挂住这支 v0.1 留 `RUNNING` + 503 `adapter_unresponsive`（retryable=true），**不新造 `UNKNOWN` 边**；甲=改领域边集（要 ADR）、乙=`state_confidence` 是一列两义且该列今天零生产写入者 —— 两条都否。**我第 23 条③原文"挂住的 Adapter 一律落 `UNKNOWN`"字面过宽，已就地收窄**：那一句只指**崩溃恢复**那一支（`Occasion=Recovery` 那条既有边）。⇒ 契约②"Adapter 崩溃 ⇒ in-flight Execution 转 `UNKNOWN`（非 `FAILED`）"的验收落点是**恢复扫描**，不是同步响应。**你量的缺口我立成 REQ-RC-1**（`internal/execution` 非测试码里 `Recovery` 零生产者；全仓唯一非测试命中在 `internal/task/projection.go`，那是 task 的状态机）——排在第 8 格之后、Wave-3 之前，**今天不占你，也别为它改 `advance` 或硬塞 `Recovery`**。<br>② **续跑 vs 永久 409：裁"走续跑"，而且 enabler 不需要 migration、不需要改 ID 规范**：`claimIdempotency` 只在 `state='COMPLETED'` 时读 `response_json`（我复现过你那条地基）⇒ **`IN_PROGRESS` 期间那一格是无人读的闲置位**：claim 时把第一笔身份写进 `response_json`，密封时覆盖成真响应。**这一列的两义连同读取条件已写进第 25 条②**（state=IN_PROGRESS ⇒ 身份；COMPLETED ⇒ 响应）——落码时照它，别只让它停在派发消息里；"不许开新列/不动 `db` 地盘"照旧生效。<br>③ **并发双续跑我容忍**：密封仍是 `UpdateOnce(guard state != 'COMPLETED')` ⇒ 只一个封得上，另一个 0 行 —— 按 CO-44 **必须喊出来**，不许静默当成功；第二条真投递由 §4 透传给 adapter 的 `Idempotency-Key` 挡。**不许为这件事给 `platform/db` 加双列 guard 或改签名。**<br>④ **判据在第 25 条⑤**（三条用例 + 两条反例，含"崩在密封前 ⇒ `messages` 仍恰一行"这一格，那才是要防的事本身）。<br>⑤ **树现在干净到可以跑全仓了**：`adapter` 第二批我已入册 `ae26c61`、它止笔（台账 21:55:24），`core/` 只剩你自己的件 —— 你之前那句"不在自相矛盾的树上跑第二遍"到此失效，交账请带**一次全包复跑 + 现读 `numstat`**。 |
-| T-346 | test | **待投递** | **三件一次结清：REQ-T30 三选一、REQ-T31 甲/乙、那张 21 个"零生产者"的分诊要不要跑。**<br>① **REQ-T30 裁乙**：先由 `backend` 把连接面搬出写事务（裁决刚给它，见 T-345），你再落那条判据。我不选甲当正件的理由不是"装配不是生产装配"，而是**它现在必然恒红**——你说"我这边不红不等于生产不红"我认，反过来"必然红"同样不该进判据表。允许你把甲当**过渡件**写进 `core/test/`，但**行里必须明写"装配为测试复刻、生产未证"**，不许读成 F20-4 那类已交判据。<br>② **REQ-T31 裁甲**：落点 `core/test/`、Go 用例 + `go/ast` 扫发射位（`db.EventDraft{Type:…}` / `Tx.Create` / `TouchTransition` / `AppendEventOnly`），**常量回解成字面值**，与 §6 展开后的词表做减法、再与散文"当前态"那行**双向对拍**。**你对"别开两处"的读法是对的**：我否的是"再开一个入口脚本"，不是"必须把 AST 塞进 bash"；展开规则的权威只有一份、住在 `TestEventCatalogMatchesJournalConstants`。三条腿照你写的三条（字面量发射位不许进无生产者集合 / 只有定义位+注册表位的必须进 / 双向相等）。<br>③ **那 21 个先跑分诊、判据代码后落**。你自己已经证明 `project_created` 是**裸字符串字面量**发射而 `task_created` 走常量 ⇒ 一种发射两种写法，那 18 个假红不许进 `scripts/**`（你拦得对）。交一张分诊表：哪些是名单真漏、哪些是你规则看不见、哪些是写法不统一；顺带告诉我要不要立项"发射统一走常量"——我倾向要，但那是 `backend` 的活、不排 Wave-2 前。<br>④ 排程：`core/` 刚干净（`backend` 正在写 REQ-S-1 那两笔），**要复采现在是窗口**；REQ-T25 那条 ID 去重腿的代码还在 `scripts/check_ownership.sh` 里未入册 ⇒ 交账写一句"这版脚本能被下一批复现"，我按角色切一笔。 |
+| T-345 | backend | **已投递（主控直投 12:07:13~12:10:54）** | **你第 276 / 281 条压着的那两裁都给了，定稿在契约① 第 25 条；你"不动码等一句"这一步做得对。**<br>① **`UNKNOWN` 那一档：裁丙，并把第 23 条③的字收窄**。同步失败/挂住这支 v0.1 留 `RUNNING` + 503 `adapter_unresponsive`（retryable=true），**不新造 `UNKNOWN` 边**；甲=改领域边集（要 ADR）、乙=`state_confidence` 是一列两义且该列今天零生产写入者 —— 两条都否。**我第 23 条③原文"挂住的 Adapter 一律落 `UNKNOWN`"字面过宽，已就地收窄**：那一句只指**崩溃恢复**那一支（`Occasion=Recovery` 那条既有边）。⇒ 契约②"Adapter 崩溃 ⇒ in-flight Execution 转 `UNKNOWN`（非 `FAILED`）"的验收落点是**恢复扫描**，不是同步响应。**你量的缺口我立成 REQ-RC-1**（`internal/execution` 非测试码里 `Recovery` 零生产者；全仓唯一非测试命中在 `internal/task/projection.go`，那是 task 的状态机）——排在第 8 格之后、Wave-3 之前，**今天不占你，也别为它改 `advance` 或硬塞 `Recovery`**。<br>② **续跑 vs 永久 409：裁"走续跑"，而且 enabler 不需要 migration、不需要改 ID 规范**：`claimIdempotency` 只在 `state='COMPLETED'` 时读 `response_json`（我复现过你那条地基）⇒ **`IN_PROGRESS` 期间那一格是无人读的闲置位**：claim 时把第一笔身份写进 `response_json`，密封时覆盖成真响应。**这一列的两义连同读取条件已写进第 25 条②**（state=IN_PROGRESS ⇒ 身份；COMPLETED ⇒ 响应）——落码时照它，别只让它停在派发消息里；"不许开新列/不动 `db` 地盘"照旧生效。<br>③ **并发双续跑我容忍**：密封仍是 `UpdateOnce(guard state != 'COMPLETED')` ⇒ 只一个封得上，另一个 0 行 —— 按 CO-44 **必须喊出来**，不许静默当成功；第二条真投递由 §4 透传给 adapter 的 `Idempotency-Key` 挡。**不许为这件事给 `platform/db` 加双列 guard 或改签名。**<br>④ **判据在第 25 条⑤**（三条用例 + 两条反例，含"崩在密封前 ⇒ `messages` 仍恰一行"这一格，那才是要防的事本身）。<br>⑤ **树现在干净到可以跑全仓了**：`adapter` 第二批我已入册 `ae26c61`、它止笔（台账 21:55:24），`core/` 只剩你自己的件 —— 你之前那句"不在自相矛盾的树上跑第二遍"到此失效，交账请带**一次全包复跑 + 现读 `numstat`**。 |
+| T-346 | test | **已投递（主控直投 12:07:13~12:10:54）** | **三件一次结清：REQ-T30 三选一、REQ-T31 甲/乙、那张 21 个"零生产者"的分诊要不要跑。**<br>① **REQ-T30 裁乙**：先由 `backend` 把连接面搬出写事务（裁决刚给它，见 T-345），你再落那条判据。我不选甲当正件的理由不是"装配不是生产装配"，而是**它现在必然恒红**——你说"我这边不红不等于生产不红"我认，反过来"必然红"同样不该进判据表。允许你把甲当**过渡件**写进 `core/test/`，但**行里必须明写"装配为测试复刻、生产未证"**，不许读成 F20-4 那类已交判据。<br>② **REQ-T31 裁甲**：落点 `core/test/`、Go 用例 + `go/ast` 扫发射位（`db.EventDraft{Type:…}` / `Tx.Create` / `TouchTransition` / `AppendEventOnly`），**常量回解成字面值**，与 §6 展开后的词表做减法、再与散文"当前态"那行**双向对拍**。**你对"别开两处"的读法是对的**：我否的是"再开一个入口脚本"，不是"必须把 AST 塞进 bash"；展开规则的权威只有一份、住在 `TestEventCatalogMatchesJournalConstants`。三条腿照你写的三条（字面量发射位不许进无生产者集合 / 只有定义位+注册表位的必须进 / 双向相等）。<br>③ **那 21 个先跑分诊、判据代码后落**。你自己已经证明 `project_created` 是**裸字符串字面量**发射而 `task_created` 走常量 ⇒ 一种发射两种写法，那 18 个假红不许进 `scripts/**`（你拦得对）。交一张分诊表：哪些是名单真漏、哪些是你规则看不见、哪些是写法不统一；顺带告诉我要不要立项"发射统一走常量"——我倾向要，但那是 `backend` 的活、不排 Wave-2 前。<br>④ 排程：`core/` 刚干净（`backend` 正在写 REQ-S-1 那两笔），**要复采现在是窗口**；REQ-T25 那条 ID 去重腿的代码还在 `scripts/check_ownership.sh` 里未入册 ⇒ 交账写一句"这版脚本能被下一批复现"，我按角色切一笔。 |
 | T-347 | 记账（不投递） | — | ① **本轮入册三笔**：`9751e11`（`backend` `GET /tasks/{id}` 读面）、`ba03ce2`（`adapter` Stop 接线四件）、`ae26c61`（`adapter` `write` 可取消三件，**只引它自己 21:55:24 那份现读读数**：全包唯一红 = `crash_test.go:251`，归 `backend` 在途那两笔）。归属边界我自己复现：`core/api/http/*.go` 里 `internal/process` 命中 0 个文件（与巡检 21:51:44 同读数）⇒ 两批互不依赖，不必等。<br>② **验证范围照实写**：`api/http` vet+test 我亲自跑过（ok 5.931s）、`build ./...` exit 0、`cmd/core` vet 0；**`go test ./...` 我没跑** —— 那一刻 `internal/process` 还在动。"全仓绿"这一格今天不自洽，我不假装它成立，引用谁的读数都按 T-323 带"截至某时刻某棵树"。<br>③ **契约新增第 25 条**：两段式幂等语义、`response_json` 的受控两义（state 作判别器）、双续跑容忍但必须喊、`UNKNOWN` 只属崩溃恢复那一支、REQ-RC-1 立项不派工、判据三条 + 反例两条。第 23 条③就地加了收窄指针。<br>④ **Wave-2 现状**：合验两份永久采信／FL-10 已交／读面已入册／回收 + `write` 可取消**已入册**／**只剩第 8 格端到端**（`backend` 两笔短事务在写 + 那条 handler 层判据待落）。**闸门不降**，今天不宣布"验证齐"。<br>⑤ **push 仍未做**：22:01:44 现量 `git rev-list --count origin/main..HEAD` = **27**（本批这笔落下去之后 28），挂在 NEEDS YOU 等用户，我不催。 |
+
+## 待投递 · 第一百一十八批（09-27 12:1x：停摆 47 小时的复活账 —— T-345/T-346 由主控直投送达，巡检通道复位）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-348 | 记账（不投递） | — | ① **停摆时长用两条可复跑读数钉死**：`qoder_cron list` 现量巡检 `lastRunAt=1790345985527`＝**09-25 22:19:49**、`enabled:false`、`pauseReason:failureCircuit`、`consecutiveFailures:3`、`lastError:{"type":"session-failed"}`；本批 `date`＝2026-09-27 12:11:20 ⇒ **47 小时 52 分零巡检、零告警**，与"进度文件 mtime 最晚 09-25 21:54:22 / `orchestration.md` 22:04:09"两路独立一致。**第五次同类停摆，仍是同一根因**（会话起不来 → 连失 3 次被静默禁用）。<br>② **代价落在哪一格是算得出的**：第一百一十七批那两条"等主控一句"已经裁完并写进契约① 第 25 条，但**指令压在我账上 47 小时没出门** —— `backend` 与 `test` 都在按各自的"不动码等一句"守规矩，等的是一个已经写好但没人送的答案。⇒ 本批由主控直投补上（`send_message` 两次都回 `messageSent`），**已投递状态就地改标，历史行不补投**。<br>③ **一条通道事实要更正旧记录**：NEEDS YOU 里 09-24 那条"`qoder_cron` 在巡检这一侧不存在"我不动它（那是它的实测），但**主控这一侧今天 `list` / `enable` 都成功** ⇒ 探活对我是**可机判**的，不必只靠"开口才查"这个习惯。**我已把 `enable` 打回去**（`pauseReason:null`、失败计数归 0、`nextRunAt` 已排 12:2x）；**"它下一轮真跑得起来"这句我现在没有证据，等心跳行落地再认**。日报那份仍 `enabled:true` 但 `consecutiveFailures:2`、今天 12:04:05 一次 107ms `session-failed` ⇒ 下一次 09-28 09:00 若再失败会被同一熔断禁掉，**我不用 `run` 去试它**（试失败＝直接打死，代价比知道得早一天大）。<br>④ **Wave-2 现状不变、闸门不降**：第 8 格端到端仍等 ① `backend` 两笔短事务（`core/` 盘上不存在，已实测）② `test` 那条 handler 层判据（裁乙：先搬连接面再落）。合验两份、FL-10、读面、回收 + `write` 可取消**均已入册**。<br>⑤ **仍等用户**：**push**（现量本地领先 `origin/main` **28** 个提交）、熔断 (A)/(B)、B5② 探针授权。三条都不阻塞本轮已投出去的两条指令。 |
+
 
 ## 待投递 · 第十八批（13:3x，REQ-F-18 裁定 + 共享临时目录的备份广播）
 
@@ -1814,3 +1844,16 @@ bbf829e ledger: 第九十九批 —— 更正我 T-271 那句"ResolveInstance �
   **✅ 已解除，你这一票不用放了（00:18 只读复核）**：adapter 自己找到了 12 段的已知良好版本 `5ea5172`（23:28）并复原，我 00:18:20 实测 `.qoder/progress/adapter.md` = **12 段 / 1780 行、无重复标题、mtime 00:11**；坏件它留在 `.scratch/adapter/ledger-corrupted-r11.md` 备查。它同时把根因写成了两条判据（账本只走 Edit/Write、绝不在 bash 里带反引号；整段替换后必须重数段数并核对标题顺序，只数行数不算），并自报"同一个毛病第四次复发"。⇒ **本节这条作废**，不需要用户动作。
 - **⚠ 第三次同类停摆（25.4 小时）＋我这侧的探活/自禁通道仍缺失（巡检 09-24 07:23 实测补记）**：我最后真跑 **09-23 05:57:05**（`session-failed`），到 **09-24 07:19** 才再醒 ⇒ 约 25.4 小时零巡检、同样零告警；与主控 T-224① 的读数一致（它 07:02 靠 `qoder_cron list` 发现并已复位）。**要你知道的三件**：① 第三次仍是同一根因（会话起不来 → 连失 3 次被静默 disable），**(A)/(B) 仍等你回**——代价已从 18h/30h 涨到第三次的 25h，而**发现它的仍然只有"有人开口"这条路**；② **`qoder_cron` 在巡检这一侧仍然不存在**（07:20:00 我实测调用被平台拒：`No connected MCP server offers a tool named mcp__builtin__qoder_cron`）⇒ 我既读不到 `pauseReason`/`lastRunAt`，也执行不了 prompt 里"连续 3 轮零进展就自禁"那一条——**巡检不是可靠的探活者，它是被探活的那个**，探活只能是"主控每次被唤起先 `qoder_cron list`"这个习惯；③ 断链期唯一沉没的一项活：**T-215（REQ-L-1，09-23 05:30 投给 backend）25 小时盘上未动**（`lock.go` mtime 09-20 11:31:53，我 07:20:53 量）——本轮回已用推进名额把 backend 唤醒；这一格是 Wave-2 崩溃注入门（约每 15 次合验真红一次）的真实风险。
 
+- **⚠ 第五次同类停摆，47 小时 52 分（主控 09-27 12:1x 实测复位）**：巡检最后一次真跑 **09-25 22:19:49**，
+  到我本轮开口前查 `qoder_cron list` 时（12:04）仍是 `enabled:false / pauseReason:failureCircuit /
+  consecutiveFailures:3 / session-failed` ⇒ **同样零告警**。成因我**不推断**：我这侧 12:0x 能起回合、能直投成功，
+  只说明**此刻**不是全局额度问题；22:19 那三次为什么 `session-failed` 我没有证据。
+  能确证的只有形状：两条 cron 都在极短时间里失败（巡检 `lastDurationMs:4192`、日报今天 12:04:05 那次 `107`），
+  也就是**会话根本没起来**，不是任务跑挂了。
+  **这一轮的真实代价是可以指认的**：第一百一十七批我把两处"等主控一句"裁完并写进契约① 第 25 条，
+  但 T-345 / T-346 两条派发**在盘上压了 47 小时没出门**；`backend` 与 `test` 都规矩地"不动码等一句"，
+  等的是一个早已写好、只是没人送的答案。已处理：两条由主控直投送达、巡检 `enable` 复位、历史行不补投。
+  **仍等你那三件（不因复活作废）**：① 熔断 **(A)** 接受"你开口我才知道" / **(B)** 提高容错 —— 你不回我按 (A)，
+  但请把这次读数当证据看：**(A) 的实际代价已累积到 18h + 30h + 25h + 31h + 47h**；
+  ② **push**：本地领先 `origin/main` **28** 个提交（12:07:13 现量），你没点头我不推；
+  ③ B5② 探针仍未授权（不阻塞任何 Wave）。
