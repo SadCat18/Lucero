@@ -9,11 +9,17 @@ package main
 // 端到端那一格按同一套 `LUCERO_TEST_FAKE_ADAPTER=1`（与 probe/discover 那两条一致）。
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	httpapi "github.com/SadCat18/lucero/core/api/http"
 	"github.com/SadCat18/lucero/core/internal/adapter"
@@ -182,4 +188,172 @@ func journalSince(t *testing.T, d *db.DB, upper int64) []journalRow {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// TestSendRequestLegHonorsCallersDeadline 是 T-345③ 那句"换常量时把注释与用例一起改"里**行为**那一腿：
+// 期限那一步（`sendpipe.go:76~81`）只能"外层没期限才补一个"，不许把这一腿从调用方手里摘出去。
+//
+// 形状是双向的，两个界都断：外层给 1.5 秒 + 一个一声不出的连接（`pipeCommand("silent")`，
+// 与 processpipe 那批用例共用同一个替身，不需要 `LUCERO_TEST_FAKE_ADAPTER`）⇒
+//   - 下界 `>= 1.2s`：证明确实等到了"要回执"那一步、并由**外层的期限**掐掉；
+//     少了这一腿，`Connect` 秒失败也会让"耗时 < 上限"白过（判据空转）。
+//   - 上界 `< 8s`：若写成 `WithTimeout(context.Background(), sendAttemptDeadline)`（丢掉父 ctx），
+//     这里就是 ~10 秒 ⇒ 红。8 秒是留给机器负载的余量，不是量出来的数。
+//
+// 为什么不用"外层 30 分钟"那种写法：`WithTimeout(parent, 10s)` 取 min 之后仍贴着父期限，
+// 那种形状与正确的不可分 —— 只有父期限比 10 秒短才分得出。
+func TestSendRequestLegHonorsCallersDeadline(t *testing.T) {
+	_, _, base, d := newBareDiscover(t, []adapterSpec{{key: "fake", displayName: "fake", command: "用不上：连接由 pipeCommand 起"}})
+	spec, ok := base.byKey["fake"]
+	if !ok {
+		t.Fatal("装配里没留下 key=fake 的 spec（这条用例会退化成 501，测不到期限）")
+	}
+	seedFakeInstance(t, d)
+	seedSession(t, d, "s-hang", "remote-1")
+
+	// 自己的 launcher：连接面换成"起得来、但一声不出"的那个替身。
+	l := newLauncher(pipeCommand("silent"), probeAttemptDeadline, nil, auditedStore{d: d}, nil)
+	pipe := &sendPipe{read: base.read, launch: l, byKey: map[string]adapterSpec{"fake": spec}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	rec, err := pipe.CallSendTurn(ctx, execution.TurnCall{
+		ExecutionID: "ex-hang", SessionID: "s-hang", Text: "外层期限",
+		Delivery: "start_now", IdempotencyKey: "k-hang",
+	})
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatalf("一声不出的连接该失败，实际回执 %+v —— 通了就不该再看耗时（那是另一条腿）", rec)
+	}
+	var ae *adapter.Error
+	if !errors.As(err, &ae) || ae.Code != adapter.ErrAdapterUnresponsive {
+		t.Errorf("挂住的连接必须归一成 ADAPTER_UNRESPONSIVE（503），实际 %T %v", err, err)
+	}
+	if elapsed < 1200*time.Millisecond {
+		t.Errorf("只等了 %v，比外层 1.5 秒还早 ⇒ 这条腿没走到「等回执」那一步，耗时上限那一条是在空转", elapsed)
+	}
+	if elapsed >= 8*time.Second {
+		t.Errorf("外层只给了 1.5 秒，这一腿却等了 %v ⇒ 期限那一步把父 ctx 换成了自己的（或没守着 ctx）", elapsed)
+	}
+}
+
+// TestSendRequestLegBoundsWhenCallerHasNoDeadline 补上一条便宜的判据给不了的那一格：
+// 外层**没给期限**时，`sendpipe.go` 那句"才补一个"必须真补上，否则一个挂住的 Adapter 就把 handler 线程永久占着
+// —— 这正是 T-345③ 那个 10 秒唯一能行为可见的时刻。代价是这条用例每次要等满那一档（实测见台账，耗时带负载条件）。
+//
+// 双向界：`>= 8s` 证明"确实补了期限、并由它掐掉"（摘掉整块 `if !ok` ⇒ 这一腿挂到包超时）；
+// `<= 25s` 证明"补的是那个量级、不是无限"。两条都**分不出借没借**（两个常量同值），那是上一条源形状判据的活。
+func TestSendRequestLegBoundsWhenCallerHasNoDeadline(t *testing.T) {
+	_, _, base, d := newBareDiscover(t, []adapterSpec{{key: "fake", displayName: "fake", command: "用不上：连接由 pipeCommand 起"}})
+	spec, ok := base.byKey["fake"]
+	if !ok {
+		t.Fatal("装配里没留下 key=fake 的 spec（这条用例会退化成 501，测不到期限）")
+	}
+	seedFakeInstance(t, d)
+	seedSession(t, d, "s-bound", "remote-1")
+
+	l := newLauncher(pipeCommand("silent"), probeAttemptDeadline, nil, auditedStore{d: d}, nil)
+	pipe := &sendPipe{read: base.read, launch: l, byKey: map[string]adapterSpec{"fake": spec}}
+
+	started := time.Now()
+	rec, err := pipe.CallSendTurn(context.Background(), execution.TurnCall{
+		ExecutionID: "ex-bound", SessionID: "s-bound", Text: "外层无期限",
+		Delivery: "start_now", IdempotencyKey: "k-bound",
+	})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatalf("一声不出的连接该失败，实际回执 %+v", rec)
+	}
+	var ae *adapter.Error
+	if !errors.As(err, &ae) || ae.Code != adapter.ErrAdapterUnresponsive {
+		t.Errorf("挂住的连接必须归一成 ADAPTER_UNRESPONSIVE（503），实际 %T %v", err, err)
+	}
+	if elapsed < 8*time.Second {
+		t.Errorf("外层没给期限，这一腿却在 %v 就退了 ⇒ 「补一个期限」那一步没落地", elapsed)
+	}
+	if elapsed > 25*time.Second {
+		t.Errorf("等了 %v 才退 ⇒ 补的那个量级不是 10 秒那一档", elapsed)
+	}
+}
+
+// TestSendAttemptDeadlineIsItsOwnConstant 钉 T-345③ 那两句字面：send 有自己的期限常量、
+// **不再借** `probeAttemptDeadline`，而且换数时注释与用例一起改。
+//
+// 三腿都判形状：① const 定义位在 `sendpipe.go` 上、且那个数就是 10 秒；② 定义之外真有人用它
+// （只留个没人用的定义=没接线）；③ 代码里不再出现 `probeAttemptDeadline`。
+// 用 `go/parser` 而不是 grep，原因很具体：`sendpipe.go` 的注释正文自己写着"不再借 `probeAttemptDeadline`"，
+// 字面 grep 会把这句自述当成引用（假红）。
+//
+// 为什么"那个数"要从**源里读**而不是写 `sendAttemptDeadline != 10*time.Second`：
+// 引用符号本身会让"把常量内联回调用点 / 挪走定义"这类变异变成 BUILD-BROKEN（无效变异、不计判决 ——
+// 本批 M5 第一发就是这么废的）。读定义位右侧那段字面，既钉住 10 秒，又让"只改数"那一手真能红。
+//
+// 这条判据**证不到**的一件事，写给下一个读它的人，别拿它当"量级被行为验过"：
+// 两个常量今天同值（都是 10 秒）⇒ 没有行为用例分得出"借了没借"，这条只能判名字与数。
+// 要让"借没借"行为可分，得先给两个不同的量级 —— 量级归主控裁。
+func TestSendAttemptDeadlineIsItsOwnConstant(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "sendpipe.go", nil, 0) // mode 0 ⇒ 注释不进 AST
+	if err != nil {
+		t.Fatalf("解析 sendpipe.go 失败（这条判据的地基）：%v", err)
+	}
+
+	defIdents := map[*ast.Ident]bool{}
+	var deadlineValue string
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs, ok := sp.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range vs.Names {
+				defIdents[name] = true
+				if name.Name == "sendAttemptDeadline" && len(vs.Values) == 1 {
+					var buf bytes.Buffer
+					if err := printer.Fprint(&buf, fset, vs.Values[0]); err != nil {
+						t.Fatalf("取 `sendAttemptDeadline` 的定义值失败：%v", err)
+					}
+					deadlineValue = buf.String()
+				}
+			}
+		}
+	}
+	if deadlineValue != "10 * time.Second" {
+		t.Errorf("T-345③ 给的占位量级是 10 秒、且定义位要在 `sendpipe.go` 的 const 上（换数时注释与本条用例一起改）；"+
+			"从定义位实际读到 %q（空串=这一格里没有那个 const）", deadlineValue)
+	}
+
+	var declared, usedOutsideDef, mentionsProbe bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		switch id.Name {
+		case "sendAttemptDeadline":
+			if defIdents[id] {
+				declared = true
+			} else {
+				usedOutsideDef = true
+			}
+		case "probeAttemptDeadline":
+			mentionsProbe = true
+		}
+		return true
+	})
+	if !declared {
+		t.Errorf("`sendpipe.go` 的 const 定义位上没有 `sendAttemptDeadline`（数被内联回调用点=没拆常量）")
+	}
+	if !usedOutsideDef {
+		t.Errorf("`sendpipe.go` 里除定义之外没人用 `sendAttemptDeadline`（那这条腿又回到没期限/借来的期限）")
+	}
+	if mentionsProbe {
+		t.Errorf("`sendpipe.go` 的代码里仍出现 `probeAttemptDeadline` ⇒ ③ 那句「不再借」没落地（注释里的自述不算，parser 已剥掉注释）")
+	}
 }

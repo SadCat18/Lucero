@@ -172,8 +172,10 @@ func TestLauncherPipeRoundTrips(t *testing.T) {
 	}
 }
 
-// TestLauncherCloseToleratesAChildThatAlreadyDied 钉 childAlreadyGone 那格：
+// TestLauncherCloseToleratesAChildThatAlreadyDied 钉的是 `process.ChildAlreadyGone` 那一格（T-368② 之后本包不自留副本）：
 // 孩子自己先退了（adapter 握手期间崩掉就是这一形），Close 不该把"已经不在了"报成关闭失败。
+// 它走的是 `pipe.Close()` 这条真路径 ⇒ 换调用点之后不必另设备岔；本批两发反例（短路掉那一判、私有副本回来）
+// 分别咬这条与下一条，判决记在账本第 289 条。
 func TestLauncherCloseToleratesAChildThatAlreadyDied(t *testing.T) {
 	var pid int
 	l := newLauncher(pipeCommand("exit"), 5*time.Second, capturePID(&pid), auditedStore{}, nil)
@@ -188,6 +190,40 @@ func TestLauncherCloseToleratesAChildThatAlreadyDied(t *testing.T) {
 		t.Errorf("孩子已经自己退了，Close 该如实成功，实际 %v", err)
 	}
 	requireProcessGone(t, pid)
+}
+
+// TestCloseUsesTheSingleSourceGoneCheck 钉 T-368② 那句"别留一个只有测试在引用的死函数"：
+// 本包不许再有 `func childAlreadyGone` 私有副本，Close 里那一判必须走 `internal/process` 导出的唯一来源。
+//
+// 为什么这一格只能判源、判不出行为：两份函数体我今天自己按字节比过（IDENTICAL，body 164 字节、
+// sha256 前缀 `5d5e5bfdd29568a7`）⇒ **没有任何输入能分出用的是哪一份**，能分出的只有"定义位在不在本包"。
+// 所以这条是归属判据，行为那一半仍由上面那条 `TestLauncherCloseToleratesAChildThatAlreadyDied` 承担
+// —— 两批判据不许合批，也不许拿这条当"期限/回收被验过"。
+// 读法上注释行整行跳过：`processpipe.go` 的注释里现在就写着这两个名字，字面计数会假红。
+func TestCloseUsesTheSingleSourceGoneCheck(t *testing.T) {
+	src, err := os.ReadFile("processpipe.go")
+	if err != nil {
+		t.Fatalf("读 processpipe.go 失败（这条判据的地基）：%v", err)
+	}
+	var definesCopy, callsExported bool
+	for _, line := range strings.Split(string(src), "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "//") {
+			continue
+		}
+		if strings.HasPrefix(l, "func childAlreadyGone(") {
+			definesCopy = true
+		}
+		if strings.Contains(l, "process.ChildAlreadyGone(") {
+			callsExported = true
+		}
+	}
+	if definesCopy {
+		t.Errorf("`processpipe.go` 里又出现了私有副本 `func childAlreadyGone` ⇒ 单一来源被破（T-368②：先对拍、一致才导出，本包只许调用）")
+	}
+	if !callsExported {
+		t.Errorf("`processpipe.go` 的代码里没有 `process.ChildAlreadyGone(` 那一判 ⇒ Close 会把'目标早不在'报成关闭失败（手里崩掉的孩子就是这一形）")
+	}
 }
 
 // TestLauncherDeadlineBoundsReads 用一个"一声不出也不退"的子进程验：装配方给了默认期限之后，

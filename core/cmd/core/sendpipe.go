@@ -1,7 +1,8 @@
 package main
 
-// sendpipe 是 `POST /api/v1/executions/{id}/send` 的连接半边：execution.Service.Send 在
-// 全部 DB 写之后、seal 之前调 CallSendTurn，这里把一次 start_now/guide 真的送到 Adapter。
+// sendpipe 是 `POST /api/v1/executions/{id}/send` 的连接半边：REQ-S-1 之后它由 **`execution.Service.Deliver`
+// 在写事务之外**调用（旧描述"在全部 DB 写之后、seal 之前调"是修之前的形状 —— 那一格正是把一次 send 变成
+// 全 Core 的写停摆的地方，09-25 裁、09-27 落；见 `api/http/executions.go` 的三拍注释）。
 //
 // 三件事决定它长这样（与 discoverassembly 同一批口径）：
 //   - **一次 send 现起一条连接**：v0.1 不做连接池（C42 未裁），连完就关。
@@ -19,12 +20,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	httpapi "github.com/SadCat18/lucero/core/api/http"
 	"github.com/SadCat18/lucero/core/internal/adapter"
 	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/session"
 )
+
+// sendAttemptDeadline 是 send 自己的请求腿期限（T-345③ 给的字：不再借 `probeAttemptDeadline`，
+// 那是"一次探针尝试"的语义，与"用户等一次投递"不是一件事）。两句必须一起留着：
+//   - **这个 10 秒是从 probe 借来的占位量级，不是从对端行为量出来的**；真 Adapter 接入后要按实测换数
+//     （主控记在 Wave-3 之后，不排当前闸门）；换数时**注释与用例一起改**，不许只改数。
+//   - **REQ-S-1 之后期限只管"这条请求腿愿意等多久"，它不再能停住全 Core 的写**：
+//     停摆的病根是"投递待在写事务里"，那个已经由两笔短事务修掉（反例 M3 证的是它，不是这个数）。
+//
+// 这一格的存在理由（T-361④ 让引的那一款，按章节名引、别按编号引）：
+// 契约①「REQ-S-1 裁定：写事务里不许有网络往返、起子进程」那一条新增的**第 ⑧ 款「调用方义务：
+// 连接面上每一次调用必须自带期限」**，实测出处是 `adapter` 的 CO-53 —— 连接面**不检测也不自救**
+// 不带期限的 ctx（孩子不再读 stdin 时一次 `request` 5 秒不返回、`writeMu` 被永久占住，只有 `Close` 解得开）。
+// 所以下面那句"外层没期限才补"不是风格选择：**这里的 `cctx` 必须无条件带期限**，缺了就是一条能把连接楔死的腿。
+const sendAttemptDeadline = 10 * time.Second
 
 // sendPipe 满足 execution.TurnCaller。
 type sendPipe struct {
@@ -61,11 +77,12 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 			httpapi.ErrAdapterNotLaunchable, adapterKey.String, adapterKey.String)
 	}
 
-	// 与 discover 同一条：连接这条路必须有期限，否则一个挂住的 Adapter 拖住 handler 线程。
+	// send 这一跳必须有期限，否则一个挂住的 Adapter 拖住 handler 线程。
+	// 量级是**占位**：见上面 `sendAttemptDeadline` 的两句注（借来的数 + 它现在只管请求腿）。
 	cctx := ctx
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		cctx, cancel = context.WithTimeout(ctx, probeAttemptDeadline)
+		cctx, cancel = context.WithTimeout(ctx, sendAttemptDeadline)
 		defer cancel()
 	}
 

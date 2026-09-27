@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -142,6 +143,29 @@ func postTimed(t *testing.T, url, token, principal, key, body string) (int, stri
 	return resp.StatusCode, string(b), time.Since(start)
 }
 
+// readExecutionViaFace 经 HTTP 读面取那条 execution 的当前形状（② 的"回读库里那一行"就走这里，
+// 不再往响应体里找一个 yaml 没有的键）。
+func readExecutionViaFace(t *testing.T, srv *httptest.Server, taskID, execID string) map[string]any {
+	t.Helper()
+	code, body := call(t, srv, http.MethodGet, "/api/v1/executions?task_id="+taskID, "", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("读面该 200，实际 %d %s", code, body)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range page.Items {
+		if it["id"] == execID {
+			return it
+		}
+	}
+	t.Fatalf("读面里没有那条 execution %s（items=%s）", execID, body)
+	return nil
+}
+
 // TestSendResumesAfterLostSeal 是判据 (a)：第一次投递失败 ⇒ **不密封**（意图已提交是既成事实）；
 // 同键第二次读到的就是"未密封 + 第一笔身份"⇒ 走续跑。这一格要防的事只有一个：**多算一次**。
 func TestSendResumesAfterLostSeal(t *testing.T) {
@@ -159,8 +183,13 @@ func TestSendResumesAfterLostSeal(t *testing.T) {
 	if n := countRows(t, d, "messages"); n != 1 {
 		t.Fatalf("第一笔该恰落 1 行消息，实际 %d", n)
 	}
+	// 投递失败后"库里那一行"要**经读面**判（主控 09-27 ② 改的字：不再从响应体里找 version ——
+	// yaml `SendResult` 只有四键，加 version 等于改对外契约，得另开 REQ 连面板一起推）。
 	if st, _ := execStatusVersion(t, d, "ex-a"); st != "RUNNING" {
-		t.Errorf("丙：投递失败之后 execution 该留在 RUNNING 不动，实际 %s", st)
+		t.Errorf("丙：投递失败之后 execution 该留在 RUNNING 不动（直接读库那份），实际 %s", st)
+	}
+	if view := readExecutionViaFace(t, srv, "task-send", "ex-a"); view["status"] != "RUNNING" {
+		t.Errorf("同一件事经 `GET /api/v1/executions?task_id=` 回读该是 RUNNING，实际 %v", view)
 	}
 	if st, _ := idemRow(t, d, "k-a"); st != "IN_PROGRESS" {
 		t.Errorf("没密封 ⇒ 幂等行该还是 IN_PROGRESS（这一次的中断是可续跑的，不是死态），实际 %s", st)
@@ -179,6 +208,10 @@ func TestSendResumesAfterLostSeal(t *testing.T) {
 	}
 	if n := countRows(t, d, "messages"); n != 1 {
 		t.Errorf("续跑**不许**写第二行消息（这一格就是防它），实际 %d 行", n)
+	}
+	if v := readExecutionViaFace(t, srv, "task-send", "ex-a"); v["version"] != float64(3) {
+		// 判据 (a) 的"version 等于当前库版本"现在落在这里：读面回读的 v3 == 库里那一行的 v3。
+		t.Errorf("续跑之后读面回读该是 v3（库里那一行），实际 %v", v)
 	}
 	if e2 := eventTypes(t, d, "ex-a"); len(e2) != 2 {
 		t.Errorf("状态边也不许多走一条，实际 %d 条 %v", len(e2), e2)

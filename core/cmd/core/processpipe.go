@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"time"
 
@@ -214,25 +213,14 @@ func (p *duplexPipe) Close() error {
 	if p.cancel != nil {
 		p.cancel() // 期限随管道一起还回去，不留在 context 树里
 	}
-	if err != nil && childAlreadyGone(err, p.child.PID) {
+	// "孩子本来就不在了"不算关闭失败 —— 这不是假想分支：一个在握手里就崩掉的 adapter 走到这里时
+	// 回收那一句已经释放了句柄，实测 Windows 上 Kill 拿到的是 EINVAL（`kill: invalid argument`）而不是
+	// 那个"进程已完"的哨兵错（Unix 才是后者），两种都说明 Close 的目标已达成；真还活着却杀不掉才把错误交回去。
+	// 判据本身不自留副本：T-368② 换成 `internal/process` 那份导出的唯一来源（两份函数体我今天自己
+	// 按字节比过，IDENTICAL）。**别把这句读成"FindProcess 是通用判活"** —— `lock.go` 里"为什么不再是 pid 判活"
+	// 那段讲的正是反面（进程对象在任一句柄关闭前一直存在）；这一格能用是因为**我们是父方、且回收已发生**。
+	if err != nil && process.ChildAlreadyGone(err, p.child.PID) {
 		return nil
 	}
 	return err
-}
-
-// childAlreadyGone 把"孩子本来就不在了"从关闭失败里分出去。这不是假想分支：
-// 一个在握手里就崩掉的 adapter 走到这里时，cmd.Wait 早已释放句柄，实测
-// Windows 上 Kill 拿到的是 EINVAL（不是 ErrProcessDone），而 Unix 上是 ErrProcessDone。
-// 两种都说明 Close 的目标已经达成；真还活着却杀不掉才把错误交回调用方。
-// 判"在不在"沿用 cmd/core/lock.go 的同一条 Windows 语义（FindProcess 对已退进程报错）。
-func childAlreadyGone(err error, pid int) bool {
-	if errors.Is(err, os.ErrProcessDone) {
-		return true
-	}
-	proc, perr := os.FindProcess(pid)
-	if perr != nil {
-		return true
-	}
-	_ = proc.Release()
-	return false
 }
