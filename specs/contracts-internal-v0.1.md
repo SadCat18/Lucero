@@ -709,6 +709,15 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       与 §15.2 现有码兼容）；**Ⅲ** 明确"v0.1 只支持同步收尾的 Provider"并把它写成 Provider 准入条件。
       **记账要点**：U13 那一格今天用 `debug/hold` 注入判据（T-386）证的是**Core 会正确落终态并投影**，
       **不证**"生产语义里帧什么时候到已定"——谁把 Wave-2 说成"投递语义已验完"，先拿本条来对。
+    - **④-c `REQ-ACCEPT-1`（09-27 16:5x 立，由主控第一次亲自全量跑 Wave-2 验收检查时量出；与 REQ-TURN-1 并列，同排 Wave-2 之前必须裁）**：
+      链尾那两条边**今天都没有驱动者**。现量：非测试码里除 `internal/task` 自己的常量/类型/payload 之外，
+      **没有一处把任务推成 `WAITING_ACCEPTANCE`**（`grep -rn "WaitingAcceptance" core --include=*.go` 去掉 `_test.go`
+      只剩常量、注册表条目、`Accept` 命令的起始态守卫 `onlyWaitingAcceptance`），而 `task_waiting_acceptance` / `task_accepted`
+      **两条都在"已登记 ≠ 有生产路径"名单里**（09-27 16:3x 那次登记的第 18、24 条）。
+      ⇒ 验收用例 `TestChainStopsBeforeAcceptanceNotAtAccept` 乙格今天是**先 `UPDATE tasks SET status='WAITING_ACCEPTANCE'` 再 `:accept`** 才落到 `ACCEPTED` 的——
+      **这把"链跑通"偷换成了"末端那一跳跑通"**。要裁的是：**Agent 完成之后，由谁、在什么信号上宣布"待验收"**
+      （候选：Core 侧在 `AGENT_COMPLETED` 落定时同笔推 `WAITING_ACCEPTANCE`；或面板/审批侧显式调用；或 §5.3 那条边本就该由 `handoff_*` 承担，而 `handoff_*` 四条今天也全在名单里）。
+      **裁死之前，Wave-2 那一格不许勾。**
     - **⑤ 判据（这一格怎么算证到）**：三条用例 —— (a) 崩在密封前 ⇒ 同 key 重试后 `messages` 仍**恰一行**、
       `executions` 仍**恰两条状态边**、幂等行被密封；"版本是当前库里那一行"**经 `GET /api/v1/tasks/{id}` 回读判**
       （09-27 更正：原写"响应 `version` 等于当前库版本"是引用了一个 `SendResult` 里不存在的键 ⇒ 按上一句改判读面）；
