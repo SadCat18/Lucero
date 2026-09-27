@@ -589,6 +589,15 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       —— 孩子被杀 ⇒ 管道断 ⇒ 堵住的 `write` 拿到 EPIPE 自行解开；但这正说明"回收"与"可取消"是同一件事的两半，
       **两半都要**：只靠 EPIPE 是撞运气，不是设计。
 
+    - **⑧ 调用方义务：连接面上每一次调用必须自带期限（09-27 13:3x 登记，实测出处是 `adapter` 的 CO-53）**。
+      `internal/process` 的连接面**不检测、也不自救"不带期限的 ctx"**：孩子不再读 stdin 时，一次 `request(context.Background(), 256KB)`
+      —— **5 秒内不返回、`c.dead` 仍 `false`、`pending` 残留 1、`writeMu` 被永久占住**（没期限就没有任何自救）；
+      排在它后面**自己带 400ms 期限**的那一条仍在 400ms 返回（第二批的 `abandon` 生效，楔子不扩散给有期限的一侧）；
+      **唯一能解开它的是 `Close`（实测 2ms）**。出处：`.scratch/adapter/co53-probe7-130609.log`（`--- PASS`，跑窗 13:06:09→13:06:18）
+      —— 按第 24 条⑤款：**这份 log 一旦灭失，本条只按"曾量到"引用，不许再拿那几个秒数当已证事实**。
+      ⇒ 义务写在**调用方**，不写在平台层：**每个走连接面的 handler / 装配点必须自带一个期限常量**。
+      今天第一个落点是 `cmd/core` 的 `sendAttemptDeadline`（09-27 13:11 我给 `backend` 的那个数），第二格是 `probeAttemptDeadline`。
+      **平台层不分"谁忘了带"，所以这条既不做成 lint、也不做成运行期 panic**（与 CO-44 同一口径：调用方必须自己喊）。
 24. **证据生命周期与"判不存在"的正确跑法（09-25 20:5x 立，今天我自己撞的两条）**。
     - **① 证据要活到对方交账那一刻。** 一次性产物照旧只进 `.scratch/<角色>/`，但**"一次性"的判定时刻是交账之后，不是我跑完那一刻**。
       实例：一条关键读数（256KB 帧发给卡死的孩子、400ms 期限之后仍堵 44.8 秒）出自 `.scratch/backend/reqs1_timing.txt`
