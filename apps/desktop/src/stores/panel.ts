@@ -202,8 +202,12 @@ export async function runChain() {
     await call('managed', `POST /sessions/${found.session_id}:manage`,
       () => core.manageSession(found.session_id, { managed: true, project_id: project?.id }, idem('manage')));
 
+    // REQ-LK-1（甲）：建任务这一发就带上来源会话，link 由 Core 在同一事务里写 ——
+    // 不做"两步式补挂"，那会留下 task 建了、link 没有的孤儿态，而 send 腿没有 session 只能 404。
     const task = await call('task', 'POST /tasks',
-      () => core.createTask({ title: `panel chain ${stamp}`, project_id: project?.id }, idem('task')));
+      () => core.createTask({
+        title: `panel chain ${stamp}`, project_id: project?.id, session_id: found.session_id,
+      }, idem('task')));
     if (!task) return;
 
     // C43：调度对象由调用方声明 ⇒ `adapter_key` 取 probe 回执里那一格，不在面板再写一个字面量。

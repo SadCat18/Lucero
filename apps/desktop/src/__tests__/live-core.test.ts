@@ -171,16 +171,22 @@ describe.skipIf(!live || !wsReady)('真 Core 联调 · WS 面', () => {
 /* ── 只读面：T-189 实测之后改成的"漂移安全"断言 ─────────────────────────────
    03:26 现盘实测（我自己的二进制 core-t189.exe，03:24:45 构建）：
    `GET /sessions`、`GET /projects`、`GET /projects/{id}`、`GET /notifications`、`POST /sessions/{id}:sync`
-   都已经脱了 501；`adapters` 面 / `models` / `executions` / `approvals` / `quota` / `search` 还在 501。
+   都已经脱了 501；**09-25 18:05:30 复量（T-282）**：`GET /executions?task_id=`、`GET /sessions/{id}/messages` 也已脱 501，
+   仍 501 的是 `GET /executions/{id}`（"还没装配读通道"）与 `/executions/{id}/output`；`adapters` 面 / `models` / `approvals`
+   / `quota` / `search` 在 mux 注册表里根本没有那几条路径（catch-all）。
    ⇒ 断言不能写"它现在必须 501"（那是把别人的进度钉成我的红），也不能写"它现在必须 200"
    （别人回退我就瞎）。统一形状：**200 就必须符合契约形状；不是 200 就只能是 `not_implemented`**。 */
 describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）', () => {
-  const raw = (method: string, path: string, idem?: string, body?: unknown) =>
+  // 期限是承重的：对端挂住时 fetch 会**永远**挂着，既吃掉整条用例的预算，又把 Core 的单写连接一并拖住，
+  // 于是"一格挂"在计数里长成"六格红"。给每一发一个 2.5s 的闸，让挂变成一条**说得清是哪一格**的失败。
+  const raw = (method: string, path: string, idem?: string, body?: unknown, ifMatch?: number) =>
     fetch(`${base}${path}`, {
       method,
+      signal: AbortSignal.timeout(2500),
       headers: { authorization: `Bearer ${token}`, 'x-lucero-principal': 'local-user',
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-        ...(idem ? { 'idempotency-key': idem } : {}) },
+        ...(idem ? { 'idempotency-key': idem } : {}),
+        ...(ifMatch !== undefined ? { 'if-match': String(ifMatch) } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 
@@ -243,15 +249,50 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
   });
 
   /**
-   * §4 第 5~6 格（建任务 → 入队）与第 7 格起的 blocked 表。
-   * 09-24 07:24:13 现盘实测（自属构建 07:24:10）：`POST /tasks` 201、`tasks/:queue` 200 都真绿；
-   * `GET /executions?task_id=` 与 approvals / quota / search 都是 catch-all 的 501，
-   * 所以拿不到 execution id —— 第 8~10 格（send / output / resolve）**今天只能记 blocked**。
-   * 这里刻意不写"必须 501"（那是把别人的进度钉成我的红，我 04:5x 才犯过），改成两支都成立、
-   * 但**每一支都各自有断言**（501 那一支也要断它是 not_implemented 而不是别的码），
-   * 免得"提前 return"让"验到了"和"什么都没验"在计数里长得一样。
+   * F-8 批准的那条单任务详情读（契约③ :123-125）：`:accept` 之前必须靠它取**最新 version** 当 If-Match。
+   * 这条单独成一个用例、且排在链式用例**之前**，理由是 09-25 的实测教训：链上一走到第 8 格 `send` 就把单写连接按住，
+   * 后面的写与这条读都再也没机会被观察到 ⇒ 把"读面在不在、形状对不对"放在不会被打断的地方量，链里那一发只管"用它当 If-Match"。
    */
-  it('§4 第 5~6 格真链 + 第 7 格起逐跳记 blocked（不许钉 501，也不许假绿）', async (ctx) => {
+  it('F-8 单任务详情读：CREATED 任务 → GET /tasks/{id} 给得出 yaml 九键与可当 If-Match 的 version', async () => {
+    const proj = await raw('POST', '/api/v1/projects', 'f8-proj',
+      { name: `f8-${Date.now()}`, canonical_path: `D:/Project/Lucero/.scratch/frontend/f8-${Date.now()}` });
+    expect(proj.status, await proj.clone().text()).toBe(201);
+    const projectId = (await proj.json() as { id: string }).id;
+    // ③（REQ-LK-1）：不带 session_id 是合法状态，所以这条用例不依赖会话，读面本身才是要看的
+    const task = await raw('POST', '/api/v1/tasks', 'f8-task',
+      { title: 'f8 read face', project_id: projectId, mode: 'MANAGED', priority: 'NORMAL' });
+    expect(task.status, await task.clone().text()).toBe(201);
+    const t = await task.json() as { id: string; version?: number };
+
+    const det = await raw('GET', `/api/v1/tasks/${t.id}`);
+    expect([200, 501], `GET /tasks/{id} 回了 ${det.status}：只许"已接(200)"或"未装配(501)"`).toContain(det.status);
+    if (det.status === 501) {
+      const e = (await det.json()).error;
+      expect(e.code, '未接线只能是 not_implemented').toBe('not_implemented');
+      console.log(`  F-8 读面仍 501（未装配）：「${e.message}」⇒ 链里那一发就不带 If-Match`);
+      return;
+    }
+    const tk = await det.json() as Record<string, unknown>;
+    // yaml `Task.required` 九键（core-v1.yaml:1072）逐个核 —— 少一个键就是给不出契约形状
+    for (const k of ['id', 'title', 'status', 'priority', 'risk_level', 'mode', 'version', 'created_at', 'updated_at']) {
+      expect(k in tk, `Task 详情缺 yaml required 的键 ${k}：${Object.keys(tk)}`).toBe(true);
+    }
+    expect(typeof tk.version, 'version 必须是数字（If-Match 的输入）').toBe('number');
+    expect(Number.isInteger(tk.created_at), 'created_at 是 Unix 毫秒整数').toBe(true);
+    expect(tk.id, '详情要指回刚建的那条').toBe(t.id);
+    console.log(`  F-8 读面 ok：GET /tasks/{id} → 200，九键齐，status=${tk.status} version=${tk.version}`);
+  });
+
+  /**
+   * §4 第 5 格起到第 11 格的逐跳真跑。
+   * 历史：09-24 07:2x 只有 5~6 两格通；09-24 10:10 第 7 格从"读面从未注册"变成"200 空清单"；
+   * **09-25 18:05:30（T-282，自属构建 18:05:0x）分派腿落地 ⇒ 第 7 格真给得出 execution 行**，
+   * 于是卡点从"读面"移到了第 8 格（send 的 task↔session link）与第 9/10/11 格（output / approvals / accept 的矩阵）。
+   * 这里刻意不写"必须 501"（那是把别人的进度钉成我的红，我 04:5x 才犯过），改成每支都各自有断言：
+   * 2xx 必须给得出契约形状，501 必须是 `not_implemented`，404/409 必须是那一格该出的码，
+   * 且**每一支都 console.log 出状态码与 message** —— 免得"提前 return"让"验到了"和"什么都没验"在计数里长得一样。
+   */
+  it('§4 第 5~11 格逐跳真跑：能断的断契约形状，断不到的记 blocked 带原因（不许钉 501，也不许假绿）', async (ctx) => {
     // 一个来源：probe 的寻址键与 :queue 请求体声明的键必须是同一个字面量，别写两遍各自漂。
     const akey = 'fake';
     const probe = await raw('POST', `/api/v1/adapters/${akey}/probe`, 't56-probe');
@@ -295,25 +336,127 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
     }
     console.log(`  :queue 带 key → ${q.status}，缺 key → ${qNoKey.status}`);
 
+    // REQ-LK-1（09-25 裁甲）的两条边界要**分开**量：② 给了 `session_id` 但库里没有那个会话 ⇒ 404 `session_not_found`；
+    // ③ 缺省或 null ⇒ 不写 link，201 完全合法 —— 所以这里不给"缺字段"编一条 400 断言（那是替契约发明要求）。
+    const taskBogus = await raw('POST', '/api/v1/tasks', 't56-task-bogus-session',
+      { title: 't56 lk-1', project_id: projectId, session_id: '01TESTNOTEXIST', mode: 'MANAGED', priority: 'NORMAL' });
+    if (taskBogus.status === 404) {
+      expect((await taskBogus.json()).error.code, 'REQ-LK-1 ② 落地后只能报会话不存在').toBe('session_not_found');
+    } else {
+      expect(taskBogus.status, `假 session_id 回了 ${taskBogus.status}：只许 201（未落地）或 404（已落地）`).toBe(201);
+      console.log('  REQ-LK-1 未落地：`session_id` 指向不存在的会话仍然 201 ⇒ 键还在校验之前被丢，欠工在 backend T-286');
+    }
+    console.log(`  POST /tasks + 假 session_id → ${taskBogus.status}`);
+
     const ex = await raw('GET', `/api/v1/executions?task_id=${t.id}`);
     if (ex.status === 501) {
       expect((await ex.json()).error.code).toBe('not_implemented');
-      console.log(`  第 7 格起 blocked：GET /executions?task_id=${t.id} → 501（拿不到 execution id）`);
+      console.log(`  第 7 格 blocked：GET /executions?task_id=${t.id} → 501（读面被摘掉了，09-25 18:05 它是 200）`);
       return;                                       // 到这里为止每一跳都真断言过，不是空跑
     }
     expect(ex.status, await ex.clone().text()).toBe(200);
-    const page = await ex.json() as { items: { id: string }[]; next_cursor: string };
+    type ExecRow = Partial<Record<'id' | 'task_id' | 'status' | 'attempt_no' | 'trigger_type' | 'state_confidence' | 'version', unknown>>;
+    const page = await ex.json() as { items: ExecRow[]; next_cursor: string };
     expect(Array.isArray(page.items)).toBe(true);
     expect(typeof page.next_cursor).toBe('string'); // REQ-F-19：分页侧只许字符串，空串=没有下一页
-    const exId = page.items[0]?.id;
-    if (!exId) {
+    // 契约③ §4「Create Execution」：`:queue` 200 ⇒ 同一笔事务里就该有 execution 行。
+    // 只在 q 真 200 的那一支才追加这条要求（409=重复排队，本来就不该新增行）。
+    if (q.status === 200) expect(page.items.length, '入队 200 却拿不到 execution 行').toBeGreaterThan(0);
+    const row = page.items[0];
+    if (!row) {
       console.log('  入队后还没有 execution 行：send / output 记 blocked（0 条是合法结果，不猜 id）');
       return;
     }
-    const send = await raw('POST', `/api/v1/executions/${exId}/send`, 't56-send', { text: 't56', delivery: 'start_now' });
-    expect([200, 202, 409, 503], `send 回了 ${send.status}`).toContain(send.status);
+    // 必填七键逐个核（yaml `Execution.required`）—— 少一个键就是对方给不出契约形状，不是我的红可以糊过去
+    for (const k of ['id', 'task_id', 'status', 'attempt_no', 'trigger_type', 'state_confidence', 'version'] as const) {
+      expect(k in row, `execution 行缺必填键 ${k}：${JSON.stringify(row)}`).toBe(true);
+    }
+    expect(row.task_id, 'execution 要挂回刚才那条任务').toBe(t.id);
+    const exId = row.id as string;
+    console.log(`  第 7 格 ok：GET /executions?task_id= → 200，items=${page.items.length}，`
+      + `status=${row.status} attempt_no=${row.attempt_no} trigger=${row.trigger_type} 七键齐`);
+
+    const detail = await raw('GET', `/api/v1/executions/${exId}`);
+    if (detail.status === 200) {
+      const d = await detail.json() as Record<string, unknown>;
+      for (const k of ['model_snapshot', 'permission_snapshot', 'environment_snapshot']) {
+        expect(k in d, `§3 :141 要的三份快照缺 ${k}（现有键 ${Object.keys(d)}）`).toBe(true);
+      }
+    } else {
+      expect([501], `GET /executions/{id} 回了 ${detail.status}`).toContain(detail.status);
+      const e = (await detail.json()).error;
+      expect(e.code, '单条详情未接线只能是 not_implemented').toBe('not_implemented');
+      console.log(`  execution 详情 blocked：501 ${e.code}「${e.message}」`);
+    }
+
+    // 09-25 三次独立复现（两次 vitest + 一发直连探针 `probe-t286lk.txt` 第 14~16 行）：
+    //   ① 这一格 2.5s / 4s 期限内无响应；② 紧接着 `POST /projects` 也无响应；③ 同时 `GET /health` 仍 200
+    //   ⇒ 被 hold 的是**写路径**（单写连接），不是监听。挂住时 fetch 抛 AbortError，这里接住并把"是谁拖死了后面"打出来。
+    //   我不写"adapter 退了"这类归因：那段时间的 core 日志只有 3 条 `kind=STARTED`、没有任何退出事件，
+    //   而 `exit=0` 是 STARTED 事件上没赋值的零值（`supervisor.go:86/:138` 只在退出路径填它）——拿它当"进程退了"是我读错。
+    let send: Response;
+    try {
+      send = await raw('POST', `/api/v1/executions/${exId}/send`, 't56-send', { text: 't56', delivery: 'start_now' });
+    } catch (e) {
+      console.log('  第 8 格 send 无响应（2.5s 期限到：' + (e as Error).name + '）⇒ 单写连接被这条腿持有，'
+        + '本文件后续用例的超时是**同一因**，不要按 N 个缺陷读。 measured 事实只有三条：'
+        + 'send 不回应 / 之后 POST /projects 也不回应 / GET /health 仍 200；欠期限与持连接的位置归 backend 读代码');
+      throw new Error('§4 第 8 格 send 无响应：Provider 腿挂住（见上一行日志与 probe-t286lk.txt）');
+    }
+    expect([200, 202, 404, 409, 503], `send 回了 ${send.status}`).toContain(send.status);
+    if (send.status === 200 || send.status === 202) {
+      const s = await send.json() as { delivery?: string; accepted?: boolean };
+      expect(typeof s.accepted, 'SendResult.accepted 必须是布尔').toBe('boolean');
+      expect(typeof s.delivery, 'SendResult.delivery 必须是字符串').toBe('string');
+    } else {
+      const e = (await send.json()).error;
+      expect(e?.code, `send 回了 ${send.status} 而不是契约形状`).toBeTruthy();
+      // 09-25 18:05:30 实测这一支是 **404 session_not_found「这条 Execution 没有可用的 Session」**，
+      // 根因不在 send 腿：`createTaskBody`（api/http/tasks.go）不收 `session_id` ⇒ 静默丢弃，
+      // 而全仓非测试码里 `task_session_links` 只有 1 处 SELECT（internal/session/repository.go:86）、0 处 INSERT
+      // ⇒ execution 的 session_id 永远是空 ⇒ 面板链第 8 格结构上到不了。这是**别人的缺口**，我只把它量准并喊出来。
+      console.log(`  第 8 格 blocked：send → ${send.status} ${e.code}「${e.message}」（task↔session link 无写入者）`);
+    }
+
     const out = await raw('GET', `/api/v1/executions/${exId}/output`);
     expect([200, 501], `output 回了 ${out.status}`).toContain(out.status);
+    if (out.status === 501) {
+      const e = (await out.json()).error;
+      expect(e.code).toBe('not_implemented');
+      console.log(`  第 9 格 blocked：output → 501 ${e.code}「${e.message}」`);
+    } else {
+      const o = await out.json() as { items: unknown[]; next_cursor: string };
+      expect(Array.isArray(o.items), 'output 200 必须是分页形状').toBe(true);
+      expect(typeof o.next_cursor).toBe('string');
+    }
+
+    const approvals = await raw('GET', '/api/v1/approvals?state=PENDING');
+    expect([200, 501], `approvals 列表回了 ${approvals.status}`).toContain(approvals.status);
+    const apErr = approvals.status === 501 ? (await approvals.json()).error : null;
+    if (apErr) expect(apErr.code, 'approvals 未接线只能是 not_implemented').toBe('not_implemented');
+    console.log(`  第 10 格 ${approvals.status === 501 ? 'blocked' : 'ok'}：GET /approvals → ${approvals.status}${apErr ? ` ${apErr.code}` : ''}`);
+
+    // F-8 那条读的**形状**由上面那条独立用例负责（九键齐）；这里只管一件事实：**拿它当 If-Match**（契约③ :124）。
+    // 形状断言不在这里重做一遍，免得两处判据各自漂。
+    const det = await raw('GET', `/api/v1/tasks/${t.id}`);
+    expect([200, 404, 501], `GET /tasks/{id} 回了 ${det.status}`).toContain(det.status);
+    let latestVersion: number | undefined;
+    if (det.status === 200) {
+      const tk = await det.json() as { version?: unknown };
+      expect(typeof tk.version, 'If-Match 的输入必须是数字版本').toBe('number');
+      latestVersion = tk.version as number;
+      console.log(`  链里用上 F-8 读面：version=${latestVersion} 当 If-Match 打 :accept`);
+    } else {
+      console.log(`  F-8 读面这格是 ${det.status} ⇒ accept 不带 If-Match（别把"没读面"混成"版本冲突"）`);
+    }
+
+    const acc = await raw('POST', `/api/v1/tasks/${t.id}:accept`, 't56-accept', {}, latestVersion);
+    expect([200, 409], `accept 回了 ${acc.status}`).toContain(acc.status);
+    if (acc.status === 409) {
+      const e = (await acc.json()).error;
+      expect(e.code, 'PREPARING → ACCEPTED 不在 §5 矩阵里，只能是 illegal_transition').toBe('illegal_transition');
+      console.log(`  第 11 格 blocked：accept → 409 ${e.code}「${e.message}」`);
+    }
   });
 
   /**
@@ -361,6 +504,19 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
     const mg = await raw('POST', `/api/v1/sessions/${sid}:manage`, 'live-t222-manage', { managed: true });
     expect(mg.status, await mg.clone().text()).toBe(200);
     expect((await mg.json()).managed).toBe(true);
+
+    // `GET /sessions/{id}/messages` 的读通道 09-25 已装配（`main.go:338` 注入 `SessionMessages`）⇒ 这格从 501 变真跑。
+    // 空清单合法（send 那格还没通，本来就该没有消息），但**分页形状必须齐**：items 是数组、next_cursor 是字符串。
+    const msg = await raw('GET', `/api/v1/sessions/${sid}/messages`);
+    expect([200, 501], `messages 回了 ${msg.status}`).toContain(msg.status);
+    if (msg.status === 200) {
+      const p = await msg.json() as { items?: unknown[]; next_cursor?: unknown };
+      expect(Array.isArray(p.items), 'messages 200 但 items 不是数组').toBe(true);
+      expect(typeof p.next_cursor, 'REQ-F-19：没有下一页只有空串一种写法').toBe('string');
+      console.log(`  messages → 200（${p.items?.length} 条，next_cursor="${p.next_cursor}"）`);
+    } else {
+      console.log(`  messages 仍 501：${JSON.stringify(await msg.json()).slice(0, 140)}`);
+    }
 
     const sy = await raw('POST', `/api/v1/sessions/${sid}:sync`, 'live-t222-sync');
     // 09-24 07:10 实测是 503 `adapter_unresponsive`（C25 那一支：无可用 Provider 也不许假"已同步"）。
