@@ -141,17 +141,19 @@ func exitCode(err error) int {
 	return -1
 }
 
-// childAlreadyGone separates "this child was already dead by the time we reached it" from
+// ChildAlreadyGone separates "this child was already dead by the time we reached it" from
 // a reap that actually failed. Not a hypothetical branch: an Adapter that crashes while we
 // hold it has its handle released by the reaper goroutine's cmd.Wait, and the later Kill
 // then answers `kill: invalid argument` (measured, T-314 probe P1) instead of
 // os.ErrProcessDone. Reported as a failure, that turns a normal shutdown into an error the
 // caller cannot act on.
 //
-// This is the same rule cmd/core already applies to the same child: its duplexPipe.Close
-// filters Stop's error through a helper of exactly this shape. CO-51 asks which copy
-// becomes the single source.
-func childAlreadyGone(err error, pid int) bool {
+// This is exported as the single source (T-362 ①): cmd/core's duplexPipe.Close filters
+// Stop's error through its own copy, and the two bodies were compared byte-for-byte on
+// 09-27 - 212 bytes each, identical, sha256 prefix `7364ae9e5ca630a8`. Because the
+// semantics match, this one is the original and `cmd/core` switches to calling it the next
+// time that file is touched; the copy in cmd/core is not deleted here (it is backend's面).
+func ChildAlreadyGone(err error, pid int) bool {
 	if errors.Is(err, os.ErrProcessDone) {
 		return true
 	}

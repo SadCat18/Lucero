@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -318,5 +319,23 @@ func TestStopKillsTheChild(t *testing.T) {
 	}
 	if code == 0 {
 		t.Errorf("exit code 0 after Kill, want a non-zero killed status")
+	}
+}
+
+// ChildAlreadyGone answers two questions and callers depend on both separately: the error
+// that *means* "already reaped" must be swallowed, and a failed Kill on a child that is
+// still running must reach the caller ("真还活着却杀不掉"). The live-pid case uses this very
+// test process, so it isolates the second branch from the first.
+// The third answer - a pid that is gone - is covered end-to-end by
+// TestCloseAfterTheChildAlreadyCrashedStaysQuiet rather than a unit case here, because a
+// dead pid plus OS pid reuse would make the unit version the flakier witness.
+func TestChildAlreadyGoneAnswersBothQuestions(t *testing.T) {
+	// The exact shape Stop produces: fmt.Errorf("kill: %w", err).
+	wrapped := fmt.Errorf("kill: %w", os.ErrProcessDone)
+	if !ChildAlreadyGone(wrapped, os.Getpid()) {
+		t.Errorf("ErrProcessDone must read as gone even when the pid is alive - the error is the answer, not the pid")
+	}
+	if ChildAlreadyGone(errors.New("kill: invalid argument"), os.Getpid()) {
+		t.Error("this process is alive: a Kill that failed here is a real failure and must not be swallowed")
 	}
 }

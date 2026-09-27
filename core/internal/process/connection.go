@@ -353,7 +353,7 @@ const closeReapTimeout = 2 * time.Second
 //
 // "关 stdin 让孩子自退" is deliberately **not** run ahead of Stop. ⑤ allowed it as courtesy,
 // and it is nothing more: doing it first is precisely what produces the already-dead-child
-// case that childAlreadyGone has to swallow (probe P1: Close answered
+// case that ChildAlreadyGone has to swallow (probe P1: Close answered
 // `kill: invalid argument` on a crashed Adapter).
 func (c *Connection) Close() error {
 	c.mu.Lock()
@@ -364,8 +364,8 @@ func (c *Connection) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 	c.kill(errors.New("connection closed"))
-	// Why Reaped() is checked even though childAlreadyGone exists: the two answer
-	// different questions. childAlreadyGone asks the OS "is this pid still mine", and after
+	// Why Reaped() is checked even though ChildAlreadyGone exists: the two answer
+	// different questions. ChildAlreadyGone asks the OS "is this pid still mine", and after
 	// the pid has been recycled that answer is yes - so without this check the Kill below
 	// could terminate an unrelated process and report a bogus reap failure. Mutation m2
 	// (dropping it) stays green precisely because that collision cannot be manufactured on
@@ -378,7 +378,7 @@ func (c *Connection) Close() error {
 		err = c.sup.Stop(c.child, closeReapTimeout)
 	}
 	c.child.CloseStreams()
-	if err != nil && !childAlreadyGone(err, c.child.PID) {
+	if err != nil && !ChildAlreadyGone(err, c.child.PID) {
 		return fmt.Errorf("reap the adapter process after closing the connection: %w", err)
 	}
 	return nil

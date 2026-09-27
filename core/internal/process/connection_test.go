@@ -1045,7 +1045,7 @@ func TestCloseReapsTheChild(t *testing.T) {
 // Whoever reaps first owns the child: cmd/core's pipeline already calls Stop(child, 2s) for
 // this exact process, so a later Close must not aim a second Kill at it. Read this case as
 // documentation rather than as teeth - mutation m2 (dropping the Reaped() check) stays green,
-// because the error a second Kill would produce is swallowed by childAlreadyGone. The check
+// because the error a second Kill would produce is swallowed by ChildAlreadyGone. The check
 // earns its place against pid reuse, which no test here can manufacture on demand.
 func TestCloseAfterAnExistingReapStaysQuiet(t *testing.T) {
 	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
