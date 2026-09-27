@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-27T12:11:20+08:00
+LAST_UPDATED: 2026-09-27T12:19:55+08:00
 
 ## Objective
 
@@ -179,18 +179,23 @@ LAST_UPDATED: 2026-09-27T12:11:20+08:00
   第一百零七～一百一十七批共 11 条派发里，**T-345 / T-346 从未送达**，直到本批由主控直投。
   Wave-2 仍**只剩第 8 格端到端**（`backend` 两笔短事务 + 那条 handler 层判据待落）。
 - Status: in_progress
-- Last verified action: **第一百一十八批**（本机 `date` 实读 2026-09-27 12:11:20）：T-345 直投 `backend`
-  （`370101c0`）、T-346 直投 `test`（`5aee940a`），两次 `send_message` 均回 `messageSent`、目标转 `opening`；
-  巡检 `qoder_cron enable` 成功（`pauseReason:null`、`consecutiveFailures` 归 0、`nextRunAt` 已排）。
-- Verification（**取证，不是验收**）：2026-09-27 12:11:20 现量 `git rev-parse --short HEAD` = `af30a9a`；
-  `git rev-list --count origin/main..HEAD` = **30 个提交，仍未 push**（同上：以现跑为准）；`git status --porcelain -- core/` =
-  **空输出** ⇒ 自 09-25 22:04 无人动过 `core/`，那两笔短事务**盘上不存在**（所以 T-345 不是重复派工）；
-  `grep -rl "go/ast" core/test/` = **0** ⇒ T-346② 也未开工。投前七家 worker 会话全部 `cold` /
-  `pendingInteractionCount:0`，进度文件 mtime 最晚是 `adapter` 09-25 21:54:22 ⇒ 这两条"待投递"确实压了 47 小时。
-- Next action: ① 等 `backend`、`test` 这两轮交账（判据＝各自台账新段落 + 现读 `numstat` + 一次全包复跑，
-  不带"截至某时刻某棵树"的读数不采信）；② 巡检 12:2x 那一轮若真跑起来，恢复它作投递通道，
-  **主控停止顶投、历史行一律不补投**（停摆期我顶投过的重投就是第二份真相）；
-  ③ `frontend` 第 8 格端到端要等 ① 落盘才谈；④ **push 仍未做**（12:1x 现量 30，含本批两笔 ledger commit ⇒ 每入册一笔 +1，引用前现跑），挂 NEEDS YOU 等用户，我不催。
+- Last verified action: **第一百一十八批 + 第一百一十九批更正**（`date` 实读 12:11:20 / 12:18:3x）：
+  T-345 直投 `backend`（`370101c0`）、T-346 直投 `test`（`5aee940a`），两次 `send_message` 均回 `messageSent`、
+  目标转 `opening`；巡检 `qoder_cron enable` 成功（`pauseReason:null`、`consecutiveFailures` 归 0）。
+  **第一百一十九批**：我这两条派发的**前提**在 9 分钟内被我自己弄过期（两家都开工了 ⇒ "树干净/是复采窗口"不再成立），
+  各补一封更正，**只改"全包绿怎么写"这一句，上面任何一条裁定一字未动**。
+- Verification（**取证，不是验收**）：12:18:13 现量 `git status --porcelain -- core/` = 两件、**按目录可分归属**：
+  `M core/internal/execution/send.go`（`backend` 在写）+ `?? core/test/event_producer_roster_test.go`
+  （`test` 12:16:34 新建）；`backend.md` mtime 12:16:46 ⇒ 两家确实已醒并且在写。
+  HEAD 与 `origin/main..HEAD` 的数**每入册一笔就变 ⇒ 以现跑那条命令为准，别抄这里的数**。
+  12:07:13 那次现量（`core/` 空、`grep -rl "go/ast" core/test/` = 0）仍然有效，它证明的是
+  **T-345/T-346 不是重复派工**，不是"此刻的盘"。
+- Next action: ① 等 `backend`、`test` 交账，判据＝各自台账新段落 + 现读 `numstat`，**全包绿一律分两面写并带
+  "截至 HH:MM 的某棵树"**（两家此刻同时在 `core/` 的不同目录上写，互不吃对方的红、也互不借对方的绿）；
+  REQ-S-1 **两半各一家**（事务半在 `backend`、回收半已入册 `ba03ce2`/`ae26c61`），两半判据齐了才闭；
+  ② 巡检 `nextRunAt` = 12:20:54，**"复活后真跑起来"要看到 09-27 心跳行才算**，现在还没有；
+  ③ `test` 那条 handler 层判据排在 ① 落盘之后（裁乙：先搬连接面）；④ `frontend` 第 8 格端到端等 ①③；
+  ⑤ **push 仍未做**，挂 NEEDS YOU 等用户，我不催。
 
 
 
@@ -1082,6 +1087,13 @@ LAST_UPDATED: 2026-09-27T12:11:20+08:00
 | # | 目标 role | 状态 | 指令 |
 |---|---|---|---|
 | T-348 | 记账（不投递） | — | ① **停摆时长用两条可复跑读数钉死**：`qoder_cron list` 现量巡检 `lastRunAt=1790345985527`＝**09-25 22:19:49**、`enabled:false`、`pauseReason:failureCircuit`、`consecutiveFailures:3`、`lastError:{"type":"session-failed"}`；本批 `date`＝2026-09-27 12:11:20 ⇒ **47 小时 52 分零巡检、零告警**，与"进度文件 mtime 最晚 09-25 21:54:22 / `orchestration.md` 22:04:09"两路独立一致。**第五次同类停摆，仍是同一根因**（会话起不来 → 连失 3 次被静默禁用）。<br>② **代价落在哪一格是算得出的**：第一百一十七批那两条"等主控一句"已经裁完并写进契约① 第 25 条，但**指令压在我账上 47 小时没出门** —— `backend` 与 `test` 都在按各自的"不动码等一句"守规矩，等的是一个已经写好但没人送的答案。⇒ 本批由主控直投补上（`send_message` 两次都回 `messageSent`），**已投递状态就地改标，历史行不补投**。<br>③ **一条通道事实要更正旧记录**：NEEDS YOU 里 09-24 那条"`qoder_cron` 在巡检这一侧不存在"我不动它（那是它的实测），但**主控这一侧今天 `list` / `enable` 都成功** ⇒ 探活对我是**可机判**的，不必只靠"开口才查"这个习惯。**我已把 `enable` 打回去**（`pauseReason:null`、失败计数归 0、`nextRunAt` 已排 12:2x）；**"它下一轮真跑得起来"这句我现在没有证据，等心跳行落地再认**。日报那份仍 `enabled:true` 但 `consecutiveFailures:2`、今天 12:04:05 一次 107ms `session-failed` ⇒ 下一次 09-28 09:00 若再失败会被同一熔断禁掉，**我不用 `run` 去试它**（试失败＝直接打死，代价比知道得早一天大）。<br>④ **Wave-2 现状不变、闸门不降**：第 8 格端到端仍等 ① `backend` 两笔短事务（`core/` 盘上不存在，已实测）② `test` 那条 handler 层判据（裁乙：先搬连接面再落）。合验两份、FL-10、读面、回收 + `write` 可取消**均已入册**。<br>⑤ **仍等用户**：**push**（现量本地领先 `origin/main` **30** 个提交（12:0x 现量 30，含当时那两笔 ledger commit；此后每入册一笔再 +1，所以这个 30 只在那一刻有效）⇒ **这个数每入册一笔就 +1，引用前现跑 `git rev-list --count origin/main..HEAD`，不要抄旧数**）、熔断 (A)/(B)、B5② 探针授权。三条都不阻塞本轮已投出去的两条指令。 |
+
+
+## 待投递 · 第一百一十九批（09-27 12:1x：直投 9 分钟后两家就开工了 —— 顺便把我自己那两句过期前提更正掉）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-349 | 记账（不投递） | — | ① **停摆的真实代价被这一批量出来了**：12:09 直投之后，`test` 12:16:34 就落下 `core/test/event_producer_roster_test.go`（T-346② 的产物，484 行、带 `go/ast`），`backend` 12:18:13 已在改 `core/internal/execution/send.go`（T-345 那两笔）。⇒ 压了 47 小时的**不是"没裁定"，是"没人送信"**；两家守的"不动码等一句"规矩本身没错，**错的是通道**。<br>② **我各补一封更正，改的只有一句**：12:18:3x 现量到两家都在 `core/` 的不同目录上并行写 ⇒ 我 12:09 那句"树现在干净到可以跑全仓了"（对 `backend`）与"要复采现在是窗口"（对 `test`）**当场失效，而且是被我自己那条派发弄失效的**。补发口径：**全包绿必须分两面写 + 带"截至 HH:MM 的某棵树"；别人在途造成的红不计你、你这一包的 ok 也不许写成全仓绿**（沿用 T-323 那条既有口径，不新立规矩）。**上面任何一条裁定一字未动。**<br>③ **REQ-S-1 的关闭条件再钉一次**（防"谁先交账谁顺手结案"）：两半各一家 —— 事务半在 `backend`（正在写）、回收半已随 `ba03ce2` / `ae26c61` 入册 ⇒ **两半判据都在才算闭，两批判据不许合批**。`test` 那条 handler 层判据按裁乙排在 `backend` 落盘之后，**今天不该由它先写**。<br>④ **巡检只复位到"可被调度"这一格**：`enable` 成功、失败计数归 0、`nextRunAt` 12:20:54 —— 但**"复活后真跑起来了"要有 09-27 的心跳行才算**，本批落笔时（12:18:13）盘上最新心跳仍是 09-25 21:52。在那之前**主控直投继续顶上，历史行一律不补投**（本批落笔 12:19:55 现量：`grep` 今日心跳行 = **0 条**，最新仍是 09-25 21:52）。 |
 
 
 ## 待投递 · 第十八批（13:3x，REQ-F-18 裁定 + 共享临时目录的备份广播）
