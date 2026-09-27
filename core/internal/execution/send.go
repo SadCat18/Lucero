@@ -109,7 +109,33 @@ type SendResult struct {
 	ExecutionID string
 }
 
-// Send 落一条消息并推进状态机。允许的起始态：
+// SendReservation 是第一笔（意图）落库之后、投递之前的凭证，也是**续跑的入场券**：
+// 同一 Idempotency-Key 若在密封前中断，重试拿这一份再打一次连接面，而不是重写第二行消息（第 25 条①）。
+// 它被 json 化存进 `idempotency_keys.response_json`（state=IN_PROGRESS 那一格 ⇒ 这一列此刻是"身份"），
+// 所以字段只能是"再打一次"所需的最小集，别顺手塞进只有第一次才有的东西。
+type SendReservation struct {
+	ExecutionID    string `json:"execution_id"`
+	SessionID      string `json:"session_id"`
+	MessageID      string `json:"message_id"`
+	Text           string `json:"text"`
+	Delivery       string `json:"delivery"`
+	IdempotencyKey string `json:"idempotency_key"`
+	NeedsTurn      bool   `json:"needs_turn"`
+	Accepted       bool   `json:"accepted"`
+}
+
+// Result 把凭证折算成 yaml `SendResult` 的形状：delivery 保持请求态（不改写成 queue），
+// accepted 在 queue 那一支是"已落库待送达"=true，在 start_now/guide 由 Deliver 覆盖成回执里的值。
+func (r SendReservation) Result() SendResult {
+	return SendResult{Delivery: r.Delivery, Accepted: r.Accepted,
+		MessageID: r.MessageID, ExecutionID: r.ExecutionID}
+}
+
+// Reserve 是**第一笔短事务**里做的那半：校验 → 状态边 → task 投影 → 落消息，返回投递凭证。
+// 它不在里面打网络：写面只有 `db.go:48` 那一条串行连接，起子进程/握手/等回执一旦关进写事务，
+// 一次 send 就能停掉全 Core 的写（REQ-S-1，09-25 裁）。投递是 `Deliver`，跑在事务之外。
+//
+// 允许的起始态：
 //   - CREATED：全链 CREATED→STARTING(execution_starting)→RUNNING(execution_started) + task_running + message_recorded
 //   - STARTING：STARTING→RUNNING + 同上两格
 //   - RUNNING：只补 message_recorded（已在跑，不重发 started）
@@ -117,40 +143,38 @@ type SendResult struct {
 // 终态与其它中间态 → ErrIllegalTransition（409）。execution 没挂 session → ErrSessionNotLinked（404）。
 //
 // **判定顺序有意如此**：validate(400) → Get(404) → session linked(404) → 状态前置守卫(409)
-// → turn 未接线(501) → projector/recorder 未装配(500) → 全部 DB 写 → CallSendTurn → 封 seal。
+// → turn 未接线(501) → projector/recorder 未装配(500) → 全部 DB 写。
 // 409 先于 501 是硬要求：状态机拒绝是"这次请求在业务上不合法"，比"能力没接线"更该先答。
-// CallSendTurn 排在 seal 之前：失败 ⇒ 整笔回滚含 idempotency claim（HTTP 层重试拿得到新答案）。
 //
-// delivery=queue 不连 adapter（drain 推进器后置），回 queue/accepted=true（已落库待送达）。
+// delivery=queue 不连 adapter（drain 推进器后置），凭证里 NeedsTurn=false、Accepted=true（已落库待送达）。
 // start_now/guide：连接面未装配 ⇒ ErrTurnNotWired（501，不静默降级 —— yaml :554 禁的正是那个）。
-// 连接面回 accepted=false ⇒ 仍 202 落库，delivery 保持请求态、accepted=false（不改写成 queue）。
-func (s *Service) Send(ctx context.Context, tx *db.Tx, id string, cmd SendCommand) (SendResult, error) {
+func (s *Service) Reserve(ctx context.Context, tx *db.Tx, id string, cmd SendCommand) (SendReservation, error) {
 	if err := validateSend(cmd); err != nil {
-		return SendResult{}, err
+		return SendReservation{}, err
 	}
 
 	cur, err := NewRepository(tx).Get(ctx, id)
 	if err != nil {
-		return SendResult{}, err // sql.ErrNoRows → transport 404 not_found
+		return SendReservation{}, err // sql.ErrNoRows → transport 404 not_found
 	}
 	if cur.SessionID == "" {
-		return SendResult{}, ErrSessionNotLinked
+		return SendReservation{}, ErrSessionNotLinked
 	}
 
 	// 状态前置守卫：只放行 CREATED/STARTING/RUNNING，其余在碰任何装配位之前答 409。
 	switch cur.Status {
 	case Created, Starting, Running:
 	default:
-		return SendResult{}, fmt.Errorf("execution: send 在 %s 不合法: %w", cur.Status, ErrIllegalTransition)
+		return SendReservation{}, fmt.Errorf("execution: send 在 %s 不合法: %w", cur.Status, ErrIllegalTransition)
 	}
 
 	// turn 未接线只拦 start_now/guide：queue 本来就不走连接面。
 	// 放在 409 之后：状态机拒绝比"能力没接线"更该先答。
 	if cmd.Delivery != DeliveryQueue && s.turn == nil {
-		return SendResult{}, ErrTurnNotWired
+		return SendReservation{}, ErrTurnNotWired
 	}
 	if s.projector == nil || s.recorder == nil {
-		return SendResult{}, fmt.Errorf("execution: Send 未 EnableSend（装配缺口）")
+		return SendReservation{}, fmt.Errorf("execution: Send 未 EnableSend（装配缺口）")
 	}
 
 	base := Command{
@@ -164,7 +188,7 @@ func (s *Service) Send(ctx context.Context, tx *db.Tx, id string, cmd SendComman
 		start := base
 		start.EventID = cmd.StartingEventID
 		if _, err := s.advance(ctx, tx, id, Starting, start); err != nil {
-			return SendResult{}, err
+			return SendReservation{}, err
 		}
 		fallthrough
 	case Starting:
@@ -173,7 +197,7 @@ func (s *Service) Send(ctx context.Context, tx *db.Tx, id string, cmd SendComman
 		// provider_execution_id 留空（omitempty 键不出现）、快照空串：
 		// send 回执不是 started 证据（CO-8），证据走 turn/claimed + turn/dispatched。
 		if _, err := s.advance(ctx, tx, id, Running, started); err != nil {
-			return SendResult{}, err
+			return SendReservation{}, err
 		}
 		// §5.3 投影：execution_started → task_running。EdgeStarted 只从 PREPARING 驱动。
 		tres, err := s.projector.ApplyExecutionEvent(ctx, tx, cur.TaskID, task.EdgeStarted,
@@ -186,15 +210,15 @@ func (s *Service) Send(ctx context.Context, tx *db.Tx, id string, cmd SendComman
 			// 没注入 reporter 的拒绝：能识别成状态机拒绝（409），不是 500 装配错。
 			// Report 写失败 / 库错误等仍原样上抛（那才是 500）。
 			if errors.Is(err, task.ErrProjectionRejected) {
-				return SendResult{}, fmt.Errorf("execution: send 的 task_running 投影被拒: %w", ErrIllegalTransition)
+				return SendReservation{}, fmt.Errorf("execution: send 的 task_running 投影被拒: %w", ErrIllegalTransition)
 			}
-			return SendResult{}, err
+			return SendReservation{}, err
 		}
 		if tres.Rejection.Reason != "" || !tres.Advanced {
 			// 注入了 reporter：§5.4 两条记录已在同事务写下，但 send 的事件序列断了
 			// （task 不在 PREPARING）⇒ 整笔回滚 + 409。回滚连那两条一起丢是有意的：
 			// send 是同步 API，409 本身是对外答案；后台事件投影那条路的 §5.4 持久化不受影响。
-			return SendResult{}, fmt.Errorf("execution: send 的 task_running 投影被拒（%s）: %w",
+			return SendReservation{}, fmt.Errorf("execution: send 的 task_running 投影被拒（%s）: %w",
 				tres.Rejection.Reason, ErrIllegalTransition)
 		}
 	case Running:
@@ -205,31 +229,50 @@ func (s *Service) Send(ctx context.Context, tx *db.Tx, id string, cmd SendComman
 		ID: cmd.MessageID, EventID: cmd.MessageEventID, Text: cmd.Text, Attachments: cmd.Attachments,
 		PrincipalID: cmd.PrincipalID, CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID,
 	}); err != nil {
-		return SendResult{}, err
+		return SendReservation{}, err
 	}
 
-	// queue：不连 adapter，已落库待送达。
+	// queue：不连 adapter，已落库待送达 ⇒ 凭证里就把答案给全（NeedsTurn=false）。
 	if cmd.Delivery == DeliveryQueue {
-		return SendResult{
-			Delivery: DeliveryQueue, Accepted: true,
-			MessageID: cmd.MessageID, ExecutionID: id,
-		}, nil
+		return SendReservation{ExecutionID: id, SessionID: cur.SessionID, MessageID: cmd.MessageID,
+			Text: cmd.Text, Delivery: DeliveryQueue, IdempotencyKey: cmd.IdempotencyKey, Accepted: true}, nil
 	}
+	// start_now/guide：意图已经落库，投递留给 Deliver —— 那一跳跑在这笔事务**之外**。
+	// accepted 在这里还是 false（占位），真值只由 Deliver 从回执里填。
+	return SendReservation{ExecutionID: id, SessionID: cur.SessionID, MessageID: cmd.MessageID,
+		Text: cmd.Text, Delivery: cmd.Delivery, IdempotencyKey: cmd.IdempotencyKey, NeedsTurn: true}, nil
+}
 
-	// start_now/guide：真开一轮。失败 ⇒ 上抛 ⇒ 整笔事务回滚（含 idempotency claim）。
+// Deliver 打连接面那一跳，**必须在任何事务之外调用**（REQ-S-1 的不变量就在这一句落地）：
+// 写面只有 `platform/db` 那一条串行连接（`db.go:48`），起子进程 / 协议握手 / 等对端回执
+// 一旦关在写事务里，一次 send 就能停掉整个 Core 的写（09-25 那条红）。
+//
+// 失败 ⇒ 原样上抛：调用者**不密封**、execution 留在 RUNNING 不动（契约①「REQ-S-1 两段式的幂等语义」那一格 ④=丙），
+// HTTP 答案走已绑 503 的 `adapter_unresponsive`；v0.1 同步路径上不新造 `UNKNOWN` 边。
+// 不密封 ⇒ 同一 `Idempotency-Key` 的下一次请求读到的仍是"未密封 + 第一笔身份"⇒ 续跑。
+//
+// `res.NeedsTurn=false`（queue）时不发帧，直接回第一笔折算出的结果。
+func (s *Service) Deliver(ctx context.Context, res SendReservation) (SendResult, error) {
+	if !res.NeedsTurn {
+		return res.Result(), nil
+	}
+	// 这里的 nil 检查与 Reserve 里那一处**不是重复**：Reserve 挡的是"首攻时就没装配"，
+	// 这一处挡的是"凭证是上一趟写的、这一趟进程重新起来后连接面没接上"（续跑路径）。
+	if s.turn == nil {
+		return SendResult{}, ErrTurnNotWired
+	}
 	rec, err := s.turn.CallSendTurn(ctx, TurnCall{
-		ExecutionID: id, SessionID: cur.SessionID, Text: cmd.Text,
-		Delivery: cmd.Delivery, IdempotencyKey: cmd.IdempotencyKey,
+		ExecutionID: res.ExecutionID, SessionID: res.SessionID, Text: res.Text,
+		Delivery: res.Delivery, IdempotencyKey: res.IdempotencyKey,
 	})
 	if err != nil {
 		return SendResult{}, err
 	}
-	// accepted=false：仍 202 落库（消息已记、状态已推），delivery 保持请求态 ——
-	// 改写成 queue 才是 §5 禁的静默降级；reason 只进 sendpipe logf，yaml 没有出口。
-	return SendResult{
-		Delivery: cmd.Delivery, Accepted: rec.Accepted,
-		MessageID: cmd.MessageID, ExecutionID: id,
-	}, nil
+	// accepted=false 仍算跑通：delivery 保持请求态 —— 改写成 queue 才是 §5 禁的静默降级。
+	// reason 只进 sendpipe 的 logf，yaml `SendResult` 没有这个出口，不发明。
+	out := res.Result()
+	out.Accepted = rec.Accepted
+	return out, nil
 }
 
 // validateSend 在碰库之前拦住：text 必须非空、delivery ∈ 三枚举、四个事件/消息 id 必须在场。

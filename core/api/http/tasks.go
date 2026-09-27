@@ -584,34 +584,46 @@ var (
 	errKeyMismatch = errors.New("httpapi: Idempotency-Key 对应的请求体不一致")
 )
 
-// claimIdempotency 决定这一次 POST 归谁干。三种结果互斥：
-//   - ("", nil)     → 这条 key 由本次占用（已写 IN_PROGRESS 行），调用方去执行副作用；
-//   - (body, nil)   → 命中已封存的首次响应，调用方把 body 原样发出去，什么都不用再写；
-//   - ("", errReplay) → 首次请求还挂着（IN_PROGRESS），此刻确实没有响应可回。
+// 幂等认领的四种结果。`claimIdempotency` 只用其中三种，send 用全部四种 ——
+// 多出来的那种是第 25 条②给的：`state=IN_PROGRESS` 期间 `response_json` 是**无人读的闲置位**，
+// 现在登记成"第一笔身份"，于是"未密封但有凭证（可续跑）"与"未密封且没凭证（只能 409）"是两件事。
+const (
+	claimFresh    = iota // 这条 key 由本次占用（已写 IN_PROGRESS 行），调用方去执行副作用
+	claimReplay          // 命中已封存的首次响应：原样发出去，什么都不用再写
+	claimInFlight        // IN_PROGRESS 且没有凭证：此刻确实没有可回的响应
+	claimResume          // IN_PROGRESS 且带着第一笔身份：意图已提交 ⇒ 续跑，**不许多写一行**
+)
+
+// claimIdempotencyRow 是所有高风险写共用的认领核心。原来那段判断只写在 claimIdempotency 里面，
+// send 要分清 claimResume / claimInFlight ⇒ 把状态提出来，而不是复制第二份 SELECT+INSERT（两份迟早分叉）。
 //
-// §1.1 第 12 条：这张表是"故意不发事件的可变表"，所以占坑用 Append、封存用 UpdateOnce，都不占聚合版本。
-func claimIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation, hash string) (string, error) {
+// 契约①「幂等表是故意不发事件的可变表」那一格：占位用 Append、改状态用 UpdateOnce，都不占聚合版本。
+func claimIdempotencyRow(ctx context.Context, tx *db.Tx, key, principal, operation, hash string) (int, string, error) {
 	var (
-		existingHash, state string
-		stored              sql.NullString
+		existingHash, rowState string
+		stored                 sql.NullString
 	)
 	err := tx.QueryRowContext(ctx,
 		`SELECT request_hash, state, response_json FROM idempotency_keys WHERE key = ?`, key).
-		Scan(&existingHash, &state, &stored)
+		Scan(&existingHash, &rowState, &stored)
 	switch {
 	case err == nil:
 		if existingHash != hash {
-			return "", errKeyMismatch
+			return claimInFlight, "", errKeyMismatch
 		}
-		if state == "COMPLETED" && stored.String != "" {
-			return stored.String, nil
+		switch {
+		case rowState == "COMPLETED" && stored.String != "":
+			return claimReplay, stored.String, nil
+		case rowState == "IN_PROGRESS" && stored.String != "":
+			return claimResume, stored.String, nil
+		default:
+			return claimInFlight, "", nil
 		}
-		return "", errReplay
 	case errors.Is(err, sql.ErrNoRows):
 		// 没记录，往下 INSERT
 	case err != nil:
 		// 读不出来的其它错误也别蒙：让 INSERT 去撞唯一约束，语义更清楚。
-		return "", err
+		return claimInFlight, "", err
 	}
 	now := time.Now().UnixMilli()
 	var p any
@@ -622,11 +634,45 @@ func claimIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation,
 		[]string{"key", "principal_id", "operation", "request_hash", "state", "created_at", "updated_at"},
 		[]any{key, p, operation, hash, "IN_PROGRESS", now, now}); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: idempotency_keys.key") {
-			return "", errReplay
+			// 并发同键：别人先占上了。这一趟读到的还是老状态 ⇒ 按"没凭证的在飞"交回调用方。
+			return claimInFlight, "", errReplay
 		}
+		return claimInFlight, "", err
+	}
+	return claimFresh, "", nil
+}
+
+// claimIdempotency 是 task / project 那两口用的旧签名：它们从不写凭证，所以 claimResume 落到它们手上
+// 只可能是脏数据 ⇒ 一律按"首次还没完成"挡（409 replay），行为与提出四态之前逐字相同。
+func claimIdempotency(ctx context.Context, tx *db.Tx, key, principal, operation, hash string) (string, error) {
+	state, payload, err := claimIdempotencyRow(ctx, tx, key, principal, operation, hash)
+	if err != nil {
 		return "", err
 	}
-	return "", nil
+	switch state {
+	case claimReplay:
+		return payload, nil
+	case claimFresh:
+		return "", nil
+	default:
+		return "", errReplay
+	}
+}
+
+// recordSendIdentity 把第一笔的续跑凭证写进 `idempotency_keys.response_json`（第 25 条②）。
+// guard 用 `state != COMPLETED`：**已经密封的那一行不许被凭证盖回去** —— 这一列的两义由 state 来分，
+// 所以写入条件与读取条件用的是同一个判据，不给下一个人留"看这一列有没有值"的读法。
+// 0 行不是"没什么大不了"：那是这一格已被别人封上，我这次写凭证就该喊（与 CO-44 同一口径）。
+func recordSendIdentity(ctx context.Context, tx *db.Tx, key, identity string) error {
+	n, err := tx.UpdateOnce("idempotency_keys", key, "state", "COMPLETED",
+		"response_json = ?, updated_at = ?", []any{identity, time.Now().UnixMilli()})
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("httpapi: 投递凭证没写上（幂等行已密封或不存在）：key=%s，改了 %d 行", key, n)
+	}
+	return nil
 }
 
 // sealIdempotency 把首次响应封进 idempotency_keys，返回**封存后从库里读回来的那一份**。

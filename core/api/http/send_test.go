@@ -15,6 +15,7 @@ import (
 	"github.com/SadCat18/lucero/core/internal/adapter"
 	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
+	"github.com/SadCat18/lucero/core/internal/project"
 	"github.com/SadCat18/lucero/core/internal/session"
 	"github.com/SadCat18/lucero/core/internal/task"
 )
@@ -99,6 +100,7 @@ func newSendHarness(t *testing.T, seed sendSeed, wired bool) (*httptest.Server, 
 		MigrationVersion: func() int64 { return 2 },
 		Tickets:          httpapi.NewTickets(30*time.Second, nil),
 		Tasks:            taskSvc,
+		Projects:         project.NewService(nil), // 只为 send 那格判据：挂住期间要能另发一发写
 		TaskList:         task.NewRepository(d.Read),
 		Store:            d,
 		Executions:       execution.NewRepository(d.Read),

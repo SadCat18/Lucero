@@ -653,7 +653,12 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **不得**产生第二条消息或第二条状态边；若第一笔已提交而进程在第二笔之前中断，claim 行保持未密封 ⇒
       同 key 重试走**续跑**（再打一次连接面 + 密封），**不是**永久 409 `idempotency_replay`。
       ⇒ 第 23 条②里那句"重试拿到的答案不许悄悄变"**按本条定义读**（"不许变"指**库里事实**不许多算一次，
-      不是"永远回同一份字节"——重放响应体里的 `version` 必须是**当前库里的版本**，写死旧值就是撒谎）。
+      **不是**"永远回同一份字节"）。
+      ⚠ **09-27 更正我自己在这一格里写下的字面**：原文写的是"重放响应体里的 `version` 必须是**当前库里的版本**"，
+      而 `SendResult` 今天**没有 `version` 这个键**（现读 yaml：只有 `delivery` / `accepted` / `message_id` / `execution_id` 四键，`required` 是前两个）
+      ⇒ **一句引用不存在字段的判据是假判据**。"当前性"因此**经读面回库里那一行来判**（`GET /api/v1/tasks/{id}`），不判响应体字段。
+      **要往 `SendResult` 加 `version` 属于改对外契约**：必须连面板侧的类型与生成物一起推，**另开 REQ，不为一条判据开路**
+      （`backend` 第 285 条问的就是这个 —— 它没偷偷加字段，做得对）。
     - **② 续跑凭证放哪儿：`idempotency_keys.response_json`，且必须登记这一列的两义**。
       `backend` 量的地基我复现了：`claimIdempotency` 只在 `state='COMPLETED'` 时读 `response_json` ⇒
       **`IN_PROGRESS` 期间那一格是无人读的闲置位**。裁：**claim 时把第一笔身份写进 `response_json`，密封时覆盖成真响应**。
@@ -675,7 +680,8 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       并按第 20 条 CO-45③ 那个口径数活进程）。**排在第 8 格端到端之后、Wave-3 之前，今天不占闸门前面**；
       在此之前，崩溃注入的测试**不许**为了变绿去改 `advance` 或硬塞 `Recovery`。
     - **⑤ 判据（这一格怎么算证到）**：三条用例 —— (a) 崩在密封前 ⇒ 同 key 重试后 `messages` 仍**恰一行**、
-      `executions` 仍**恰两条状态边**、幂等行被密封且响应 `version` 等于当前库版本；
+      `executions` 仍**恰两条状态边**、幂等行被密封；"版本是当前库里那一行"**经 `GET /api/v1/tasks/{id}` 回读判**
+      （09-27 更正：原写"响应 `version` 等于当前库版本"是引用了一个 `SendResult` 里不存在的键 ⇒ 按上一句改判读面）；
       (b) 双客户端同 key 并发 ⇒ 只有一行密封成功、另一条走 0 行分支**并且喊出来**；
       (c) 挂住/超时 ⇒ 库里 `RUNNING` 不变 + 503 `adapter_unresponsive` + `retryable=true` + **不多发任何事件**。
       反例两条起步：把续跑改回 `errReplay` ⇒ (a) 必须红；把密封 guard 摘掉 ⇒ (b) 必须红。
