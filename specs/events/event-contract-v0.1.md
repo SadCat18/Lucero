@@ -282,6 +282,23 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > `TestAdapterDowngradedCannotRideASessionTouch`）。
 > 所以本名单当前是**三条**：`policy_created` / `policy_updated` / `adapter_downgraded`。
 
+> **【名单扩容 · 主控 09-27 16:3x 按 `test` 的名册判据登记，原文留档不删】上面那句"三条"已被取代：名单现为 27 条。**
+> 新增的 **24 条**由判据机械导出（不是我手抄）：`go test -count=1 -v -run '^TestEventProducerRosterMatchesDerivedSet$' ./test/`
+> 打印的"派生集合里有 X 而名单没登记"逐条取回，分类是 `test` 给的（**22 条只有定义位、2 条只在错误文案里出现**）：
+> `adapter_restart_exhausted`、`approval_cancelled`、`core_shutdown`、`execution_approval_requested`、
+> `execution_approval_resolved`、`execution_output_flushed`、`grant_revoked`、`handoff_completed`、`handoff_created`、
+> `handoff_failed`、`handoff_ready`、`model_discovered`、`project_archived`、`quota_observed`、`session_synced`、
+> **`task_accepted`**、`task_blocked`、`task_paused`、`task_preparing`、`task_queued`、`task_resumed`、
+> `task_state_corrected`、`task_verifying`、`task_waiting_acceptance`。
+> **两条明确不进名单**：`process_crashed` / `process_exited` —— 四层回解（形参←同包调用点实参）生效后
+> 判为**有生产者**（契约① 第 24 条⑧款那格、账本 T-371① 裁的就是这一层）。
+> ⚠ **`task_accepted` 在这一批里最值得单看**：它是 §7 垂直链的收尾事件，而名册说它今天**没有生产者**
+> ⇒ Wave-2 第 8 格即使 `:accept` 走通，也要确认这一条**真的落进 `event_journal`**，
+> 别把"HTTP 200"当成"链尾事件已发生"（判据面：契约① §1.1 那串垂直链 oracle + 账本 T-381/T-382）。
+> **口径提醒**：本名单是"登记了但没人发"的**已知缺陷清单**，不是功能清单；补登记不等于补功能。
+>
+> 所以**本名单当前是 27 条**（09-27 16:3x 起，取代上面那句"三条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` / `task_waiting_acceptance` 。
+
 
 ## 7. 垂直链事件序列（测试 oracle）
 

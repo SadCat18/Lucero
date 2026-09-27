@@ -201,6 +201,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
 | U13-5 | `response_json` 落库必须已脱敏（含"调用方已序列化的 JSON"也要扫） | `TestUpdateOnceRedactsPreSerializedJSON` | `go test -count=1 -v -run TestUpdateOnceRedactsPreSerializedJSON ./internal/platform/db/` | 现存 / db |
 | U13-6 | 首次 201 body 与重放 body **逐字节相等**（C18 选②） | `TestIdempotentReplayBodyIsByteIdentical` | `go test -count=1 -v -run TestIdempotentReplayBodyIsByteIdentical ./test/` | **SKIP（blocked）**：用例在 `core/test/crash_test.go`，自带 `t.Skip("blocked: 需要 POST /api/v1/tasks 与幂等回读路径可用（backend）")` / 待 backend |
 | U13-7 | 响应里含密钥形状时，**首次与重放两份都等于打码后的存储值** | 建议名 `TestIdempotentFirstResponseIsRedacted` | `go test -count=1 -v -run TestIdempotentFirstResponseIsRedacted ./api/http/` | **待建 / backend**（U13-5 只证到 db 落库层，**没有证到"首次响应体不外泄"**——C18 的真实风险点目前缺一层断言） |
+| U13-8 | §6 词表里每个事件名**必须有发射位覆盖**，或**在本节名单里被登记为"无生产者"**；两个方向都算红（漏登记 ⇒ 红、多登记而其实有生产者 ⇒ 也红）。回解深度四层（字面量 / 常量 / 别名或调用 / 形参←同包调用点实参），**回解不出者单列「未决」并让用例 FAIL，绝不计入"无生产者"**（把看不见的东西写成没有，就是往名单里塞假事实） | `TestEventProducerRosterMatchesDerivedSet` | `go test -count=1 -timeout 120s -v -run '^TestEventProducerRosterMatchesDerivedSet$' ./test/` | **现存 / test**（主控 09-27 16:3x 自己跑：`--- PASS (2.00s)`、`ok`；跑前一遍是 `FAIL` 24 条未登记，登记后归 0。名单落点见事件契约「本名单当前是 27 条」那句——**它是这条判据的唯一锚点**，改了那句不重跑 = 立刻红） |
 
 **状态列只允许三个值**（16:01 逐个实跑标定，不是推断）：`现存` = 该 `-run` 目标**真的跑出 PASS**
 （判据：加 `-v` 后 `--- PASS` 计数等于期望条数；U13-1~5 实测 **5**）；`SKIP（blocked）` = 用例存在但被
