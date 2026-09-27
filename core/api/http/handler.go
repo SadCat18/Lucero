@@ -165,6 +165,7 @@ func NewHandler(c Config) http.Handler {
 	registerSessionListRoute(mux, c)
 	registerAdapterProbeRoute(mux, c)
 	registerExecutionRoutes(mux, c)
+	registerApprovalRoutes(mux)
 
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

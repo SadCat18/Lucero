@@ -97,6 +97,19 @@ func registerExecutionRoutes(mux *http.ServeMux, c Config) {
 			}
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 				"/api/v1/executions/{id} 只声明 GET；send 是 {id}/send", false)
+		case verb == "output":
+			// T-370② 那一格：`GET /executions/{id}/output` 是 §3 登记过的路径（yaml :505 `listExecutionOutput`），
+			// 以前它连 `splitExecutionItem` 都过不去，于是拿到一句"这条路径的形状我不认识"——那是假话，
+			// 和 sessions.go 里 `messages` 那格同族（修法也照它：方法不对才 405，声明过但没装配是 501）。
+			// 为什么今天只能 501：这张表的**写者还不存在** —— delta 级输出由入站帧落
+			// `execution_output_chunks`，而那条消费者正是 T-370① 裁的那一格；先修文案不为它铺路。
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+					"/api/v1/executions/{id}/output 只声明 GET（增量游标 after_seq）", false)
+				return
+			}
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"GET /api/v1/executions/{id}/output 在契约③ §3 登记过，但读通道没装配：这一次执行的流式批次今天还没有写者（写它的是连接面入站帧那个消费者，见 T-370①），不拿空页冒充", true)
 		default:
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"没听过的 execution 子路径一律 501，不猜它该走哪条腿", true)
@@ -116,6 +129,14 @@ func splitExecutionItem(path string) (id, verb string, ok bool) {
 			return "", "", false
 		}
 		return sub, "send", true
+	}
+	// `/output` 也是 §3 登记过的形状（yaml :505），必须过得去 splitter —— 否则它对上的是
+	// "形状我不认识"那句假话（T-370②）。仍然只认这两条子路径：认多了就是替别人决定归属。
+	if sub, found := strings.CutSuffix(rest, "/output"); found {
+		if sub == "" || strings.Contains(sub, "/") || strings.Contains(sub, ":") {
+			return "", "", false
+		}
+		return sub, "output", true
 	}
 	if strings.Contains(rest, "/") || strings.Contains(rest, ":") {
 		return "", "", false
