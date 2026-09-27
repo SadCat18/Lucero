@@ -701,6 +701,14 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       `internal/task/projection.go` 那一处，那是 task 的状态机）⇒ **REQ-RC-1**（恢复扫描器要成为 `Recovery` 的入口，
       并按第 20 条 CO-45③ 那个口径数活进程）。**排在第 8 格端到端之后、Wave-3 之前，今天不占闸门前面**；
       在此之前，崩溃注入的测试**不许**为了变绿去改 `advance` 或硬塞 `Recovery`。
+    - **④-b `REQ-TURN-1`（09-27 16:5x 立项，随 CO-54=丙 那道"借来的绿"一起登记，排 Wave-2 之后、真 adapter 接入之前必须裁）**：
+      **`turn/finished` 与 send 回执的先后时序在 v0.1 未定义**。今天的形状是"`start_now` 一次调用一条连接、返回即 `Close`"
+      （C42 连接复用后置未裁），而 `cmd/fake-adapter` 的收尾在**排水**那一步、不在 send 那一跳内 ⇒
+      **真 adapter 的收尾帧几乎必然后到**，届时"帧到了没人收"会变成常态而不是边角。
+      三条出路留给那时裁：**Ⅰ** 常驻入站泵（原 CO-54 的乙/C42 那一支）；**Ⅱ** send 改成异步回执（`202 + 轮询/WS`，
+      与 §15.2 现有码兼容）；**Ⅲ** 明确"v0.1 只支持同步收尾的 Provider"并把它写成 Provider 准入条件。
+      **记账要点**：U13 那一格今天用 `debug/hold` 注入判据（T-386）证的是**Core 会正确落终态并投影**，
+      **不证**"生产语义里帧什么时候到已定"——谁把 Wave-2 说成"投递语义已验完"，先拿本条来对。
     - **⑤ 判据（这一格怎么算证到）**：三条用例 —— (a) 崩在密封前 ⇒ 同 key 重试后 `messages` 仍**恰一行**、
       `executions` 仍**恰两条状态边**、幂等行被密封；"版本是当前库里那一行"**经 `GET /api/v1/tasks/{id}` 回读判**
       （09-27 更正：原写"响应 `version` 等于当前库版本"是引用了一个 `SendResult` 里不存在的键 ⇒ 按上一句改判读面）；
