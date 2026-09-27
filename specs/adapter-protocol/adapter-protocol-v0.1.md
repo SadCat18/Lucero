@@ -306,6 +306,17 @@ Adapter→Core 通知：
      这条与 §8 崩溃语义同源：宁可丢一个流式帧，不可串两个 execution 的输出。
    - 断线重连后 `since_seq` 也要按 `turn_ref` 分别补，不同 execution 的游标互不相干。
    - **FakeAdapter（§10）必须测这一条**：一条连接上并发两个 execution，各自的 delta 只进自己的 chunk 行。
+6. **`result_code` 的合法取值 = Execution 那三个"一轮可落到"的终态字面：`SUCCEEDED` / `FAILED` / `CANCELLED`**
+   （09-27 16:2x 补，起因是甲那一格交账后暴露的两个洞。**取值表只有一份，住在 `internal/execution` 的状态常量里；
+   本节只按名字对齐，不再抄一份枚举** —— 两处各存一份就是我自己否掉过的那种"第二处展开规则"）。三条推论必须一起成立：
+   - **① "收到 `turn/finished`" ≠ "成功"**：帧只证明"这一轮收尾了"，终态由 `result_code` 说。
+     不在表里的码 ⇒ Core **不写终态、原样回 202 并喊一句** —— "有帧但那个码没人裁过"与"根本没有帧"
+     必须是两种可区分的结局（§7 那句"没收到 `turn/finished` 信号不许读成失败"继续成立，`CO-8`）。
+   - **② `INTERRUPTED` 不是合法的 turn 级 `result_code`**："被打断"是 **Core 侧对进程死亡的观察**，归恢复扫描那条边
+     （`Occasion=Recovery`，`REQ-RC-1`），**不许由对端一帧自报** —— 否则崩溃恢复那一格永远测不出真东西。
+   - **③ `start_now` / `guide` 这一路必须发 `turn/finished`**（规则 1 已把它定为唯一的强制收尾信号）。
+     今天唯一生产者 `cmd/fake-adapter` 只在"取消"与"队列排空"两路发帧，字面用的是 `"OK"` / `"INTERRUPTED"` ⇒
+     这是**实现缺口，不是协议留白**：`"OK"` 收进表里等于把"没裁过的东西"当成功，所以禁；改的是发帧方。
 
 ## 7. 额度契约（UNKNOWN 与 0 是两回事）
 
