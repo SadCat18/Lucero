@@ -714,13 +714,30 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
         协议 §8"崩溃后果…只影响该 Adapter 上的 in-flight Execution，**一律转 `UNKNOWN`**" + 上文
         "契约②那条…落点是恢复扫描" + §5.5 三条件（Recovery + 非空 Evidence + 非终态）+ 同事务 Audit。
         **这条的接线依赖 `Supervisor.Run` 那一格**（W2-7 点名生产码零调用点，归属 backend/process）⇒ **排在本轮之后**；
-      - **REQ-RC-2 裁「甲」**：`→UNKNOWN` 的 §6 事件名**定 `execution_unknown`**（与 `execution_interrupted` 同形，
-        payload `from` + `reason`，Audit 必带）。**现在不登 §6** —— C8-12 是双向对拍，先登行必红；
+      - **REQ-RC-2 裁「甲」**：`→UNKNOWN` 的 §6 事件名**定 `execution_unknown`**，payload `from` + `reason`，Audit 必带。
+        **09-30 18:0x 更正本条字面**：原写「与 `execution_interrupted` 同形」是错的 —— §6 里那一枚是 :218 的**合并行**
+        （`result_code` / `error_code` / `usage`），而 `UNKNOWN` 的正身就是**没有 `result_code` 可填**；并进合并行会
+        诱导出「给一次未知编一个结果码」的假数据，与契约②「收到帧 ≠ 成功」「不许 Core 替 Provider 编终态」同族。
+        ⇒ §6 给它**单独一行**（`from` + `reason`；`from` 有先例 = :208 `task_resumed`，`reason` 有先例 = :183/:204/:206）。
+        **盘上落点核对**（18:0x 现读）：`core/internal/execution/events.go:26` = `EventUnknown = "execution_unknown"`，
+        `auditRequired` 已含它，`Terminal(Unknown) == false` ⇒ **不写 `finished_at`**（这正是「不可判定」与「已失败」在列上的区别）。**现在不登 §6** —— C8-12 是双向对拍，先登行必红；
         登记授权随落地批给出：backend 落 UNKNOWN 路径的同一提交里加常量 + 主控批 §6 行，顺序照 REQ-DB-4；
       - **Task 侧本轮不动**：`execution_unknown` 不进 §5.3 七条边 ⇒ 投影不产生 Task 事件
         （`projection.go:6-8` 那句"不在这张表里的一律不产生"照读），task 留在 `RUNNING` —— 这不是欠账是矩阵：
         §5.1 里 task `RUNNING` 的恢复列只有 `INTERRUPTED`，本就没有 `RUNNING→UNKNOWN` 这条边。
         task 自己的 `UNKNOWN` 行今天无生产者，与 `task_verifying` 同格（有意 idle，不立项）。
+      - **REQ-RC-3 裁「丙」（09-30 18:0x）：v0.1 不建 `execution_leases` 的写路径，也不给「死／挂／还在跑」
+        补第三态信号源 —— 三态里今天只有「进程级存活」可判，另两态**承认不可判定**（落 `UNKNOWN`，不猜）。
+        三条理由，都带盘上出处：① 它要守的那个并发面在文档里**不存在** —— 「Runner」全仓只有 §24 两行与 handoff
+        摘要，无定义、无 `owner_id` 生产者、无 acquire/release 协议、无 TTL 数值；② 今天任何写它的代码路径都会被
+        `core/internal/platform/db/touch.go:201` 的 `narrowTables` 拒（只放 `idempotency_keys`），**那道闸是有意的**
+        （扩表要过 §1.1.13 的 REQ 门），绕过它等于拆自己的门；③ 崩溃恢复的最小需求「别把在飞的活当成功」已经由
+        `→UNKNOWN` + `Terminal(Unknown)==false` + 不许替 Provider 编终态覆盖，lease 只是把它做成「多 Runner 抢占」，那是 v0.2 的面。
+        **连带裁**：`executions.provider_execution_id` **不是缺信号源，是缺一次落库调用** —— 值今天已经在 Core 手里
+        （`turn/claimed` 经泵进 `TurnTracker.ProviderExecutionID()`，时机按契约② :189 必须是 claimed 那一刻），
+        写列归 `internal/execution`（backend），**随泵的接线同批做**（它不该单独开一批去写这一列）。
+        若 v0.2 真要做 lease：**先补文档（Runner 定义 + owner_id + acquire/release + TTL 数值），再走 §1.1.13 扩表门**，
+        顺序反了就会得到「表建好了没人写、写了没人读」的那种僵尸面。
     - **④-b `REQ-TURN-1`（09-27 16:5x 立项，随 CO-54=丙 那道"借来的绿"一起登记，排 Wave-2 之后、真 adapter 接入之前必须裁）**：
       **`turn/finished` 与 send 回执的先后时序在 v0.1 未定义**。今天的形状是"`start_now` 一次调用一条连接、返回即 `Close`"
       （C42 连接复用后置未裁），而 `cmd/fake-adapter` 的收尾在**排水**那一步、不在 send 那一跳内 ⇒

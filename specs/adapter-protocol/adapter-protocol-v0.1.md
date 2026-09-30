@@ -346,6 +346,7 @@ Adapter→Core 通知：
   （**不是 `FAILED`**——我们没有证据说它失败了），由 Recovery Engine 结合 lease/heartbeat/
   `provider_execution_id` 判 reconnect / resume / interrupt。
 - 重启退避 `1s, 2s, 4s, 8s, 上限 30s`；连续 5 次崩溃 → `health=UNAVAILABLE` + 停止自动重启 + 发 Notification。
+  **健康分档补一句（09-30 18:0x 裁，回 adapter 第 33 轮「这是读法不是裁定」那句）**——轴是**这台现在能不能接新活**，不是「丢了几次帧」：**① 单次连接丢失、被监督的子进程还活着、下一次 send 能重连上 ⇒ `DEGRADED`**（能力没少，只是这一轮收尾没收到；上面那条阶梯要「连续 5 次崩溃」才升 `UNAVAILABLE`，所以单次丢失不该直接判死）；**② 重连失败 / 进程已死 / 重启阶梯用尽 ⇒ `UNAVAILABLE`**（与本行同一条，不另立标准）；**③ 握手从未成功 ⇒ `UNAVAILABLE`**（代码今天就是这条路：`core/internal/adapter/probe_store_sqlite.go:255` 的 `MarkUnverified`，与本裁一致，不是它自造的读法）；**④ 每次降档必须同事务发 `adapter_health_changed`**（事件契约 §6 :185 现成那行，载荷 `from` `to` `confidence`）⇒ **降健康不许是静默改列**，面板要看得见是哪一次掉的。**单一写口**：`healthWrite`（`probe_store_sqlite.go:350`）是那张表健康三列的唯一写点，新路径一律走它，**不许另起第二写手**。
 - Adapter 崩溃**绝不允许**导致 Core 退出；Core 退出**绝不允许**损坏 SQLite。这两条各有回归测试。
 
 ## 9. 危险开关的 gating
