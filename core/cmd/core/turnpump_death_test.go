@@ -8,8 +8,9 @@ package main
 // 三条线各自有主：
 //   - 在飞名单（`turnHub.watch`）⇒ 崩溃改判只覆盖**我自己发过帧的那些执行**，库里别的 RUNNING 行不算；
 //   - §7.2 健康列 ⇒ 走 `internal/adapter` 那唯一写口 `DowngradeHealth`（T-402 ①，泵只调用）；
-//   - 崩溃改判那一笔 ⇒ 今天会被平台事件目录挡下（§6 还没有 `execution_unknown` 那行），
-//     所以这里的断言是**配对的**：喊成功就必须真落了，喊失败就必须一行没动 —— 两种都不许悄悄。
+//   - 崩溃改判那一笔 ⇒ `execution_unknown` 已在 §6 与平台目录里（09-30 三处同改那一批），所以今天
+//     真落得下去。这里的断言仍是**配对的**：喊成功就必须与库里一致、喊失败就必须一行没动 ——
+//     两种都不许悄悄，也不必因为"墙拆了"而改测试（分支由喊话决定，不由开关决定）。
 
 import (
 	"context"
@@ -79,11 +80,10 @@ func deathFixture(t *testing.T) (*sendPipe, *logTap, *db.DB, string) {
 	return pipe, tap, d, items[0].SessionID
 }
 
-// armHoldAndSend 武装 hold 再打一发 start_now：这一发被接下、收尾被扣住 ⇒ 它就是一条"在飞"的执行。
-func armHoldAndSend(t *testing.T, pipe *sendPipe, d *db.DB, execID, taskID, sess string) {
+// insertInFlightRow 播一条"在飞"的执行（task + execution 两行，RUNNING / HIGH）。
+// 拆出来只为一件新判据（T-414 ②）需要在**占住写面之前**把行备好、把 hold 武装上，然后再出帧。
+func insertInFlightRow(t *testing.T, d *db.DB, execID, taskID, sess string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	if _, err := d.Read.Exec(`INSERT INTO tasks (id, title, status, created_at, updated_at)
 		VALUES (?, '崩溃这一格', 'RUNNING', 1, 1)`, taskID); err != nil {
 		t.Fatal(err)
@@ -94,6 +94,13 @@ func armHoldAndSend(t *testing.T, pipe *sendPipe, d *db.DB, execID, taskID, sess
 		execID, taskID, sess); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// armHold 起常驻连接并武装 debug/hold（§10 那条注入：收尾被扣住，这一轮就留在飞）。
+func armHold(t *testing.T, pipe *sendPipe) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	conn, err := pipe.hub.connection(ctx, "fake")
 	if err != nil {
 		t.Fatalf("起常驻连接失败：%v", err)
@@ -101,12 +108,42 @@ func armHoldAndSend(t *testing.T, pipe *sendPipe, d *db.DB, execID, taskID, sess
 	if _, err := conn.Call(ctx, "debug/hold", map[string]any{"on": true}); err != nil {
 		t.Fatalf("武装 debug/hold 失败：%v", err)
 	}
+}
+
+// sendHeldTurn 打一发 start_now：这一发被接下、收尾被 hold 扣住 ⇒ 它是一条在飞的执行。
+func sendHeldTurn(t *testing.T, pipe *sendPipe, execID, sess string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if _, err := pipe.CallSendTurn(ctx, execution.TurnCall{
 		ExecutionID: execID, SessionID: sess, Text: "留在飞", Delivery: "start_now",
 		IdempotencyKey: "k-die-" + execID,
 	}); err != nil {
 		t.Fatalf("这一发 send 该被接下：%v", err)
 	}
+}
+
+// releaseHeldTurn 解除 hold ⇒ 对端把那一轮的 `turn/finished` 交出来（不带 code 时默认 SUCCEEDED，
+// `core/cmd/fake-adapter/main.go:341~343` 那句）。这一帧**需要写库**，所以它也是"泵还能不能干活"的探针。
+func releaseHeldTurn(t *testing.T, pipe *sendPipe) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := pipe.hub.connection(ctx, "fake")
+	if err != nil {
+		t.Fatalf("取常驻连接失败：%v", err)
+	}
+	if _, err := conn.Call(ctx, "debug/hold", map[string]any{"on": false}); err != nil {
+		t.Fatalf("解除 debug/hold 失败：%v", err)
+	}
+}
+
+// armHoldAndSend 武装 hold 再打一发 start_now：这一发被接下、收尾被扣住 ⇒ 它就是一条"在飞"的执行。
+func armHoldAndSend(t *testing.T, pipe *sendPipe, d *db.DB, execID, taskID, sess string) {
+	t.Helper()
+	insertInFlightRow(t, d, execID, taskID, sess)
+	armHold(t, pipe)
+	sendHeldTurn(t, pipe, execID, sess)
 }
 
 // crashIt 让真孩子当场死掉（debug/crash 先回执、后 os.Exit(2)）。
@@ -146,7 +183,7 @@ func TestPumpDeathMarksInFlightAndDowngradesHealth(t *testing.T) {
 	if summary := tap.lineWith("崩溃处理收尾"); !strings.Contains(summary, "在飞 1 条") {
 		t.Fatalf("在飞名单该认得这一条 send（它出帧前就登记了），实际那一声是 %q", summary)
 	}
-	// 配对断言：改判成不成，都要与库和喊话一致。今天 §6 没那行 ⇒ 必然走"没落成"那一支。
+	// 配对断言：改判成不成，都要与库和喊话一致。两分支由**喊话**选，不由开关选 ⇒ 墙拆了不必改这里。
 	landed, blocked := tap.count("判为 UNKNOWN"), tap.count("崩溃改判没落成")
 	status := pumpExecStatus(t, d, "ex-die")
 	switch {
@@ -162,7 +199,7 @@ func TestPumpDeathMarksInFlightAndDowngradesHealth(t *testing.T) {
 			t.Errorf("改判没成却把状态改了（%s）⇒ 那是「只改状态不发事件」那一形", status)
 		}
 		if n := pumpEventsOf(t, d, "execution_unknown"); n != 0 {
-			t.Errorf("§6 还没有那行就不许有任何 execution_unknown，实际 %d 行", n)
+			t.Errorf("改判没成却留下事件（%d 行）⇒ 状态与事件得同生同死", n)
 		}
 	default:
 		t.Fatalf("改判的喊话必须恰一条、且只在一侧：成功 %d、失败 %d（日志：%v）", landed, blocked, tap.lines)
@@ -174,7 +211,8 @@ func TestPumpDeathMarksInFlightAndDowngradesHealth(t *testing.T) {
 	if n := pumpEventsOf(t, d, "adapter_health_changed"); n == 0 {
 		t.Errorf("健康是 adapter 的 store 写的，它那条 adapter_health_changed 该留下；没有就说明泵绕过了写口。泵的观察：%v", tap.lines)
 	}
-	// provider 把手：claimed 那一刻被泵接住（这一列今天落不下去，观察面先可见，见台账第 305 条 ③）。
+	// provider 把手的**观察面**：claimed 那一刻被泵记进在飞名单。库里那一腿的配对断言在
+	// `turnpump_claim_test.go` —— 两腿各判各的，谁也不替谁担保（内存那份活不过重启，库里那份才是交接）。
 	if n := tap.count("claimed 带回 provider_execution_id"); n != 1 {
 		t.Errorf("claimed 那帧该被记恰一次，实际 %d 句：%v", n, tap.lines)
 	}
@@ -212,19 +250,26 @@ func TestPumpDeathLeavesOtherRunningRowsAlone(t *testing.T) {
 	}
 }
 
-// TestShutdownIsNotACrash 是 `closing` 那面旗的全部理由：Core 自己关停也会"看到"孩子终止
+// TestShutdownIsNotACrash 钉的是"关停不是崩溃"那一格：Core 自己关停也会"看到"孩子终止
 // （`Close` 就是杀它），但那不是对端死了 ⇒ 不改判、不降健康、不走崩溃处理。
-// 摘掉那面旗，本用例当场红 —— 那正是一次正常关停写出满库 UNKNOWN 的坏形状。
+// 守住这一格的是 `watchDeath` 里 `werr != nil` 那一句（`closeAll` 先按 cancel、再退役，所以主动关停
+// 那一趟 `Wait` 必然带 err）。**这条用例就是那一句的全部理由**：摘掉它，本用例当场红（本批变异 N-g）。
+// 原来这里还有一面 `closing atomic.Bool`，T-408 ③ 二选一之后按"无人能观察的状态不留"摘了 ——
+// 它与"cancel 已按"永远同真，而反过来还能把一次紧邻关停的真死亡读成"不是崩溃"。
+//
+// 等的是观察者自己那声"不作崩溃处理"（就在 return 前一句），**不是**等"连接退役"：上一版等后者，
+// 判据就成了"看观察者跑没跑完"的赛跑 —— N-g 第一次跑正是这样被蒙过去的（第 306 条记这个反例）。
 func TestShutdownIsNotACrash(t *testing.T) {
 	pipe, tap, d, sess := deathFixture(t)
 	armHoldAndSend(t, pipe, d, "ex-shut", "task-shut", sess)
 	before := pumpHealth(t, d, "fake")
 
 	pipe.hub.closeAll()
-	// 等的不是"崩溃处理收尾"（那一声**不该**出现）。等"连接退役"：它在旗之后、也在观察者跑到之前，
-	// 所以等到它就等于观察者也走完了 —— 不是拿 sleep 撞运气。
-	if !tap.wait(t, "连接退役", 15*time.Second) {
-		t.Fatalf("关停没把连接退役：%v", tap.lines)
+	if !tap.wait(t, "不作崩溃处理", 15*time.Second) {
+		t.Fatalf("死亡观察者没给出它的决定 ⇒ 这一格又变成靠运气等的了：%v", tap.lines)
+	}
+	if n := tap.count("不作崩溃处理"); n != 1 {
+		t.Errorf("这一代连接只有一个观察者，决定该恰一声，实际 %d：%v", n, tap.lines)
 	}
 	if n := tap.count("崩溃处理收尾"); n != 0 {
 		t.Errorf("Core 主动关停不许走崩溃处理，实际 %d 声：%v", n, tap.lines)
@@ -277,6 +322,18 @@ func TestPumpFlightsTrackOnlyWhatWasSent(t *testing.T) {
 	if left := hub.takeFlights("k3"); len(left) != 0 {
 		t.Errorf("收到收尾的执行不该还留在飞名单里：%v", left)
 	}
+	// claimed 那两帧在**落库面**那一腿也必须出声：这台 hub 只接了观察面（svc==nil），
+	// 两帧 ⇒ 两声"没接落库面"；而上面那条 dispatched 帧一声都不该有（:741 第二条硬时机）。
+	if n := tap.count("没接落库面"); n != 2 {
+		t.Errorf("两条 claimed 帧各该喊一声没装配齐，实际 %d 句：%v", n, tap.lines)
+	}
+	// 没带把手的 claimed：不写、不猜，但要说出来。
+	hub.handle("k1", 1, process.Inbound{ExecutionID: "ex-a",
+		Frame: &adapter.StreamFrame{Method: adapter.MethodTurnClaimed}})
+	if n := tap.count("没带 provider_execution_id"); n != 1 {
+		t.Errorf("空把手该被点出来，实际 %d 句：%v", n, tap.lines)
+	}
+
 	// 那一笔写必然失败（这台 hub 没接库通道），失败要喊出来、不许静默跳过。
 	if n := tap.count("收尾没落成"); n != 1 {
 		t.Errorf("泵落不了库时必须出声，实际 %d 句：%v", n, tap.lines)

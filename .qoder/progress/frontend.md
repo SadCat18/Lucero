@@ -3,15 +3,15 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-27T13:25:00+08:00（T-358 复验轮：**6 条红全塌**。复现器两棵树上都给 exit 0（净树 13:13:48 / 含 backend 三件在途 13:23:35）、
-live **22 passed / 0 skip**、闸门六腿全 0；F-8 读到 200 九键齐（`tasks.go:159` 分发 `getTask`、残留那句"还没接线"在 `:162` 且属于 **PATCH**）。
-新那道 `core/test` 门在我这一腿里**被编译但不执行**（`-run` 只挑 C8-13），所以我 exit=0 **不证**那 44 条假红已修 —— 分两面写。
-本轮源码零改动；指纹 `69e96ec` 起跑前后同值。）
+LAST_UPDATED: 2026-09-30T21:58:50+08:00（T-415 子轮：第二枚 token `execution_claimed` 进 `core-v1.yaml:876` ⇒ C8-13 **`66/66/66、四条边全空`**；修前红是 `§6=66 / yaml=65 / 常量=66` 且两条失败边都指向 yaml。
+**预告的红没有发生**（巡检 21:53:32 说 db 那腿未到；我 21:55:21 现量 `ExecutionClaimed`=2 已到树里）⇒ 同一枚事实两次读数中间树动了一格，引用别人的读数必须带时刻。
+四处目前**都不在 HEAD**（逐面 `git show HEAD:… | grep -c` = 0；`claim.go` 还是未跟踪）⇒ 边界 ①「同一个提交」有了一张可核对清单。面板链顺带复跑 **`22 passed (22)`**：7b / 8 / 11 三格 ok、9 与 10 仍 blocked（归属已改：10 归 backend T-414③，9 今天不派）。
+本轮只动 yaml + 生成物两格、**没提交**；标签起跑与收工同为 `09dd199`。）
 
-> 旧读数指针（细节按原段读）：**REQ-S-1 复验轮** 13:19:16（第 8 格首次转绿、复现器把指纹写进输出、判据两面都有腿）/
-> **T-317** 09-25 20:31:18（④ 起了、实测仍 501；九键断言挪到链式用例之前）/ **T-311** 20:09:05（复现器固化成一行命令 + 退出码即判据）/
-> **T-286 合验轮** 19:25:01（"永久 hold"那格的红）/ **T-287** 18:36:30（REQ-LK-1 裁甲后传 `session_id`）/ **T-282** 18:15:20（§4 逐跳真跑）/
-> **T-276** 09-24 10:54:12（头部五行规矩）/ **T-264** 10:14:28（C43 请求体）/ **T-256** 09:28:41（事件枚举 64 条、固化 run-gates.sh）/ T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。
+> 旧读数指针（细节按原段读）：**T-410** 20:34:58（入册带齐三处 ⇒ 65/65/65、预测前半关掉；面板链 11 格 9 通、7b 与第 11 格转绿；归因写法「标签变了≠内容变了」）/
+> **T-406** 19:27:35（一枚 `execution_unknown` + 「混态才会红」预测 + 6 处历史 checkpoint 改标）/ **T-358** 09-27 13:25:00（6 条红全塌）/
+> **REQ-S-1 复验轮** 13:19:16 / **T-317** 09-25 20:31:18 / **T-311** 20:09:05 / **T-286 合验轮** 19:25:01 / **T-287** 18:36:30 / **T-282** 18:15:20 /
+> **T-276** 09-24 10:54:12（头部五行规矩）/ **T-264** 10:14:28 / **T-256** 09:28:41 / T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -51,17 +51,15 @@ live **22 passed / 0 skip**、闸门六腿全 0；F-8 读到 200 九键齐（`ta
 > **T-276 规矩（主控 10:45 裁，本册被举成反面例子）**：每次交账**同时**刷下面那五行，`Last verified action` 的时刻必须当场 `date` 实读；
 > "等"这一格写全**等谁 / 等什么 / 谁解锁**；头部与正文不一致时以正文为准，且那次交账记为"头部未刷 = 交账不完整"。
 
-- Stage: T-358 复验轮已交（**绿交**）—— REQ-S-1 复现器两棵树都 **exit 0**、live **22 passed / 0 skip**、闸门六腿全 0；
-  09-25 那 6 条红（1 根因 + 5 连带）**塌成 0 条**；F-8 单任务详情读也从 501 转 **200 九键齐**，链里真拿它读到的 version 当 If-Match ⇒ 面板链头到第 11 格的 `409 illegal_transition`
-- Status: in_progress —— 我这侧无欠工、手里无红；剩 3 格 blocked（`/output` 501+文案误导、`/approvals` 未注册、`:accept` 差 `AGENT_COMPLETED`）都不记我账
-- Last verified action: 当场 `date` 实读 **2026-09-27 13:25:00 +0800**。三个读数归因到同一个 **HEAD `69e96ec 13:17:57`**（起跑前与收工各读一次，同值）：
-  复现器 13:23:35 → **exit 0**（`send 202/12ms`、`写请求 201/3ms`；输出自带 `core_脏面=[ M send_two_phase_test.go  M sendpipe.go  M sendpipe_test.go ?? event_producer_roster_test.go ]`）；
-  live 13:24 → **22 passed (22)**（二进制 mtime `09-27_13:23:50`）；闸门链 13:25 前 → 六腿 exit 全 0 / 非零腿数=0。
-  **一句限定**：这三个读数都长在 backend 三件**在途** `core/` 码上（`sendpipe.go` 13:16:15 等）⇒ "绿"不等于"在他们收工之后"
-- Next action: **等谁**＝adapter（`turn/finished` → `AGENT_COMPLETED`）＋ backend（`GET /executions/{id}` 三份快照、`/output`、`approvals` 注册 + 那条 501 文案）；
-  **等什么**＝第 9/10 格 501→200、第 11 格真能 `:accept`（WS 上收到 `task_accepted`）；
-  **谁解锁**＝他们各自交账 —— **REQ-S-1 与 F-8 已划掉**；我不催、不替谁排期；
-  被叫醒时的动作：先 `git log -1` + 逐字 `git status --porcelain`（分清是不是长在别人在途码上）→ `bash .scratch/frontend/repro-req-s1.sh` → `bash .scratch/frontend/run-t282.sh` ⇒ 诊断表 v10→v11
+- Stage: T-415 已交（绿交）—— 第二枚 token `execution_claimed` 进 `core-v1.yaml:876`（与 `execution_unknown` 同一行尾）+ 生成物重跑 **66 条** ⇒
+  C8-13 从 **`§6=66 / yaml=65 / 常量=66`** 变成 **`66/66/66、四条边全空`**（`=== RUN=1 / PASS=1 / FAIL=0 / SKIP=0`）。**派发里预告的那个红没有发生**：db 的 T-413 已在我 21:55:21 现量到时落进工作树（`ExecutionClaimed`=2）
+- Status: in_progress —— 我这侧无欠工、手里无红；面板链剩 2 格 blocked（第 9 格 `/output` 缺写者、今天不派；第 10 格 `/approvals` 归 backend T-414③）⇒ 依赖是 backend，不是路由
+- Last verified action: 当场 `date` 实读 **2026-09-30T21:58:50 +0800**。读数标签：起跑前与收工都读到 **`09dd199 21:31:58`**（这次标签没变，与 09-27 那轮不同，我仍按现量写而不写「大概」）。真跑：validate 修前 exit=1 / 修后 exit=0（66 类双向相等）；
+  Go 判据修前 exit=1（`§6=66 / yaml=65 / 常量=66`，两条失败边都是 `[?→yaml]`）、修后 **exit=0**、`=== RUN=1 / PASS=1 / FAIL=0 / SKIP=0`、`66/66/66 四条边全空`；闸门六腿 exit 全 0、非零腿数=0；live **`22 passed (22)`** 0 skip
+- Next action: **等谁**＝主控（把四处**同一个提交**入册：我的 yaml、主控的 §6、db 的 eventjournal 两行、backend 的未跟踪 `claim.go` —— 拆开任何一处 HEAD 就红）＋ backend（T-414③ 的 `GET /approvals` 接线）；
+  **等什么**＝入册后在新 HEAD 上 C8-13 仍 `66/66/66`（当前这份绿长在**工作树**：四面 `git show HEAD:… | grep -c execution_claimed` 全是 **0**），面板第 10 格转 200；
+  **谁解锁**＝主控那一笔提交 + backend 交账；我这侧无预备动作、**不提交**
+  被叫醒时：先现取 `git log -1` + 逐字 porcelain → `repro-req-s1.sh` → `run-t282.sh` → `run-gates.sh`
 - Verification: `bash .scratch/frontend/run-gates.sh`（六腿：validate / codegen / vitest / F20-4 / build / go c8-13；退出码无管道取、非零腿数回扫证据文件）＋ `bash .scratch/frontend/run-t282.sh`（live：自建二进制＋`-adapter fake=`＋自属数据目录＋起停收尾；**今天这一腿是红的**）
 
 ## Completed
@@ -343,7 +341,7 @@ dev 注入正式化到 `vite.config.ts` 的 proxy `configure`（只 /api；/ws �
 - 重写后首跑是 `Test timed out in 5000ms`（3 次连接 × 2.5s 窗口 > vitest 默认 5s），属预算不是行为；改窗口 900ms + 显式 20s 后 9/9。
   报的绿是改后那次。
 
-## 当前 checkpoint（覆盖此前所有同名段）
+## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 `## Current checkpoint` 那五行）
 - Stage：WS 面收口完成；面板侧无待办，等的是业务端点与两条文档裁定
 - Status：in_progress
 - Last verified action：2026-09-21T11:23:16+08:00 前后两轮 —— `live 9/9`（自属实例）与四道闸门 `11:20:48`（validate 全部通过 / codegen / vitest 19 passed+9 skipped / build+no-secret 全通过）
@@ -400,7 +398,7 @@ dev 注入正式化到 `vite.config.ts` 的 proxy `configure`（只 /api；/ws �
 `build + check:no-secret` 全通过。live 那 10 条本轮未重跑（改动只在 yaml 形状与校验脚本，不触碰任何线上行为；
 下一次接 `/sessions:sync` 时随链一起重跑）。
 
-## 当前 checkpoint（覆盖此前所有同名段）
+## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 `## Current checkpoint` 那五行）
 - Stage：REQ-F-19 / F-20 / F-21 三条游标口径全部落 yaml 且各有断言；面板无待办
 - Status：in_progress
 - Last verified action：12:38:06 四道闸门全绿 + ④-b 变异验证（先红后回滚一致）
@@ -473,7 +471,7 @@ dev 注入正式化到 `vite.config.ts` 的 proxy `configure`（只 /api；/ws �
 - **未重跑的部分，如实标**：live 那 10 条本轮没重跑。理由：改动只在 schema 形状、校验/测试文件与 devDeps 声明，
   不触碰 `client.ts` / `events.ts` / `panel.ts` 任何线上行为路径；下一次接 `:sync` 时随 11 步真链一起重跑。
 
-## 当前 checkpoint（覆盖此前所有同名段）
+## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 `## Current checkpoint` 那五行）
 - Stage：REQ-F-19 / F-20 / F-21 / **F-22** 四条游标口径全部落 yaml，且每条除 validator 外另有实例级形状断言；面板无待办- Status：in_progress（阻塞在别人的端点，不在我）
 - Last verified action：13:37:09 四道闸门全绿（validate / codegen / 25 passed|10 skipped / build+no-secret）；
   本轮磁盘变异一次且**不咬**（已用 `diff`=0 证明还原），判别力改由进程内 `degraded()` 自证
@@ -557,7 +555,7 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
 之后 `find specs/openapi packages/api-client/src apps/desktop/src apps/desktop/scripts -newermt "2026-09-22 15:37:42"` → **空输出**
 ⇒ 从 vitest 起跑那一刻起源码没再动过；codegen 那步排在 find 判定**之前**（生成物 mtime 必然晚于链条起点，反过来排就是自己骗自己）。
 
-## 当前 checkpoint（覆盖此前所有同名段）
+## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 `## Current checkpoint` 那五行）
 - Stage：REQ-F-14 关闭（enum 29 条三方对拍 + 守门自证）；「事件契约」引用改净；**F20-4 已建并双向变异验过**；面板无待办
 - Status：in_progress（阻塞在别人的端点，不在我）
 - Last verified action：15:37:42 四道闸门全绿（26 passed | 10 skipped）+ F20-4 表内命令 1 passed；
@@ -627,7 +625,7 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
   **但本轮补了一条真正的兜底**：§15.2 侧的 near-miss 判据就是同一族形状的第一道警报，
   若 §6 哪天也要机械解析，缺的是"合并族行怎么展开"这一句约定，请主控给落点（重复登记，不催）。
 
-## 当前 checkpoint（覆盖此前所有同名段）
+## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 `## Current checkpoint` 那五行）
 - Stage：T-127/T-128 入库后，T-139 把守门从"字面基线"改成"判形状 + 打印"，enum 30 条三方对拍通过
 - Status：in_progress（阻塞在别人的端点，不在我）
 - Last verified action：23:08:53 五步链全 exit=0 + M4 变异先红后回滚 `diff`=0；守门探针 A 组 4 条停、B 组 2 条放行
@@ -705,7 +703,7 @@ M2（`hello` 回显覆盖）→ `回显 from_seq=9 不得改写客户端游标: 
   `find`（排除生成物）在链条起点之后 → **0 个**；生成物由 codegen 自写，已用"重跑 codegen 输出逐字节相同"证幂等。
 - live 那次跑在 **23:37:11**（早于五步链 19 秒），代码状态与链条一致：链条之后 `find` 为 0 个，所以两份绿指向同一份源码。
 
-## 当前 checkpoint（覆盖此前所有同名段）
+## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 `## Current checkpoint` 那五行）
 - Stage：**§4 第一格已在真 Core 上点亮**（REST 写 → journal → WS → 面板投影，16/16 live 0 skip）；
   §6 目录解析器补上、手抄少收的 3 条已补齐（enum 62 与目录双向相等）；自抓一条"零比对报 ok"的假绿并加了守卫 + M5 证明
 - Status：in_progress（还剩 `:sync` 与 `probe` 两格，另有 REQ-F-23 等裁）
@@ -1600,3 +1598,143 @@ PATCH 那一半仍未接线（面板链不用它，不记我红、也不催）�
 **等谁**＝adapter（`turn/finished` ⇒ 执行到 `AGENT_COMPLETED`）＋ backend（`GET /executions/{id}` 三份快照、`/output`、`approvals` 注册与那条 501 文案）；
 **等什么**＝第 9/10 格从 501 转 200、第 11 格能真验收（`task_accepted` 上 WS）；
 **谁解锁**＝他们各自交账。**REQ-S-1 与 F-8 两格已从"等"里划掉**（本轮 exit 0 与 200 为凭）。
+
+## T-406 子轮（一枚 token：`execution_unknown` 进 yaml 枚举 ⇒ 三格 65/65/65）· 本机 date 2026-09-30T19:27:35+08:00
+
+### 指纹自己现取（第 24 条），并且两次同值
+`git rev-parse --short HEAD` 起跑前 19:24:04 = **`738cb13 19:02:00`「第一百四十七批 —— 巡检…」**，收工 19:27:35 再读**仍是 `738cb13`** ⇒ 本轮四个读数同一 HEAD。
+**巡检那封的 HEAD 已由它自己更正**（19:24:32 那封写 `73c926d`）：我现量 `git cat-file -t 73c926d` = **Not a valid object name**，真值 **`738cb13`** 与我两次独立现取一致 ⇒ 这一格并掉，不再挂"分歧"。
+教训照旧入账：**指纹只认自己现跑的 `git rev-parse --short HEAD`**，别人信里的哈希要用 `cat-file` 验过一次才引（巡检这次是拄错了自己的输出，同族错误我 09-2x 也犯过）。
+**逐字 porcelain（25 项）**：`core/` 面 **16 件**（`M` 13 + `??` 3：`turnpump_death_test.go`、`health_store_test.go`、`recovery_unknown_test.go`，另有 `attach_test.go`），
+`specs/events/event-contract-v0.1.md` 是 `M`（§6 那一半**落在工作树、故意不提交** —— 主控自己那行标题就这么写；`grep -c execution_unknown` = 1，新行在 `:219`），6 份别人的 progress + `scripts/check_ownership.sh`。
+**我这侧的脏面交账时恰好两件**：`M specs/openapi/core-v1.yaml`、`M packages/api-client/src/gen/schema.ts` —— 就是这轮该动的两格，没多一个。
+
+### 改了什么（一枚 token，同一行末尾）
+`specs/openapi/core-v1.yaml:876` → `… execution_interrupted, **execution_unknown**,`（主控叮嘱"别插到别的行"，我现量该行改前结尾正是那四个名 ⇒ 落在**同一行**，
+现量 `grep -n execution_unknown` 命中 **只有 876 行、计数 1**）。改完 `npm run codegen` 重跑生成物，**没手写第二套类型**。
+
+### 先取修前的红，再取修后的绿（两条判据都点名到具体那一枚）
+- 我的 validator（运行时解析 §6、双向集合）：**exit=1**，原文
+  `FAIL EventType enum 与事件契约 §6 目录不等：目录有而 enum 无=[execution_unknown]；enum 有而目录无=[]`
+- 主控那条 Go 判据，**照 T-406 的形状跑**：`CGO_ENABLED=0 go test -count=1 -timeout 200s -v ./test/ -run '^TestEventTypeTripleEquality$'` → **exit=1**，
+  先证 `=== RUN` 计数 = **1**（awk 同一口径两棵树各量一次：**修前 `=== RUN=1 --- PASS=0 --- FAIL=1 --- SKIP=0`**、**修后 `=== RUN=1 --- PASS=1 --- FAIL=0 --- SKIP=0`**）再落 `--- FAIL: TestEventTypeTripleEquality (0.00s)`，
+  点名两条边：`[§6→yaml]` 与 `[常量→yaml]` 都写 `里有 execution_unknown，core-v1.yaml 的 EventType 枚举 里没有`，计数行 **`§6=65 / yaml=64 / 常量=65`**。
+  （一条取数教训：同一条命令里 `grep -c "^=== RUN…"` 那次**整段没显示**，我改用 awk 计数二次复量才拿到 1 —— 计数缺失≠计数为 0。）
+- 修后：validate **exit=0** `ok EventType enum 与 §6 目录双向相等（当场展开 **65** 类，含合并族行）`；同一条 Go 判据 **exit=0**，
+  `=== RUN=1 / --- PASS=1 / 无 SKIP`，结论行 `C8-13 三格相等：**§6=65 类、yaml=65 条、常量=65 个**；四条边全空`。
+
+### 生成物计数：我第一版解析器给了假数，重测才对（自报）
+`schema.ts` 里 EventType 是 `"a" | "b" | …` 联合，我第一发拿 `export type EventType =` 当锚点 ⇒ 拿到 **-1**，第二发锚点找错位置抓到 46 条 `schemas` 噪声。
+都不成立。第三发按「"project_created" | 起、到分号止」抽联合体，实测 **65 条**、`含 execution_unknown=true`、首名 `project_created`、末三名 `process_crashed,core_ready,core_shutdown`。
+⇒ 计数口径本身要能命中，不然就是我自己那条"0 命中也可能是口径太窄"。
+
+### 闸门与本轮没跑的
+`GATES_FILE=…/gates-t406.txt bash run-gates.sh` → **六腿 exit 全 0、非零腿数=0**（`vitest 26 passed | 22 skipped (48)`、F20-4 `1 passed | 47 skipped`、build 含 vue-tsc + check-no-secret、go c8-13 65/65/65）。
+**live 电池本轮没跑，也不计入我的绿**：本轮改动只在 yaml 枚举与生成物，面板链与之无关；而 `core/` 面此刻有 16 件别人在途（backend=running、test=running），
+现在起 Core 二进制会把他们未完成的码编进来 —— 那读数既不能归我，也可能把他们的红带上。按 T-317/T-358 的分两面写口径：**记 skipped，不凑绿**（上一次 live 真跑是 09-27 13:24 的 `22 passed`，其时 HEAD 与本轮不同，不能拿来当本轮证据）。
+
+### 证形（三句）
+- 改了什么：`specs/openapi/core-v1.yaml`（876 行末尾一枚 token）+ 生成物 `packages/api-client/src/gen/schema.ts`（codegen 重跑）。**没碰 `specs/events/**`（§6 归主控，已落）**，没碰 `core/**`。
+- 当场命令与原文：上面"修前红 / 修后绿"四条逐字都在 `v-t406-red.txt` / `go-t406-red.txt` / `v-t406.txt` / `go-t406.txt` / `gates-t406.txt`。
+- **没提交**（红线：我零 git 写）。四处一次入册由主控做 —— 我这侧交账即完。
+
+### 等（三问）
+**等谁**＝**主控**（把 yaml 这一枚与 §6／常量／我那两格一起入册）；**等什么**＝入册之后三格对拍在任何新 HEAD 上继续 `65/65/65`；
+**谁解锁**＝主控一笔提交即闭（我不催别的：backend/test 那两家的 `core/` 在途件与我这轮无关）。
+我这侧无预备动作；下一次被叫醒按 Next action 的固定顺序跑。
+
+### 一条更要紧的事实：这枚登记**只有"混态"才会红**（给主控入册时用）
+我把四处逐个按"工作树 vs HEAD"两层量了一遍（`grep -c` 对 `git show HEAD:<路径> | grep -c`）：
+| 那一格 | 工作树 | HEAD `738cb13` | porcelain |
+|---|---|---|---|
+| `specs/openapi/core-v1.yaml` | 1 | **0** | `M` |
+| `specs/events/event-contract-v0.1.md`（§6） | 1 | **0** | `M` |
+| `core/internal/eventjournal/events.go`（常量+catalog） | 2 | **0** | `M` |
+⇒ **三处都不在 HEAD 里**，所以 HEAD 自己是自洽的 **64/64/64（不红）**，工作树也是自洽的 **65/65/65（我刚验的绿）**。
+红只出现在**部分提交**那种混态 —— 今天 19:0x 我取到的 `§6=65 / yaml=64 / 常量=65` 就是这个形状（§6 与常量已落、yaml 还没落）。
+所以"四处一次入册"不是洁癖：**少提交任何一处，C8-13 当场打红**；反过来说，如果入册后有人跑判据见到 64/64/64，那也不是回归，
+而是**那一笔没带上全部三处**（工作树/HEAD 各算各的，两边各自自洽）。这条预测我写进账，免得下一次又把它当成新的漂移查一遍。
+
+### 顺手清掉一处索引歧义（我 09-2x 自己留下的，不是别人写的）
+查重时发现正文里躺着 **6 处** `## 当前 checkpoint（覆盖此前所有同名段）`（行 345/402/475/559/629/707），内容全是 REQ-F-19/F-20/F-21、T-127/T-139 那几轮的旧状态 ——
+是我当时"每轮往正文里追加一个新 checkpoint"留下的**历史快照**，标题却写着"当前"。危害与 T-276 那条同族却更隐蔽：下一个查索引的人（人或脚本）可能把 09-20 的 Stage 读成今天的。
+处置：只加标题后缀，改成 `## 当前 checkpoint（历史快照，非当前索引 —— 当前状态只看文件顶部 \`## Current checkpoint\` 那五行）`，**六处各一次、内容一字未删、层级未动**。
+改前后实测：`^## ` 总段数 **52 → 52**（没增没减，防"段数翻倍"那族误判）、旧形态残留 **0**、顶部 ASCII 五行 marker 仍 **1/1/1/1/1**。
+顺带一条为什么我此前的自检没抓到：那 6 处用的是**全角冒号** `- Stage：`，而我数的是 ASCII `- Stage: ` ⇒ marker 计数天生看不见它们（判据没覆盖它声称在守的东西，第三次）。已把这条并入记忆里的头部规矩。
+
+## T-410 子轮（预测用真读数关掉；面板链 11 格里 9 格真通）· 本机 date 2026-09-30T20:34:58+08:00
+
+### 入册确实带齐了三处 ⇒ 我那条预测的前半可以关掉，后半留作 T-408 的预警
+近三笔：`07d2163` → `2c65177`「三处同改一次入库 —— execution_unknown 登记齐」→ `738cb13`。逐文件两层量（`git show HEAD:<路径> | grep -c` 对工作树）：
+`specs/openapi/core-v1.yaml` **HEAD=1 / 工作树=1**、`specs/events/event-contract-v0.1.md`（§6）**1 / 1**、`core/internal/eventjournal/events.go` **1 / 1**（标识符 `ExecutionUnknown` **两层都是 2**：常量 + catalog），三件 `git status --porcelain` 全空。
+**实测结论：没有出现我预测的那种"入册后仍 64/64/64"** —— `§6=65 类、yaml=65 条、常量=65 个；四条边全空`，`=== RUN=1 / --- PASS=1 / --- FAIL=0 / --- SKIP=0`、exit=0（`go-t410.txt`）。
+后半条继续生效作预警：T-408 那枚 `execution_claimed` 现量只在 `core/internal/execution/events.go`（3 处），**§6 / yaml / eventjournal 都还是 0** ⇒ C8-13 扫的是 eventjournal，所以我这腿现在照旧 65/65/65；
+等它被加进 eventjournal 而 §6/yaml 未齐那一刻，我这条判据会**主动报红**（就是今天下午 65/64/65 那个形状）—— 那时请读成"三处没带齐"，不是回归。
+REQ-S-1 在新 HEAD 上再次确认：`repro-req-s1.sh` → **exit 0**（`send 202/40ms`、紧随写请求 `201/16ms`），输出自带 `fingerprint HEAD=07d2163 core_脏面=[8 件 backend 在途]`。
+
+### 面板链：第 11 格第一次真点亮，11 格里 9 格通（`Tests 22 passed (22)`、0 skip）
+新转绿两格的原文：`  7b ok：GET /executions/{id} → 200，三份快照齐（model/permission/environment）` 与 `  第 11 格 ok：accept → 200，status=ACCEPTED version=7（If-Match 用的是 F-8 读来的版本）`。
+第 11 格这一步的因果要说准：F-8 读到 `version=6` 喂进 If-Match，验收成功到 `version=7` ⇒ **链从头到尾第一次通到终态**，不是我把期望放宽了（判据一字未改，只补了打印）。
+**这里有一条我自己的账**：7b 那一支原本只在 501 时打印 ⇒ "日志里没有 blocked 行"并不等于"它 200"。我先补了成功分支的打印再复跑，才敢写"转绿"。
+**同一种洞我在这一串会话里改了第三次**（第 8 格、第 11 格、现在 7b）—— 只让失败面说话，绿就是无声的。
+剩两格 blocked：第 9 格 `/output` 501（**文案已被当事角色改成正确归因**，我 09-25 两次报的"形状我不认识"这条闭了，欠的只剩读通道装配 = T-370①）；第 10 格 `GET /approvals` 501（mux 未注册）。
+
+### 归因写法（我差点在这里写错）
+起跑前 20:24:53 读到 `07d2163`，复现器输出自带同一个值（20:25:26）；但 20:27:59 再读已是 **`89b32b3 20:27:55`** ⇒ 后半程（live 第二次、闸门链）**没当场读到标签**。
+补救不是猜，而是查那一笔动了什么：`git show --name-only 89b32b3` = **1 个文件**（`.qoder/progress/orchestration.md`，+28/−4），`grep -cE "^(core/|specs/|packages/|apps/)"` = **0**
+⇒ **码面在 `07d2163` 与 `89b32b3` 之间逐字相同**（那一笔是纯台账提交），四个读数可以归因到同一份代码；三处登记在收工时的 HEAD 上现量仍是 1/1/1。
+如果我当时顺手写"四个读数同一 HEAD"就是假话 —— 标签变了，只是内容没变，这两件事必须分开说。
+
+### 证形（三句）
+- **改了什么**：`apps/desktop/src/__tests__/live-core.test.ts` 一处（7b 成功分支加打印，**判据零改动**）+ 诊断表升 **v11**（7b / 9 / 11 三行重写、标题计数改口）+ 本台账。
+- **当场命令与原文**：Go 判据 exit=0 与 `65/65/65`（`go-t410.txt`）；复现器 exit=0（自带指纹）；live `Tests 22 passed (22)`（`live-t410.txt`）；闸门六腿 exit 全 0、非零腿数=0（`gates-t410.txt`）。跑判据前逐字 porcelain 已存（16 项，其中 `core/` 8 件是 backend T-408 在途）。
+- **没做的为什么**：契约面 `specs/openapi/core-v1.yaml` 与生成物本轮**未动**（我这侧 `git status --porcelain -- specs packages` 为空）；没碰 `specs/events/**`（§6 归主控）；不测 `approvals/{id}:resolve`（列表就 501，无 id 可打）；没提交（零 git 写）。
+
+### 等（三问）
+**等谁**＝backend（`/output` 的读通道装配 = T-370①；`GET /approvals` 与 `:resolve` 的注册）；另盯 T-408 那枚 `execution_claimed` 是否三处带齐。
+**等什么**＝第 9/10 格从 501 转 200，届时第 10 格才第一次有真 id 可打。
+**谁解锁**＝backend 交账。**面板链已通到终态，我这侧无预备动作。**
+被叫醒时的固定顺序：`git log -1` + 逐字 `git status --porcelain` → `repro-req-s1.sh` → `run-t282.sh` → `run-gates.sh` ⇒ 诊断表 v11→v12。
+
+## T-415 子轮（第二枚 token：`execution_claimed` ⇒ 66/66/66；派发里那句「加完仍会红」已被实测推翻）· 本机 date 2026-09-30T21:58:50+08:00
+
+### 一枚 token，落在今天那枚后面、同一行
+`specs/openapi/core-v1.yaml:876` 现为 `… execution_interrupted, execution_unknown, execution_claimed,`（`git diff --numstat` = **1 增 / 1 删**，只这一行；`grep -c execution_claimed` 在 yaml 从 0 → **1**）。
+`npm run codegen` 重跑：生成物 `EventType` **66 条**，`execution_claimed` 与 `execution_unknown` 都在列，末一名仍是 `core_shutdown` ⇒ **没有手写第二套类型**。
+
+### 修前红 / 修后绿，两条判据都点名到具体那一枚
+- 修前：validate **exit=1** `目录有而 enum 无=[execution_claimed]`；Go 判据 **exit=1**、`=== RUN=1 / PASS=0 / FAIL=1 / SKIP=0`、计数行 **`§6=66 / yaml=65 / 常量=66`**，
+  且两条失败边都指着我这一格：`[§6→yaml]` 与 `[常量→yaml]` —— 也就是**只欠 yaml 这一处**（见下面那条更正）。
+- 修后：validate **exit=0** `双向相等（当场展开 66 类）`；Go 判据 **exit=0**、`=== RUN=1 / PASS=1 / FAIL=0 / SKIP=0`、结论行 **`C8-13 三格相等：§6=66 类、yaml=66 条、常量=66 个；四条边全空`**；
+  闸门链六腿 **exit 全 0、非零腿数=0**（`gates-t415.txt`：validate / codegen / vitest / f204 / build / go c8-13）。
+
+### 一条要交回去的实测更正：db 那一腿已经到树里了，所以我加完不红
+巡检 21:53:32 那封写「`grep -c ExecutionClaimed core/internal/eventjournal/events.go` = **0**，你这枚加完后三格仍不等（db 那两行未到），C8-13 仍会红」——
+我 **21:55:21 现量同一文件**：`ExecutionClaimed` = **2**（常量 + catalog 两行）、`execution_claimed` = **1** ⇒ T-413 在他们那次读数之后、我这次读数之前**已经落进工作树**。
+所以我这边加完是 **66/66/66 全等（绿）**，不是预告的那个红。这不是谁对谁错，是**两次读数中间树动了一格**（同族坑：引用别人的读数必须带时刻，且自己跑判据前重新现取）。
+反过来说，那条预警并没有作废、只是换了主体：**现在四处都不在 HEAD 里**（逐面量过 `git show HEAD:<路径> | grep -c execution_claimed`），
+| 那一面 | HEAD | 工作树 | porcelain |
+|---|---|---|---|
+| `specs/openapi/core-v1.yaml`（我） | **0** | 1 | ` M` |
+| `specs/events/event-contract-v0.1.md`（§6，主控） | **0** | 1 | ` M` |
+| `core/internal/eventjournal/events.go`（常量+catalog，db） | **0** | 1 | ` M` |
+| `core/internal/execution/claim.go`（发射位，backend） | **0** | 3 | `??` |
+⇒ 边界 ①「四处同一个提交、拆开任何一处 HEAD 就红」现在有了一张可核对的清单；`claim.go` 还是**未跟踪文件**，`git add` 时最容易漏的那一件。
+
+### 面板链顺带复跑（不是本轮的活，但主控说「还没自己复跑」，我把新读数交在这儿）
+`bash .scratch/frontend/run-t282.sh`（HEAD `09dd199`、自建二进制）→ **`Tests 22 passed (22)`、0 skip**；关键几行原文：
+`  7b ok：GET /executions/{id} → 200，三份快照齐（model/permission/environment）` / `  第 8 格 ok：send → 202 … message_id="01a0f29a-…"` /
+`  第 11 格 ok：accept → 200，status=ACCEPTED version=7（If-Match 用的是 F-8 读来的版本）`，blocked 仍只有第 9（`/output`，读通道无写者）与第 10（`/approvals`，未注册）两格。
+**「11 格里 9 格通」这句自述现在有新读数撑着**（09-30 21:57 这一跑，与前一次 09-27 同形态）；等主控按 Wave-2 那把尺亲自跑，可以对上。
+主控 ③ 的归属变化已收下：`GET /approvals` 接线**归 backend（T-414③）**、`/output` **今天不派**（缺的是写者）⇒ 我面板剩下的依赖是 backend，不是路由。
+
+### 证形（三句）
+- **改了什么**：`specs/openapi/core-v1.yaml`（同一行末尾一枚 token）+ 生成物 `packages/api-client/src/gen/schema.ts`（codegen 重跑）。**没碰别的任何文件**：`core/**` 零改动、`specs/events/**` 没动（§6 归主控）。
+- **当场命令与原文**：上面「修前红 / 修后绿」两条 + `go-t415-red.txt` / `go-t415.txt` / `v-t415-red.txt` / `v-t415.txt` / `gates-t415.txt` / `live-t415.txt`。
+  未提交自证按归属拆开写，免得把别人的 §6 算成我的：`git status --porcelain -- specs packages` 给 3 行，其中 `specs/events/…` 是**主控那一面**；我这一侧恰好两行 —— `M specs/openapi/core-v1.yaml`、`M packages/api-client/src/gen/schema.ts`。
+- **没做的为什么**：没提交（零 git 写；四处一次入册由主控做）；没为了绿去碰 `core/**`（db 的常量已到树里、`claim.go` 是 backend 的发射位，都不是我的面）；诊断表本轮**未升版**（v11 那三行讲的是 7b/9/11 的连通性，一枚枚举 token 不改它们的形状；面板链读数原样附在上面）。
+
+### 等（三问）
+**等谁**＝① 主控把四处**同一个提交**入册（清单见上，`claim.go` 未跟踪最容易漏）；② backend 的 T-414③（`GET /approvals` 接线）。
+**等什么**＝入册后在任何新 HEAD 上 C8-13 仍 `66/66/66、四条边全空`（现在这份绿长在**工作树**上，HEAD 里四处都还没有）；面板链第 10 格从 501 转 200。
+**谁解锁**＝主控那一笔提交 + backend 交账。我这侧无预备动作；被叫醒时按固定顺序跑并**当场重取 HEAD**。

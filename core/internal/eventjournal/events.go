@@ -46,6 +46,7 @@ const (
 	ExecutionSucceeded         = "execution_succeeded"
 	ExecutionInterrupted       = "execution_interrupted"
 	ExecutionUnknown           = "execution_unknown"
+	ExecutionClaimed           = "execution_claimed"
 	ExecutionPaused            = "execution_paused"
 	ExecutionResumed           = "execution_resumed"
 	ApprovalRequested          = "approval_requested"
@@ -89,7 +90,7 @@ var catalog = map[string]bool{
 	ExecutionOutputFlushed:     true,
 	ExecutionApprovalRequested: true, ExecutionApprovalResolved: true,
 	ExecutionCancelled: true, ExecutionFailed: true, ExecutionSucceeded: true,
-	ExecutionInterrupted: true, ExecutionUnknown: true, ExecutionPaused: true, ExecutionResumed: true,
+	ExecutionInterrupted: true, ExecutionUnknown: true, ExecutionClaimed: true, ExecutionPaused: true, ExecutionResumed: true,
 	ApprovalRequested: true, ApprovalResolved: true, ApprovalExpired: true,
 	ApprovalCancelled: true,
 	GrantIssued:       true, GrantRevoked: true, GrantExpired: true,

@@ -24,6 +24,17 @@ const (
 	// 登记授权随落地批给出：backend 落 UNKNOWN 路径的同一提交里加常量 + 主控批 §6 行」。
 	// 所以本常量是那一枚"落地批的码"半边，§6 行 + `internal/eventjournal` 目录那半边分别归主控与 db。
 	EventUnknown = "execution_unknown"
+	// EventClaimed 不是状态迁移的事件，而是**一列的值**的事件：REQ-RC-3 通道裁 (i)（契约①
+	// 第 25 条 ④-a :741，09-30 19:3x，回我第 304 条 ① 的甲/乙问）——
+	// 「**新增一行 §6 事件 `execution_claimed`**（aggregate `execution`、载荷 `provider_execution_id`、Audit `–`）」，
+	// (ii)（db 开"聚合行无事件列写"的口子）被明拒，理由是"每次 `Touch` 带一条事件"是审计链地基。
+	// 三条硬时机照原文落点在 claim.go：只在 `turn/claimed` 帧到达那一刻写、**不许**在 `dispatched` 补写、
+	// **不许**借这一笔把状态显示成 running（开始证明仍只认 `dispatched`，契约② §6 规则 1）。
+	//
+	// 所以它**不进 `EventOf`**：那张表按"迁移"索引，而这一笔不推任何边（`From == To`）。
+	// 由 `EventOf` 反查它必然得到空串，那是正确的，别为了"让它有事件名"把它塞进矩阵。
+	// §6 那一行归主控、`internal/eventjournal` 的目录条目归 db（:752 那句"三处同改"），我不碰 specs。
+	EventClaimed = "execution_claimed"
 )
 
 // EventOf 返回该迁移对应的事件类型；"" 表示该迁移不由本包发事件
@@ -64,6 +75,9 @@ func EventOf(from, to State) string {
 // `EventUnknown` 在列里是契约① :717 那句「Audit 必带」的落点（与 `execution_interrupted` 同待遇）；
 // §6 那一行由主控在同批补，**这一张表先于表**是本批的形状，不是越界登记 —— 登记（写 §6）与
 // 消费（这里要不要审计）是两件事，后者归执行落地的那一方，前者归 specs。
+//
+// `EventClaimed` **不在**这张表里，而且不许补进去：:741 那行的 Audit 列是 `–`（一条把手的观察不是
+// 一次需要证据的裁决）。它要是被补进来，claim.go 那一笔就会去要一条没人给的 audit 行、当场写不下去。
 var auditRequired = map[string]bool{EventFailed: true, EventInterrupted: true, EventUnknown: true}
 
 func RequiresAudit(eventType string) bool { return auditRequired[eventType] }
@@ -136,7 +150,19 @@ type ResultPayload struct {
 // 这两句不可能同时成立，所以"同形"只能读成"同样是一行 execution 域事件 + Audit 列 ✓"，
 // 键集以它显式点名的 `from` + `reason` 为准。**若主控落 §6 时选择把 `_unknown` 并进 :218 那条合并行**
 // （即键沿用 result_code/error_code/usage），这一格要跟着改回来 —— 那是两行形状之差，不是改名。
+//
+// 那处分歧已按上面这一读闭合：§6 现在给它的是**独立一行**（`event-contract-v0.1.md:219` 的
+// `execution_unknown` | execution | `from` `reason` | ✓），不是并进 :218 的合并行 ⇒ 这两个键是权威，别改。
 type UnknownPayload struct {
 	From   State  `json:"from"`
 	Reason string `json:"reason"`
+}
+
+// ClaimedPayload 是 §6 那一行 `execution_claimed` 的 payload，**只有一个键**：
+// 载荷按 :741 点名的 `provider_execution_id`，别的键一个都不加 —— 这一事件的存在理由就是
+// "Provider 的把手什么时候第一次被 Core 知道"，它不是状态、不是结果、也不带 usage。
+// 与列同源：claim.go 那一笔把**同一个值**同时写进 `executions.provider_execution_id` 和这里的键，
+// 与 `columnWrites` 给 result_code 的约定同形（两处同事实、必然同值）。
+type ClaimedPayload struct {
+	ProviderExecutionID string `json:"provider_execution_id"`
 }

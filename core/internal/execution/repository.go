@@ -26,7 +26,10 @@ func NewRepository(q Queryer) *Repository { return &Repository{q: q} }
 // result_code/error_code/error_message、started_at/heartbeat_at/finished_at、created_at/updated_at
 // —— 与 `scanExecution` 的目的参数逐位对齐，加列必须两处同批改。
 // 写者（第八十一批甲档）不在这里：`columnWrites`（service.go:216）跟 status 同笔落；
-// error_message / heartbeat_at / provider_execution_id 今天仍无写者（NULL 是真值）。
+// error_message / heartbeat_at 今天仍无写者（NULL 是真值）。
+// `provider_execution_id` **有写者了**（REQ-RC-3 裁 (i)）：`RecordClaim`（claim.go）在 `turn/claimed`
+// 那一刻单独一笔带 `execution_claimed` 的 Touch，不跟 status 同笔 ⇒ 读到 NULL 仍是真值，但含义是
+// "claimed 还没到"，不是"这一列没人写"。
 const execCols = `id, task_id, adapter_instance_id, session_id, model_id, predecessor_execution_id,
 	attempt_no, status, state_confidence, trigger_type, provider_execution_id, version,
 	model_snapshot_json, permission_snapshot_json, environment_snapshot_json,

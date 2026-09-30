@@ -382,6 +382,8 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
       for (const k of ['model_snapshot', 'permission_snapshot', 'environment_snapshot']) {
         expect(k in d, `§3 :141 要的三份快照缺 ${k}（现有键 ${Object.keys(d)}）`).toBe(true);
       }
+      // 成功那一支也要留打印（这已经是我第三次补同一种洞：只让 blocked 说话，绿就无声）
+      console.log('  7b ok：GET /executions/{id} → 200，三份快照齐（model/permission/environment）');
     } else {
       expect([501], `GET /executions/{id} 回了 ${detail.status}`).toContain(detail.status);
       const e = (await detail.json()).error;

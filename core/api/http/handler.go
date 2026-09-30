@@ -143,6 +143,11 @@ type Config struct {
 	// 两条读面共用这一个 *Repository 注入：要么整面在、要么整面不在，没有中间态。
 	Executions ExecutionReader
 
+	// Approvals 是 `GET /api/v1/approvals` 的读面（T-414 ③：handler 接线归 backend，
+	// 而那一行的读法本身住在 `internal/approval` —— 本包只调它，拿不到任何入口符号）。
+	// 没注入时这条口维持 501「没装配」，**不回空的一页**：空页说的是"今天确实没有审批"。
+	Approvals ApprovalLister
+
 	// ExecutionSend + Store 都在时才挂 POST /api/v1/executions/{id}/send（yaml :544；写侧要事务通道）。
 	// 缺任一个则该路径落 catch-all 的 501（C28②：能力没接线不给半套面）。
 	ExecutionSend ExecutionSender
@@ -167,7 +172,7 @@ func NewHandler(c Config) http.Handler {
 	registerSessionListRoute(mux, c)
 	registerAdapterProbeRoute(mux, c)
 	registerExecutionRoutes(mux, c)
-	registerApprovalRoutes(mux)
+	registerApprovalRoutes(mux, c)
 
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

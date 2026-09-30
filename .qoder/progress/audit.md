@@ -3,7 +3,7 @@ TASK_ID: audit-permission
 STATUS: idle（09-27 15:01 起：无自主待办；T-372 已答"排在 Wave-2 之后"，两条真触发条件见 Current checkpoint）
 SCOPE: 权限判定、Approval 聚合与裁决、Temporary Grant、Audit 哈希链与敏感规则集、§9 绕审批门禁；不实现脱敏执行点，approvals/temporary_grants 的 SQL 只准出现在 internal/approval
 EVIDENCE_DIR: .qoder/evidence/audit/
-LAST_UPDATED: 2026-09-28T18:24+08:00（T-390 / W2-9 当天重跑读数入册；上一版 2026-09-27T15:01+08:00）
+LAST_UPDATED: 2026-09-30T15:03+08:00（T-372 交付轮；时钟跨会话不稳见第 126 条，判据一律挂命令与输出）
   〔本机时钟跨会话不稳，见第 126 条；判据一律挂命令与输出〕
 
 ## Objective
@@ -54,25 +54,19 @@ LAST_UPDATED: 2026-09-28T18:24+08:00（T-390 / W2-9 当天重跑读数入册；�
 ## Current checkpoint
 
 - Stage: B1 已解除并完成落库层；`approvals`/`temporary_grants`/`audit_entries` 真库链路打通；
-  **T-390 当天重跑读数已交（第 132 条，W2-9 那一格到此闭合）；idle 状态不变，触发条件 ①② 仍未到**
-- Last verified action: **2026-09-28T18:14:31+08:00 → 18:14:37** 实跑
-  `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test -count=1 -v ./internal/audit/... ./internal/permission/... ./internal/approval/...`
-  → exit=0，三包全 `ok`，**216 PASS（93 顶层 + 123 子）/ 0 FAIL / 0 SKIP**，逐包 audit 82 / permission 54 / approval 80；
-  同轮另跑全仓 `test ./... -count=1`（**18:15:03 → 18:15:30**，exit=0，**18 包 ok / FAIL 0**）、
-  三包 `go vet`（**18:16:40**，exit=0、无输出）、触发条件自查（**18:15:57**，三个关键行各 =1、mtime 仍是我 09-21 写下的）
-  ⇒ 变异不必重放。上一轮（09-22 23:20:44）逐包数：audit 82 / permission 54 / approval 80 / cmd/core 26，FAIL 0 / SKIP 0
-  ⚠ 本机时钟跨会话不稳（详见第 126 条），本文件的时刻只当"该条命令当时的读数"，判据一律挂命令与输出。
-- Status: idle（有意状态，T-390 是主控要的一次性读数、**不算破 idle**）+ **T-372 已答「排在 Wave-2 之后」（第 128 条）**，
-  形状已交 REQ-A13，**本轮零 `core/**` 改动**（只写本文件与 `.qoder/evidence/audit/` 下 5 个证据文件）
-- Next action（**仍是下面两条真触发条件，本轮没有新增第三条**；**W2-9/T-390 已闭**——我这一份当天读数已交，
-  Wave-2 的签字与勾框归主控，我不代签、也不因此开任何新活）：
-  ① **Wave-2 闸门勾上（主控账上出现"`Task → ACCEPTED` 被观察到 / 框勾"）** ⇒ 我立刻做 T-372 那一格
-  （`internal/approval` 的只读 `ListPage`；形状、三条判据、以及 `state=PENDING` 必须复用 `DeadlinePassed`
-  这条都已在 REQ-A13 落账，backend 不必再等我一轮设计）。
-  判据不是我估的：主控 09-27 13:4x 在 T-364 明写"链停在第 9/10/11 三格、`Task → ACCEPTED` 仍没被观察到 ⇒ 框不勾"。
-  **主控若要我插队，明说一句即可**；我不默默开工，也不把"等收口"报成缺陷。
-  ② **谁改 `Chain`/`Scrub`/`redactionHits` 任一侧** ⇒ 我重放 M8/M9 两批变异（09-27 14:55 已核、
-  **09-28 18:15:57 复核仍同**：三个关键行各 =1、mtime 仍是 09-21，目前不必）。
+  **T-372 只读列表已交付（09-30 第 27 轮），T-390/W2-9 那格已闭（09-28 第 132 条）**
+- Last verified action: **09-30 15:03:03 逐包单独取数（交付前最后一次重跑；14:54:29 同数，被本次取代）** → audit **82** / permission **54** / approval **96**，三包 FAIL 0 / SKIP 0；
+  14:53:57 `bash scripts/build_stamp.sh` 指纹 **66b83f7898d6a78c898e125750901388**（HEAD=264d562，编译输入 2372，包=[./cmd/core ./test]）；
+  14:54:49 全仓 = 17 包 ok + `cmd/fake-adapter` 2 条红（mtime 09-30 14:54，adapter 在途，第 138 条）
+  ⇒ 我**不写"全仓 18/18"**，那只到我三个包 + 上面那棵树为止。
+  〔09-28 那次读数（三包 216 PASS、全仓 18 ok、vet 净）已被本轮**取代**，原文仍留在第 26 轮与 Verification evidence 里，不删。〕
+  ⚠ 本机时钟跨会话不稳（第 126 条），时刻只当读数，判据一律挂命令与输出。
+- Status: **T-372 已交付（09-30 14:56，第 27 轮 133~139 条）**。三包 82/54/96 全绿；
+  路由与 handler 仍归 backend（我没有注任何路由）；本轮新报 **REQ-A14**（`SweepExpired` 生产里无人调用）
+- Next action（两条真触发条件）：
+  ① **主控裁 REQ-A14**（谁在什么时机清扫过期审批）⇒ 我把"边界同步"那条用例改成真调度下的断言，并闭合这一格；
+  ② **谁改 `Chain`/`Scrub`/`redactionHits` 任一侧** ⇒ 我重放 M8/M9（09-30 14:53 复量：`ade8085..HEAD` 无人动我包）。
+  触发条件之外我不新增工作；`backend` 接 handler 时**不需要我再改任何东西**，形状就是 `Service.ListPage`。
 - 备注（避免下轮把这些又当待办）：**签名已裁不做**（ADR-018 `accepted 2026-09-20`，见第 24 轮 122~123 条），
   `execution_started` 先于审批那一问**未实测、归编排决定**（第 128 条），锚点三处时机与推进腿已在册（第 92~94 条），
   T-23 第 1 条驳回的"替 backend 预置骨架"仍已撤回、接口形状都在 Coordination 里。
@@ -1014,6 +1008,65 @@ LAST_UPDATED: 2026-09-28T18:24+08:00（T-390 / W2-9 当天重跑读数入册；�
        `t390-0928-grep.txt` / `t390-0928-summary.txt`）。**不做** T-372（触发条件 ① 仍未到）、
        **不重放** M8/M9（触发条件 ② 仍未到）、不动 `Chain`/`Scrub`/`redactionHits`。
 
+### 第 27 轮（2026-09-30 14:44~14:56，接 T-393：触发条件 Ⅰ 成立 ⇒ T-372 那一格开工）
+
+133. **先做"开工前先复量"，而且复量真的改了一次结论**：主控信上写 `HEAD=ade8085`，但我 14:53 现读
+    `git log -1` 已是 **`264d562`**（基线在我读信之后又前进了）。按 `ade8085..HEAD` 查归属：
+    `git log --oneline ade8085..HEAD -- core/internal/{audit,approval,permission}` **为空 ⇒ 没人动我的包**，
+    才动手。工作树里除我四件外还有 `core/cmd/fake-adapter/main.go` 与 `core/test/event_producer_roster_test.go`
+    （别人的在制品，见第 138 条，我一件没碰）。
+    Wave-2 收口也自己读了主控的记账原文而不是采信转述：`orchestration.md:1234`
+    "Wave-2 那一格（`Task → ACCEPTED`）与五方重跑证据成立，**框保持勾住**（09-28 21:4x 那次签字我复核认可）"。
+134. **交付的形状照 REQ-A13，也照 `internal/notification` 的分工**（`Store` 端口 +1 方法、Service 一处校验、SQL 只在包内）：
+    - `approval.go`：`ListFilter{State *string, After *ListPosition, Limit int}` + `ListPosition{RequestedAt, ID}`；
+      `allStates`/`validState` 成为**状态域的唯一来源**（顺手把 `validateResolution` 里那份手抄的四值 switch 也改成调它，
+      REQ-A8 那一族的另一处同源重复就此并掉）；`Service.ListPage` 只做"非法 state 在到达 store 之前拒掉 + 转调"。
+    - `store_sqlite.go`：`(*SQLiteStore).ListPage` —— keyset 展开成显式条件（不用行值比较，对齐 notification/task 两条老决定）、
+      `ORDER BY requested_at, id`、`LIMIT ?`、默认 50 **与 notification 同一个数**；
+      `WHERE` 整段可省（那文件自己的注释就是踩过 "WHERE  ORDER BY" 才写的，我照抄了这个守卫）。
+    - 只读是构造性的：没有 `Tx`、没有 `d.Write`、不建事件、不建审计行、不推 version。
+135. **一处我没敢自己拍的安全语义，是用量出来的事实决定的**：`state=PENDING` 要不要排除"已过期但还没 sweep"的行？
+    我先按"排除得更彻底"写成**无条件**排除（任何视图都不显示过期未扫的 PENDING 行），随后写用例时发现
+    那样会把行**永久变隐身**——`grep -rn "SweepExpired" --include=*.go . | grep -v _test.go` 只剩我自己的定义与注释，
+    也没有任何 ticker（`grep -rn "Ticker|time.AfterFunc" cmd/core internal/process` 无清扫相关命中）⇒
+    **今天没有周期性清扫**。所以改成：**到期条款只在 `State==PENDING` 时生效**；不传 state 的全量视图仍返回该行
+    （带它真实的 `state='PENDING'` 与已越过的 `expires_at`），`state=EXPIRED` 不匹配它。
+    这样既满足 ③（待决列表与 `BlockingState` 同一毫秒同步），又不让一次读取把存在的审批变没。
+    这条判断记在 `store_sqlite.go` 的注释里，并且**顺手成为 REQ-A14**（清扫没接线是真缺口，不该由我悄悄补）。
+136. **三条判据两侧都断，共 7 个顶层用例 / 16 条 PASS 行**（`internal/approval/list_page_test.go`）：
+    空表（0 行 + 零位置 + 无错，另加"有行时必须看得见"当反向）；非法 state（假 store 计数 = **0 次调用**，
+    六个反例含小写 `pending`、空串、SQL 片段，另有三个合法 state 必须放行——否则"永远报错"也算通过）；
+    keyset 翻页（7 行、limit 2 ⇒ 每 id 恰出现 1 次、**页数恰 5**、按 (requested_at,id) 严格递增、有 2 行故意共用同一毫秒
+    来逼出 id tie-break；断言只钉 keyset 序，不钉插入序——uuidv7 同毫秒内不保证单调，那样写会是一颗随机翻脸的假绿）；
+    边界同步（deadline−1 / ==deadline / +1 三点上 `Live`、`state=PENDING` 列表、`BlockingState`、清扫结果四路同向）；
+    只读（四个计数器快照不变，且同一用例里先证明"一次真写会动它们"，免得两边都零相等蒙过去）。
+137. **变异四条，判决分开记，含两次我自己无效的尝试**（纪律：BUILD-BROKEN 与 SILENT 都不算证据）：
+    - 第一次 M-A（删掉两行到期语句）→ **BUILD-BROKEN**：留下空 if 块 + `now` 未使用，红得毫无意义，作废重做。
+    - **M-A′**（把条款中性化成 `id != ?`，仍编译、仍吃参数）→ **FIRED**：
+      `listing says 1 pending rows, Live says false — the two spellings disagree`。
+    - **M-B**（keyset 用 `id >= ?`）→ **FIRED**：`paging never terminated`（界内守卫先命中，说明重复行确实存在）。
+    - **M-C**（跳过 `validState`）→ **FIRED**：`accepted "pending"; an illegal filter must not answer at all` × 反例数。
+    - 第一次 M-D（让 `ListPage` 顺手 `ExpirePending`）→ **SILENT**：**这是我这条腿的真实覆盖洞**——
+      夹具里没有一行是过期的，"清扫 0 行"与"根本没清扫"长得一模一样。补一行"已过期"的夹具后重放同一个 M-D
+      → **FIRED**：`a read-only call changed the tables: [9 4 4 4] → [10 5 4 5]`。
+      记在这里是因为它比"四条全 FIRED"好看的那版假：报 SILENT 才是这条腿真正该交的东西。
+    还原全部核实：到期条款回到原位（计数 1）、读路径里没有 `ExpirePending` 残留、`.scratch/audit/` 收尾 0 项。
+138. **绿色与归属（逐包单独取数，不合并）**：**15:03:03 交付前最后一次重跑**
+    `internal/audit` **82 PASS / 0 FAIL / 0 SKIP**、`internal/permission` **54 / 0 / 0**、`internal/approval` **96 / 0 / 0**
+    （原 80 → 96 = 本轮 16 条新 PASS 行）；同一次 `gofmt -l` 三包**无输出**、`go vet ./internal/approval/` 无输出、
+    `TestApprovalsSQLStaysInThisPackage` 与 `TestScanActuallyFindsViolations` 双双 `--- PASS`
+    ⇒ 我新增的 `FROM approvals` 仍留在包内，局部性判据没被我绕过（这是可执行检查，不是我的一句断言）。
+    14:54:29 那一次同数，被本次取代。指纹（`bash scripts/build_stamp.sh`，14:53:57）：
+    **`66b83f7898d6a78c898e125750901388`**，HEAD=264d562、编译输入 2372 个、工作树未提交 6 处、包=[./cmd/core ./test]。
+    全仓 14:54:49 → **17 包 ok + `cmd/fake-adapter` 2 条红**（`TestFakeAdapterStartNowClosesItsRun`、
+    `TestFakeAdapterGuideOnQuietSessionIsQ10`），**归因证据**：`cmd/fake-adapter/main.go` mtime **09-30 14:54**，
+    与我那次全仓跑同一分钟，且它正是 6 处未提交里 adapter 自己的在制品；主控 14:31~14:37 量到的是 18 包全 ok。
+    ⇒ 按 T-68 记成"截至 14:55:20 的在途态"，我不报回归、不替谁修，也不拿它当"我改坏了"的证据。
+    **所以本轮的"全绿"只到我三个包 + 指纹那棵树为止**，不写"全仓 18/18"（那是主控 14:3x 的读数，不是我的）。
+139. **另记**：主控说 W2-9 那栏不用我再补（我 09-28 18:14 的读数已随 `6bad4a0` 入册、且他本人重跑 audit=82 PASS）
+    ⇒ 我照 T-390 划掉，不重复取证也不另立一格。
+
+
 ## Remaining
 
 - `internal/approval/store_sqlite.go`：`Store` 的真库实现（唯一允许出现 `approvals` SQL 的地方），
@@ -1282,6 +1335,18 @@ LAST_UPDATED: 2026-09-28T18:24+08:00（T-390 / W2-9 当天重跑读数入册；�
     不重不漏、且第二页不吃第一页的边界行）、非法 `state`（两侧都断：必须报错 **且** 一行都不许多读）。
   ④ 排程：等 Wave-2 收口（第 128 条那条 T-364 记账），或主控明令我插队——两者任一到我立刻动手，
     工作量约一次 `Store.ListPage` + 一条 SQL 谓词 + 上面三条腿的用例。
+  **⑤ 已交付（09-30 14:56，见第 133~138 条）**：`Service.ListPage` / `SQLiteStore.ListPage` 落地，
+  七条用例 + 四条变异；`api/http` 的路由与 handler **仍归 backend**（我没有注任何路由，那边 `approvals` 仍 0 命中）。
+- **REQ-A14 → 主控（本轮新量到的真缺口：`SweepExpired` 在生产里没有任何调用者）**：
+  `grep -rn "SweepExpired" --include=*.go . | grep -v _test.go` 只剩我包内的定义与注释；
+  `cmd/core`/`internal/process` 里也没有任何与清扫相关的 ticker（`grep -rn "Ticker|time.AfterFunc"`）。
+  后果不是权限泄漏（读侧 `Grant.Active`/`Approval.Live` 本来就 fail closed，过期即不认），而是：
+  ① 过期的 PENDING 审批**永远停在 `PENDING`**，`approval_expired` 事件与那次 version 推进从来不会发生；
+  ② 面板只能靠"不传 state 的全量视图"看见它们（这就是我第 135 条不敢把到期条款做成无条件的直接原因）；
+  ③ 待决列表与真实状态长期不一致，越久越难归因。
+  请裁"谁在什么时机扫"（候选：`cmd/core` 启动后一次性收敛 + 一个 ticker；或 `GET /approvals` 之前顺手收敛）。
+  **我不擅自接**：把清扫塞进读路径正是我这条包里被反复禁止的形状（第 134 条"只读是构造性的"），
+  而它归装配层决定。裁定后我在自己包里要做的只是把"清扫与列表边界同步"那条用例改成真调度下的断言。
 
 
 ## Changed files

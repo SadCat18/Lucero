@@ -233,13 +233,18 @@ func (s *Service) advance(ctx context.Context, tx *db.Tx, id string, to State, c
 //     与 payload 键一一对应）、`turn/finished` 帧（adapter-protocol-v0.1.md:279）只有
 //     turn_ref/result_code/usage/provider_raw，transport 层的中文文案不属于领域列 ⇒ 留 NULL。
 //   - heartbeat_at：乙档已裁不动（v0.1 无心跳信号源）。
-//   - provider_execution_id：乙档已裁不动（CO-8 故意不写列，send.go:66）。
+//   - provider_execution_id：**不在这一格**，而且永远不许补进来 —— REQ-RC-3 裁 (i) 之后它的写者是
+//     `RecordClaim`（claim.go）单独一笔带 `execution_claimed` 的 Touch。在这里顺手写它就是把
+//     "只在 claimed 那一刻写"那句硬时机改成"started 时补写"，正好撞上被拒的那半边。
 //
-// INTERRUPTED 今天**没有落点**：`advance` 恒以 `Occasion=Normal` 裁决，recovery-only 的那条边
-// 会被 `Check` 拒，所以这里到不了它。恢复扫描那条路在 recovery.go（REQ-RC-1）：它推的是 UNKNOWN
-// 那条边，且今天恒停在 §6 没有对应事件（REQ-RC-2，明确失败不自己造）⇒ INTERRUPTED 的落点仍然没有。
-// 而按 §5.2 它还能回 RUNNING（不是终态）⇒ 将来真有了落点，也得先裁一句 INTERRUPTED 算不算终态，
-// 别在这一格替它决定。
+// `advance` 到不了 INTERRUPTED 与 UNKNOWN 这两条边：它恒以 `Occasion=Normal` 裁决，而 §5.2 把这两条
+// 边登记成 recovery-only（Recovery 槽位），`Check` 在第一关就拒。它们的落点在 recovery.go，不在这里：
+//   - INTERRUPTED ⇒ `ScanRecovery`（REQ-RC-1，boot 扫描，生产调用点在 cmd/core）；
+//   - UNKNOWN ⇒ `MarkCrashUnknown`（REQ-RC-2 那一支，触发点是泵观察到对端进程死亡）。
+//
+// 而这两态在 `Terminal` 面前都**不算终态**（statemachine.go:74~76 那个 `&& s != Unknown`，与
+// `Interrupted` 自己那条 `{Running, Failed, Cancelled}` 出边）⇒ `columnWrites` 的 `Terminal(to)`
+// 永远不该为它们写 `finished_at` —— 这一句是判据（`recovery_unknown_test.go` 就断这个），不是推测。
 func columnWrites(cur Execution, to State, cmd Command, now int64) (string, []any) {
 	set := []string{"status = ?", "updated_at = ?"}
 	args := []any{string(to), now}

@@ -1,10 +1,17 @@
 OWNER_ROLE: db
 TASK_ID: db-platform
-STATUS: complete
+STATUS: complete（T-413 两行已落、C8-12 转 PASS、`go test ./...` 18 包 ok／0 FAIL；只剩合批入册这一件不在我手里）
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-25T18:18+08:00
-UNCOMMITTED: 无 —— 本角色三路径全部在库（`events.go`=`38cafa8` 09-24 10:03:46、`versionless_test.go`=`2c56023` 09-25 17:47:36、`touch.go` 随 09-23 那批）；`git diff HEAD` 对我范围 0 行（18:11:58 实读）
+LAST_UPDATED: 2026-09-30T22:06+08:00
+UNCOMMITTED: core/internal/eventjournal/events.go —— **T-413 的两行**（`git diff HEAD --numstat` = `2 1`，21:58:11 实测；归属 db）。
+  同族等合批的另两件不在我名下、也还未入库：`specs/events/event-contract-v0.1.md`（主控 §6 一行）与
+  `specs/openapi/core-v1.yaml`（frontend T-415 一枚 token）；backend 的 `claim.go` 等仍是未跟踪 `??`。
+  ⇒ HEAD `09dd199` 里 `execution_claimed` **三处全 0（自洽，不会红）**，工作树三处齐（全绿）。
+  上一批 `execution_unknown` 已在库（`2c65177` 19:57:03）。
+  被验树指纹（本轮末次）：**构建时刻 2026-09-30T21:57:37、HEAD `09dd199`、未提交 20 处、编译输入 2380 个、
+  指纹 `38bf468ccdd2273adb60cf582da4f841`、包 [./cmd/core ./test]**（前一枚 `28ca76db…` 是 21:56:44、
+  frontend 落 yaml 之前那棵树，留着标"被取代"）
 
 ## Objective
 
@@ -33,37 +40,45 @@ UNCOMMITTED: 无 —— 本角色三路径全部在库（`events.go`=`38cafa8` 0
 
 ## Current checkpoint
 
-- Stage: **六批都已落账**：T-219 / T-233+T-243 / T-252 / T-266 / T-276（只刷头部）+ **09-25 18:12 这一轮
-  ＝执行 Next action 的基线复测**（零代码、零判据改动；REQ-DB-2 那条落地判据我自己复跑到 PASS）——
-  无版本聚合三入口在盘、
-  `AppendEventOnly` 已收紧成只给 `table == noTable`、REQ-DB-4 的 `execution_starting` 常量 + `Registered()` 集合
-  已入册（`38cafa8` 09-24 10:03:46，今日仍是该文件最后一次提交）；`versionless_test.go` 那 +3 行注释
-  也已随 `2c56023`（09-25 17:47:36）入册 ⇒ **我三路径全在库、工作树干净**
-- Status: complete（本角色账上无待办，**也不等任何人**——上一轮那格"等主控入册"18:11:58 已确认成立并关闭）
-- Last verified action: **最后一次重跑 = 09-25 18:12:10→18:15:32（Next action 那条基线复测，当场 `date` 实读；
-  本行于 18:15:48 刷新）** ——
-  scoped 门禁 `-v`：**49 `--- PASS`、0 FAIL、0 SKIP（顶层 49 / 嵌套 0）**，`ok platform/db 2.599s` +
-  `ok eventjournal 0.484s`、原文 `contract §6 and the catalogue agree on 64 event types`；
-  `gofmt -l` 空、`go vet` 两包 exit 0、`go build ./...` exit 0；`go test ./internal/...` → **13 包 ok、FAIL 0**；
-  信息性 `go test ./...` → **18 包 ok、FAIL 0、no test files 0**；
-  **契约① 第 17 条那条落地判据我自己复跑并 PASS**：
-  `LUCERO_REQ_DB2=1 CGO_ENABLED=0 go test -count=1 -v -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
-  → `--- PASS (0.13s)`，同一用例**不带 flag 时是 `--- SKIP`**（18:14 两跑对照 ⇒ 门是 env 控制的，
-  我没有带 flag 跑全仓，只跑契约点名的那一条）；`check_ownership.sh` exit 0"0 项越界"。
-  （上一轮 10:02:43 那次读数已被本轮取代；本轮之前我只做只读核对。）
-- 等（三问，按 T-276②）：**已成立 ⇒ 本格关闭，留原文不删** ——
-  ~~等谁＝主控；等什么＝把 `core/internal/platform/db/versionless_test.go` 那 +3 行注释入册；谁解锁＝主控~~
-  18:11:58 我自己复量：`git log -1 -- …/versionless_test.go` = **`2c56023`（09-25 17:47:36）**、
-  `git show HEAD:…versionless_test.go | grep -c fixture` = **1**（我 10:11:49 量的是 HEAD 内 0 / 工作区 1，
-  两条读数都真，差在 09-25 那批入册），`git diff HEAD -- 我三路径` = **0 行** ⇒ 三路径全在库、工作树干净。
-  **本角色现在不等任何人。**
-- 范围自证：基线现取 **`7f8599f`（09-25 17:49:12，父 = `2c56023`）**；
-  `git diff HEAD -- core/internal/platform/db core/internal/eventjournal core/migrations` = **0 行**（三路径全在库）；
-  我三个文件的 mtime 仍停在各自最后一次编辑（`touch.go` 09-24 07:10:37、`versionless_test.go` 07:52:15、
-  `events.go` 09:05:35）⇒ **今天没有任何人在我范围内改过码**；未跟踪件本角色 0 件
-- Next action: **无本角色待办、也不等任何人**；下一次开工的唯一动作＝等主控派新活，接手时先复跑那两条基线
-  （scoped 门禁 + `LUCERO_REQ_DB2=1 … -run TestLifecycleRowLandsTheFiveColumns ./cmd/core/`）确认没被别人改动带歪。
-  本轮（09-25 18:12）就是这条复测，已完成、读数在 `Last verified action`。
+- Stage: **T-413（主控 21:5x 补派的那两行）已落，全仓转绿**——`events.go:49` 常量 `ExecutionClaimed` +
+  `catalog` 的 `:93` 一枚 `true`，与今天已入库的 `ExecutionUnknown`（`:48`/`:92`）逐字同构；
+  上一批 **T-403/407 整条链由 `2c65177`（19:57:03）一次入库并复测通过**（没留 09-24 那种窗口）
+- Status: complete（**代码上不等任何人**；我那两行等主控合批入册，这与"等裁"不同——见下面"等（三问）"）
+- Last verified action: **最后一次重跑 = 09-30 21:55:01→21:57:37（当场 `date` 实读；本行于 22:01 刷新）** ——
+  scoped 门禁 `-v`：**`=== RUN` 49、49 `--- PASS`、0 FAIL、0 SKIP**（`ok platform/db 2.601s` + `ok eventjournal 0.514s`），
+  我包内对拍 `contract §6 and the catalogue agree on **66** event types`；`gofmt -l` 空、`go vet` exit 0；
+  主控点的那条判据 **从红转 PASS**：`C8-12：目录 66 类 / 常量 66 个；两个"独有"都空`（21:55:17）；
+  `./test/` 整包 **55 PASS／0 FAIL／7 SKIP**、`./internal/...` **13 包 ok**、`go test ./...` **18 包 ok／0 FAIL**（21:57:37）
+  ——**那 7 个 SKIP 不在我包里**（我 scoped 的 SKIP = 0），本轮没去逐一点名它们等谁；
+  变异取证：摘掉 `ExecutionClaimed: true`（`subs=1`）→ **FIRED**（§6 registers 但 catalogue 没有），
+  **同变异下 C8-12 仍 PASS ⇒ map 那枚的唯一见证是我那条对拍**（与 T-252 同一格）；
+  被验树指纹 **21:57:37、HEAD `09dd199`（21:31:58）、未提交 20 处、编译输入 2380、
+  指纹 `38bf468ccdd2273adb60cf582da4f841`**（前一枚 21:56:44/`28ca76db…` 对应 frontend 落 yaml 之前的树）；
+  **末两次复跑 22:02:49→22:02:51**：`LUCERO_REQ_DB2=1` 那条 `--- PASS (0.19s)`、
+  `C8-12 66/66` 与 **`C8-13 三格相等 §6=66 / yaml=66 / 常量=66，四条边全空`** ⇒ 三处在**工作树**已齐，只差入库；
+  **交账前最后一次 22:06:23** 再跑 scoped：**`RUN` 49／49 PASS／0 FAIL／0 SKIP**，
+  指纹 22:06:24/HEAD `09dd199`/`a7753907b8a7333918a41315c235e7e8`（未提交 21 处、编译输入 2381）
+  ——**别人在途会让指纹每跑必变**，所以配对读数的是"哪一枚对应哪一次判据"，不是"哪一枚最新"
+- 等（三问，按 T-276②）：**等主控合批**——**等谁**＝主控；**等什么**＝`execution_claimed` 那一族的入库
+  （21:58:11 实测 HEAD 内三处全 0、工作树三处齐：我的 `events.go` +2/−1、主控的 §6、frontend 的 yaml，
+  外加 backend 那 3 个未跟踪件）；**谁解锁**＝主控（入册）。
+  **HEAD 那棵树这一轮是自洽的、不会红**（backend 的发射位 `claim.go` 还是 `??` 未跟踪）⇒ 只是"未入库"，不是"缺一致性"。
+  - 已成立的历史格（留档勿再当待办读）：~~等合批入册（execution_unknown 那一族）~~ ⇒ **19:57:03 由 `2c65177` 落地**、
+    我 20:25:47 复跑全绿；~~等主控在 (a)/(b) 之间选~~ ⇒ T-407① 已裁 **(a)**；
+    ~~等主控把 `versionless_test.go` 那 +3 行入册~~ ⇒ 09-25 18:11:58 复量已成立（`2c56023`、HEAD 内 = 1）。
+- 范围自证：**基线现取 `09dd199`（09-30 21:31:58，`git cat-file -t` = commit）**——本轮 HEAD 一路换过
+  `738cb13`(19:02) → `07d2163`(20:02) → `89b32b3`(20:27) → `09dd199`(21:31)，所以每个数都带自己那次的时刻、不互相顶替
+  （19:2x 那三枚哈希的分歧已核完、只 `73c926d` 无效且巡检已自纠：详见 `## Completed` 的 T-407 收单段）。
+  **本轮我名下只有 1 件、且未入库**：`git diff HEAD --numstat` = **`2 1 core/internal/eventjournal/events.go`**
+  （T-413 那两行），`git status` 同一件 ` M`；`touch.go`、`versionless_test.go`、`core/migrations/` 对 HEAD 零差异；
+  **未跟踪件本角色 0 个**（backend 的 `claim.go`/`claim_test.go`/`turnpump_claim_test.go` 是它的，我没碰）。
+  上一批 `ExecutionUnknown` 的两行确认在库：`git log -1 -- …/events.go` = **`2c65177`（19:57:03）**、
+  `git show HEAD:…/events.go | grep -c ExecutionUnknown` = **2**。
+  计数口径并列不推：21:57:37 指纹报"未提交 20 处"（含我 1 件），19:33:55 我数 numstat 总 23；
+  `events.go` 的 mtime 现读 **21:56:36**（T-413 还原后的字节），旧句"18:27:16/17:37:08"都随各自那次为真、现已过期，就地留着不抹
+- Next action: **无待办**；下一次开工先复跑 `Verification` 那两条 + `go test ./test/ -run TestEventTypeTripleEquality`
+  确认合批后三处仍在库、基线没被带歪（上一句"等合批"针对 `execution_unknown`，已于 19:57:03 落地并复跑完；
+  本轮 `execution_claimed` 的合批是同一件事的下一次，**不阻塞我**）。**我不动 `specs/**`、不动 `core/test/**`、不放宽对拍。**
   - 已作废/已成立的历史层（T-276③：头部只留活动项，历史按"留档"读，勿再当待办）：
     ① ~~把 T-233 与 adapter 那两处更正按改后口径转告 adapter~~（T-243 08:20 销账：巡检 07:50 已覆盖同一格，
       且"分开两种错形"本是 **adapter 07:46 先纠出来的**——它按 `landedStatus` 落码在先，
@@ -78,13 +93,123 @@ UNCOMMITTED: 无 —— 本角色三路径全部在库（`events.go`=`38cafa8` 0
     ② 我那句"拿观察态当 guard……第二次还撞 `event_id` 的 UNIQUE"把两种错形合成了一种——
     固定用观察态 ⇒ 每次干净 0 行 + 一句喊、永远走不到记事件；只有"guard 跟着状态前进"才会撞 `event_id`
     的 UNIQUE（adapter 用 m3 复现过）。⇒ 本角色代码零改动，改的是我这两次转述。
-- Verification: 两条，都在 09-25 18:12 跑过——
+- Verification: 三条，本轮全部复跑过（① 21:56:55→21:57:37、②③ 22:02:49→22:02:51；判据自带执行证明：
+  `-v` 里 `grep -c '^=== RUN'` 必须 > 0，scoped 那轮实读 **49** ⇒ 不是"空匹配也 ok"）——
   ① `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
+  （21:56:55 复跑：`RUN` 49／49 PASS／0 FAIL）
   ② 契约① 第 17 条的落地判据（只在带 flag 时**单跑那一条**，不带 flag 全仓）：
   `cd /d/Project/Lucero/core && LUCERO_REQ_DB2=1 CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -v -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
+  （**本轮 22:02:49 复跑 → `--- PASS (0.19s)`**；不带 flag 时同一用例是 `--- SKIP`，两跑对照在 09-25 18:14 记过）
+  ③ 三格同步判据（在 test 角色名下，我只跑不改）：
+  `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -v -run 'TestEventCatalogMatchesJournalConstants|TestEventTypeTripleEquality' ./test/`
+  → 22:02:51 **两条 PASS**，原文 `C8-12：目录 66 类 / 常量 66 个；两个"独有"都空`、
+  `C8-13 三格相等：§6=66 类、yaml=66 条、常量=66 个；四条边全空`
 
 ## Completed
 
+- **T-413（09-30 21:54：登记 `execution_claimed`）两行已落，全仓转绿**（这是主控 T-412① 漏派、21:5x 补开的那张，
+  主控自己写明"这一格是我漏派给你的，不是你的欠账"）：
+  - **改的两处与 `ExecutionUnknown` 逐字同构**：`events.go:49` 常量 `ExecutionClaimed = "execution_claimed"`
+    （紧跟 `:48`）、`catalog` 的 `:93` 加一枚 `ExecutionClaimed: true`（`gofmt -w` 后那一行重排，
+    尾部 `ExecutionPaused/Resumed` 两枚**没被我吃掉**——我改完把 90~94 行整片读回来核过）。
+    仍**没有 payload 表**（依据同前：`Registered()` 只查 `catalog[ev]`）。`git diff HEAD --numstat` = **`2 1`**。
+  - **判据按主控点名的那条走，并带执行证明**：`TestEventCatalogMatchesJournalConstants`
+    从主控给的现读"目录 66 / 常量 65、独有 [execution_claimed]"变成 **`PASS：目录 66 类 / 常量 66 个，
+    两个"独有"都空`**（21:55:17）；我包内 `TestCatalogMatchesContract` 同步从 65 变
+    **`contract §6 and the catalogue agree on 66 event types`**，scoped 门禁 `-v` **`=== RUN` 49／49 PASS／0 FAIL**（21:56:55→21:57:37）。
+  - **"目录那一枚 true 有没有见证"我又变异验了一次，第一次取证无效（我的 cwd 错）**：
+    把 `ExecutionClaimed: true` 从 map 里摘掉（`subs=1`）→ **FIRED**
+    （`event contract §6 registers [execution_claimed] but the catalogue has no entry/constant for them`），
+    而**同一变异下 C8-12 仍 PASS**（它比的是 §6 ↔ 常量声明，看不见 map）⇒ 与 T-252 同一格：
+    **map 那枚的唯一见证是我那条对拍**。
+    **第一次跑我在 `internal/eventjournal/` 目录里用了相对包路径**，拿到的是 `[setup failed]` 一类的空输出
+    （我 09-30 05:4x 记过的坑又踩一次）⇒ 那次不作证，回到模块根 `core/` 重跑才有上面那行 FIRED；
+    还原以 `md5sum -c` = OK、`grep -Fc 'ExecutionClaimed: true'` = 1 自证。
+  - **三处同改这次几乎同时到位，只剩入库**：§6 由主控 21:3x 前落（工作树 1 命中）、
+    yaml 由 frontend 在 **21:56:44→21:56:55 之间**落下（我 21:55:17 量 C8-13 还是 `yaml=65` FAIL，
+    40 秒后复跑就 `PASS §6=66/yaml=66/常量=66` 一类相等 ⇒ **两条读数都真，差在落地那一刻**），
+    于是 `./test/` 整包 **55 PASS／0 FAIL／7 SKIP**（那 7 个 SKIP 不在我包里，我 scoped 是 0 SKIP）、
+    `./internal/...` 13 ok、`go test ./...` **18 包 ok／0 FAIL**（21:57:37）。
+    上一轮 20:27 那枚 `TestEventProducerRosterMatchesDerivedSet` 的红也随 §6 那行自消（我没碰 `core/test/**`）。
+  - **指纹两枚**（同一轮内树动过一次）：21:56:44/HEAD `09dd199`/`28ca76dbd248e7593c89f07964f9707d`（未提交 20 处）
+    与 **21:57:37/HEAD `09dd199`/`38bf468ccdd2273adb60cf582da4f841`（未提交 20 处、编译输入 2380）**；
+    后者对应上面那组全仓绿读数。
+  - **入库状态实测（21:58:11/21:58:34，不猜）**：HEAD `09dd199`（21:31:58）里 `execution_claimed` **三处全 0**
+    （`git show HEAD:specs/events/event-contract-v0.1.md`、`HEAD:specs/openapi/core-v1.yaml`、
+    `HEAD:core/internal/eventjournal/events.go` 各 0），工作树里三处各 1/1/2 ⇒ **我的、主控的、frontend 的那一件
+    现在都还在树里等合批**。
+    **但这一轮"干净检出 HEAD 会不会红"答案是不会**：backend 的发射位 `core/internal/execution/claim.go`
+    仍是**未跟踪**（`git ls-files --error-unmatch` 报 "did not match any file(s) known to git"），
+    `HEAD:core/internal/execution/events.go | grep -c ExecutionClaimed` = **0** ⇒ HEAD 那棵树自洽，
+    没有 20:27 那枚 roster 红所依赖的"发射位已入库、词表未入库"不对称。
+    **给主控的时机信息（不是我的账）**：这一族要同一批进（我 1 件 + §6 1 件 + yaml 1 件 + backend 那 3 个未跟踪/2 个改动），
+    分批提交会临时造出 C8-13 或 roster 的红。
+- **09-30 20:25 合批后复测轮（执行 Next action"等入册后复跑"，零代码）**：
+  - **入库已确认**（不是转抄巡检的数）：`git log -1 -- core/internal/eventjournal/events.go` =
+    **`2c65177`（19:57:03，"三处同改一次入库"）**；`git show HEAD:…/events.go | grep -c ExecutionUnknown` = **2**；
+    §6 与 yaml 在 HEAD 里各 1 命中 ⇒ 三处这次同批齐；我三路径 `git status` 与 `git diff HEAD --numstat` **都空**。
+  - **复跑读数**（20:25:47→20:29:08）：scoped 门禁 `-v` **`=== RUN` 49／49 PASS／0 FAIL／0 SKIP**、
+    `gofmt`/`vet` 干净、两条三格判据 `C8-12`/`C8-13` **PASS（65/65/65）**、`./internal/...` **13 包 ok**。
+  - **全仓剩的一枚红不是我面，我把因果查到断言行才敢这么说**：`./...` 里 `FAIL core/test`，
+    唯一失败用例是 `TestEventProducerRosterMatchesDerivedSet`，它的 `t.Errorf` 在
+    `core/test/event_producer_roster_test.go:1009`（"未决位点逐个点名并 FAIL"那条腿），点名对象是
+    **`internal/execution/claim.go:69` 发射 `EventClaimed`**，而 `execution_claimed` 在
+    §6（HEAD 与工作树）= **0**、yaml = **0** ⇒ 是 **backend 按 T-408 在途的那半未齐**
+    （`claim.go`/`claim_test.go`/`turnpump_claim_test.go` 都还是未跟踪 `??`）。
+    我的名字 `execution_unknown` 在同一份日志里被算进"有生产者"的宽覆盖清单（`recovery.go:174/:267`、
+    `service.go:209` 三处都列到它）⇒ **不是我这一格遮住谁**。按巡检 20:2x 的提醒先分清归属、不动别人文件。
+  - **HEAD 五分钟内换了三次**：`738cb13`(19:02:00) → `07d2163`(20:02:28) → `89b32b3`(20:27:55)，
+    指纹相应换两枚：**19:26:27/`738cb13`/`6b5f3b01de843723b568f5e1fa3288f2`**（旧）与
+    **20:29:08/`89b32b3`/`abffa276e877fa6b08da4b0f3d74d6d1`、未提交 17 处、编译输入 2381**（本轮）。
+    两枚并列、旧的标"被取代"不删。
+- **T-403（09-30 18:2x：登记 `execution_unknown`）两行已落，但我不交绿**（**这句是 18:34 交账当时的状态；
+  19:27 收口见本节末条与 `## Current checkpoint`**）：
+  - **改的就是派发稿点的那两处**：`events.go:48` 常量 `ExecutionUnknown = "execution_unknown"`
+    （照 `:47 ExecutionInterrupted` 的形状），`catalog` 的 `:92` 加一枚 `ExecutionUnknown: true`
+    （在 `ExecutionInterrupted: true` 后面）。**没有加 payload 表**——我读了 `:105`
+    `func Registered(eventType string) bool { return catalog[eventType] }`，目录确实不校验载荷键。
+    `git diff --numstat HEAD` 对我范围只有一件：**`2 1 core/internal/eventjournal/events.go`**（常量 +1、
+    catalog 那行一改一删），gofmt 已跑（`-l` 空）。
+  - **判据自带执行证明**（主控点名"别交 0 命中也 ok 的读数"）：`-v` 输出里 **`=== RUN` 计数 = 49 > 0**，
+    与 `48 PASS + 1 FAIL = 49` 相互对得上 ⇒ 不是空匹配。
+  - **红的那一条是我自己的守门，而且它点的是缺文不是代码**：
+    `--- FAIL: TestCatalogMatchesContract`，原文
+    `contract_parity_test.go:225: the catalogue registers [execution_unknown] which event contract §6 never registered`；
+    `platform/db` 同批 `ok 3.018s`。同因的两条全仓判据（18:28:06 实测）：
+    `C8-12：目录 64 类 / 常量 65 个；代码独有 [execution_unknown]` FAIL、
+    `C8-13 三格计数：§6=64 / yaml=64 / 常量=65` FAIL。
+    **成因我核到原文**：`grep -c execution_unknown specs/events/event-contract-v0.1.md` = **0**（18:26:19），
+    而 契约① 有 3 处（`:717` 「REQ-RC-2 裁『甲』：`→UNKNOWN` 的 **§6 事件名定 `execution_unknown`**，
+    payload `from` + `reason`，Audit 必带」、`:722` 盘上落点核对、`:725` Task 侧不动）
+    ⇒ **裁定在 契约① 里、登记表那一行还没进 事件契约 §6**，而 T-258 刚裁过"§6 是唯一权威"（09-24 10:12 我
+    自己还核过 契约① 只有 §0~§5）⇒ 这次是"先落码后补表"，与那条权威规矩的顺序反着走。
+  - **功能上确实解锁了**（这点也报给主控，免得它被我的红掩盖）：
+    `go test ./internal/execution/` → `ok 2.655s`，其中
+    `TestMarkCrashUnknownLandsUnjudgedStateWithAudit` **`--- PASS (0.04s)`**（18:28:41），
+    另一条 `TestMarkCrashUnknownStopsAtTheJournalCatalogue` **自己转成 SKIP** 并写明
+    `recovery_unknown_test.go:361: 事件目录已含 execution_unknown ⇒ 本用例的墙没了；完整形状由 … 断`
+    ⇒ backend 那两格按它说的"探针只认错误文本、不需人改测试"如期翻面，我没有为它改任何测试。
+  - **我为什么不自己补 §6 让它变绿**：`specs/**` 不是我的可写面（§7 归属 + T-258 那条"第四处真相"的教训），
+    而且**放宽自己的对拍**是这一格最坏的消红方式（会把"名字没登记"变成永远看不见）。所以停下等二选一。
+  - **收口（T-407① 裁 (a)，19:25~19:27 我自己复跑，不转抄）**：§6 那一行由主控补进 `:219`
+    （备文与我为它写的那行字面一致：`| \`execution_unknown\` | execution | \`from\` \`reason\` | ✓ |`）、
+    yaml 那一枚由 frontend 于 19:25:03 落地（T-406）⇒ **我那两行保留、门禁全绿**：
+    scoped `-v` = **`=== RUN` 49／49 PASS／0 FAIL／0 SKIP**（19:25:01），
+    `C8-12 目录 65/常量 65`、`C8-13 三格相等 §6=65/yaml=65/常量=65` 双 PASS（19:25:22），
+    `./internal/...` 13 ok、`./...` 18 ok／0 FAIL。
+    指纹换过一枚（旧的那枚覆盖 18:28:44 的树、HEAD `6961df9`）：**19:26:27、HEAD `738cb13`、
+    指纹 `6b5f3b01de843723b568f5e1fa3288f2`、未提交 25 处、编译输入 2377**。
+    **一条口径记录**：主控 ③ 说"HEAD `53c926d` 是绿的"、巡检 19:24 说现读 `73c926d`、我 19:26:27 实读
+    **`738cb13`（19:02:00）** 三者互不相同 ⇒ 我按"哈希只能抄自本轮命令"的规矩用自己的读数，
+    谁被谁取代由主控记，我不改它们的行。
+    **→ 19:31:12 我把三枚哈希按对象本身查了（不是转抄），并收回我 19:27 那句过强的话**：
+    `git cat-file -t` → **`53c926d` = commit（有效）**，18:30:50「第一百四十六批」，
+    且是 HEAD 的**直接父**（`git rev-list --count 53c926d..HEAD` = **1**）；
+    **`73c926d` = fatal: Not a valid object**（巡检 19:30 已自纠：它拄错了 `git rev-parse` 的输出）；
+    `738cb13` = commit（19:02:00，本轮 HEAD）。⇒ **主控那枚是真对象、只是时点被 19:02 那笔取代**，
+    我"请核出处、别让它进判据链"那句**收回**；假的是巡检那枚而它自己报了。
+    **"哈希只抄自本轮命令"这条规矩仍成立**，只是这次分歧的成因是**时点**、不是编造。另：19:24:17 我量 yaml 的 `execution_unknown` = 0、
+    46 秒后（19:25:03）它变 1 —— **两条都真，差在落地那一刻**。
 - **09-25 18:12 基线复测轮（执行 Next action，零代码零判据改动）**：
   - **读数全部当场取**（`date` 18:11:58 / 18:12:10→18:15:32 / 18:17:00）：scoped 门禁 `-v` **49 PASS／0 FAIL／0 SKIP**
     （`ok platform/db 2.599s`、`ok eventjournal 0.484s`、`agree on 64 event types`）、`gofmt -l` 空、
@@ -691,7 +816,12 @@ UNCOMMITTED: 无 —— 本角色三路径全部在库（`events.go`=`38cafa8` 0
 
 ## Blockers
 
-- 无。
+- **T-403 一条（09-30 18:3x）⇒ 已解，留原文不删（T-407① 裁 (a)）**：~~`execution_unknown` 的两行已落，但
+  事件契约 §6 还没有那一行 ⇒ 我包里的对拍 + 全仓 C8-12/C8-13 三条同因红~~
+  主控 19:0x 补了 §6（`specs/events/event-contract-v0.1.md:219`，`Audit` 带 `✓`），frontend 19:25:03 补了 yaml 的
+  `EventType` token ⇒ **19:25:01 我复跑：scoped 门禁 `=== RUN` 49／49 PASS／0 FAIL，C8-12 与 C8-13 双 PASS
+  （§6=65 / yaml=65 / 常量=65）**。**本角色无阻塞**（20:25:47 复跑确认三处同改已由 `2c65177`（19:57:03）一次入库，连"等入册"也没有了）。
+  两条我自排除的消红方式仍然成立、也没用上：不改 `specs/**`（归属不在我）、不放宽对拍（那会把"名字没登记"变成永远看不见）。
 
 ## Coordination
 
@@ -878,10 +1008,25 @@ UNCOMMITTED: 无 —— 本角色三路径全部在库（`events.go`=`38cafa8` 0
     工作区才是 3/1/2。⇒ **干净检出 HEAD 时 C8-13 是 64/64/63 的红**，正是它自己那条提交信息里写的
     "红已在盘上闭、却未入库这一格随时可能被别人的下一批覆盖掉"——**现在被覆盖的风险还留在我这一格上**。
     我无 git 写权限（红线①），**只能把它报给主控按角色入册**；我不因此重跑或改动任何东西。
+- **T-403 → 主控（~~NEEDS YOU，二选一~~ 已裁 (a)、本条转留档，19:27 标）**：`execution_unknown` 的**裁定已进 契约①**
+  （`:717` REQ-RC-2 裁「甲」）但**登记表那一行还没进 事件契约 §6**，而我包里的对拍只认 §6（T-258 你裁过
+  "§6 是唯一权威"）⇒ 我那两行落下去之后 `TestCatalogMatchesContract` + 全仓 C8-12/C8-13 三条同因红，
+  且都点名同一条边。**要转绿只需你在 §6 表格补这一行**（格式照 216 行那种带 `✓` 的写法，
+  `Audit` 必带的依据是 契约① 第 25 条 ④-a 那句"payload `from` + `reason`，Audit 必带"）：
+  ```markdown
+  | `execution_unknown` | execution | `from` `reason` | ✓ |
+  ```
+  位置建议紧接 212 行那条 `execution_starting`（同族、都是 execution 聚合的状态边事件）。
+  **补完之后 frontend 还要在 `specs/openapi/core-v1.yaml` 的 `EventType` 枚举加一个 token**，否则 C8-13
+  会从"常量多一条"变成"yaml 少一条"（这条链我 09-24 已经量过一次）。
+  若你选**「先立文后落码」要我先退这两行**，回一句即可，我一条 `Edit` 撤回、门禁立刻回 49/49。
 
 ## Changed files
 
 - `core/internal/eventjournal/events.go`（T-252 改，+4/-1）— 常量 `ExecutionStarting` 进 `events.go:39`、`catalog`（`:87`）加一条；
+- `core/internal/eventjournal/events.go`（T-403 改，`git diff HEAD --numstat` = 2 加 1 删）— 常量
+  `ExecutionUnknown = "execution_unknown"`（`:48`，照 `:47` 形状）+ `catalog` 的 `:92` 一枚 `true`；
+  **未加 payload 表**（`:105 Registered()` 只查 `catalog[ev]`，目录不校验载荷键）；T-407① 裁 (a) 后保留不撤回
   只为 REQ-DB-4 登记的 `execution_starting`（事件契约 §6 第 202 行），其余一字未动
 - `core/internal/platform/db/db.go`（新建）— Open / PRAGMA 分层 / 读池 + 单连接写通道
 - `core/internal/platform/db/migrate.go`（新建）— 迁移器 + VACUUM INTO 备份

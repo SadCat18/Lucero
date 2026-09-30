@@ -5,7 +5,7 @@ SCOPE: Core↔Adapter 协议实现（帧编解码/握手/capability/三态/流�
 EVIDENCE_DIR: .qoder/progress/adapter.md（本轮为纯单测证据，不落 .qoder/evidence/）
 SCRATCH_DIR: D:\Project\Lucero\.scratch\adapter\（T-47：一次性产物只准落这里，仓库已 ignore；
              永不碰 /tmp、%TEMP%、$env:TEMP 的通配删除；只删自己建的具体文件名）
-LAST_UPDATED: 2026-09-27T17:13:13+08:00  # 本机 date 实读（第 30 轮：T-386 丙已落地；两面绿取于 17:10:26，未入册）
+LAST_UPDATED: 2026-09-30T17:44:34+08:00  # 本机 clock 实读（第 33 轮收尾：health 写口 + h1..h8 全 FIRED + 给泵的调用面 CO-58；读数取于 HEAD=6ced981；未入册；第 32 轮那三件仍在同一棵树上等入册。本行是本轮第二次抬——17:43:41 那一版写完正文后我又补了一次标题空行，头部就滞后了 25 秒）
    # 自纠两处（T-43）：① 本行上一度写成 `14:36:20`，那**不是** `date` 读出来的、是估的（当时最后一次实读是
    # 14:31:49）；② 09-21 11:11 我用一条 `\S+` 的正则改这行，把 `LAST_UPDATED:` 前缀 itself 吃掉了，
    # 当场用 Edit 修回 —— 记账本自己的教训：**改标头行必须锚全文，不能用 `^KEY: \S+` 这种吞前缀的写法**。
@@ -49,44 +49,221 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 
 ## Current checkpoint
 
-- Stage: **第 30 轮 = T-386 的"丙"落地：`debug/hold` 存在且只推迟收尾，`start_now`/`guide` 默认发
-  `turn/finished{SUCCEEDED}`**。③Ⅰ 现在有专名用例钉在真子进程的原始线节点上；
-  "解除那一刻才是收尾点"另有一条钉住（否则 `on:false` 无人证）。
-  定形并留了反例的一处：**排干出来的轮次不受 hold 影响**（让 hold 吞掉排干＝移动 CO-25 的排干点，正是甲被否的原因）。
-  变异两包同跑（基线 74 PASS/0 FAIL）= **h1/h2/h3/h5 FIRED、h4 SILENT 且已查到机制**
-  （`Handshake.Call` 不查能力表 ⇒ 那行声明不是闸门）⇒ 开 CO-55 请裁要不要立判据。
-  两面绿：A 面 **121 PASS / 2 SKIP / 0 FAIL**（三包 ok）、B 面 **544 PASS / 8 SKIP / 0 FAIL、17 包 ok**；
-  指纹换成 **`internal/process be4ef95cdea707dc`**、**`cmd/fake-adapter baa270cd1cba56bd`**（第 29 轮那两枚作废）。
-- Status: **idle-ready；本轮未入册，等复跑/入册 + §10 补第五枚那一行**。被验面带我 5 件，另有 backend/test 13 件。
-- Last verified action: **17:10:01→17:10:26 两面各一次**（`bash .scratch/adapter/delivery-r25.sh` +
-  `go test -v` 三包，日志 `delivery-r25-171001.log` / `faceA-r386.log`）：A 面 `exit=0`、顶层 **121 PASS / 2 SKIP / 0 FAIL**、
-  三包全 ok、我这 5 条关键用例在 :26/:30/:217/:227/:229 全 `--- PASS:`；
-  B 面 **544 PASS / 8 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**。
-  指纹 **`internal/process = be4ef95cdea707dc`**、**`cmd/fake-adapter = baa270cd1cba56bd`**（构建时刻 17:10:03），
-  `deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f` 未变；HEAD `cde8d79`。
-  变异 `mut-r386.py` + h3 补跑：锚点命中全=1、每枚按字节还原并 assert sha，
-  **`main.go` 现读 sha `26a0604493beab5c` 与变异批 PRE-SHA 同值 ⇒ 判据证在交付字节上**。
-  ZMUT = 0、`zz_*` 残留 0。**"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
-- Verification: `## Verification evidence` 顶部 = **"第 30 轮（T-386 丙：`debug/hold` + 即时收尾）"** ——
-  落地形状、"排干不受 hold 影响"这条定形与它的反例、③ 三条现在各自钉在哪、五行变异判决表
-  （含 h4 SILENT 的机制核查）、§10 拟稿那一行、REQ-TURN-1 的记账口径、两面读数与两个时刻的脏件清单都在里面；
-  往下是第 29 轮（T-382 ②、岔口与那条流程教训）、第 28 轮（T-362 对拍）、第 27 轮补、第 27 轮（停摆后复量）。
-  本轮真跑过的判据命令：`python .scratch/adapter/mut-r386.py`（+ h3 补跑那一枚）、
-  `bash .scratch/adapter/delivery-r25.sh`、
-  `cd core && CGO_ENABLED=0 go test -count=1 -v ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`。
-- Next action: **idle-ready，等主控点名**。六格"等"写全：
-  ① 等什么：**本轮（第 30 轮）被复跑/入册**（谁解锁：主控；当场可复量 `bash .scratch/adapter/delivery-r25.sh`）；
-  ② 等什么：**§10 的"故障注入（`debug/*`）"表补上第五枚 `debug/hold` 那一行**（谁解锁：主控，`specs/**` 归他；
-  拟稿在第 30 轮正文）；
-  ③ 等什么：**CO-55 裁"要不要把能力声明与可达方法的一致性做成判据"**（谁解锁：主控。h4 证明今天没人查表；
-  我不擅自往 `Handshake.Call` 加门，那会改变所有能力的调用语义）；
-  ④ 等什么：**backend 复跑端到端那一腿**（挂住留 `RUNNING`+503、崩溃不许写成功；谁解锁：backend，
-  按 T-382④ 不替它跑）+ **backend 把 `cmd/core/processpipe.go:228` 改成调用 `ChildAlreadyGone`**（CO-51 收尾）；
-  ⑤ 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
-  判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
-  ⑥ 等什么：**`REQ-TURN-1`**（`turn/finished` 与 send 回执的先后时序在 v0.1 未定义；谁解锁：主控，
-  排 Wave-2 之后、真 adapter 接入之前）。**我不拿本轮的绿去填它。**
-  我名下没有欠着的动作：五件改动都在 `core/cmd/fake-adapter/` 与我包的两条消费者用例里，等入册。
+- Stage: **第 33 轮 = T-402 的 `adapter_instances.health` 写口交完**（与 T-398① 分两批，没合批）。
+  新导出面 `(*SQLiteStore).DowngradeHealth(ctx, adapterKey, to) (bool, error)`：按 `adapter_key` 走、
+  **`health` / `last_healthcheck_at` / `updated_at` 同笔三列**（① 那句「别只改一列」直接落成一条断言），
+  每次都带 §6 给的那三把事件键（`from`/`to`/`confidence`，`event-contract-v0.1.md:185`），
+  方向表是**闭集**：只收 H→D、H→U、D→U、UNKNOWN→U，抬健康一律拒（那是探针的证据不是泵的），
+  同状态是 `(false, nil)` 不是错误（泵每次重连都撞一次很正常），表里没有这台 ⇒ 错误里保住
+  `db.ErrAggregateNotFound`（**泵不许把「连接丢了」变成「注册了一台 Adapter」**）。
+  两件我按盘上事实改了主控的前提，都写在证据里：① **这张表今天已有健康写口** ——
+  `MarkUnverified` 就在写这三列（字面 `INSERT/UPDATE adapter_instances` 全在夹具里，生产走 `tx.Touch`，
+  所以「零写者」那句只在字面 grep 口径下成立）；我没有另起第二个写手，而是**把两条门合到同一个 `healthWrite`**，
+  并给它配了一枚回归位（h7：合并把探针那半的 `metadata_json` 理由吃掉就红）。② **`ProbeStore` 接口我没扩**——
+  它是探针的两方法合同，加方法会打死别人家的替身；泵直接使 `core.instances *adapter.SQLiteStore`（`main.go:76` 已在）。
+- Status: **idle-ready；本轮 2 件（1 改 + 1 新用例文件）未入册，且第 32 轮那 3 件仍在同一棵树上等入册**。
+  整仓未提交 14 处，我占 5 处（`probe_store_sqlite.go`、`health_store_test.go` + 第 32 轮三件），其余 9 处是
+  backend 在落的 `internal/execution/{events,recovery,service}.go`、`recovery_unknown_test.go` 与别家账本。
+- Last verified action: **17:37:24→17:41:01 mut-r33b（v2，带基线预检）**：基线三包 **322 PASS / 0 FAIL**、
+  八枚锚点命中全 = 1、**8/8 FIRED**（h1 摘掉写口红 **6** 枚，正是主控点名的那条），每枚输出与基线两两不同，
+  `probe_store_sqlite.go` 还原 PRE=POST **`3c9ee50b81cd433e`**（17505 字节）、ZMUT 0、CR 0、备份与盘上字节相同。
+  **17:31:49→17:32:01 A 面**：**146 PASS / 2 SKIP / 0 FAIL、三包 ok**（135 → 146 = 本轮 6 条顶层 + 5 条子用例）。
+  **17:41:12→17:41:34 B 面**（`faceB-r33.log`）：**`ALL_RC=0`、18 包全 ok、0 FAIL、0 build failed**。
+  指纹（现跑）：`internal/adapter` = **`3059c8d157feb07a6ffab24575f90f09`**（1687 输入），
+  闭包 `[internal/process + cmd/fake-adapter + internal/adapter]` = **`6f3dd41a7f121347e34081255c10e445`**
+  （1701 输入，比第 32 轮的 1700 多一枚＝新增的 `health_store_test.go`），HEAD `6ced981`、未提交 14 处。
+  **一条流程上的自纠写在这里**：17:35 的 v1 批次里 h5/h6/h8 判成 BUILD-BROKEN，**不是我的变异**——那一刻别家在改
+  `internal/eventjournal/events.go`（`ExecutionUnknown redeclared`）把三个依赖包一起打死；v2 给每一枚动手前加了一次
+  **基线预检**（只跑我这包，不绿就记 VOID 不记判决），重跑才是 8/8 FIRED。⇒ 跨包变异批从此默认带预检，
+  否则「别人正编不过」会冒充成我这批的判决。
+- Verification: `## Verification evidence` 顶部 = **"第 33 轮（T-402：health 写口 + 两条门合到一个写手）"** ——
+  「零写者」那句在两种口径下各自成立/不成立（我复跑了 `grep -c` 两遍并各带口径）、`healthWrite` 合并的形状与
+  h7 那枚回归位、方向表为什么这么闭（含 `000001:93-96` 的 CHECK 有六个值而协议只有四个这一格差异）、
+  为什么不扩 `ProbeStore`、给泵的调用面与**那条跨家判据的配方**（他们接上之后该摘哪一行）都在里面；
+  往下是第 32 轮补、第 32 轮（T-398）、第 31 轮补（T-397）、第 31 轮（T-392）。当场可复跑：
+  `python .scratch/adapter/mut-r33b.py`、`cd core && CGO_ENABLED=0 go test -count=1 -timeout 300s -v ./internal/adapter/ -run 'TestDowngrade|TestBothHealth'`。
+- Next action: **idle-ready，等主控点名**。八格"等"写全：
+  ① 等什么：**第 32 轮 + 第 33 轮被复跑/入册**（谁解锁：主控；当场可复量上面那三条命令；
+  注意两批在同一棵树上，入册要一起入，别只挑一件）；
+  ② 等什么：**泵侧那一次调用由 backend 接**（谁解锁：backend。要求 ② 说"调用方是泵、backend 不许自己 UPDATE 这张表"——
+  我这面已经导出可调用；**他们接上之后才有那条"连接死了要降健康"的用例**，在那之前 h1 是唯一证人，我不替他们声称）；
+  ③ 等什么：**DEGRADED 与 UNAVAILABLE 的分档**（谁解锁：主控。我今天写成闭集但**没有裁定依据**：
+  一次连接丢失算 DEGRADED、§8 预算烧完（`ErrUnavailable`）算 UNAVAILABLE 是我的读法；
+  契约只裁了后者（`adapter-protocol §8`），前者没原文 ⇒ 要么认我这个分档，要么改成"泵只发 UNAVAILABLE"，一句就行）；
+  ④ 等什么：**`execution_leases` 的甲/乙/丙**（CO-57 ②，第 32 轮开的，仍未裁）；
+  ⑤ 等什么：**`provider_execution_id` 的列写点名**（CO-57 ③，归 execution）；
+  ⑥ 等什么：**`Run` 的另一半形状**（CO-57 ①：要让重启阶梯与常驻连接共用一台孩子，还差"每起一台交回一个连接"）；
+  ⑦ 等什么：**§10 表第五枚补 `code`、CO-55、§22 `adapter_downgraded` 发射点、`REQ-TURN-1` 契约文本**（四格都在主控名下，各自独立）；
+  ⑧ 等什么：**合验两半**（契约② §6 规则 6 + 第 25 条 (a)，谁解锁：主控发令；我不先动 `cmd/core`）。
+  我名下没有欠着的动作：两轮的改动分别在 `core/internal/process/` 与 `core/internal/adapter/`，等入册。
+  - 【以下五格是第 32 轮（09-30 15:56~17:00，T-398：NewConnection 闸门 + REQ-RC-3 归属 + 假绿复证）写的，按 T-276 原样留档、不当现状读；其中「A 面 135 PASS」那一枚已被第 33 轮换掉（本轮新增 11 条用例，同一集合的扩大不是波动），三枚指纹也换成第 33 轮那两枚——树动了，旧枚只代表旧字节】
+  - Stage: **第 32 轮 = T-398 三件都交**。① 加了主控要的导出入口 **`(*Supervisor).NewConnection(child, coreVersion)`**
+    （"从被监督的孩子构造连接"，不再 Start），并把它的前提做成能测的东西：孩子不是本 Supervisor 起的 ⇒
+    **`ErrForeignChild`**（`Child.sup` 是包内字段，伪造不出来）；一个孩子已有活连接 ⇒ **`ErrChildBusy`**（两根泵读一根
+    stdout 不是"安静一点的版本"，是把帧流切开）；**`Run` 在有连接挂着时直接拒**并点名那个 pid ⇒ ① 那一句"不许各起一台
+    子进程"落成了断言（判据读的是 Launcher 的**起进程次数**，不是 pid）。闸门只挡不放是死锁不是规则，所以
+    **`Connection.Close` 是唯一释放点**（`defer`，包含"上报回收失败"那条出口也在放）。
+    ② **REQ-RC-3 的写者归属交回两条不同的答案**（详见 CO-57）：`executions.provider_execution_id` **不是没有信号源**，
+    是**值已经到 Core 手里、没人落库**（我这半今天就在交：`turn/claimed` 经泵进 `TurnTracker.ProviderExecutionID()`，
+    时机按契约必须是 claimed 那一刻，`adapter-protocol:189`；写列归 `internal/execution`）；
+    `execution_leases` 则是**它守的那个并发面在文档里不存在**（"Runner" 全仓只有 §24 两行 + handoff 摘要，
+    无定义、无 `owner_id` 生产者、无 acquire/release 协议、无 TTL 数值），而且今天**任何写它的代码路径都被
+    `platform/db` 的 `narrowTables` 拒**（`touch.go:201` 只放 `idempotency_keys`，加表要过 §1.1.13 那道 REQ 门）
+    ⇒ 我**没有**替它发明归属，三条可选形状与各自缺的原文都摆在 CO-57 等裁。③ 主控 T-398 与 T-392 里那两条
+    `-run '^TestDelivery'` / `'^TestStartNow'` 在**入册后的新树上复跑仍是 0 命中**（RUN 计数各 0、
+    `ok … [no tests to run]`），真实名字的三条各跑各绿，读数在下一格。
+    两面绿：**A 面 135 PASS / 2 SKIP / 0 FAIL（三包 ok，五枚新用例逐条 PASS）**；
+    **B 面 `go test ./...` = 18 包全 ok、`ALL_RC=0`、0 FAIL** —— 这一跑含 `core/test`（e2e/崩溃骨架），
+    也就是说**我这半没有把 backend 那根刚入册的泵碰红**。
+  - Status: **idle-ready；本轮 3 件改动未入册**（2 改 + 1 新，`+122/−1`），另有别家 5 处在途（`core/` 面 8 处未提交里
+    我只占 3 处）。**0dceb09 已把我第 31 轮入册**（主控 ③ 那句），所以线序那半不再是在途件。
+  - Last verified action: **16:54:46→16:54:57 A 面最终重跑**（`faceA-r32-final2.log`，`A_RC=0`、
+    **135 PASS / 2 SKIP / 0 FAIL、三包 ok**，枚数与 16:50:44→16:51:01 那次（`faceA-r32-final.log`）**完全相同**——
+    同一集合的复跑，不是两个集合；两次之间同样只差那处注释。
+    那一次的原文按「同一轮更早的一次采样」留着：16:50:44→16:51:01（`faceA-r32-final.log`，`A_RC=0`、
+    **135 PASS / 2 SKIP / 0 FAIL、三包 ok**；五枚新用例 `TestNewConnectionRidesTheChildWithoutStartingAnother` 0.95 /
+    `TestNewConnectionRefusesAChildItDidNotStart` 0.96 / `TestOneChildCarriesOneConnection` 0.01 /
+    `TestRunRefusesToStartASecondProcessBesideAConnection` 0.00 /
+    `TestRunIsAllowedAgainOnceTheConnectionIsClosed` 0.02 逐条 `--- PASS:`）。
+    **16:55:11→16:56:34 mut-r32 跑在最终交付字节上**：基线两包 **82 PASS / 0 FAIL**、六枚锚点命中全 = 1、**6/6 FIRED**
+    （a4/a5 各红 **2** 枚、a6 红 3 枚）、六枚输出与基线两两不同；`supervisor.go` 还原 PRE=POST
+    **`559fad27a8d6d1f2`**、`connection.go` **`a308276700796e52`**，ZMUT 残留 0、CR 0。
+    **并列不删**：16:49:09→16:50 那一次也是 6/6 FIRED（当时 `supervisor.go` = `9d79878b8bdd41d0`），两次之间只多了
+    一处**注释改动**（`supervisor.go` 里「这台闸门不覆盖什么」那一段）——注释不动行为，但**动了字节 ⇒ 换了指纹**，
+    所以交付判据认后面那一次。
+    **16:48:24→16:48:46 B 面**（`faceB-r32.log`，`ALL_RC=0`）：**18 包 ok / 0 FAIL / 0 build failed**，
+    这一跑"全"= 18 包（17 + `core/test`），**与第 31 轮那句"17 包不含 core/test"是两个集合，别对拍**。
+    指纹（现跑 `bash scripts/build_stamp.sh`，HEAD `5215256`、工作树未提交 8 处）：
+    闭包 `[./internal/process ./cmd/fake-adapter ./internal/adapter]` = **`7eb1e8505c1a6334269ea380f3dd195b`**（1700 输入，16:54:57），
+    单包 `internal/process` = **`44bde8bacd227e86995595b7887deab6`**（16:54:58），`cmd/core` = **`7989430625ad28c850586976fc929489`**（16:55:10）。
+    **16:50:44~49 那三枚不删，降级为「同一轮更早的一次采样」**：闭包 `f8ace7c0a8ecbb823c5a80f928ed9c0e`、
+    `internal/process` `a466f42115a4c3c7d1b459aa86db9cb3`、`cmd/core` `5147a2e5a41f8ddb6ea7c6e027e10a9f`。两次取号之间
+    我只改过一处注释、没有行为改动，但**这句只有编辑记录、没有 diff 能自证到旧时刻**，所以处理方式是以最终字节上那三枚
+    为交付值。B 面「我这半没碰红 backend」跑在 16:48:24→16:48:46（早于那处注释）⇒ 要最终字节上的 B 面就现跑
+    `cd core && CGO_ENABLED=0 go test -count=1 -timeout 600s ./...`，我不拿旧时刻的 18 包 ok 冒充新字节。
+    **③ 那两条的读数**：16:26:59→16:27:11 照字 `-run '^TestDelivery'` 与 `'^TestStartNow'` ⇒ `no tests to run` +
+    `[no tests to run]`、`grep -c '^=== RUN'` **各 = 0**；16:27:19→16:27:33 真名三条
+    `'^TestFakeAdapterClosingFrameFollowsItsReceipt$'` **0.83s PASS** / `'^TestFakeAdapterStartNowClosesItsRun$'`
+    **0.65s PASS** / `'^TestFakeAdapterTurnFinishThreeStatesOnTheWire$'` **0.66s PASS**，另消费者半
+    `'^TestLateTurnFinishedClosesTheTurnItBelongsTo$'` **1.03s PASS**（`t398-readings-162659.log`）。
+  - Verification: `## Verification evidence` 顶部 = **"第 32 轮（T-398：NewConnection 闸门 + REQ-RC-3 归属 + 假绿复证）"** ——
+    闸门为什么只挡一个方向（另一方向今天挡不了，因为 `Run` 不把手上的孩子交出去，那半写成 CO-57 的问题而不是伪装成实现）、
+    "reaped 逃逸口"那一格怎么被变异查出来并当场收掉、REQ-RC-3 两半的原文落点（`000001:335-341`、
+    `CORE_DOMAIN_MODEL:792/:810`、`touch.go:201`、`adapter-protocol:189/:346`）、六枚变异判决表、
+    两面读数（含 18 包那个新集合）与脏件归属都在里面。当场可复跑：
+    `python .scratch/adapter/mut-r32.py`、`bash scripts/build_stamp.sh ./internal/process ./cmd/fake-adapter ./internal/adapter`、
+    `cd core && CGO_ENABLED=0 go test -count=1 -timeout 300s -v ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`。
+  - Next action: **idle-ready，等主控点名**。七格"等"写全：
+    ① 等什么：**本轮（第 32 轮）被复跑/入册**（谁解锁：主控；当场可复量上面那三条命令）；
+    ② 等什么：**`execution_leases` 的三选一裁定（CO-57 的 甲/乙/丙）**（谁解锁：主控。我不代裁：
+    甲=v0.1 明写租约不进范围、乙=先开 `narrowTables` 的 REQ 门再补"Runner 是谁/何时 acquire/TTL 多少/谁判过期"四件原文、
+    丙=承认今天只有进程级存活；三条都不在 `internal/process` 里落码就能解决）；
+    ③ 等什么：**`executions.provider_execution_id` 那一列的写入点名**（谁解锁：主控 + backend。
+    我这半的值今天已经在 `TurnTracker` 里、泵也在收，缺的是 execution 侧一次列写，**不是信号源缺失**）；
+    ④ 等什么：**`Run` 那一格另一半的形状**（CO-57 末段：要让"重启阶梯 + 常驻连接"共用一台孩子，
+    还差"每起一台交回一个连接"那一步，那是 backend 的泵与主控共同的决定，我不替它定）；
+    ⑤ 等什么：**§10 表第五枚补 `code` 参数那一行 + CO-55 + §22 `adapter_downgraded` 发射点**（谁解锁：主控，三格各自独立）；
+    ⑥ 等什么：**`REQ-TURN-1` 的契约文本**（生产者侧常态位置我第 31 轮已钉，但"v0.1 未定义"那格仍要主控改口径；
+    **我不拿形状冒充裁定**）；
+    ⑦ 等什么：**合验两半（契约② §6 规则 6 + 第 25 条 (a)）**（谁解锁：主控发令；泵已在 `0dceb09`，
+    前提齐了，但那一跑要连 `cmd/core` 一起过，按 T-397 尾句我仍不先动它）。
+    我名下没有欠着的动作：3 件改动都在 `core/internal/process/`，等入册。
+
+  - 【以下五格是第 31 轮（09-30 14:46~16:01，T-392 生产者半 + T-397 三件：改号映射、0 命中判据复跑、k1 再现）写的，按 T-276 原样留档、不当现状读；其中 A 面那三个数已被第 32 轮换掉（130 → 135 是新增 5 枚用例，不是同一集合的波动），闭包指纹也从 `ec662dd6…` 换成第 32 轮那一枚——树动了，旧枚不再代表交付字节】
+  - Stage: **第 31 轮 = T-392 的生产者半落地：`turn/finished` 的常态位置换成「send 回执之后」，三态分辨第一次
+    能整组从真双进程身上指出来**。`sessionSend` 拆成两段：`accept` 只把这一发**开出来的轮次**交回来（CO-8 那一对
+    证据帧仍在回执之前——回执敢声称的东西必须已经在线上，CO-7 没让路），收尾改由新的 `settle()` 在
+    `f.reply(...)` 之后发；`debug/hold` 的**解除**多带一个可选 `code`，于是「有帧但码未裁」这一格不再只能靠
+    in-process 替身演（`turn/finished` 缺 `result_code` 会被 `NewStream` 拒，所以「未裁」在这条线上只能是表外值，
+    这一点写进注释免得下个人去追一个发不出来的形状）。**CO-25 的排干点一字未动**（排水仍挂在 `finish` 那一帧上，
+    `k8` 摘掉它立刻红）。消费者侧新增 `TestLateTurnFinishedClosesTheTurnItBelongsTo`：帧到之前 tracker 是
+    `RUNNING`/`""`（回执处不许替 Provider 编终态），帧到之后落 `CLOSED`，表外码 `INTERRUPTED` 原样递出去、
+    不被泵洗成成功。变异 **k1..k8 全 FIRED**（k1 就是把收尾搬回回执之前＝已否的甲，红在
+    「1 turn/finished arrived before reply#r1」那一句上；k7 证明 guide 那一腿单独有人证）。
+    两面绿分两面写：**A 面 130 PASS / 2 SKIP / 0 FAIL、三包 ok**；B 面这一跑 **不是全量绿** —— `api/http` 与
+    `cmd/core` **build failed**，落点是 backend 正在落的 T-391 那根泵（`cmd/core/sendreap.go` 已删、
+    `cmd/core/turnpump.go` 未跟踪），另 `core/test` 名册 1 条红（`task_accepted`/`task_paused`/`task_preparing`/
+    `task_queued`/`task_resumed` 五名，扫描落点全在 `internal/task/service.go` 与契约名册）。**整份 B 面日志里没有
+    一行点到我这 4 个文件**，我也不替他们跑。
+  - Status: **idle-ready；本轮读数全部取于 HEAD=`264d562`（14:51 主控那一笔之后），未入册**。
+    被验面带我 4 件（1 非测试 + 3 测试，`+298/−26`），另有 backend/audit/test 在途 18 件；
+    `cmd/core` 那两件的编不过**不是**我的红，但它是两半的接缝，写在 CO-56。
+  - Last verified action: **交付前最后一次重跑 = 15:15:18→15:15:29 A 面**（`faceA-r31-final.log`，`FINAL_RC=0`、**130 PASS / 2 SKIP / 0 FAIL、三包全 ok**，与 15:09:27 那一次同形状；五条新判据逐条 `--- PASS:`：`…ClosingFrameFollowsItsReceipt` :0.02 / `…TurnFinishThreeStatesOnTheWire` :0.01 / `TestLateTurnFinishedClosesTheTurnItBelongsTo` :0.90 / `…StartNowClosesItsRun` :0.01 / `…QueueDrainsAtTurnFinishedNotAtNextSend` :0.01）。**15:15:37 复算闭包指纹仍是 `ec662dd69c073989781c31b239b2e275`**（与 15:08:49 同值 ⇒ 两次读数同一棵树；但整仓未提交从 21 处涨到 **27 处**，增出来的全在 backend 名下：`cmd/core/turnpump_test.go` 与 `cmd/core/turnpump_late_test.go` 两枚 ??——**那枚 `_late` 正是 T-391 判据 (a) 的落点，我这一半的生产者形状与它咬合，但它跑不跑得起不在我账上**）。下面先给 15:09:27→15:09:37 A 面（`go test -count=1 -timeout 300s -v
+    ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`，日志 `faceA-r31.log`）
+    **exit=0、顶层 130 PASS / 2 SKIP / 0 FAIL、三包全 ok**；
+    **15:07:53→15:08:10 B 面**（`go test -count=1 -timeout 300s ./...`，日志 `faceB-r31.log`）
+    `ALL_RC=1`、**15 包 ok + 2 包 build failed + `core/test` 1 红**，`grep -n "fake-adapter\|internal.process"`
+    在该日志里只命中两行 `ok`（计数 0 条 FAIL）。
+    **15:05:16→15:07:21 变异批** `python .scratch/adapter/mut-r31.py`：基线两包 **77 PASS / 0 FAIL**、
+    八枚锚点命中全 = 1、**8/8 FIRED**、每枚输出与基线非逐字相同、`main.go` 按字节还原
+    （PRE-SHA = POST-SHA = `c11aaf2ffe55adbf`，ZMUT 残留 0、CR 0）。
+    指纹（现跑 `bash scripts/build_stamp.sh`，**16 位旧枚一律作废**）：
+    闭包 `[./internal/process ./cmd/fake-adapter ./internal/adapter]` = **`ec662dd69c073989781c31b239b2e275`**
+    （15:08:49 与 15:09:48 两次同值 ⇒ 读数与被验树同一棵），单包 `internal/process`
+    **`681226c050b7832fca1184766ae5e4af`**、`cmd/fake-adapter` **`85a8962766bc02bbfaa1a7d1e3eafd9d`**、
+    `internal/adapter` **`4d8e65bdfbc1380e90370d93b5663794`**（15:09:46~47，HEAD `264d562`，
+    工作树未提交 21→22 处——增量在 `internal/task`/`cmd/core` 那一侧，不在我闭包里）。
+    **主控 T-392 里引的那一对（`33d54df2a154e3ee` / `46377e8752bf1298`）是我第 29 轮的旧枚，不是今天的树；
+    今天这棵树上交账用的是上面那三枚 32 位值（build_stamp 截 32 位，与旧 16 位枚不可对拍）。** "全" = A 面 3 包 / B 面 17 包（15 ok + 2 build failed），
+    **不含 `core/test/` 与 `scripts/`**。
+  - Verification: `## Verification evidence` 顶部 = **"第 31 轮（T-392 生产者半：收尾在回执之后 + 三态分辨）"** ——
+    `accept`/`settle` 的分段为什么这么切、`code` 为什么只挂在解除上、`session/stop` 那一格的顺序**故意没跟着搬**
+    （它的回执声称"停了"，帧是它的证据，与 send 回执方向相反）、三态各自钉在哪一条用例、k1..k8 判决表、
+    两面读数与两个时刻的脏件归属、B 面那两处 build failed 的原文都在里面。当场可复跑：
+    `python .scratch/adapter/mut-r31.py`、`bash scripts/build_stamp.sh ./internal/process ./cmd/fake-adapter ./internal/adapter`。
+  - Next action: **idle-ready，等主控点名**。六格"等"写全：
+    ① 等什么：**本轮（第 31 轮）被复跑/入册**（谁解锁：主控；当场可复量
+    `cd core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -timeout 300s ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`）；
+    ② 等什么：**§10「故障注入（`debug/*`）」表里 `debug/hold` 那一行补上解除侧的 `code` 参数**（谁解锁：主控，
+    `specs/**` 归他；拟稿在第 31 轮正文，T-275 的豁免只覆盖"这枚端点存在于 fake-adapter"）；
+    ③ 等什么：**backend 把 T-391 那根常驻泵落完**（谁解锁：backend。现量：`cmd/core` 与 `api/http` 此刻 build failed）。
+    接缝写在 CO-56：**我的常态位置要求收件方在回执之后还在听**——`reapTurnFinished` 那种"回执后同步扫一次缓冲"
+    在新顺序下必然 `Seen=false`。这不是我这一跑的红，但**两半只落一半就是红的**，所以别把我的绿当成可以单独入册；
+    ④ 等什么：**CO-55 裁"能力声明与可达方法的一致性要不要立判据"**（谁解锁：主控；h4 已证今天没人查表）；
+    ⑤ 等什么：**§22 `adapter_downgraded` 发射点的点名**（谁解锁：主控；归我但不排在闸门之前）；
+    ⑥ 等什么：**`REQ-TURN-1` 的契约文本**（谁解锁：主控）。本轮我钉住的是**生产者侧的常态位置**（回执之后），
+    这不等于"v0.1 未定义"那一格已经裁完——**我不拿形状冒充裁定**，也不拿它去填 Wave-3 那格。
+    我名下没有欠着的动作：4 件改动都在 `core/cmd/fake-adapter/` 与我包的一条消费者用例里，等入册。
+
+  - 【以下五格是第 30 轮（09-27 16:52~17:13，T-386 丙：`debug/hold` + 即时收尾）写的，按 T-276 原样留档、不当现状读；其中「两面绿」那两个数与两枚 16 位指纹已被第 31 轮作废，「即时收尾」那个位置本身被 T-392 ① 换掉了】
+  - Stage: **第 30 轮 = T-386 的"丙"落地：`debug/hold` 存在且只推迟收尾，`start_now`/`guide` 默认发
+    `turn/finished{SUCCEEDED}`**。③Ⅰ 现在有专名用例钉在真子进程的原始线节点上；
+    "解除那一刻才是收尾点"另有一条钉住（否则 `on:false` 无人证）。
+    定形并留了反例的一处：**排干出来的轮次不受 hold 影响**（让 hold 吞掉排干＝移动 CO-25 的排干点，正是甲被否的原因）。
+    变异两包同跑（基线 74 PASS/0 FAIL）= **h1/h2/h3/h5 FIRED、h4 SILENT 且已查到机制**
+    （`Handshake.Call` 不查能力表 ⇒ 那行声明不是闸门）⇒ 开 CO-55 请裁要不要立判据。
+    两面绿：A 面 **121 PASS / 2 SKIP / 0 FAIL**（三包 ok）、B 面 **544 PASS / 8 SKIP / 0 FAIL、17 包 ok**；
+    指纹换成 **`internal/process be4ef95cdea707dc`**、**`cmd/fake-adapter baa270cd1cba56bd`**（第 29 轮那两枚作废）。
+  - Status: **idle-ready；本轮未入册，等复跑/入册 + §10 补第五枚那一行**。被验面带我 5 件，另有 backend/test 13 件。
+  - Last verified action: **17:10:01→17:10:26 两面各一次**（`bash .scratch/adapter/delivery-r25.sh` +
+    `go test -v` 三包，日志 `delivery-r25-171001.log` / `faceA-r386.log`）：A 面 `exit=0`、顶层 **121 PASS / 2 SKIP / 0 FAIL**、
+    三包全 ok、我这 5 条关键用例在 :26/:30/:217/:227/:229 全 `--- PASS:`；
+    B 面 **544 PASS / 8 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**。
+    指纹 **`internal/process = be4ef95cdea707dc`**、**`cmd/fake-adapter = baa270cd1cba56bd`**（构建时刻 17:10:03），
+    `deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f` 未变；HEAD `cde8d79`。
+    变异 `mut-r386.py` + h3 补跑：锚点命中全=1、每枚按字节还原并 assert sha，
+    **`main.go` 现读 sha `26a0604493beab5c` 与变异批 PRE-SHA 同值 ⇒ 判据证在交付字节上**。
+    ZMUT = 0、`zz_*` 残留 0。**"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+  - Verification: `## Verification evidence` 顶部 = **"第 30 轮（T-386 丙：`debug/hold` + 即时收尾）"** ——
+    落地形状、"排干不受 hold 影响"这条定形与它的反例、③ 三条现在各自钉在哪、五行变异判决表
+    （含 h4 SILENT 的机制核查）、§10 拟稿那一行、REQ-TURN-1 的记账口径、两面读数与两个时刻的脏件清单都在里面；
+    往下是第 29 轮（T-382 ②、岔口与那条流程教训）、第 28 轮（T-362 对拍）、第 27 轮补、第 27 轮（停摆后复量）。
+    本轮真跑过的判据命令：`python .scratch/adapter/mut-r386.py`（+ h3 补跑那一枚）、
+    `bash .scratch/adapter/delivery-r25.sh`、
+    `cd core && CGO_ENABLED=0 go test -count=1 -v ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`。
+  - Next action: **idle-ready，等主控点名**。六格"等"写全：
+    ① 等什么：**本轮（第 30 轮）被复跑/入册**（谁解锁：主控；当场可复量 `bash .scratch/adapter/delivery-r25.sh`）；
+    ② 等什么：**§10 的"故障注入（`debug/*`）"表补上第五枚 `debug/hold` 那一行**（谁解锁：主控，`specs/**` 归他；
+    拟稿在第 30 轮正文）；
+    ③ 等什么：**CO-55 裁"要不要把能力声明与可达方法的一致性做成判据"**（谁解锁：主控。h4 证明今天没人查表；
+    我不擅自往 `Handshake.Call` 加门，那会改变所有能力的调用语义）；
+    ④ 等什么：**backend 复跑端到端那一腿**（挂住留 `RUNNING`+503、崩溃不许写成功；谁解锁：backend，
+    按 T-382④ 不替它跑）+ **backend 把 `cmd/core/processpipe.go:228` 改成调用 `ChildAlreadyGone`**（CO-51 收尾）；
+    ⑤ 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
+    判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+    ⑥ 等什么：**`REQ-TURN-1`**（`turn/finished` 与 send 回执的先后时序在 v0.1 未定义；谁解锁：主控，
+    排 Wave-2 之后、真 adapter 接入之前）。**我不拿本轮的绿去填它。**
+    我名下没有欠着的动作：五件改动都在 `core/cmd/fake-adapter/` 与我包的两条消费者用例里，等入册。
   - 【以下五格是第 29 轮（09-27 16:12~16:33，T-382）写的，按 T-276 原样留档、不当现状读；其中「① 未落 / Ⅰ 交不了」那两句已被第 30 轮取代】
   - Stage: **第 29 轮 = T-382 的 ② 两半落地、① 交回一个岔口（CO-54）**。
     关键发现：**被抢占那一帧同时是 CO-25 的排干点** —— 只删帧会把排在它后面的队列饿死
@@ -2027,7 +2204,102 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
   ⇒ 我今天真正等的只剩 **`test` 侧的合验发令（主控）** + **backend 删掉 CO-49 那份字面量** + **CO-50① 那条断言落地**。
   我不去动 `cmd/core` 的任何文件，也不提前跑合验。
 
+- **CO-56（09-30 15:10，T-392 的两半接缝 + 一条我没擅自合并的约定）**：① **生产者半与消费半互相咬**：
+  我把 `turn/finished` 移到 send 回执之后（T-392 ①），而 `cmd/core/sendpipe.go` 今天还是
+  "回执后 `reapTurnFinished(conn.Inbound(), …)` 同步扫一次缓冲"（非阻塞 `default` 即返回）——**在新顺序下那条腿必然
+  `Seen=false`**，于是"回执之后落终态"这一格只有在 backend 的常驻泵（T-391 ④）落地之后才可能绿。
+  两半只落一半必然红，所以**别把我这一轮的 A 面当成可以单独入册的绿**；我不去碰 `cmd/core` 补那一半。
+  现量（15:08:32）：泵那一半正在落（`sendreap.go` 已删、`turnpump.go` 未跟踪）。
+  ② **一条看起来不一致、我故意没合并的顺序**：`session/stop` 与 `debug/hold` 的解除，收尾帧仍在**各自的回执之前**，
+  因为它们的回执声称的正是"停了 / 收了"这件事（帧=证据，CO-7 方向）；send 回执不声称结束，所以结束在它之后。
+  契约② §6 如果要把"收尾在回执之后"写成通则，这一处得先裁是不是例外——我不替主控裁。谁解锁：主控。
+
+- **CO-57（09-30 16:51，T-398 ① 的开放半 + ② 的写者归属，请裁）**：
+  ① **一台 Supervisor 一个孩子的闸门只挡了一向**：`Run` 拒绝在有连接时起跑（已实现 + 有牙），但
+  "泵先起跑、连接后接上"那一向今天**只能靠交回孩子**才能解决 ⇒ 需要"每起一台孩子把这台交给调用方"的形状
+  （回调或 `Supervised()` 句柄两条，我倾向回调，因为句柄会在重启的瞬间变成过期指针）。**这半归谁定**：泵在
+  `cmd/core`，所以是 backend + 主控共同决定；**这台闸门今天不覆盖裸 `Start`**——`cmd/core` 的健康/发现那条腿
+  要在同一条 Supervisor 上起短生命孩子，那是合法用法。所以「连起两次 Connect 且第一次不 Close」今天仍然能造出两台孩子；
+  要把它也挡掉，认领就得从「记一个 `last`」改成「记一族」，那是另一格形状，我摆在这里不顺手扩。我不替它定形状，只要主控点头，`NewConnection` 已经是它需要的全部导出面。
+  ② **`execution_leases` 的写者归属交回三档**（原文都在 `## Verification evidence` 第 32 轮那一格，逐条带 `文件:行号`）：
+  **(甲)** v0.1 明写"租约不进范围"——理由是它唯一的立表前提"多 Runner"在 specs/代码里**没有任何定义与生产者**
+  （"Runner" 全仓 3 处命中，两处在 §24 的两行里）；恢复输入退回 §56 另三件（`process_instances` 有行、
+  adapter health 有探测、`provider_execution_id` 见 ③）。**(乙)** 保留租约——那么先要 `platform/db` 的
+  `narrowTables` 开口（REQ-DB-1 §1.1.13，db 角色 + 主控），再补四件今天**完全没有原文**的东西：谁是 Runner、
+  acquire 落在哪个调用点、TTL 数值、谁判过期。**(丙)** 承认 v0.1 只有进程级存活（`process_instances.heartbeat_at`
+  那条已作废的列不再试图复活）。**我不选**，三条都需要契约文本；CO-38 那句"我不建 poll、不碰那列"在三档里都成立。
+  ③ **`provider_execution_id` 请换个说法登记**：它不是"零写者 ⇒ 无信号源"，而是"**信号已到 Core、缺一次列写**"——
+  值从 `turn/claimed` 经我的泵进 `TurnTracker`（有判据），落 `executions` 那一列的动作归 `internal/execution`
+  （名册在 `check_ownership.sh:238`），时机按 `adapter-protocol:189` 必须是 claimed 那一刻（不能等 dispatched）。
+  如果主控同意，REQ-RC-3 的"两半"就该分名册记：**一半是 execution 的列写（今天可闭），一半是租约的归属裁定（等裁）**。
+
+- **CO-58（09-30 17:41，T-402 的调用面与那条跨家判据的配方）**：
+  ① **给 backend 的调用面**（我不碰 `cmd/core`，这里只把形状讲清）：
+  `(*adapter.SQLiteStore).DowngradeHealth(ctx, adapterKey, to) (bool, error)`；
+  `core.instances` 今天就是这个具体类型（`cmd/core/main.go:76`），`retire`/`closeConn` 两支直接调即可，
+  **不需要新装配、也不需要我扩 `ProbeStore`**（那个接口是探针的两方法合同，加方法会打死所有替身）。
+  返回值语义：`(true, nil)` 真的降了；`(false, nil)` 已经在这个状态（**别当错误记**）；
+  `errors.Is(err, db.ErrAggregateNotFound)` = 这张表没有这台（**别当成"注册它"**）；
+  `*adapter.Error` + `INVALID_PARAMS` = 方向不被这扇门接受（抬健康 / 目标 UNKNOWN / 值不在协议四枚举）。
+  ② **主控要的那条判据，今天只有一半能由我交**：「把写口摘掉 ⇒ 那条"连接死了要降健康"的用例必须红」——
+  我这边的 h1 红了 6 枚（写口本身有牙），**但"泵在连接死亡时调了它"这条用例在 backend 名下，今天还不存在**，
+  我不替他们声称。配方请随派发一起给他们：接上之后加一条用例（让连接死 ⇒ 断 `adapter_instances.health` 降了
+  + 一条 `adapter_health_changed`），**它的反例是把 `DowngradeHealth` 那一次调用删掉（锚点=调用那一行，命中必须 = 1）**，
+  跑法照我这轮的规矩：每枚变异前先跑基线预检，否则别人在途会把自己的枚判成 BUILD-BROKEN（本轮 v1 就被
+  `eventjournal` 的一次在途编辑污染了三枚，原文留着在 `mut-r33-h*.log`）。
+  ③ **一句我没有裁定依据的话**：一次连接丢失到底算 `DEGRADED` 还是 `UNAVAILABLE`，契约只裁了后者的一半
+  （§8 连续 5 次崩溃 ⇒ UNAVAILABLE），没写单次丢失；我按"H→D 与 D→U 都收、U 是终点"实现，
+  **但这是读法不是裁定**——要么主控认这一句，要么改成"泵只发 UNAVAILABLE"（那时我把 D 那一格从表里删掉，
+  两条用例跟着收）。谁解锁：主控。
+
 ## Changed files
+
+- **第 33 轮（09-30 T-402）· `git diff --numstat HEAD` 现读（17:41，HEAD `6ced981`）**：
+  `internal/adapter/probe_store_sqlite.go +103/−8`，加一枚未跟踪新文件
+  **`internal/adapter/health_store_test.go`**（6 条顶层用例 + 5 条子用例 + 2 个助手，未跟踪 ⇒ `--numstat HEAD` 看不见）
+  ⇒ **交付面 = 1 改 + 1 新**。
+  - `probe_store_sqlite.go`：新导出的 `(*SQLiteStore).DowngradeHealth`、`healthWrite`（两条门共用的那一个写手，
+    同笔三列 + §6 的三把事件键）、`healthDowngrades` 闭集表与 `isDowngrade`、
+    `MarkUnverified` 那段自己的 `tx.Touch` 改为调 `healthWrite`（行为不变，h7 是它的回归位）。
+  - `health_store_test.go`：`TestDowngradeHealthMovesTheTrioInOneStatement` /
+    `…RefusesWhatItIsNotEntitledToSays`（5 条子用例）/ `…DoesNotRegisterAnAdapterItOnlyLost` /
+    `…FromAnUnprovedRowOnlyAcceptsFailure`（UNKNOWN 与 STOPPED 两个起点）/
+    `TestBothHealthDoorsWriteTheSameTrio` / `…RejectsAValueOutsideTheProtocolEnum`。
+  - **没碰** `cmd/core`（泵的接线归 backend，我只把入口导出）、`internal/execution`、`internal/platform/db`、
+    `api/http`、`specs/**`、`docs/**`；`ProbeStore` 接口一字未改。
+    证据留档：`faceA-r33.log`、`faceB-r33.log`、`mut-r33-*.log`（v2 那一批 9 份 + v1 被外部破坏污染的那几份仍在原地，
+    标着「判决不作数」）、`probe_store_sqlite.go.bak-r33`。
+
+- **第 32 轮（09-30 T-398）· `git diff --numstat HEAD` 现读（16:49，HEAD `5215256`）**：
+  `internal/process/supervisor.go +99/−1`、`internal/process/connection.go +23/−0`（`git diff --numstat HEAD` 只数已跟踪的
+  两件），加一枚未跟踪新文件 **`internal/process/attach_test.go`**（5 条用例 + 2 个助手，`+222`，
+  未跟踪 ⇒ `--numstat HEAD` 看不见，只能按文件行数记，别当成"改动少了"）
+  ⇒ **交付面 = 3 files, +122/−1 已跟踪 + 1 新文件**。
+  - `supervisor.go`：`Supervisor.mu/last` 两个字段、`Child.sup/conn` 两个字段、`ErrForeignChild`/`ErrChildBusy`
+    两个哨兵、`ladderMayStart`（Run 的那半闸门）、`attach`/`release`（认领与归还）、`Start` 结尾登记 `s.last`、
+    `Run` 开头一句拒。
+  - `connection.go`：新导出的 `(*Supervisor).NewConnection`（`Connect` 改成 Start + 它）、`Close` 里那一条
+    `defer c.sup.release(c.child, c)`（每条出口都放，含回收失败那条）。
+  - `attach_test.go`：五枚（rides-without-starting / refuses-a-child-it-did-not-start / one-child-one-connection /
+    run-refuses-beside-a-connection / run-allowed-again-after-close），"起没起第二台"一律读 Launcher 计数。
+  - **没碰** `cmd/core`、`api/http`、`internal/execution`、`internal/platform/db`、`specs/**`、`docs/**`
+    （`execution_leases` 与 `narrowTables` 那两件的归属不在我，写者归属只以 CO-57 交回）。
+    证据留档：`faceA-r32.log`、`faceA-r32-final.log`、`faceB-r32.log`、`mut-r32-*.log`（7 份：基线 + 六枚）、
+    `t398-readings-162659.log`（③ 的五条读数）。
+
+- **第 31 轮（09-30 T-392）· `git diff --numstat HEAD` 现读（15:10，HEAD `264d562`）**：
+  `cmd/fake-adapter/main.go +61/−24`、`cmd/fake-adapter/delivery_test.go +134/−2`、
+  `cmd/fake-adapter/main_test.go +25/−0`、`internal/process/connection_test.go +78/−0`
+  ⇒ **4 files changed, 298 insertions(+), 26 deletions(-)**。
+  - `main.go`：`sessionSend` 收尾后移（`accept` 多回一个"这发开出来的轮次"）、新增 `settle()`、
+    `debugHold` 的解除带可选 `code`（布防带码直接拒）、`startTurn` 不再自己收尾。
+  - `delivery_test.go`：`TestFakeAdapterClosingFrameFollowsItsReceipt`（① 的位置判据，start_now + guide 两条腿）、
+    `TestFakeAdapterTurnFinishThreeStatesOnTheWire`（③ 三态一枚进程里出齐）、Q10 与 ③Ⅰ 两条按新顺序改写。
+  - `main_test.go`：`next()`（读回执**之后**那一帧）与 `rawClose()`（收尾帧的原始 params 字节）两个助手。
+  - `internal/process/connection_test.go`：新增 `TestLateTurnFinishedClosesTheTurnItBelongsTo`
+    （帧到之前不许有终态、表外码不许被洗）。
+  - **没碰** `cmd/core`、`api/http`、`internal/execution`、`internal/task`、`specs/**`、`docs/**`。
+    证据留档：`faceA-r31.log`、`faceB-r31.log`、`mut-r31-*.log`（九份：基线 + 八枚）。
 
 - **第 30 轮（09-27 T-386）· `git diff --numstat HEAD` 现读（17:10）**：
   `cmd/fake-adapter/main.go +85/−3`、`delivery_test.go +75/−8`、`readers_test.go +12/−2`、
@@ -2229,6 +2501,199 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - `core/internal/adapter/stream.go` — §4.2 的两处结论落地：`CarriesTurnRef` 只含四条、
   `turn/dispatched` 放开 Provider 句柄（CO-13）、跟踪器同口径；注释与 §4.2 载荷表对齐
 ## Verification evidence
+
+- **第 33 轮（09-30 17:24~17:41，T-402：`adapter_instances.health` 的写口归我）· 不与第 32 轮合批**
+  - **主控那句「非测试码零写者」我复跑过，并且它只在一种口径下成立**（两种口径都留命令原文）：
+    `grep -rn -e 'INSERT INTO adapter_instances' -e 'UPDATE adapter_instances' --include='*.go' core | wc -l` = **25**（巡检同值），
+    这 25 行**行号全在 `_test.go`** ⇒ 字面写 SQL 的生产代码确实 0 处。**但同一张表的写口不是 0**：
+    `core/internal/adapter/probe_store_sqlite.go:227`（`MarkUnverified`）**今天就在写** `health`、`last_healthcheck_at`、
+    `updated_at`、`metadata_json`，只是走 `tx.Touch(db.AggAdapter, …)` 拼出来的列名，不是字面 `UPDATE adapter_instances`。
+    ⇒ 结论按盘上事实写：**这张表已经有健康写口、已经在 `internal/adapter`，缺的是"泵能调的那扇门"**；
+    我没有另起第二个写手，而是把两条门合到同一个 `healthWrite`（同笔三列只组装一次）。
+    引用这条时请带上口径：**「字面 INSERT/UPDATE 数」≠「写口数」**（巡检也提醒过"提及数 24"是第三种数）。
+  - **门为什么长这样**（`(*SQLiteStore).DowngradeHealth(ctx, adapterKey, to) (bool, error)`）：
+    ① 按 `adapter_key` 走，与唯一读点同形（`probe_store_sqlite.go:61` = `SELECT id, health FROM adapter_instances WHERE adapter_key = ?`）；
+    ② 三列同笔（① 那句"别只改一列"），h2/h3 各摘掉一列都红；
+    ③ 事件用 §6 给的那三把键，**没有第四个参数**——`event-contract-v0.1.md:185` 只列 `from`/`to`/`confidence`，
+      往签名上塞一个 `reason` 就是把契约改动偷运进接口（探针那条门的 reason 走 `metadata_json`，那是 §7.2 已有的形状，我没改它）；
+    ④ 同状态 = `(false, nil)`：泵每次重连都撞一次「已经在这里了」很正常，把它做成错误会让调用方去写 `if err != nil { 记一条红 }`；
+    ⑤ 表里没有这台 = 错误里保住 `db.ErrAggregateNotFound`（h6 摘掉 `%w` 就红），**泵不许把"连接丢了"变成"注册了一台 Adapter"**——
+      注册是探针的动作（`RecordProbe`），这条边界比签名好看更重要。
+  - **方向表为什么闭**：只收 `HEALTHY→DEGRADED`、`HEALTHY→UNAVAILABLE`、`DEGRADED→UNAVAILABLE`、`UNKNOWN→UNAVAILABLE`。
+    抬健康一律拒（那是探针的证据，不是"没听到死亡信号"的证明）、`→UNKNOWN` 一律拒（`openapi` 里
+    "UNKNOWN 不得折成 UNAVAILABLE"是同族禁令的另一面：UNKNOWN 是**没有证据**，不是一个可选状态）。
+    还有一格差异我写进代码注释而不是猜：**列的 CHECK 有六个值**（`000001:93-96` 还有 `STARTING`/`STOPPED`），
+    而协议枚举 `healthValues`（`handshake.go:69-72`、`:84`）只有四个 ⇒ 这张表**永远不该出现**那两值，
+    真出现了这扇门拒绝处理它（`TestDowngradeHealthFromAnUnprovedRowOnlyAcceptsFailure` 用夹具插了一行 STOPPED 把这条钉住），
+    而不是顺手编一条规则。**主控如要把 STARTING/STOPPED 变成 Core 写的状态，那是契约面的一格，不归我这轮。**
+  - **`MarkUnverified` 的合并是本轮唯一动到既有行为的地方**，所以给它配了回归位：h7（把 `reason != ""` 那一支摘掉 ⇒
+    探针那条门丢 `metadata_json`）**FIRED 在 `TestBothHealthDoorsWriteTheSameTrio`**；既有探针用例（322 条基线里）无一转红。
+  - **变异批 v2（`mut-r33b.py`，17:37:24→17:41:01，三包 = `internal/adapter` + `cmd/core` + `api/http`）**：
+    基线 **322 PASS / 0 FAIL**；八枚锚点命中全 = 1；**8/8 FIRED**；每枚输出与基线两两不同；
+    还原 PRE=POST `3c9ee50b81cd433e`、ZMUT 0、CR 0。
+
+    | 变异 | 判决 | 读数 | 这一枚在证什么 |
+    |---|---|---|---|
+    | h1-door-removed | **FIRED** | PASS=316 **FAIL=6** | **主控点名的那条**：摘掉写口 ⇒ 降健康一律红（红面最宽的一枚） |
+    | h2-loses-updated-at | **FIRED** | PASS=319 FAIL=3 | ① 那句「同笔把 `updated_at` 一起走」 |
+    | h3-loses-check-time | **FIRED** | PASS=319 FAIL=3 | 同笔里的 `last_healthcheck_at` |
+    | h4-direction-table-open | **FIRED** | PASS=317 FAIL=5 | 方向表放开 ⇒ 泵可以把健康抬回去 |
+    | h5-same-state-becomes-a-write | **FIRED** | PASS=319 FAIL=3 | 同状态写成一次变化（§10「别把没变化写成变化」） |
+    | h6-missing-row-stops-naming-itself | **FIRED** | PASS=321 FAIL=1 | `errors.Is(…, db.ErrAggregateNotFound)` 这条契约 |
+    | h7-probe-door-loses-its-reason | **FIRED** | PASS=321 FAIL=1 | 我这次合并有没有吃掉探针那半的 reason（**本轮唯一动旧行为的地方**） |
+    | h8-event-loses-confidence | **FIRED** | PASS=321 FAIL=1 | §6 三把键少一把就是契约面被改 |
+  - **v1 那三枚 BUILD-BROKEN 不作数，原文留着**：17:35 的批次里 h5/h6/h8 三包全 `FAIL [build failed]`，
+    报错是 `internal/eventjournal/events.go:51:2: ExecutionUnknown redeclared in this block`（**别家此刻在改 `eventjournal`/`execution`**，
+    与我的锚点无关；`mut-r33-h5-same-state-becomes-a-write.log` 头三行就是这条）。
+    ⇒ 这一批的规矩改成：**每枚动手前先跑一次基线预检**（只跑我这包，秒级），预检不绿就记 VOID 不记判决。
+    教训按"变异批必须自带被验树可编译的证明"入册，不写进代码注释。
+  - **两面读数与集合口径**：A 面 **146 PASS / 2 SKIP / 0 FAIL**（三包；第 32 轮是 135，本轮 +6 顶层 +5 子用例）；
+    B 面 17:41:12→17:41:34 **18 包全 ok、`ALL_RC=0`、0 FAIL**（含 `core/test`，口径同第 32 轮，不与第 31 轮的"17 包"对拍）。
+    本轮的 `cmd/core` 与 `api/http` 都在变异批里被跑过（它们**直接持有 `*adapter.SQLiteStore`**，`main.go:76`），
+    所以"我没把泵碰红"这句话有两面证据，不是一次 `go build`。
+
+- **第 32 轮（09-30 15:56~16:51，T-398 三件）· 承接第 31 轮补（T-397），不覆盖它**
+  - **① 为什么闸门只挡一个方向，我没有假装挡两头**：`Run` 的循环把手上的 `*Child` 留在里面（`supervisor.go:387` 起孩子、
+    `:391` Wait），外面**没有任何句柄**能拿到那台孩子 ⇒ "Connect 撞 Run"这一向今天挡不了（挡了就是把 backend 唯一
+    能用的形状也锁死）。所以我做的是：① 给"从被监督的孩子构造连接"开口（`NewConnection` + `Child.sup` 包内字段证明
+    归属，伪造不出来）；② 把能挡的那一向挡死并让它可测（`ladderMayStart`）。剩下的"每起一台交回一个连接"那一步写成
+    **CO-57 的问题**交回主控，不伪装成实现。这条自约束写在 `NewConnection` 的注释里，代码与注释同向。
+  - **reaped 逃逸口是变异查出来的，不是我想到要修的**：第一版 `ladderMayStart` 写成
+    `s.last.conn != nil && !s.last.Reaped()`，a4/a5（把 `release` 掏空 / 让 `Close` 不放）**只红了一枚用例**——
+    `TestRunIsAllowedAgainOnceTheConnectionIsClosed` 照样绿，因为 `Close` 会回收孩子，"已 reaped"这条腿替它答了案。
+    ⇒ 条件收成"`conn != nil` 就拒，唯一释放点是 Close"，a4/a5 从 FAIL=1 变 **FAIL=2**（那枚用例真的在看释放）。
+    这一格记两条：① **一条断言在"另一道闸也会给出同样答案"时不算证**（同族教训我写过，这次是自己踩）；
+    ② 收紧后的语义也更对：死了但没人 Close 的连接仍然占着这台 Supervisor，因为那个 Connection 对象的
+    `execByRef`/tracker 还在声称它描述这轮——放行它会得到"第二台孩子 + 一份还在世的旧连接"。
+  - **② REQ-RC-3 的两半分开交（原文落点全部现读，没有一句凭记忆）**：
+    · `executions.provider_execution_id`：列在 `core/migrations/000001_core_schema.sql:313`（可空、无 CHECK）。
+      契约要求它挂在 `claimed` 上的理由在 `specs/adapter-protocol/adapter-protocol-v0.1.md:189`
+      （"**Core 可能在 claimed-未-dispatched 这个窗口里死掉**"）、`:204` 重述、`:221` 是 T84-3 判据；
+      §8 `:346` 说 Recovery 用 lease/heartbeat/它 判 reconnect / resume / interrupt。
+      **我这半已经在交值**：泵的 `Inbound` 带 `turn/claimed` 的 `ProviderExecutionID`，并落进
+      `TurnTracker.ProviderExecutionID()`（`internal/adapter/stream.go` 的导出读口），
+      `TestNewConnectionRidesTheChildWithoutStartingAnother` 与 `TestConnectionSendOverRealPipe` 钉住"穿过泵不变样"。
+      ⇒ 归属答案：**写列的是 `internal/execution`（`executions` 归它，`scripts/check_ownership.sh:238`），
+      时机是泵收到 `turn/claimed` 那一刻，缺的是一次列写而不是一个信号源**。
+    · `execution_leases`：表在 `000001:335-341`（`execution_id` PK / `owner_id NOT NULL` / `acquired_at` /
+      `heartbeat_at NOT NULL` / `expires_at NOT NULL`）+ `:343` 按 `expires_at` 的索引；语义只有
+      `docs/architecture/CORE_DOMAIN_MODEL_V0.1.md` §24（`:792` 立表理由、`:810` "Runner 只有持有有效 Lease 才能执行"、
+      `:812` 过期后由 Recovery Engine 判断），§56 `:1785-1791` 把它列进恢复判据四件之一。
+      **今天写不进去**：`core/internal/platform/db/touch.go:201` 的 `narrowTables` 只有 `idempotency_keys`，
+      注释 `:190` 明写"加表要过 REQ（契约 §1.1.13）"，并且 `update_test.go:92` 直接把
+      `{"execution_leases", "heartbeat_at"}` 当**会被拒**的用例钉着。**表名册归属是 `internal/execution`**
+      （`check_ownership.sh:239`）。
+      **前置概念不存在**（现读，非推断）：`grep -rn "Runner" docs specs core` ⇒ 只有
+      `CORE_DOMAIN_MODEL:792`、`:810` 与 `docs/handoff/Lucero_Qoder_Handoff_v0.1.md:400` 三处，
+      **没有 Runner 的定义、没有 `owner_id` 的任何生产者、没有 acquire/release 协议、没有 TTL 数值**；
+      `grep -rn "SweepingExpired"` = **0**（`specs/contracts-internal-v0.1.md:917` 那个 `SweepExpired` 是
+      `approval`/`temporary_grants` 的，不是租约）。⇒ 归属答案：**今天没有一个角色能名正言顺写它**，
+      三档可选形状（甲：v0.1 明写租约不进范围、恢复输入退回 §56 另三件；乙：先开 DB 门再补四件原文；
+      丙：承认只有进程级存活）都写在 CO-57，**由主控裁**，我不选。
+      另按已裁的 **CO-38**：我不建 poll、也不碰 `process_instances.heartbeat_at`（那列 v0.1 已显式作废）。
+  - **③ 两条 0 命中判据的复证（同一棵树，入册之后）**：16:26:59→16:27:11 照字跑
+    `go test -count=1 -timeout 90s -v ./cmd/fake-adapter/ -run '^TestDelivery'`（与 `'^TestStartNow'`）⇒
+    两条都是 `testing: warning: no tests to run` + `ok … [no tests to run]`，`grep -c '^=== RUN'` **各 0**；
+    机制复核 `grep -c "^func Test\(Delivery\|StartNow\)" cmd/fake-adapter/delivery_test.go` = **0**
+    （包内用例全部 `TestFakeAdapter` 起头）。真实名字的四条各跑各绿（16:27:19→16:27:33）：
+    位置判据 0.83 / 必须发帧 0.65 / 三态 0.66 / 消费者接缝 1.03，全部 `--- PASS:` 且各 RUN=1。
+    第 31 轮那条"那句反例文字要跑变异才打印"今天仍然成立：`:410` 在位，打印它的是 `mut-r31.py k1-…`。
+  - **两面读数与集合口径**：A 面 **135 PASS / 2 SKIP / 0 FAIL**（三包；比第 31 轮多 5 枚＝本轮新用例）；
+    B 面 **18 包全 ok、`ALL_RC=0`、0 FAIL、0 build failed**，18 包 = 上一轮的 17 + `core/test`（14.987s，
+    崩溃骨架与 e2e 都在里面）⇒ **"全"这个字在本轮换了集合**，两枚数不可对拍。
+    这条 B 面的意义是：我改的是 `Connect` 的实现与 `Run` 的入口检查，**backend 刚入册的那根泵（`cmd/core` 19.798s ok）
+    没有被我的闸门碰红**——它只用 `Connect`，没用 `Run`。
+    未提交面 16:48:57 = `core/` 3 件（全是我：`connection.go`、`supervisor.go`、未跟踪的 `attach_test.go`）；
+    整仓 8 处（其余 5 处是别家的账本与别家的在途件）。
+
+- **第 31 轮补（09-30 15:56~15:58，T-397 巡检投递：改号 + 合验前两半的形状自查）· 不新起轮次、不改上面第 31 轮正文**
+  - **② 改号映射（凭证就是这一行）**：主控 ② 明写"号请以 **T-395** 为准，正文不用回改"⇒ 我账上
+    现读 `grep -n "T-391" .qoder/progress/adapter.md` ⇒ 指泵的共**六处**：`:63`（`- Stage:`）、`:70`（`- Last verified action:`
+    里那句"`_late` 正是 T-391 判据 (a) 的落点"）、`:98`（`- Next action:` ③）、`:2088`（`## Coordination` 段末的 CO-56）、
+    `:2355` 与 `:2397`（复量那行、B 面 build failed 的归属那行）——**字面全部原样留着**，一律读作**常驻泵那封 = T-395**；
+    `T-391` 这个号归 backend 的 `REQ-RC-1`（09-29 已落）。行号会漂，认的是那句"backend 正在落的…那根泵"。
+    我不回改，是因为改了会把主控那笔"编号行"的历史挪位；映射只在此处登记一次。
+  - **③ 第一件：那句判据文本还在不在**（我自己现读，不拄巡检）：
+    `grep -n 'turn/finished arrived before reply' core/cmd/fake-adapter/delivery_test.go` ⇒
+    **`410:`** 命中 1 行，源码原文是
+    `t.Errorf("%s: %d turn/finished arrived before reply#%s; T-392 ① puts the close after the receipt",`——
+    **带格式动词，所以干净树上看不到那句话**（这一条 pass 时不打印任何东西）。
+    主控引的那句成形文字（`start_now: 1 turn/finished arrived before reply#r1; …`）是**甲的位置回来时**的输出：
+    15:58 我在今天的树上单跑 `python .scratch/adapter/mut-r31.py k1-settle-before-reply`（脚本这轮加了 argv 过滤，
+    只跑这一枚），**逐字再现于 `mut-r31-k1-settle-before-reply.log:24`**，PRE-SHA = POST-SHA = `c11aaf2ffe55adbf`、
+    ZMUT 残留 0。⇒ 合验要用这句话当反例证据时，**命令是"跑 k1"，不是"跑测试"**；这点必须在派发里写清，否则下一个人会在绿树上等一条不会打印的消息。
+  - **③ 第二件：主控给的 `-run` 两条照字跑＝0 命中的假绿**（这是主控的账，我按"判据命令行必须真跑过"上交）：
+    15:56:59→15:57:10 现跑 `go test -count=1 -timeout 90s -v ./cmd/fake-adapter/ -run '^TestDelivery'`
+    与 `-run '^TestStartNow'` ⇒ 两条都是 `testing: warning: no tests to run` +
+    `ok github.com/SadCat18/lucero/core/cmd/fake-adapter 1.7s **[no tests to run]**`，`grep -c '^=== RUN'` **各 = 0**。
+    机制：我这包里的用例名全部以 `TestFakeAdapter` 起头（`grep -c "^func Test\(Delivery\|StartNow\)" cmd/fake-adapter/*_test.go`
+    四份文件**全 0**），`^TestDelivery` / `^TestStartNow` 是照文件名猜的、不是照函数名。
+    ⇒ **合验判据别写这两条**：`-run` 空匹配在 Go 里是 `ok`，不带 `-v` 连 `no tests to run` 都看不见。
+  - **③ 第三件：真实名字的三条单跑（各 RUN=1 / PASS=1 / FAIL=0，15:57:20→15:57:31，`t397-readings-155720.log`）**，
+    都是单个正则、不含竖线（守主控"竖线会把表格行劈开"那条）：
+    `-run '^TestFakeAdapterClosingFrameFollowsItsReceipt$'` **0.84s PASS**（= ① 的位置判据，:410 那句的东家）、
+    `-run '^TestFakeAdapterStartNowClosesItsRun$'` **0.67s PASS**（= §6 第 6 条③ 的"必须发帧"）、
+    `-run '^TestFakeAdapterTurnFinishThreeStatesOnTheWire$'` **0.77s PASS**（= 三态分辨）。
+    不过滤的那一次全量仍算第 31 轮的 15:15:18→15:15:29（**130 PASS / 2 SKIP / 0 FAIL、三包 ok**）。
+  - **归属与可归因**：整仓 HEAD 已从第 31 轮的 `264d562` 换到 **`bfcbd88`**、未提交 27→**32 处**；
+    但我这三包的闭包指纹 `bash scripts/build_stamp.sh ./internal/process ./cmd/fake-adapter ./internal/adapter`
+    在 15:08:49 / 15:09:48 / 15:15:37 / **15:58:29** 四次**同值 `ec662dd69c073989781c31b239b2e275`（1699 个编译输入）**
+    ⇒ 上面所有读数（含 15:57 那三条与 15:58 那枚 k1）**与我第 31 轮交账的是同一棵被验树**，别人在 `cmd/core`/`internal/task` 那一侧的搬运进不来。
+  - **没做的事**：没有合跑两半（按 ③ 尾句等 backend 交账）、**没碰 `cmd/core` 一个字节**；
+    它那一半的形状我只读巡检证据（`turnpump.go` 16099B@15:22、`sendreap*.go` 已无、`sendpipe.go:144` 已改口），**没跑它的包**；
+    名单也不代加：自己现读 `specs/events/event-contract-v0.1.md` 的"本名单当前是"锚句 **命中 1、自称 26 条**
+    （用 python 计数，不用中文 grep），要不要涨是主控的裁定项。
+
+- **第 31 轮（09-30 14:46~15:10，T-392 生产者半：`turn/finished` 移到 send 回执之后 + 三态分辨）· 取代第 30 轮的「即时收尾」那一格**
+  - **开工前先复量（⑤）**：14:46:38 `git rev-parse --short HEAD` = **`ade8085`**、`git status --porcelain -- core/`
+    只有 `core/internal/approval/approval.go` 一件（不是我包的；14:47 整仓读是 3 件，另两件是 `store_sqlite.go` 与
+    `specs/api-contract-v0.1.md`）；`test -f scripts/build_stamp.sh` 在。
+    与主控那句"长在 HEAD=ade8085"当场相符 ⇒ 方向不改。**到 15:08:32 复量时树已经换了**：HEAD=`264d562`（14:51:31 主控那一笔）、
+    未提交 21 件，其中 `cmd/core/sendreap.go` 是 **D**、`cmd/core/turnpump.go` 是 **??** ⇒ backend 正在落 T-391 的泵。
+    **所有读数因此都带 `264d562`，没有一条来自 `ade8085`。**
+  - **为什么"回执之后"是一条判据而不是一个细节**：收尾若在回执之前，"Core 有没有接住这轮结束"这个问题
+    在观察上无法分辨——帧已经在缓冲里了。搬回之前那枚变异（k1）红的正是这一句：
+    `delivery_test.go:410: start_now: 1 turn/finished arrived before reply#r1; T-392 ① puts the close after the receipt`。
+    `call()` 在返回回执之前把它读到的一切记进日志，所以"回执之前没有"是一句**测出来的否定**，不是没看。
+  - **分段为什么这么切**：`accept` 负责"这发开出了什么、证据帧上线"，`settle` 负责"这一发开出的轮次什么时候算完"。
+    CO-8 那一对（claimed/dispatched）**留在回执之前**——回执声称"开了这一轮"，声称的东西必须已经在线上（CO-7）；
+    收尾不是回执声称的内容，所以它是回执之后的第一帧。`queue` 与 guide 转向两条路 `opened == nil`，不 settle。
+  - **`session/stop` 那一格的顺序我没搬**，并且是有意的：它的回执声称 `stopped=true`，收尾帧就是这条声称的证据，
+    方向与 send 回执相反（`TestFakeAdapterStopClosesTheRunningTurn` 把"帧在回执之前"钉在原处）。
+    两格读起来像不一致，其实是同一条规则的两个方向：**回执只能声称它发出去之前的东西**。
+  - **`code` 只挂在解除上**：布防带码 = 一个可能永远用不到的参数被静默吞掉，所以直接 `INVALID_PARAMS`（k6 摘掉这层
+    立刻红）。空 `code` 默认成 `SUCCEEDED` 是**承重件**不是糖：`internal/adapter/stream.go:175` 对
+    `turn/finished` 缺码是拒发的，所以 k5（去掉默认）会让整条解除路径发不出帧——两枚各证一半。
+  - **三态分辨各自钉在哪**（全在一枚真子进程里，`TestFakeAdapterTurnFinishThreeStatesOnTheWire`）：
+    **没帧** = a1 被 a2 抢占、终局日志里 a1 零枚 `turn/finished`（外加"它确实被抢过"那条 status delta，
+    否则这条否定什么都没证）；**有帧但码未裁** = 解除时给 `INTERRUPTED`，断的是 `rawClose()` 回来的**原始 params 字节**
+    含 `"result_code":"INTERRUPTED"`；**有帧且落终态** = a3 走默认路径、`SUCCEEDED`，不带任何注入。
+    消费者侧同一枚进程里再加两条：`Result()` 在帧到之前必须是 `""`，表外码穿过泵不许变样。
+  - **变异批（`mut-r31.py`，15:05:16→15:07:21，两包同跑＝跨包判据，因为 `internal/process` 在测试里 `go build` 这份源码）**：
+    基线 **77 PASS / 0 FAIL**；锚点命中全部 = 1；**8/8 FIRED**；每枚还原后 assert sha 与 PRE-SHA `c11aaf2ffe55adbf` 同值。
+
+    | 变异 | 判决 | 读数 | 证的是哪一腿 |
+    |---|---|---|---|
+    | k1-settle-before-reply | **FIRED** | 75 PASS / 2 FAIL，红在"arrived before reply#r1" + Q10 顺序 | ① 的位置本身（甲回来了） |
+    | k2-never-settle | **FIRED** | 73 PASS / 4 FAIL，含 `…StartNowClosesItsRun`、`…ClosingFrameFollowsItsReceipt` | §6 第 6 条③ 必须发帧 |
+    | k3-hold-stops-deferring | **FIRED** | 69 PASS / 8 FAIL，含 `TestConnectionSendOverRealPipe`、`TestConnectionChainClosesBeforeItOpens` | `debug/hold` 还是不是判据 (a) 的仪器 |
+    | k4-release-drops-the-code | **FIRED** | 75 PASS / 2 FAIL，含 `TestLateTurnFinished…` | 「有帧但码未裁」这一格 |
+    | k5-no-default-code | **FIRED** | 75 PASS / 2 FAIL，红在 `…HoldReleaseIsWhereTheCloseGoes` | 空码默认值是承重件 |
+    | k6-arming-accepts-code | **FIRED** | 76 PASS / 1 FAIL，红在三态用例第一句 | 布防不许带码 |
+    | k7-guide-does-not-settle | **FIRED** | 75 PASS / 2 FAIL，红在 `no turn/finished with ticket "g1"` | guide 那一腿单独有人证 |
+    | k8-finish-stops-draining | **FIRED** | 76 PASS / 1 FAIL，红在 `…QueueDrainsAtTurnFinishedNotAtNextSend` | CO-25 排干点没被搬家带走 |
+  - **§10 表第五枚那一行的拟稿（补第 30 轮那一行的解除侧参数）**：
+    `debug/hold` · 参数 `{"on": true|false}`，`on:false` 另收可选 `code`（默认 `SUCCEEDED`）·
+    语义：推迟/立刻发出这一轮唯一的强制收尾帧（CO-25 的排干点随之落在这条帧上）·
+    期望：`turn/finished` 出现在 send 回执**之后** · 只许 `adapter_key=fake` + `EXPERIMENTAL`（§9）。
+  - **B 面的两处 build failed 原文（不认领、也不替它修）**：
+    `cmd/core/sendpipe_test.go:216:37: unknown field launch in struct literal of type sendPipe` 等 3 条 +
+    `cmd/core/discoverassembly_test.go:113:32: assignment mismatch: 4 variables but newAdapterServices returns 5 values`；
+    `api/http/accept_chain_test.go:29:47: undefined: execution.TurnFinish` 等 7 条。
+    归属：`git status --porcelain` 里 `cmd/core/*` 5 改 + `turnpump.go` ?? + `internal/execution/{finish,send}.go` 2 改
+    都在 backend 名下（T-391），`core/test/event_producer_roster_test.go` 在 test 名下（T-394）。
+    **我这一跑的 A 面闭包不含以上任何一包**（`go list -deps -test` 只含
+    `internal/{adapter,audit,eventjournal,platform/db,process}` + `cmd/fake-adapter`）。
 
 - **第 30 轮（09-27 16:52~17:10，T-386：CO-54 裁"丙" ⇒ `debug/hold` + 即时收尾）· 取代第 29 轮里"① 未落"那一格**
   （第 29 轮的正文与判决不删，按 T-276 当历史读；被取代的只有"① 未满足 / Ⅰ 交不了"那两句）。

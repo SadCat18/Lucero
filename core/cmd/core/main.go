@@ -67,6 +67,10 @@ type Core struct {
 	// 它自己的 write() 已经是"事务内建 tx 绑定 Chain、提交成功后 ch.Checkpoint()"的形状，
 	// 所以这里只是把计数器接上，不另造第二套交账时机。
 	approvals *approval.SQLiteStore
+	// approvalSvc 是同一个 store 上面的 Service：T-414 ③ 把 `GET /api/v1/approvals` 的 handler 接线
+	// 归给 backend，而那一行的**读法本身**（状态过滤、keyset 顺序、"PENDING 还要看 deadline"）留在
+	// `internal/approval` —— transport 只调这一口的 `ListPage`，本进程里不留第二份读法。
+	approvalSvc *approval.Service
 	// reporter/tasks/store 是 §5.4 与"提交后才交账"这条时序的落点（见 rejections.go）。
 	reporter *rejectionReporter
 	tasks    *task.Service
@@ -178,6 +182,9 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	core.checkpoints = audit.NewCheckpointCounter(core.anchor, nowMillis)
 	core.approvals = approval.NewSQLiteStore(d, nowMillis)
 	core.approvals.UseCheckpoints(core.checkpoints)
+	// 读法建在同一个 store 上、同一把时钟上（`nowMillis` 是 boot 里那一份，业务包不许各取一次时间：
+	// ListPage 里那句"PENDING 还要看 expires_at"用的就是这个钟）。
+	core.approvalSvc = approval.NewService(core.approvals, nowMillis)
 	// §5.4 的两条记录在这里接线（拖了五轮的那颗雷）：不注入 reporter 的话，
 	// 任何一次被拒投影都会直接失败整个请求（task.Service 对 nil reporter 是硬报错，不许静默吞）。
 	core.reporter = &rejectionReporter{notes: notification.NewService(), now: nowMillis}
@@ -321,6 +328,16 @@ func (c *Core) discoverField() httpapi.SessionDiscoverer {
 	return c.discover
 }
 
+// approvalsField 是同一条规矩的第三个实例：`GET /api/v1/approvals` 的读面接没接，transport 只能靠
+// "接口是不是 nil"来分岔（501 那一格与 panic 那一格的差别就在这里）。直接把 `c.approvalSvc` 塞进
+// 接口会得到一个"非 nil 但一调就 panic"的 typed nil，所以这里转换。
+func (c *Core) approvalsField() httpapi.ApprovalLister {
+	if c.approvalSvc == nil {
+		return nil
+	}
+	return c.approvalSvc
+}
+
 // handler 把两个 transport 面拼起来：/ws/v1/events 走一次性短票（REQ-F-2，不接受 Authorization 头），
 // 其余 /api/v1 走 Bearer。两条共用同一个回环来源判定，CORS 规则不出现第二套。
 func (c *Core) handler() http.Handler {
@@ -348,6 +365,10 @@ func (c *Core) handler() http.Handler {
 		Executions: execution.NewRepository(c.db.Read),
 		// inbox 那一腿是纯读：不注入 Store，所以它不需要事务通道。
 		Notifications: notification.NewRepository(c.db.Read),
+		// approvals 的列表口（T-414 ③）。走 c.approvalsField() 而不是直接塞指针：把可能是 nil 的
+		// `*approval.Service` 装进接口会得到一个"非 nil 但一调就 panic"的值，501 那一格就白留了
+		// —— 与上面 adaptersField 同一把尺、同一个坑。
+		Approvals: c.approvalsField(),
 		// `:read` 是这条竖线第一次真改 notifications 的一行状态（C31 已 GO）：写要事务通道，所以配 Store。
 		NotifRead: notifSvc,
 		// `:handle` 的边集是 09-25 契约① §1.1 第 21 条裁的（`UNREAD`/`READ`/`PENDING → HANDLED`、
