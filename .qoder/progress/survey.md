@@ -31,15 +31,13 @@ LAST_UPDATED: 2026-09-19T16:55+08:00
 
 ## Current checkpoint
 
-- Stage: **两轮全部闭环** —— 第 1 轮五家静态定级 + 第 2 轮 WorkBuddy 动态实测与改判，交付物已同步更新
+- Stage: **三轮闭环** —— 第 1 轮五家静态定级 ｜ 第 2 轮 WorkBuddy 动态实测与改判 ｜ **第 3 轮（09-27，授权 B5②）Qoder mcp-router 探测，负向收口**
 - Status: complete
-- Last verified action: `check_tables.py` → 五份报告主能力表各 25 行、矩阵 25 行 7 列无破表；
-  隐私复扫 `<用户名>|<昵称>|<服务口令>|<仓主>|github\.com/|sk-|<项目A>|<项目A>|<项目B>|主机名` → **0 命中**；
-  残留复核 `netstat` → 自起的 `127.0.0.1:8791` **已无 LISTENING**（仅剩内核 TIME_WAIT），
-  `taskkill /PID 22600 /T /F` 成功，job worker(34852)/session 进程(37388) 已自行退出，
-  桌面端 13 个 WorkBuddy 进程全程未受影响，`workbuddy.db.sessions` 仍 36 行（实测计数未变）
-- Next action: **交回主控**——本角色无剩余动作；WorkBuddy 探针已结案，唯一待授权的深挖只剩 **Qoder mcp-router REST 面**
-- Verification: 见 V1~V7 与 D1~D8
+- Last verified action: 两发只读对照请求（带 key→`404` / 不带 key→`401`）+ 收尾核验：
+  `netstat` 监听数 39→39 未增、`52393` 仍由 pid 30936(Qoder `0.4.2`) 独占、`Get-Process python` 无我的残留、
+  `mcp-router.json` mtime 仍 `2026-09-27T12:04:05`（早于探测 ⇒ 确认只读未改）；apiKey 全程 `***(len 43)` 未落盘
+- Next action: **交回主控**——Phase 0 已无「等授权才能定级」的悬空格子，本角色可关闭
+- Verification: 见 V1~V7、D1~D10、**R1~R3（第 3 轮，见下）**
 
 ## Completed
 
@@ -288,6 +286,23 @@ WorkBuddy 的**配置、账号、默认项目、既有会话**同样 0 次写入
 - **D10 清理**：`taskkill /PID 22600 /T /F` 成功；34852/37388 已自行退出；8791 无 LISTENING（剩 TIME_WAIT）；
   收尾新增的 51218/51219 经核属 **AweSun**（pid 7272），非本探针残留；桌面 WorkBuddy 13 进程未动
 
+### 第 3 轮动态实测（Qoder mcp-router，R1~R5）— 归档于 `.scratch/phase0-qoder/`
+
+- **R0 现量复测（静态，先做）**：`mcp-router.json` mtime `2026-09-27T12:04:05`、内容 `{schemaVersion:2, pid:30936, baseUrl:"http://127.0.0.1:52393", apiKey:***(len 43), startedAt:2026-09-27T12:04:05}`
+  ⇒ **09-19 旧读数（pid 24480 / 58129）全部作废**；`netstat` 确认 `52393 LISTENING 30936`；`Get-Process` 确认该 pid = `D:\Qoder\.qoder-versions\0.4.2\Qoder.exe`（**已从 0.3.3 升到 0.4.2**）
+- **R0b 零请求的路由穷尽（静态）**：在 `app.asar`(141,352,046 B) 内定位 `mcp-router.json` 写入点（偏移 38,180,795），读出常量与路由：
+  `X-Api-Key` 头名（服务端要求 `rawHeaders` 中**恰好出现 1 次**，再 `sha256().digest()` 比对）、
+  三条路径构造器 `/mcp/servers/${encodeURIComponent(id)}`、`/mcp/sessions/${token}/servers/${id}`、`/mcp/applications/${token}/servers/${id}`，
+  另有 `/oauth/callback` 与 `/mcp/add`；`dIe()` 要求 id 解码后非空且不含 `/` 与 `\0`；`gVe(t)=t.profile.transportKind!=="inProcess"`
+- **R1 [实测] 带 key 的 initialize**：`POST /mcp/servers/builtin`（JSON-RPC `initialize`, protocolVersion 2025-03-26, clientInfo=lucero-phase0-probe）
+  → **404**；`content-type: text/plain; charset=utf-8`、`cache-control: no-store`、`Connection: close`；body 9 B `"Not Found"`
+- **R2 [实测] 同请求不带 key** → **401**；body 12 B `"Unauthorized"`
+  ⇒ **R1+R2 合起来的判据**：401 出现在鉴权阶段、404 出现在路由阶段，故 **key 已被服务端接受**，`builtin` 只是未注册上游。**单看 R1 的 404 不能得此结论**（这正是先设计对照再发第二发的理由）
+- **R3 主动保留未发**：剩余可发目标只有 `/mcp/add`（注册上游＝改第三方配置）、`/oauth/callback`（涉凭据流）、以及需 32+ 位他方令牌的 token 路径（未取未猜）。多发一发只会得到又一个 404，不产生新信息
+- **R4 [静态] 工具面变化实测**：`mcp_list` 复核 `mcp__builtin__skill_manage` 存在 ⇒ builtin 工具 **7 → 8**（09-19 为 7）
+- **R5 [实测负向结论] 探针对 Qoder 的影响 = 零**：未启动进程、未新增监听（39→39）、未改任何文件（`mcp-router.json` mtime 未变）、未发消息、未消耗额度
+- **未端到端跑通的东西一律没升级**：Qoder #22 仍 `EXPERIMENTAL`（本轮拿到的是**边界证明**，不是能力打通）；#8/#9/#11/#13/#14 五项缺口维持 `UNSUPPORTED`，且 router 出路已被**实测排除**
+
 ### 交付验收（V1~V7）
 
 - **V1 文件齐全**：`ls -la docs/adapters/phase0/*.md docs/adapters/PHASE0_CAPABILITY_MATRIX.md` → 6 个文件非空；
@@ -306,6 +321,19 @@ WorkBuddy 的**配置、账号、默认项目、既有会话**同样 0 次写入
   监听数 33 → 34 的差值经核属第三方 AweSun，非本探针
 - **V7 唯一遗留物 = 文件残留（未删）**：`~/.codebuddy/{projects/d-Project-Lucero-.scratch-…, jobs/5c14baca, sessions/22600.json, logs/2026-09-19/probe-proj__*.log, traces/{37388,16604}}`
   → 删除动作等于写第三方数据目录，需主控另行授权；内容仅含**我自造的标记串与提示词**，不含用户历史正文
+
+## Closure record（09-27，主控 T-353 三件裁定已执行）
+
+- **① 批准关闭本角色** ⇒ 已按裁定改写**两层因果**：`qoder.md` 推论段拆成
+  「层 1 实测得到（404 只证明此刻无已注册上游）」与「层 2 由约束推出（要用此面须先 `POST /mcp/add` 注册上游 = 改第三方配置 = 禁区）」，
+  并明写"若授权范围变这一格可重开"。矩阵 §7 同步加入三种负向成因的分类：
+  **Qoder=被约束推出 ｜ WorkBuddy 5 项=被预算卡住 ｜ ZCode #21/#22=真·本机无实物（这一格才是"探不到"）**。
+- **② UI Automation 不投** ⇒ 遵判：**未写任何 UIA 探针/脚手架**，本报告只留"将来若要把 Qoder 当 adapter 接，由用户单独授权"一句指向。
+- **③ WorkBuddy 5 项维持 UNKNOWN，不追加授权** ⇒ 已在 `workbuddy.md` UNKNOWN 表头立口径：
+  **"预算用尽未探" ≠ "探不到"**，两者分写不合并；并列出各自可试的具体命令（`-r <sessionId>`、`--model`、`--effort`）以示"只差授权"。
+- **④ R3 主动保留** 获背书；剩余额度按裁定**不退不追**。④ 要求的自证形状（探针影响 = 零：监听 39→39、`mcp-router.json` mtime 未变、未消耗额度）
+  已提到 `qoder.md` 第 3 轮章节**头部**供主控直接引用。
+- 本角色状态：**关闭**（`STATUS: complete`，不再领新活；WorkBuddy 那 5 项由主控点名重开）。
 
 ## Recovery note
 
