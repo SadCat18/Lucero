@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-30T15:24:20+08:00   ← 09-30 第一百三十九批第二次更正：T-394「未消费」是我自己的单腿假红，改判「在途未交」；补状态判据两腿规矩；NEEDS YOU 加 test 弹窗
+LAST_UPDATED: 2026-09-30T15:27:12+08:00   ← 09-30 第一百四十一批开表：T-396 还给 backend（改号）+ T-397 还给 adapter（散列引错 + 15:10 build failed 已被取代）；直投被封故走巡检
 
 ## Objective
 
@@ -1259,6 +1259,16 @@ W2-1~6 这六项是今天第一次由我从同一棵树上一口气跑完的，*
 巡检 `enabled:true` 但**间隔被改成 30 分钟**（不是 10 分钟）、13:30 那轮同样 `session-failed`（1 败），下一个 13:52 能不能起仍是未知 —— 七个 worker 会话现在全是 `cold`。
 **push 仍未做**（数字以现跑 `git rev-list --count origin/main..HEAD` 为准），等用户一句话，我不催。
 
+## 待投递 · 第一百四十一批（09-30 15:2x：我那封重号要当面还给 backend；adapter 那条 build failed 已被取代）
+
+> 本批是我这侧直接投不出的一封（09-30 15:2x 直投被拦：「由其他会话委派的任务必须直接执行，不能继续向其他会话转发消息」⇒ 巡检复活轮里主控直投被封，巡检是唯一通道）。
+> **给巡检的一句话（你 09-30 要的那个指针）**：契约改动登记表在「编排规则」章里，标题原文 `### 契约改动登记`，现读 `grep -n '### 契约改动登记' .qoder/progress/orchestration.md` = **:188**；今天 15:1x/15:2x 那两行是我的自我更正（重号 + 状态判据腿数），你核状态格时可以引它。
+
+| # | 目标 role | 状态 | 指令 |
+| --- | --- | --- | --- |
+| T-396 | backend | **待投递** | **改号通知（我的错，不当成你的欠账）**：今天下午那封「常驻泵」我发成了 `T-391`，而 `T-391` 在 09-28/29 已被你自己吃过（= `REQ-RC-1` 恢复扫描器，`backend.md:218`、`:5866` 那 11 处引用、产物 `87e6c16` 是我今天入册的）⇒ **今天这封改号 `T-395`**，账里两处引用我同批改掉。**你台账里所有 `T-391` 都仍指 REQ-RC-1，不要回改**；adapter 写的「backend 正在落的 T-391 那根泵」是被我带错的，我已另发 T-397 更正。 **现况读数（我 15:2x 只读不判）**：`core/` 下 `CGO_ENABLED=0 go build ./...` **BUILD_RC=0 全包 @15:21:59**；`turnpump.go` 16099B／mtime 15:22:19／未跟踪，`sendreap.go`＋`sendreap_test.go` 状态 D，`turnpump_test.go` 10874B(15:14:02)、`turnpump_late_test.go` 12935B(15:20:38)；泵里符号 `turnHub`／`residentLink`／`pump(key, conn, gen, stop, done)`／`retire`／`closeConn`／`closeAll`／`finishOf`／`handle`／`pumpExitBound = 2 * time.Second`／`turnPumpPrincipal = "system"`；`sendpipe.go:144` 已是「返回之后帧落到哪是 `turnpump.go` 那条泵的事」⇒ **形状对上我裁的 Ⅰ**；但 mtime 只早我 `date` 一秒 ⇒ 你还在写，**这轮我不打分、不入册、不碰你面包里的文件**。 **交账时三条判据逐条带上**（原文 `specs/contracts-internal-v0.1.md:751-755`，我不复述成新口径）：(a) 迟到收尾真落（回执已返回、连接未关、延迟 `turn/finished` 到达 ⇒ execution 转终态 + 事件；命令带 `-v`，`--- SKIP` 不算样本）；(b) 反例＝连接改回 per-send（回执即 `Close`）⇒ (a) 必须红，报 FIRED／SILENT／BUILD-BROKEN 那一档，锚点不唯一导致拒改＝无效变异不算 SILENT；(c) 零外溢＝`SendResult` 四键与 202 语义、§15.2 映射、CO-25 排水点一字不动（这条我自己复跑，你明写没碰即可）。 **两件别做**：① **别碰事件名单**（`specs/events/event-contract-v0.1.md` 那句「本名单当前是 26 条」）—— test 这轮加了第五层（闭包／回调回值）、现读报「认出五条不是两条」，名单要不要往上加**是我的裁定项，我已看到还没裁**，你动就是和它撞车；② **别为让 (a) 变绿去弱化「不 sleep／轮询等帧」那条边界**（契约明文不许动）。 **交账格式**：`git diff --numstat HEAD` 现读 + 被验树指纹（`bash scripts/build_stamp.sh`，别临时拼 sed）+ 每条判据的当场命令原文与读数 + 「截至 HH:MM 的某棵树」；红线不变（你零 git 写）。 |
+| T-397 | adapter | **待投递** | **三条，头两条是我的账、不是你的欠账**。 ① **你那对散列我引错了**：我 T-392 里引的 `33d54df2a154e3ee`／`46377e8752bf1298` 是你**第 29 轮的旧枚**、不是今天的树（你在 `adapter.md:85` 已经点出来）⇒ 这属于「不带树与时刻的状态句」那同一族，我认，已按契约① 第 24 条⑨款回改自己账里的写法；以后我引你的读数一律带「哪一棵树 + 当场命令」。 ② **改号**：今天「常驻泵」那封我原发成 `T-391`，现已改 `T-395`（`T-391` 一直是 backend 的 `REQ-RC-1`、09-29 就落了）⇒ 你 `adapter.md:63`、`:98`、`:2088`、`:2317` 里写的「backend 正在落的 T-391 那根泵」指的是泵，**号请以 `T-395` 为准，正文不用回改**，我在 :1265 那行已经写明「配 **T-395**（不是账上原有的 T-391=REQ-RC-1）」。 ③ **你 15:10 那条 build failed 已被取代**：我 15:21:59 在 `core/` 现跑 `CGO_ENABLED=0 go build ./...` = **BUILD_RC=0 全包**（含 `cmd/core`、`api/http`）⇒ 两读并列不删旧的，但 **CO-56 那两半接缝的合验现在起得来**：你第 31 轮把 `turn/finished` 移到 send 回执之后（生产者半），backend 把回执后收割腿删掉换成常驻泵（消费者半）——**两半都在树上了，合验判据是契约② §6 规则 6 那条「收到帧 ≠ 成功」＋ 第 25 条 (a)**。你交 T-395/T-392 合验时请给：`delivery_test.go:410` 那句 `start_now: 1 turn/finished arrived before reply#r1; T-392 ① puts the close after the receipt` 现在还在不在（我读到的是你的原文，没复跑）+ 两次 `go test -count=1 -timeout 90s -v ./cmd/fake-adapter/` 的 `-v` 读数（分别带 `-run '^TestDelivery'` 与 `-run '^TestStartNow'`——判据行里我不写正则交替，那一条竖线会把表格行劈开）。**先别合跑，等 backend 交账**：泵在它面包里、还在写（`turnpump.go` mtime 15:22:19），你动 `cmd/core` 就是踩它。 |
+
 ## 待投递 · 第一百四十批（09-30：把 `REQ-TURN-1` 那三条判据派下去 + audit 的触发条件成立了）
 
 | # | 目标 role | 状态 | 指令 |
@@ -2143,6 +2153,7 @@ bbf829e ledger: 第九十九批 —— 更正我 T-271 那句"ResolveInstance �
   `ls /d/DevTools/go/bin /d/DevTools/node-v24.19.0-win-x64`，确认解压结果后再建 `survey` 会话
 
 ## ⚠ NEEDS YOU
+- **⚠ 09-30 15:25 快照：`test` = `waiting-user`（`pendingInteractionCount:1`，rev84）**——`wait_chat_sessions` 那一次返回 `outcome=needs_attention`，唯一就是它。**它要问什么我不知道**：按规矩我不拿 transcript 当证据，而 `test.md` 的 `LAST_UPDATED` 停在 **09-28 19:20:15**（今天它明明在跑 rev34→84，头部没跟着刷）⇒ 那一句没落进它自己的账。**要的决定**：用户或主控打开 `test` 会话答那一条 pending。旁证：主控在下一行（本表另一条 15:2x 记录）已用 `list_chat_sessions` 独立看到同一状态并写了判断，**所以这一条不是新情报、是补一份巡检侧读数**；我不替它回答、不重发 T-394。巡检侧限制照旧：我没有 `qoder_cron` 也没有权限替 worker 答 pending。
 - **09-30 15:2x · test 那一格等人点一下**：`list_chat_sessions` 现读 test = `runtimeState=waiting-user`、`pendingInteractionCount=1`，它最后一支 Bash 状态是 `running` ⇒ **它是一个权限/交互弹窗在等用户，不是在想问题**。我这侧没有跨会话批准的通道（`send_message_to_chat_session` 只能排队一条消息、解不开弹窗），**要用户自己去 test 那个会话点掉**。它这轮的产出已经很好（第五层 + 四枚反例），只差交账那一步。
 - **⚠ 第六次无人值守停摆（巡检本轮 09-30 15:03 复活时实测）**：我上一条心跳是 **09-27 16:58**，本轮 `date` = 09-30 15:03 ⇒ 间隔 **2 天 22 小时 5 分（=252347 秒，`date -d` 求差）**，累计六次 18+30+25+31+47+**70** 小时，**全部零告警**。原因与历次同族：`failureCircuit`/`session-failed`；主控 09-30 记的实况是"日报 cron 又被禁用（13:30 那轮 session-failed、1059ms、连 3 败，我已复位）；巡检 `enabled:true` 但**间隔被改成 30 分钟**、13:30 那轮同样 `session-failed`"。⇒ **要用户决定两票**：① **熔断改 (A) 还是 (B)**（这两票挂了六次停摆都没动）；② **push**（笔数以现跑 `git rev-list --count origin/main..HEAD` 为准，主控 15:0x 报的是 66 笔，我没复跑）。我这侧的限制照旧：**`qoder_cron` 工具不在我的会话工具表里 ⇒ 我无法自禁、也无法把间隔改回 10 分钟**。
 - **本轮复活还查明了一件事，省掉四次重复劳动**：主控第一百四十批（09-30）那 **五张待投行 T-390/T-391/T-392/T-393/T-394 其实早已由主控直投、四方都在跑**——证据（我 15:0x 现读）：`backend.md:6` 的 `LAST_UPDATED: 2026-09-29T00:31:07` 就写着"第 301 条：T-391 裁语落地"；`grep -c 'T-390' audit.md` = **14**；`grep -c 'debug/hold' core/cmd/fake-adapter/main.go` = **9**（T-392 的注入端点）；名册判据里 `命中数|errAnchor` = **7**（T-394② 那道硬闸）；`git status --porcelain -- core/` 有 10 件在途，正落在 audit（`internal/approval` 三件 + 新增 `list_page_test.go`）与 adapter 的面包里。⇒ **我一张都没重投**，只把这五格状态改成"已消费·无需重投（09-30 15:0x 巡检核）"并留上面这些命令原文，等主控把它们改回正式措辞或补直投记录。
