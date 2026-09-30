@@ -1,9 +1,10 @@
 OWNER_ROLE: audit
 TASK_ID: audit-permission
-STATUS: in_progress
+STATUS: idle（09-27 15:01 起：无自主待办；T-372 已答"排在 Wave-2 之后"，两条真触发条件见 Current checkpoint）
 SCOPE: 权限判定、Approval 聚合与裁决、Temporary Grant、Audit 哈希链与敏感规则集、§9 绕审批门禁；不实现脱敏执行点，approvals/temporary_grants 的 SQL 只准出现在 internal/approval
 EVIDENCE_DIR: .qoder/evidence/audit/
-LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致，见第 126 条；判据一律挂命令与输出）
+LAST_UPDATED: 2026-09-28T18:24+08:00（T-390 / W2-9 当天重跑读数入册；上一版 2026-09-27T15:01+08:00）
+  〔本机时钟跨会话不稳，见第 126 条；判据一律挂命令与输出〕
 
 ## Objective
 
@@ -52,30 +53,34 @@ LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致�
 
 ## Current checkpoint
 
-- Stage: B1 已解除并完成落库层；`approvals`/`temporary_grants`/`audit_entries` 真库链路打通
-- Last verified action: **15:53:03 最后一次逐包重跑** → audit 82 / permission 54 / approval 80 / cmd/core 17，
-  **FAIL 0、SKIP 0**；15:52:08 全仓 `go test -count=1 ./...` → **exit=0，17 个包全 ok**
-  （db 与 fake-adapter 都已自愈，我 15:47:04 实跑 db=ok）。`gofmt -l` 干净，`.scratch/audit/` 收尾 0 项
-  ⚠ 本机 `date` 在 15:19→15:24→15:22 之间出现过**回跳**，所以本文件的时刻只当"该条命令当时的读数"，不要拿来排序；
-  判据一律挂在命令与输出上。
-- Status: idle（有意状态）—— §2.2.1 三件里归我的两件 + 装配半边（REQ-A12）全部落地，**不再被 db 或 backend 阻塞**；
-  REQ-A8 / A18-1②③ / 链健康三态对账 / §5.4 见证用例都已交付，账上无待办
-- Next action（唯一一条，有触发条件）：**REQ-A12 已落（15:35 现盘 `rejections.go:44` 挂了 `Scrub: auditScrub`），
-  我这边计划的最后一件也做完了**（§5.4 形状两条顶层见证用例 + M9 三条独立红）。因此**当前无待办**。
-  **只剩一个真触发条件**：谁再改 `Chain`/`Scrub`/`redactionHits` 任一侧 ⇒ 我重放 M8/M9 两批变异。
-  〔16:1x 更正：这里原先还挂着第二条"等 `signature`/检查点签名裁定 ⇒ 我实现那一半"，**那是个不会到来的事件**——
-  巡检 T-121 指出后我自己读了 `docs/adr/README.md`：标题（:26）就是"审计链头锚点在库外文件，**v0.1 不签名**"，
-  正文（:204）"「`audit_entries.signature` 保持空串，`Head` 结构不增密钥字段」，Phase 6 另开 ADR"，
-  状态 `accepted 2026-09-20`。⇒ 签名**已裁完、v0.1 明确不做**，不是待裁项；我把它写成待办会让下一轮继续等。〕
-  在此之前我不制造新工作。（另记一条**未实测、只是我读 §7 顺序时留下的疑问**：垂直链要求 `execution_started`
-  先于任何审批，而这需要 seed 策略或改默认档——编排归属决定，我既没测也没权定，故不写进待办。）
-  第 17 轮核销掉的那两件接线仍然成立（命令 `grep -rn "reportAuditChain|audit\.Check\(" cmd/core`）：
-  启动即校验在 `cmd/core/main.go:177`，干净关闭补锚点在 `close()`（走 `Anchor.Commit` 而非 `Advance`，见 `main.go:250` 注释）；
-  两条推进腿继续存在，但按 12:44 的裁定**白名单已降级成记录、不再是闸门**（幂等由 seq 差保证，见第 92~94 条）。
-  （T-23 第 1 条驳回的"替 backend 预置骨架"已撤回，接口形状与错误语义改写进上面 Coordination。）
+- Stage: B1 已解除并完成落库层；`approvals`/`temporary_grants`/`audit_entries` 真库链路打通；
+  **T-390 当天重跑读数已交（第 132 条，W2-9 那一格到此闭合）；idle 状态不变，触发条件 ①② 仍未到**
+- Last verified action: **2026-09-28T18:14:31+08:00 → 18:14:37** 实跑
+  `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test -count=1 -v ./internal/audit/... ./internal/permission/... ./internal/approval/...`
+  → exit=0，三包全 `ok`，**216 PASS（93 顶层 + 123 子）/ 0 FAIL / 0 SKIP**，逐包 audit 82 / permission 54 / approval 80；
+  同轮另跑全仓 `test ./... -count=1`（**18:15:03 → 18:15:30**，exit=0，**18 包 ok / FAIL 0**）、
+  三包 `go vet`（**18:16:40**，exit=0、无输出）、触发条件自查（**18:15:57**，三个关键行各 =1、mtime 仍是我 09-21 写下的）
+  ⇒ 变异不必重放。上一轮（09-22 23:20:44）逐包数：audit 82 / permission 54 / approval 80 / cmd/core 26，FAIL 0 / SKIP 0
+  ⚠ 本机时钟跨会话不稳（详见第 126 条），本文件的时刻只当"该条命令当时的读数"，判据一律挂命令与输出。
+- Status: idle（有意状态，T-390 是主控要的一次性读数、**不算破 idle**）+ **T-372 已答「排在 Wave-2 之后」（第 128 条）**，
+  形状已交 REQ-A13，**本轮零 `core/**` 改动**（只写本文件与 `.qoder/evidence/audit/` 下 5 个证据文件）
+- Next action（**仍是下面两条真触发条件，本轮没有新增第三条**；**W2-9/T-390 已闭**——我这一份当天读数已交，
+  Wave-2 的签字与勾框归主控，我不代签、也不因此开任何新活）：
+  ① **Wave-2 闸门勾上（主控账上出现"`Task → ACCEPTED` 被观察到 / 框勾"）** ⇒ 我立刻做 T-372 那一格
+  （`internal/approval` 的只读 `ListPage`；形状、三条判据、以及 `state=PENDING` 必须复用 `DeadlinePassed`
+  这条都已在 REQ-A13 落账，backend 不必再等我一轮设计）。
+  判据不是我估的：主控 09-27 13:4x 在 T-364 明写"链停在第 9/10/11 三格、`Task → ACCEPTED` 仍没被观察到 ⇒ 框不勾"。
+  **主控若要我插队，明说一句即可**；我不默默开工，也不把"等收口"报成缺陷。
+  ② **谁改 `Chain`/`Scrub`/`redactionHits` 任一侧** ⇒ 我重放 M8/M9 两批变异（09-27 14:55 已核、
+  **09-28 18:15:57 复核仍同**：三个关键行各 =1、mtime 仍是 09-21，目前不必）。
+- 备注（避免下轮把这些又当待办）：**签名已裁不做**（ADR-018 `accepted 2026-09-20`，见第 24 轮 122~123 条），
+  `execution_started` 先于审批那一问**未实测、归编排决定**（第 128 条），锚点三处时机与推进腿已在册（第 92~94 条），
+  T-23 第 1 条驳回的"替 backend 预置骨架"仍已撤回、接口形状都在 Coordination 里。
 - Verification: 13:16:25 实跑 `go test -count=1 ./internal/{audit,permission,approval}/...` = 3 包 ok，
   173 PASS / 0 FAIL；全仓 17 包 0 FAIL；`grep -rn MUTATION` → 0
   （18:19:50 = 162 PASS / 0 FAIL；18:21:08 复核仍绿），全仓 13 包 0 FAIL
+  〔**本行是 09-20 13:16 那一档的历史读数，不是 09-27 也不是 09-28**；09-28 当天的读数在上面
+  Last verified action 与第 132 条 / Verification evidence 第 21 条（216 = 93 顶层 + 123 子，0 FAIL / 0 SKIP）。〕
 
 ## Completed
 
@@ -856,6 +861,159 @@ LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致�
 5. 测试 4 份共 1399 行 / 133 个用例。
 6. 顺带发现并修掉一处**脱敏绕过**（见 Verification evidence 第 6 条），并识别出 db 侧同源缺陷（Coordination REQ-A2）。
 
+### 第 23 轮（2026-09-21 15:37~15:46，REQ-A12 已落 ⇒ 把 §5.4 形状纳入我自己的见证用例）
+
+118. **先读被引用方再说自己覆盖了**：只读 `cmd/core/rejections.go` 拿到 §5.4 的真实形状 ——
+    details 是 `json.Marshal(task.Rejection)`，三键 `task_state` / `execution_event` / `reason`
+    （`internal/task/projection.go:22`），`reason` 就是被拒投影的原文；那条腿现在挂
+    `Scrub: auditScrub`，归因用 `redactionHits(tx, ch)`（与我包内同名同式的**纯拼接**一致，`rejections.go:88`）。
+    12:xx 那条"cmd/core 的 §5.4 是自由文本、没 Scrub 就会静默断链"的担心到此**被别人做掉了**，我这边只剩见证。
+119. **§5.4 形状进了 `internal/approval/chain_health_test.go`，两条各自独立的顶层用例**：
+    - `TestSection54ScrubbedReasonStaysVerifiable`：三键 + `reason` 里带 `ghp_` →
+      断言 ①落库字节是 `adapter refused: [REDACTED]`（**只换命中的那一段**，周围文字必须还在，整列抹平也算错）；
+      ②`outcome` 仍是 §5.4 指定的 `UNKNOWN`；③redaction 行确有且 `pattern` 命中与规则名各恰 1 次；
+      ④锚点撞上后 `Check` = **`VERIFIED_LOCAL`**。
+    - `TestSection54WithNothingScrubbedWritesNoRecord`：诚实的一行（reason 无密钥形状）⇒
+      `RecordRedaction` 零命中不写行，**只剩 1 条审计行**，不许多一条空归因。
+120. **这一轮真正修掉的是我自己埋的一处掩盖**：这两条最初是我上一轮那条用例里的 `t.Run` 子用例，
+    而**父体在它们之前有一句 `t.Fatal`** ⇒ M9 第一次跑，它们**根本没执行**却"没报错"。
+    把它们提成顶层函数后重放同一个 M9，现在**三条独立红**：
+    `被脱敏改写的行仍然撞得到锚点`（:237 hash 重算不上）、`TestAuditRowScrubIsStillAttributed`（:281 归因行没了）、
+    `TestSection54ScrubbedReasonStaysVerifiable`（:329 只剩 1 行）。
+    教训并进 [[lucero-test-conventions]]：**子用例不许挂在"父体会 Fatal"后面**——那等于把判据藏在该藏的地方。
+121. **最后一次重跑（15:45:36，逐包单独取数，按老规矩不合并）**：
+    `internal/audit` **82 PASS**、`internal/permission` **54 PASS**、`internal/approval` **80 PASS**、`cmd/core` **17 PASS**，
+    合跑 exit=0、四包全 `ok`、`--- FAIL` 0、`--- SKIP` 0（三包合计 216，加 cmd/core 17 = 233）。
+    `gofmt -l` 干净；`.scratch/audit/` 里的 `c11.keep`（我那个失败的拆分脚本留下的备份，脚本在写回前就 assert 退出、
+    没碰过源文件）按具名删除，收尾 `ls | wc -l` = **0**。
+    **一处刚写完就被自己推翻的话，按原文留着再纠正**：这一条我最初写的是"`TestScrubSecondPassReportsNothingForAuditRows`
+    红、不是我的"——那是转述巡检 15:39 之前的状态。15:47:04 我自己跑了
+    `go test -count=1 ./internal/platform/db/` → **ok 2.308s**，db 那半已经自愈。
+    所以本轮结束时**全仓无红点归我**，也不再有我引用的别人的红；引状态一律现取现用（T-68 的"几分钟寿命的假红"今天又应验一次）。
+
+### 第 24 轮（2026-09-21，接巡检 T-121：把我那条"等不到的触发条件"从账上摘掉。
+**时刻两个读数都记**：派件抬头写 16:08，而我本轮末尾跑 `date` 得到 **23:18:54**（`internal/notification/repository.go`
+的 mtime 也是 09-21 23:18，对得上）——本机时钟在 15:53→23:18 之间跳过一大段，具体原因我不猜；
+本轮所有"几点"都只当读数用，排序一律靠命令与输出）
+
+122. **巡检这条我认，而且是我自己该早发现的**：我 Next action 里写的第二个触发条件是
+    "`signature`/检查点签名'Head 存哪儿、谁签'裁定下来 ⇒ 我实现那一半"——**这不是一个会到来的事件**。
+    我自己读了原文才改：`docs/adr/README.md:26` 标题就是"审计链头锚点在库外文件，**v0.1 不签名**"，
+    `:204` 正文"`audit_entries.signature` 保持空串，`Head` 结构不增密钥字段"，Phase 6 引入设备密钥/外部时间戳时**另开 ADR**，
+    状态 `accepted 2026-09-20`。⇒ 签名是**已裁不做**，我把它挂成"等裁定"等于给下一轮留了个永远不亮的灯。
+123. **顺着这一条把我账上同源的四处过期断言一起改了**（都注明"16:1x 更正"、不静默删）：
+    - Current checkpoint 的 Next action：两个触发条件 → **只剩一个真的**（改 `Chain`/`Scrub`/`redactionHits` ⇒ 重放 M8/M9）。
+    - Remaining 里"仍缺 `signature` 列的 checkpoint 签名……否则尾部删除仍检不出"：
+      改成"签名已裁不做"，并指出**尾部删除今天检得出、靠的是 ADR-018 的库外锚点**，
+      我第 20 轮的 `真库里删掉尾部被检出` 就是证据（锚点记到 seq 5、库被删到 2 ⇒ `UNVERIFIED`）。
+    - Verification evidence 第 3 条那句"`Head{Seq,Hash}` 须由调用方存在链外（`audit_entries.signature` 或签名 checkpoint，见 Remaining）"：
+      那是**第 1 轮锚点还不存在时**写的。现已指明链外那个 Head 就是 `audit.head`，并补上仍然成立的两条限度：
+      **最后一次检查点之后**被删的尾巴检不出、能写数据目录的人可连锚点一起删（ADR-018 自己划的边界，不是实现缺口）。
+    - Recovery note 的"仍开：checkpoint 签名'Head 存哪儿/谁签'待裁"→ 已裁；
+      "不得推断其存在的事 ①"里那句"**没有它，尾部删除仍检不出**"→ 按实测改写成"链内自洽查不出截断，
+      但锚点查得出"，并把措辞红线原样留住（三词表、禁"已签名/signed/防篡改/tamper-proof"）。
+124. **这一轮没碰代码，只改账**：所以绿色数字沿用第 23 轮的最后一次重跑（15:53:03 逐包 audit 82 / permission 54 /
+    approval 80 / cmd/core 17，FAIL 0 / SKIP 0；15:52:08 全仓 17 包 ok、exit=0），我没有用"应该还是绿的"当结论。
+125. **本轮末尾又跑了一次（23:18:54 起）**，两件事如实分开：
+    - 我这四个包仍全绿：`go test -count=1 ./internal/{audit,permission,approval}/... ./cmd/core/` → 四行全 `ok`。
+    - 全仓这次是 **16 包 ok + `core/api/http` 两条红**（`TestInboxPagesWithCursor`、
+      `TestInboxItemShapeKeepsNullApartFromZero`，`notifications_test.go:118/:152` 拿到
+      `500 internal_error`）。**不是我造成的，三条证据**：① 15:52:08 我那次全仓还是 17/17 全绿；
+      ② `internal/notification/repository.go` mtime **09-21 23:18**、`service_test.go` **23:19**
+      —— 有人**正在改** inbox 那条查询；③ `grep -rln "inbox" internal/{audit,approval,permission}` **零命中**，
+      我的三个包里根本没有这个概念。按 T-68 这就是在途瞬时态，我不报成回归、更不去替谁修。
+    - 与第 24 轮标题里那条时钟跳变一起记：**同一次 `date` 从 15:53 跳到 23:18**，
+      所以"截至 HH:MM"这类话在本文件里只能当读数，不能当排序依据。
+126. **时钟这件事比我上面写的更严重，单独记一条免得下轮又拿时刻当证据**：
+    我 23:18:54 读 `%H:%M:%S` 得 23:18，几分钟后读完整 ISO 时间戳得的是 **`2026-09-22T20:05:05+08:00`**
+    ——也就是**连"今天几号"都不稳**（前面整批账都记在 09-21 名下）。
+    后果我自己承担并写明：本轮所有取证**只用"同一条命令里的 mtime 与 `date` 是否吻合"作相对判断**
+    （例如 `notification/repository.go` mtime 23:18 与我当次 `date` 23:18:54 吻合 ⇒ 那一刻刚被写过），
+    **不做跨轮的时刻排序、不据此判谁先谁后**。上一轮我在第 125 条把这件事写成"15:53→23:18 跳了一段"，
+    那是对当时读数的解释，现在看更像我把不同来源的时刻混在了一起——以本条为准。
+127. **交付前最后一次重跑（读数 `2026-09-22T23:20:44+08:00`，逐包单独取数）**：
+    `internal/audit` 82 PASS / `internal/permission` 54 / `internal/approval` 80 / `cmd/core` 26，
+    **四包 FAIL 全 0**（cmd/core 从上一轮的 17 涨到 26，是 backend 自己加了用例）；
+    `gofmt -l` 干净，`.scratch/audit/` = 0 项。本轮**零代码改动**，改的只有本文件。
+
+### 第 25 轮（2026-09-27 14:55~，接 T-372：`GET /api/v1/approvals` 的只读列表方法）
+
+128. **答复：这一格排在 Wave-2 之后。** 距我上次交账已过 5 天，所以我先复量盘上现状、不凭账本推断：
+    `orchestration.md:1134`（**T-364，主控本人 09-27 13:4x 的记账，兼改判巡检那句**）原文是
+    "跑确实是绿的……**但'闸门那一格'没到：链停在第 9/10/11 三格，`Task → ACCEPTED` 今天仍没被观察到
+    ⇒ Wave-2 的框不勾**，按第 15 波次口径'算进度≠接近闸门'"；
+    `orchestration.md:1131`（T-361，13:45 派 backend）说闸门唯一真正的 blocker 是 `cmd/core` 那根
+    "谁把通知变成 `AGENT_COMPLETED` 命令"的消费腿，并明写"不许为了少一跳就在 Core 侧伪造"。
+    ⇒ **T-372④ 的排程前提（Wave-2 收口）尚未成立，我不动代码**。按 ④ 这算一次交付，我把依据写全而不是只回一句。
+129. **我自己那条真触发条件也核过了**（第 127 行那格："谁改 `Chain`/`Scrub`/`redactionHits` ⇒ 重放 M8/M9"）：
+    14:55 现读三个关键行都在原位 —— `grep -c 'Scrub: func(table string' internal/approval/store_sqlite.go` = 1、
+    `grep -c 'func (c \*Chain) ScrubHits' internal/audit/append.go` = 1、
+    `grep -c 'func redactionHits(tx \*db.Tx' internal/approval/store_sqlite.go` = 1；
+    mtime `store_sqlite.go 09-21_15:43` / `append.go 15:12` / `redaction.go 15:10` 全是我上一轮写下的那些文件，
+    **5 天内没人动过 ⇒ 变异不必重放**（判"落没落"看关键行在原位，不看 mtime 单独说话）。
+    验收面另跑一次：14:56:03 `go test -count=1 ./internal/{audit,permission,approval}/...` → **三包全 ok**（绿只来自这次实跑）。
+130. **不写代码不等于不交形状**：REQ-A13 已写进 Coordination，把"那一格将来长什么样"钉在**仓里已有的口径**上，
+    backend 注端点时不必再等我一次设计回合。取舍理由见那一条（照 `notification.Repository.ListPage` 的分工：
+    keyset 谓词在包里、游标编解码在 transport）。
+131. **本轮真正的事故是我自己的账本结构，且我在交回前抓到并修好**：我上一轮两次插入都把锚点选在
+    `## Changed files` 的**标题行**上，把标题吞了、并使第 23/24 轮掉进 `## Coordination` 里——
+    也就是说 T-72 明令"结构性编辑不许锚在 `## ` 行"这条我违反了两次，只是这次才去看结构。
+    修法：按前缀定位、整块搬回 `## Completed` 末尾、补回 `## Changed files` 标题与引言；
+    事前把原文件按具名备份到 `.scratch/audit/ledger.move.keep`，事后逐项校验：
+    行数 1386 → 1391（= 我补的 4 行标题 + 1 空行）、`### 第 23/24 轮` 与 `## Changed files` **各恰 1 次**、
+    条目 100/110/118/121/122/127 **各恰 1 次**、两处接缝读通、且断言
+    `## Coordination < ## Changed files < ## Verification evidence`、`### 第 24 轮 < ## Remaining` 全过。
+    第一次脚本人还在写入**之前**就让它自己失败了（`list.index` 要整行相等而我给的是前缀 ⇒ ValueError，
+    文件未动）——这一点算做对的地方，写下来免得下次以为"脚本跑过=改对了"。
+
+### 第 26 轮（2026-09-28 18:08~18:24，接 T-390 / W2-9：只交一份当天重跑读数，不派新活、不写业务码）
+
+132. **T-390 当天（09-28）重跑读数 —— 四条命令各带当场时刻**（时刻全部
+     `Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"` 实读；证据落 `.qoder/evidence/audit/`，该目录本轮新建）：
+     - **三包一次 `-v`**（18:14:31 → 18:14:37，exit=0）：
+       `CGO_ENABLED=0 D:\DevTools\go\bin\go.exe test -count=1 -v ./internal/audit/... ./internal/permission/... ./internal/approval/...`
+       → 三行 `ok`（audit 1.085s / permission 1.842s / approval 3.877s）。按包分组数 `--- PASS`：
+       **audit 82 = 39 顶层 + 43 子、permission 54 = 13 顶层 + 41 子、approval 80 = 41 顶层 + 39 子；
+       合计 216 = 93 顶层 + 123 子；FAIL 0；SKIP 0（名单为空，逐条点名 = 一条都没有）**。
+       T-390④ 那句「全是哪个集合」写清：**「全」= 这三包**（`./internal/{audit,permission,approval}/...`），不是全仓。
+     - **T-390① 点名的那几格都在这次 `-v` 里且全 PASS**：`TestRewriteIsDetected`（13 列逐个篡改）、
+       `TestReSealAfterRewriteIsStillDetected`（hash 后改 `details_json` 必被抓）、`TestDeletionIsDetected`、
+       `TestSecretsNeverReachAuditDetails`、`TestAuditRowsThisPackageWritesAreNotScrubTargets`（脱敏计数在 `Seal` 之前），
+       加 `chain_health_test.go` 里**没有** `t.Skip` 的四条：`TestChainHealthTriStateOnRealRows`、
+       `TestAuditRowScrubIsStillAttributed`、`TestSection54ScrubbedReasonStaysVerifiable`、
+       `TestSection54WithNothingScrubbedWritesNoRecord`。SKIP 名单因此是空的，不是我略过没报。
+     - **全仓**（18:15:03 → 18:15:30，exit=0）：`go test ./... -count=1` → **18 包全 `ok`、FAIL 0**
+       （api/http、api/websocket、cmd/core、cmd/fake-adapter、internal/{adapter,approval,audit,eventjournal,
+       execution,notification,permission,platform/db,process,project,quota,session,task}、test）。
+       这棵树含 `core/test/crash_test.go`（mtime 09-28 15:38:58，test 角色 W2-7 那份），即五方共用的在途树。
+     - **`go vet` 三包**（18:16:40）：`go vet ./internal/audit/... ./internal/permission/... ./internal/approval/...`
+       → exit=0、**零输出**（0 字节）。
+     - **触发条件自查**（18:15:57，照 09-27 14:55 那次的口径）：本机 `grep` 不在 PATH，用等价的
+       `rg -n 'Scrub:|ScrubHits|redactionHits'`；三个关键行各自 `grep -c` =
+       `Scrub: func(table string`（`store_sqlite.go`）**1**、`func (c *Chain) ScrubHits`（`append.go`）**1**、
+       `func redactionHits(tx *db.Tx`（`store_sqlite.go`）**1**；
+       mtime `store_sqlite.go 2026-09-21 15:43:48` / `append.go 2026-09-21 15:12:37` / `redaction.go 2026-09-21 15:10:28`
+       —— 与 09-27 14:55 那次记的读数**逐字相同** ⇒ 关键行在原位 + mtime 没变 ⇒ **变异（M8/M9）不必重放**。
+     - **与上次对比：同，没有变。** 09-27 14:56:03 那条台账原文只写「三包全 `ok`」、**没写 PASS 计数**；
+       台账里带计数的最近一次是 09-22 23:20:44 的 audit 82 / permission 54 / approval 80（合计 216），
+       **本次 82 / 54 / 80、合计 216，逐包逐数相同**。〔一处转述要更正：任务书把「173 PASS / 0 FAIL」
+       挂在 09-27 14:56 那次，但账里 173 出自 **09-20 13:16:25**（Verification 第 1 条与第 11 轮第 54 条两处），
+       09-27 那条没写数；我不改写旧读数，只按现盘报上面这组。〕
+     - **两面写（T-340②）：本轮没有任何红**——三包 0 FAIL、全仓 18 包 0 FAIL、vet 零输出，
+       所以没有「我的面 / 别人的面」要分，如实一并报绿。归属侧另量两件事：
+       ① 我三个包 09-28 00:00 起被写过的 `.go` = **0**；② 全仓今天有 **21** 个 `core/**` 文件被写过
+       （api/http 9、internal/execution 8、`cmd/core/sendwedge_test.go`、`internal/task/service.go`、
+       `core/test/crash_test.go`），**没有一个落在 audit / permission / approval**。
+     - **T-390① 要的 HEAD 短码与构建指纹这轮没取到，如实报、不自造**：`git` 不在 PATH；
+       `bash scripts/build_stamp.sh` 起不来（本机只有 WSL 的 `C:\Windows\system32\bash.exe`，实跑报
+       `MountDisk/HCS/ERROR_PATH_NOT_FOUND`，Docker Desktop 的 WSL 盘不在）。按那支脚本自己的规矩
+       （宁可 exit 2 也不给一个「看着像的戳」），我不手搓指纹充数；替代证据只有上面那条
+       「我三个包今天零写入 + 三个关键文件 mtime 仍是 09-21」。**这一格要不要补跑，请主控定。**
+     - **本轮零 `core/**` 改动**：只写了 `.qoder/progress/audit.md` 与 `.qoder/evidence/audit/`
+       （5 个文件：`t390-0928-v.txt` / `t390-0928-repo18pkg.txt` / `t390-0928-vet.txt` /
+       `t390-0928-grep.txt` / `t390-0928-summary.txt`）。**不做** T-372（触发条件 ① 仍未到）、
+       **不重放** M8/M9（触发条件 ② 仍未到）、不动 `Chain`/`Scrub`/`redactionHits`。
+
 ## Remaining
 
 - `internal/approval/store_sqlite.go`：`Store` 的真库实现（唯一允许出现 `approvals` SQL 的地方），
@@ -1096,81 +1254,39 @@ LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致�
   **REQ-A12 已闭合（15:35 现盘）**：`cmd/core/rejections.go` 的 reporter 腿现在挂 `Scrub: auditScrub`，
   且归因走 `redactionHits(tx, ch)`（与我包内同名同式的纯拼接，没造第二套去重规则）；
   我这边把 §5.4 的三键形状纳成了两条独立顶层见证用例并实测（第 118~120 条）。**这条不再需要主控派。**
+- **REQ-A13 → `backend` + 主控（T-372 那一格的形状，先落在账上不写代码：Wave-2 未收口，见第 128 条）**：
+  ① 归属我确认成立 —— 契约③ §7 把 `core/internal/approval/**` 归 `audit`（`specs/api-contract-v0.1.md:284`
+  那行还带一句"`approvals` 的 SQL 只准出现在 `internal/approval`"），而 `backend` 明写 `approvals` 是它的禁读表面，
+  所以这个读法**只能从我包里出**，我没有任何"要不要给"的裁量空间，只有排程。
+  ② **形状照仓里已有的分工来，不自造第三种**：`internal/notification/repository.go:58` 的
+  `ListPage(ctx, ListFilter{State *State, After *ListPosition, Limit int}) ([]Notification, ListPosition, error)`
+  已经立了三件事，我直接对齐：
+  ```go
+  // approval 侧将来那一格（名字待定，语义如下即可）
+  func (s *Service) ListPage(ctx context.Context, f ListFilter) ([]Approval, ListPosition, error)
+  //   f.State *State   nil = 全部；非法值 → 报错，不静默当成空列表
+  //   f.After *ListPosition  keyset 位置（requested_at + id），不是 offset
+  //   f.Limit int            ≤0 用默认值（notification 那格用的就是 50，别再定第二个数）
+  ```
+  - **游标编解码留在 transport**（那文件自己的注释："游标的编解码属 transport"），我只回 `ListPosition`；
+    契约③ §2 禁 offset，所以翻页必须是 keyset 谓词。
+  - **REQ-F-19 与 REQ-F-21/22 是两套游标口径，不许共用编解码**（同上注释原文），
+    inbox 这格属于 F-19（`next_cursor:""` 合法=没有下一页）。
+  - **`state=PENDING` 必须复用 `Approval.DeadlinePassed`**：现在 `BlockingState` 已经规定
+    "已过期但还没被 sweep 的 PENDING 行既不阻塞也不算批准"（第 9 轮 `TestBlockingState` 5 例钉着）。
+    列表若直接用 SQL `state='PENDING'` 就会把那种行显示成"待决"，于是**同一个审批在 `/approvals` 里待决、
+    在 `/executions/{id}` 那儿回 NONE** —— 这正是 REQ-A8 那一族"同一规则两处各推一遍"，
+    所以我包里将来也只有这一处真相可复用，`ListPage` 里要么调 `DeadlinePassed` 逐行判、
+    要么 SQL 谓词与它写成一个口径并由边界用例钉住（同 `ExpirePending` 现在的做法）。
+  ③ **判据三条腿我照 ③ 认**：空表（回空 + `next_cursor:""`，不是报错）、游标翻页（两页拼起来等于全量、
+    不重不漏、且第二页不吃第一页的边界行）、非法 `state`（两侧都断：必须报错 **且** 一行都不许多读）。
+  ④ 排程：等 Wave-2 收口（第 128 条那条 T-364 记账），或主控明令我插队——两者任一到我立刻动手，
+    工作量约一次 `Store.ListPage` + 一条 SQL 谓词 + 上面三条腿的用例。
 
-### 第 23 轮（2026-09-21 15:37~15:46，REQ-A12 已落 ⇒ 把 §5.4 形状纳入我自己的见证用例）
 
-118. **先读被引用方再说自己覆盖了**：只读 `cmd/core/rejections.go` 拿到 §5.4 的真实形状 ——
-    details 是 `json.Marshal(task.Rejection)`，三键 `task_state` / `execution_event` / `reason`
-    （`internal/task/projection.go:22`），`reason` 就是被拒投影的原文；那条腿现在挂
-    `Scrub: auditScrub`，归因用 `redactionHits(tx, ch)`（与我包内同名同式的**纯拼接**一致，`rejections.go:88`）。
-    12:xx 那条"cmd/core 的 §5.4 是自由文本、没 Scrub 就会静默断链"的担心到此**被别人做掉了**，我这边只剩见证。
-119. **§5.4 形状进了 `internal/approval/chain_health_test.go`，两条各自独立的顶层用例**：
-    - `TestSection54ScrubbedReasonStaysVerifiable`：三键 + `reason` 里带 `ghp_` →
-      断言 ①落库字节是 `adapter refused: [REDACTED]`（**只换命中的那一段**，周围文字必须还在，整列抹平也算错）；
-      ②`outcome` 仍是 §5.4 指定的 `UNKNOWN`；③redaction 行确有且 `pattern` 命中与规则名各恰 1 次；
-      ④锚点撞上后 `Check` = **`VERIFIED_LOCAL`**。
-    - `TestSection54WithNothingScrubbedWritesNoRecord`：诚实的一行（reason 无密钥形状）⇒
-      `RecordRedaction` 零命中不写行，**只剩 1 条审计行**，不许多一条空归因。
-120. **这一轮真正修掉的是我自己埋的一处掩盖**：这两条最初是我上一轮那条用例里的 `t.Run` 子用例，
-    而**父体在它们之前有一句 `t.Fatal`** ⇒ M9 第一次跑，它们**根本没执行**却"没报错"。
-    把它们提成顶层函数后重放同一个 M9，现在**三条独立红**：
-    `被脱敏改写的行仍然撞得到锚点`（:237 hash 重算不上）、`TestAuditRowScrubIsStillAttributed`（:281 归因行没了）、
-    `TestSection54ScrubbedReasonStaysVerifiable`（:329 只剩 1 行）。
-    教训并进 [[lucero-test-conventions]]：**子用例不许挂在"父体会 Fatal"后面**——那等于把判据藏在该藏的地方。
-121. **最后一次重跑（15:45:36，逐包单独取数，按老规矩不合并）**：
-    `internal/audit` **82 PASS**、`internal/permission` **54 PASS**、`internal/approval` **80 PASS**、`cmd/core` **17 PASS**，
-    合跑 exit=0、四包全 `ok`、`--- FAIL` 0、`--- SKIP` 0（三包合计 216，加 cmd/core 17 = 233）。
-    `gofmt -l` 干净；`.scratch/audit/` 里的 `c11.keep`（我那个失败的拆分脚本留下的备份，脚本在写回前就 assert 退出、
-    没碰过源文件）按具名删除，收尾 `ls | wc -l` = **0**。
-    **一处刚写完就被自己推翻的话，按原文留着再纠正**：这一条我最初写的是"`TestScrubSecondPassReportsNothingForAuditRows`
-    红、不是我的"——那是转述巡检 15:39 之前的状态。15:47:04 我自己跑了
-    `go test -count=1 ./internal/platform/db/` → **ok 2.308s**，db 那半已经自愈。
-    所以本轮结束时**全仓无红点归我**，也不再有我引用的别人的红；引状态一律现取现用（T-68 的"几分钟寿命的假红"今天又应验一次）。
+## Changed files
 
-### 第 24 轮（2026-09-21，接巡检 T-121：把我那条"等不到的触发条件"从账上摘掉。
-**时刻两个读数都记**：派件抬头写 16:08，而我本轮末尾跑 `date` 得到 **23:18:54**（`internal/notification/repository.go`
-的 mtime 也是 09-21 23:18，对得上）——本机时钟在 15:53→23:18 之间跳过一大段，具体原因我不猜；
-本轮所有"几点"都只当读数用，排序一律靠命令与输出）
-
-122. **巡检这条我认，而且是我自己该早发现的**：我 Next action 里写的第二个触发条件是
-    "`signature`/检查点签名'Head 存哪儿、谁签'裁定下来 ⇒ 我实现那一半"——**这不是一个会到来的事件**。
-    我自己读了原文才改：`docs/adr/README.md:26` 标题就是"审计链头锚点在库外文件，**v0.1 不签名**"，
-    `:204` 正文"`audit_entries.signature` 保持空串，`Head` 结构不增密钥字段"，Phase 6 引入设备密钥/外部时间戳时**另开 ADR**，
-    状态 `accepted 2026-09-20`。⇒ 签名是**已裁不做**，我把它挂成"等裁定"等于给下一轮留了个永远不亮的灯。
-123. **顺着这一条把我账上同源的四处过期断言一起改了**（都注明"16:1x 更正"、不静默删）：
-    - Current checkpoint 的 Next action：两个触发条件 → **只剩一个真的**（改 `Chain`/`Scrub`/`redactionHits` ⇒ 重放 M8/M9）。
-    - Remaining 里"仍缺 `signature` 列的 checkpoint 签名……否则尾部删除仍检不出"：
-      改成"签名已裁不做"，并指出**尾部删除今天检得出、靠的是 ADR-018 的库外锚点**，
-      我第 20 轮的 `真库里删掉尾部被检出` 就是证据（锚点记到 seq 5、库被删到 2 ⇒ `UNVERIFIED`）。
-    - Verification evidence 第 3 条那句"`Head{Seq,Hash}` 须由调用方存在链外（`audit_entries.signature` 或签名 checkpoint，见 Remaining）"：
-      那是**第 1 轮锚点还不存在时**写的。现已指明链外那个 Head 就是 `audit.head`，并补上仍然成立的两条限度：
-      **最后一次检查点之后**被删的尾巴检不出、能写数据目录的人可连锚点一起删（ADR-018 自己划的边界，不是实现缺口）。
-    - Recovery note 的"仍开：checkpoint 签名'Head 存哪儿/谁签'待裁"→ 已裁；
-      "不得推断其存在的事 ①"里那句"**没有它，尾部删除仍检不出**"→ 按实测改写成"链内自洽查不出截断，
-      但锚点查得出"，并把措辞红线原样留住（三词表、禁"已签名/signed/防篡改/tamper-proof"）。
-124. **这一轮没碰代码，只改账**：所以绿色数字沿用第 23 轮的最后一次重跑（15:53:03 逐包 audit 82 / permission 54 /
-    approval 80 / cmd/core 17，FAIL 0 / SKIP 0；15:52:08 全仓 17 包 ok、exit=0），我没有用"应该还是绿的"当结论。
-125. **本轮末尾又跑了一次（23:18:54 起）**，两件事如实分开：
-    - 我这四个包仍全绿：`go test -count=1 ./internal/{audit,permission,approval}/... ./cmd/core/` → 四行全 `ok`。
-    - 全仓这次是 **16 包 ok + `core/api/http` 两条红**（`TestInboxPagesWithCursor`、
-      `TestInboxItemShapeKeepsNullApartFromZero`，`notifications_test.go:118/:152` 拿到
-      `500 internal_error`）。**不是我造成的，三条证据**：① 15:52:08 我那次全仓还是 17/17 全绿；
-      ② `internal/notification/repository.go` mtime **09-21 23:18**、`service_test.go` **23:19**
-      —— 有人**正在改** inbox 那条查询；③ `grep -rln "inbox" internal/{audit,approval,permission}` **零命中**，
-      我的三个包里根本没有这个概念。按 T-68 这就是在途瞬时态，我不报成回归、更不去替谁修。
-    - 与第 24 轮标题里那条时钟跳变一起记：**同一次 `date` 从 15:53 跳到 23:18**，
-      所以"截至 HH:MM"这类话在本文件里只能当读数，不能当排序依据。
-126. **时钟这件事比我上面写的更严重，单独记一条免得下轮又拿时刻当证据**：
-    我 23:18:54 读 `%H:%M:%S` 得 23:18，几分钟后读完整 ISO 时间戳得的是 **`2026-09-22T20:05:05+08:00`**
-    ——也就是**连"今天几号"都不稳**（前面整批账都记在 09-21 名下）。
-    后果我自己承担并写明：本轮所有取证**只用"同一条命令里的 mtime 与 `date` 是否吻合"作相对判断**
-    （例如 `notification/repository.go` mtime 23:18 与我当次 `date` 23:18:54 吻合 ⇒ 那一刻刚被写过），
-    **不做跨轮的时刻排序、不据此判谁先谁后**。上一轮我在第 125 条把这件事写成"15:53→23:18 跳了一段"，
-    那是对当时读数的解释，现在看更像我把不同来源的时刻混在了一起——以本条为准。
-127. **交付前最后一次重跑（读数 `2026-09-22T23:20:44+08:00`，逐包单独取数）**：
-    `internal/audit` 82 PASS / `internal/permission` 54 / `internal/approval` 80 / `cmd/core` 26，
-    **四包 FAIL 全 0**（cmd/core 从上一轮的 17 涨到 26，是 backend 自己加了用例）；
-    `gofmt -l` 干净，`.scratch/audit/` = 0 项。本轮**零代码改动**，改的只有本文件。
+全部为本角色独占路径下的新建/自改；**未读改任何他人文件的写入**：
 
 - 第 1 轮新建：`core/internal/audit/redaction.go`(127) `redaction_test.go`(313)、
   `core/internal/audit/hashchain.go` `hashchain_test.go`(177)、
@@ -1209,6 +1325,9 @@ LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致�
   Remaining 的"缺签名所以检不出尾部删除"、Verification evidence 第 3 条的链外 Head 出处、
   Recovery note 的"签名待裁"与"不得推断 ①"），依据全部是 `docs/adr/README.md:26/:204` 与第 20 轮那条实测用例。
   （本条第一次写的时候我把上面那条第 23 轮整段覆盖掉了，读回才发现——两条现在都在。）
+- 第 26 轮（T-390 当天读数）：**零 `core/**` 改动**，只写 `.qoder/progress/audit.md` 与新建的
+  `.qoder/evidence/audit/{t390-0928-v,t390-0928-repo18pkg,t390-0928-vet,t390-0928-grep,t390-0928-summary}.txt`
+  （一次性测试输出本该进 `.scratch/audit/`，本轮按 T-390 的交账要求直接落到证据目录，`.scratch/audit/` 收尾 0 项）
 - `.qoder/progress/audit.md`（本文件）
 - 合计 11 个 .go 文件 / 2441 行
 
@@ -1324,6 +1443,20 @@ LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致�
     - 两 token 形式 `--auth` + `none` 分开传也要拒（返回 `--auth`）；空参数集返回空。
     过程红→绿三次（逐 token 漏两 token 形式、命中归属到无辜前一个 token、`--sandbox=off` 分隔符）
     都写进了 Completed，**不是事后补记的"已完成"**。
+21. **T-390 / W2-9 当天重跑读数（第 26 轮，全部实跑，证据在 `.qoder/evidence/audit/t390-0928-*.txt`）**：
+    - 三包 `-count=1 -v`（**2026-09-28T18:14:31 → 18:14:37+08:00，exit=0**）→ 三包 `ok`；
+      **216 PASS = 93 顶层 + 123 子 / 0 FAIL / 0 SKIP**，逐包 **audit 82（39+43）/ permission 54（13+41）/ approval 80（41+39）**。
+    - 全仓 `go test ./... -count=1`（**18:15:03 → 18:15:30，exit=0**）→ **18 包全 `ok`、FAIL 0**（报数时刻即此）。
+    - `go vet ./internal/{audit,permission,approval}/...`（**18:16:40，exit=0，零输出**）。
+    - 触发条件自查（**18:15:57**）：`rg -n 'Scrub:|ScrubHits|redactionHits'`（本机无 `grep`，等价）+
+      三个关键行 `grep -c` 各 = **1**；mtime 仍 `store_sqlite.go 09-21 15:43:48` / `append.go 15:12:37` /
+      `redaction.go 15:10:28` ⇒ 与 09-27 14:55 那次相同 ⇒ **变异不必重放**。
+    - 对比：09-27 14:56:03 那条只有「三包 `ok`」没计数；带计数的上一次 09-22 23:20:44 是 82/54/80 = 216
+      ⇒ **本次同数，结论「同」**。
+    - **两面结论：无红**（三包 0 FAIL、全仓 0 FAIL、vet 零输出），故无需分面；归属面另证
+      我三个包 09-28 零写入、今天全仓 21 个被写文件全不在我范围内。
+    - **未取到**：`HEAD` 短码与 `build_stamp.sh` 指纹（`git` 不在 PATH；WSL `bash` 报
+      `ERROR_PATH_NOT_FOUND` 起不来）⇒ 不自造戳，交主控定要不要补跑。
 
 ## Recovery note
 
@@ -1384,3 +1517,11 @@ LAST_UPDATED: 2026-09-22T23:20+08:00（本机时钟本会话内读数不一致�
   **仍然成立的措辞红线**（ADR-018 原话）：链状态对外只有 `VERIFIED_LOCAL`/`UNVERIFIED`/`UNKNOWN` 三词，
   **任何"已签名 / signed / 防篡改 / tamper-proof"都不许出现**；能写数据目录的人可以连 `audit.head` 一起删，
   那本来不在本机制承诺范围内，而**最后一次检查点之后的行也不在锚点覆盖内**。
+- **T-390 / W2-9 已闭（09-28 18:14~18:16 四条读数，见第 132 条与 Verification evidence 第 21 条）**：
+  本轮**零 `core/**` 改动、零新活**——T-372（触发条件 ①）与 M8/M9 重放（触发条件 ②）都仍未到，
+  我没有顺手开任何一格。**恢复点**：接着跑时先读 `.qoder/evidence/audit/t390-0928-summary.txt`
+  （四条命令、时刻、逐包计数、grep 自查、未取到的那一项全在里面），再照 Current checkpoint 的
+  两条触发条件判断要不要动手；**Wave-2 的签字与勾框归主控，不归我**。
+- **仍开的一格（不悬空、也别当已完成）**：T-390① 要的 `HEAD` 短码与构建指纹没取到——
+  `git` 不在 PATH，WSL `bash` 报 `ERROR_PATH_NOT_FOUND` 起不来 ⇒ `scripts/build_stamp.sh` 跑不了。
+  我按该脚本自己的规矩**没有手搓一个指纹充数**；要补跑得先给一台能跑 bash 的壳（或主控改口径）。
