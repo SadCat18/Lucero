@@ -10,10 +10,12 @@ import (
 )
 
 // 甲（T-370① 裁的那一支）的落点 (a)：把一帧 `turn/finished` 落成 Execution 的终态，并同笔投影到 Task。
+// 谁调它随 REQ-TURN-1 裁「Ⅰ」变了：上一形状由 handler 在第二笔短事务里调（收尾随 send 回执同步交回），
+// 现在是 cmd/core 那条**常驻入站泵**在收到帧的那一笔里调 —— 落库这一格的内容一个字没改，改的是触发时机。
 //
-// 为什么需要单独一个导出方法，而不是让 handler 直接调 `advance`：`advance` 是所有推进共用的四步
+// 为什么需要单独一个导出方法，而不是让调用方直接调 `advance`：`advance` 是所有推进共用的四步
 // （读行 → If-Match → §5.2 裁决 → Touch + 事件），它**接收目标态**；而"帧里那个字符串算哪种终态"是新的
-// 解释职责 —— 混进 handler 就会长出第二份映射（边界一禁的正是这个）。
+// 解释职责 —— 混进调用方就会长出第二份映射（边界一禁的正是这个）。
 //
 // **取值表只有一份，就是本包的状态常量**：`SUCCEEDED` / `FAILED` / `CANCELLED`（边界一点名的那三个）。
 // 这里不引入第四个字面、也不给任何别名 —— 协议规范 `specs/adapter-protocol/adapter-protocol-v0.1.md:279`
@@ -24,13 +26,6 @@ import (
 //
 //	不代表 producer 现状），把 `"OK"` 折成成功就是「伪造终态」—— 取值表本身已由 `契约② §6` 第 6 条裁死。
 var ErrUnmappedResultCode = errors.New("execution: turn/finished 的 result_code 不在已裁的取值表里")
-
-// TurnFinish 是从连接面收上来的一份收尾证据：`Seen` 才是"确实收到了收尾帧"，
-// `ResultCode` 是帧里的原话（不翻译、不猜测、不合并）。
-type TurnFinish struct {
-	Seen       bool
-	ResultCode string
-}
 
 // turnFinishedState 是那份唯一的映射。
 func turnFinishedState(resultCode string) (State, bool) {
@@ -43,8 +38,8 @@ func turnFinishedState(resultCode string) (State, bool) {
 
 // MappedTurnResultCode 是给装配层问的那一句："这个收尾码在不在已裁的取值表里"。
 // 它和 `FinishFromTurn` 读**同一份** `turnFinishedState`（边界一：不许长出第二份映射），
-// 存在的唯一理由是 handler 要能区分"没有收尾帧"与"有帧但那个码没人裁过"——
-// 后者该原样交回 202 并喊一句，而不是被写成成功、也不是被写成 500。
+// 存在的唯一理由是收帧的那一条腿（REQ-TURN-1「Ⅰ」的入站泵）要能在**开写事务之前**问一句：
+// 表外的码一行都不写，而写面只有 `platform/db` 那一条串行连接，不该为注定回滚的一笔去占它。
 func MappedTurnResultCode(resultCode string) bool {
 	_, ok := turnFinishedState(resultCode)
 	return ok
@@ -57,12 +52,13 @@ func MappedTurnResultCode(resultCode string) bool {
 //
 // 三种结局互不重叠：
 //  1. 表里没有这个 `resultCode` ⇒ `ErrUnmappedResultCode`，**一行都不写**（边界一）；
-//  2. 库里已经是这个终态（同帧重放、或续跑时上一趟已落成）⇒ `alreadyFinished=true`、`Advanced=false`，
-//     **不重复发事件**（幂等：调用方据此起 202 而不是 409）；
+//  2. 库里已经是这个终态（同帧重放、或两条腿都收到了同一份收尾）⇒ `alreadyFinished=true`、`Advanced=false`，
+//     **不重复发事件**（幂等：调用方据此什么都不补，只喊一声）；
 //  3. 正常落终态 ⇒ 走 `advance`（`Occasion=Normal`，与 `Recovery` 无关：这是同步腿收到的真帧）。
 //
 // 投影被拒（Task 不在 §5.3 要求的那个态）⇒ 整笔回滚并上抛 `ErrIllegalTransition`，
-// 这一趟**既不写终态也不密封**；§5.4 那两条记录此刻没有 reporter（与 send 腿同一形状的取舍），要就裁。
+// 这一趟**连终态那一行都不写**（泵因此只喊、不改库）；§5.4 那两条记录此刻没有 reporter（与 send 腿同一形状的取舍），要就裁。
+// 幂等密封不归这里：那是 handler 第二笔自己的 guard（REQ-TURN-1「Ⅰ」之后两笔不再是同一笔）。
 func (s *Service) FinishFromTurn(ctx context.Context, tx *db.Tx, id, resultCode string,
 	cmd Command) (res Result, alreadyFinished bool, err error) {
 	to, ok := turnFinishedState(resultCode)

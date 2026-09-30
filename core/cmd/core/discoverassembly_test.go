@@ -17,8 +17,10 @@ import (
 
 	httpapi "github.com/SadCat18/lucero/core/api/http"
 	"github.com/SadCat18/lucero/core/internal/adapter"
+	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/session"
+	"github.com/SadCat18/lucero/core/internal/task"
 )
 
 // stubCaller 只需要 `Call` 这一格能力：它按页返回 §4 的形状，第二页起该带上次的游标。
@@ -110,11 +112,20 @@ func newBareDiscover(t *testing.T, specs []adapterSpec) (*probeService, *discove
 	}
 	now := func() int64 { return 4_000 }
 	svc := session.NewService(session.NewRepository(d.Read), now)
-	probe, discover, pipe, err := newAdapterServices(d, auditedStore{d: d}, specs, probeAttemptDeadline, now,
-		func(string, ...any) {}, svc)
+	// 泵要的那个 Service：`FinishFromTurn` 需要 task 投影器，所以这里与真装配同形（EnableSend 两件都给）。
+	execSvc := execution.NewService()
+	execSvc.EnableSend(task.NewService(nil), svc)
+	probe, discover, pipe, _, err := newAdapterServices(context.Background(), d, auditedStore{d: d}, specs,
+		probeAttemptDeadline, now, func(string, ...any) {}, svc, execSvc)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 常驻连接是真子进程：用例结束必须退役它们，否则这一包跑完留下一堆没人收的孩子（第 19 条那一格）。
+	t.Cleanup(func() {
+		if pipe.hub != nil {
+			pipe.hub.closeAll()
+		}
+	})
 	if probe == nil || discover == nil || pipe == nil {
 		t.Fatal("给了 specs 就该三个都装配出来")
 	}

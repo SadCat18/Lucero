@@ -280,7 +280,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 发在**降级发生的那一刻**（`internal/adapter` 的能力核定/注册域，Touch `adapter_instances`），
 > **`POST /sessions/{id}:sync` 的 503 出口只回码、不发这条事件**（守卫机械不允许，见契约① 同条引的
 > `TestAdapterDowngradedCannotRideASessionTouch`）。
-> 所以本名单**当时**是**三条**（此行为留档，已被下面 09-27 的 27 条与 09-28 的 26 条取代；**故意不再使用"当前是"那个锚字**，见 REQ-T37 裁甲）：`policy_created` / `policy_updated` / `adapter_downgraded`。
+> 所以本名单**当时**是**三条**（此行为留档，取代链：09-27 的 27 条 → 09-28 的 26 条 → 09-30 的 21 条（当前）；**故意不再使用"当前是"那个锚字**，见 REQ-T37 裁甲）：`policy_created` / `policy_updated` / `adapter_downgraded`。
 
 > **【名单扩容 · 主控 09-27 16:3x 按 `test` 的名册判据登记，原文留档不删】上面那句"三条"已被取代：名单现为 27 条。**
 > 新增的 **24 条**由判据机械导出（不是我手抄）：`go test -count=1 -v -run '^TestEventProducerRosterMatchesDerivedSet$' ./test/`
@@ -309,8 +309,9 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 口径不变：名单仍是"登记了但没人发"的已知缺陷清单、补登记不等于补功能 —— 这一条是**先补了功能才摘**，
 > 摘条的授权随契约④-c（`specs/contracts-internal-v0.1.md` 裁「甲」那一段）一并给出。
 >
-> 所以**本名单当前是 26 条**（09-28 起，取代上面那句"27 条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` 。
-
+> 所以**本名单当时是 26 条**（09-28 起至 09-30，取代上面那句"27 条"；本行留档，已被下面 09-30 的 21 条取代）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` 。
+> 所以**本名单当前是 21 条**（09-30 15:5x 主控裁，取代上面那句"26 条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_blocked` / `task_state_corrected` / `task_verifying` 。
+> **09-30 15:5x 摘掉 5 条**（`task_accepted` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed`）—— 测试角色这轮给名册判据加了**第五层**（回解 `eventOf func(Task) (string, any)` 闭包回出的常量），五条各自的发射位在 `core/internal/task/service.go:326 / :338 / :347 / :364 / :385` 的 `return EventXXX, …Payload{…}`，而承载它们的方法 `Queue`/`Prepare`/`Pause`/`Resume`/`Accept` **都有非测试调用点**：`core/api/http/tasks.go:483 / :518 / :574 / :629 / :605` ⇒ 按本契约「有发射位即有生产路径」的口径，这五条该离开名单。**本行由主控改（`specs/**` 归主控），不是 worker 自改**；U13-8 那条判据自己会盯住以后谁把它们悄悄加回去或删掉生产路径。
 
 ## 7. 垂直链事件序列（测试 oracle）
 

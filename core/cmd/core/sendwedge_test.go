@@ -16,8 +16,12 @@ package main
 // adapter 的文件不是我的，我也不为绿去挪它。
 //
 // 「真帧没到」这个状态本用例**不再拿真 producer 造**（它现在造不出来了），那一格的覆盖在
-// `sendreap_test.go` 的三分表（拿替身帧喂：没帧不喊 / 表外码喊 / 表内码不喊）与本用例第二腿
+// `turnpump_test.go`（泵的三分辨：非收尾帧不写 / 表外码只喊不写 / 表内码写）与本用例第二腿
 // （没回执也没帧）。要新增覆盖是单独一格，不夹在这里。
+//
+// **本批（T-391「Ⅰ」）改过第一腿的读法**：上一版在 202 之后**立刻**读库，因为那时终态是 handler
+// 第二笔里同步写的；现在终态由常驻入站泵在帧到达之后自己那一笔写 ⇒ 判据等的是"帧到了并且落了"，
+// 等的那一声来自泵。这一腿因此同时钉住了契约里那句"回执之后帧迟到是常态"。
 
 import (
 	"context"
@@ -61,7 +65,8 @@ func TestNoTurnFrameIsNotTheSameAsWedge(t *testing.T) {
 		}
 
 		tap := &logTap{}
-		pipe.logf = tap.f // sendpipe 那句「未裁的码」只走 logf，不收集就断不到
+		pipe.logf = tap.f     // sendpipe 那句「未裁的码」只走 logf，不收集就断不到
+		pipe.hub.logf = tap.f // 「Ⅰ」之后那声"落库了"住在泵里，同一个收集器才看得见两腿
 		srv := stallServe(t, d, pipe)
 		defer srv.Close()
 
@@ -73,6 +78,11 @@ func TestNoTurnFrameIsNotTheSameAsWedge(t *testing.T) {
 		if got.code != http.StatusAccepted {
 			t.Errorf("回执照给 ⇒ 该 202（503 是「楔住」那一腿的答案，两态不许互串），实际 %d %s", got.code, got.body)
 		}
+		// 「Ⅰ」之后落终态不在回执那一拍里做，而是泵收到帧之后自己做一笔 ⇒ 断库之前先等泵那一声。
+		// 这不是"等够"：泵是"先写完、后喊"（`turnpump.go` 的 handle 里两句挨着），等到那一声=等到那一笔。
+		if !tap.wait(t, "迟到收尾已落终态", 15*time.Second) {
+			t.Fatalf("没等到泵那一声「迟到收尾已落终态」⇒ 帧没被收走（连接被提前关了？实际日志：%v）", tap.lines)
+		}
 		if st, stored := stallIdem(t, d, "k-rf"); st != "COMPLETED" || stored == "" {
 			t.Errorf("投递成功就该密封成响应，实际 state=%s body=%q", st, stored)
 		}
@@ -81,7 +91,7 @@ func TestNoTurnFrameIsNotTheSameAsWedge(t *testing.T) {
 		if st := stallStatus(t, d, `SELECT status FROM executions WHERE id='ex-rf'`); st != "SUCCEEDED" {
 			t.Errorf("真帧带表内码 ⇒ 该落终态 SUCCEEDED，实际 %s", st)
 		}
-		// 表内码不喊：喊是「码没裁过」那一格的形状（三分表在 sendreap_test.go），这里只钉它不外溢。
+		// 表内码不喊：喊是「码没裁过」那一格的形状（三分表在 `turnpump_test.go`），这里只钉它不外溢。
 		if n := tap.count("未裁"); n != 0 {
 			t.Errorf("表内码不该喊未裁，实际 %d 句：%v", n, tap.lines)
 		}

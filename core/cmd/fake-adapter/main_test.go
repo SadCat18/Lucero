@@ -107,6 +107,16 @@ func (p *fakeProcess) nextFrame(t *testing.T) *adapter.Frame {
 	return nil
 }
 
+// next records the frame the child sends next, which is how a test asserts on what
+// follows a receipt. Since T-392 ① a run's closing frame sits after the send's answer, so
+// `call` - which stops at the response - is no longer the last read of an exchange.
+func (p *fakeProcess) next(t *testing.T) *adapter.Frame {
+	t.Helper()
+	f := p.nextFrame(t)
+	p.seen = append(p.seen, f)
+	return f
+}
+
 // silent reports whether the adapter kept its mouth shut for d. A frame that does
 // arrive within d is returned so the caller can name it in the failure.
 func (p *fakeProcess) silent(t *testing.T, d time.Duration) (*adapter.Frame, bool) {
@@ -165,6 +175,21 @@ func call(t *testing.T, p *fakeProcess, id, method string, params any) *adapter.
 			return f
 		}
 	}
+}
+
+// rawClose returns the params bytes of the turn/finished that closed a ticket, or nil.
+// T-392 ③ asks for the claim on what went over the pipe: DecodeStream fills a struct, and
+// a struct field is one removed from the line the reader actually saw.
+func rawClose(all []*adapter.Frame, ticket string) json.RawMessage {
+	for _, f := range all {
+		if f.Kind() != adapter.KindNotification || f.Method != adapter.MethodTurnFinished {
+			continue
+		}
+		if s, err := adapter.DecodeStream(f); err == nil && s.TurnRef == ticket {
+			return f.Params
+		}
+	}
+	return nil
 }
 
 // initialize performs §2's handshake, which every other call is gated behind.

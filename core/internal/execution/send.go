@@ -65,13 +65,14 @@ type TurnCall struct {
 // TurnReceipt 是连接面的回执：只回答"接没接"与"没接时的理由"。
 // 刻意不带 provider_execution_id —— CO-8 禁止拿 send 回执当 started 证据
 // （证据要走 turn/claimed + turn/dispatched 那一对）。
+//
+// 这里**没有** `Finish` 字段，是 REQ-TURN-1 裁「Ⅰ」的直接后果（不是遗漏）：
+// 上一形状（甲，T-370①）让连接面在 `Close` 之前扫一遍缓冲、把收尾随回执一起交回，
+// 而「Ⅰ」把连接改为常驻、收尾帧由入站泵在**回执之后**收走并自己落终态 ⇒ 回执上没有、也不该再有收尾证据。
+// 留着那个字段就等于留第二条落终态的路，两条路会各自写下同一笔事件的两个版本。
 type TurnReceipt struct {
 	Accepted bool
 	Reason   string // 只进 sendpipe logf；yaml SendResult 没有 reason 出口，不发明
-
-	// Finish 是甲（T-370①）那一腿在 `Close` 之前从 `Inbound()` 里收到的收尾帧。
-	// 它不进 `SendResult`：那是 yaml 的四键对外形状，收尾码是 Core 内部的推进依据，不是响应字段。
-	Finish TurnFinish
 }
 
 // TurnCaller 是 execution → 连接面的 consumer-side 接口，由 cmd/core 的 *sendPipe 满足。
@@ -261,30 +262,31 @@ func (s *Service) Reserve(ctx context.Context, tx *db.Tx, id string, cmd SendCom
 // 不密封 ⇒ 同一 `Idempotency-Key` 的下一次请求读到的仍是"未密封 + 第一笔身份"⇒ 续跑。
 //
 // `res.NeedsTurn=false`（queue）时不发帧，直接回第一笔折算出的结果。
-func (s *Service) Deliver(ctx context.Context, res SendReservation) (SendResult, TurnFinish, error) {
+//
+// 返回值里没有收尾证据（REQ-TURN-1「Ⅰ」）：`turn/finished` 由 cmd/core 那条常驻入站泵收走并落终态，
+// 域在这里只管"投递成没成"。
+func (s *Service) Deliver(ctx context.Context, res SendReservation) (SendResult, error) {
 	if !res.NeedsTurn {
-		return res.Result(), TurnFinish{}, nil
+		return res.Result(), nil
 	}
 	// 这里的 nil 检查与 Reserve 里那一处**不是重复**：Reserve 挡的是"首攻时就没装配"，
 	// 这一处挡的是"凭证是上一趟写的、这一趟进程重新起来后连接面没接上"（续跑路径）。
 	if s.turn == nil {
-		return SendResult{}, TurnFinish{}, ErrTurnNotWired
+		return SendResult{}, ErrTurnNotWired
 	}
 	rec, err := s.turn.CallSendTurn(ctx, TurnCall{
 		ExecutionID: res.ExecutionID, SessionID: res.SessionID, Text: res.Text,
 		Delivery: res.Delivery, IdempotencyKey: res.IdempotencyKey,
 	})
 	if err != nil {
-		// 投递本身没成 ⇒ 这一趟不密封、不写终态（丙）。带回来的 Finish 是零值，调用方不该拿它去写库。
-		return SendResult{}, TurnFinish{}, err
+		// 投递本身没成 ⇒ 这一趟不密封（丙）。终态那一格不归这一腿：泵收到帧才写，收不到就什么都不做。
+		return SendResult{}, err
 	}
 	// accepted=false 仍算跑通：delivery 保持请求态 —— 改写成 queue 才是 §5 禁的静默降级。
 	// reason 只进 sendpipe 的 logf，yaml `SendResult` 没有这个出口，不发明。
 	out := res.Result()
 	out.Accepted = rec.Accepted
-	// 收尾证据原样交回：落不落终态、落成哪个终态，是 handler 在**第二笔短事务**里问 (a) 的事，
-	// 不在这里、更不在连接面里写库（REQ-S-1 的不变量）。
-	return out, rec.Finish, nil
+	return out, nil
 }
 
 // validateSend 在碰库之前拦住：text 必须非空、delivery ∈ 三枚举、四个事件/消息 id 必须在场。

@@ -236,14 +236,14 @@ func splitExecutionItem(path string) (id, verb string, ok bool) {
 // 两个方法而不是一个：REQ-S-1 的不变量要求**投递跑在任何事务之外**（写面只有一条串行连接，
 // 起子进程/握手/等回执关进写事务 ⇒ 一次 send 停掉全 Core 的写）。
 // `Reserve` 落"意图"（消息 + 状态边 + 事件），`Deliver` 打那一跳 —— transport 负责安排顺序，域负责各自那半。
+//
+// 这里**没有** `FinishFromTurn`：REQ-TURN-1 裁「Ⅰ」（契约① 第 25 条 ④-b）之后，
+// `turn/finished` 由 cmd/core 那条常驻入站泵收走并在**它自己那笔短事务**里落终态，
+// handler 这一腿只安排"预留 → 投递 → 密封"。上一形状（甲，T-370①）里 handler 拿收尾帧写终态，
+// 与泵并发写同一个 execution 会长出两条落终态的路 ⇒ 那条按帧落终态的格已从本文件删除。
 type ExecutionSender interface {
 	Reserve(ctx context.Context, tx *db.Tx, id string, cmd execution.SendCommand) (execution.SendReservation, error)
-	Deliver(ctx context.Context, res execution.SendReservation) (execution.SendResult, execution.TurnFinish, error)
-	// FinishFromTurn 是甲（T-370①）的 (a)：把 `Deliver` 收回来的那帧 `turn/finished` 落成 execution
-	// 终态 + 同笔的 task 投影。它在**第二笔短事务里**调用，与密封同一个 tx ——
-	// "投递 → 第二笔落结果"那句裁语里，落的就是这个。
-	FinishFromTurn(ctx context.Context, tx *db.Tx, id, resultCode string,
-		cmd execution.Command) (execution.Result, bool, error)
+	Deliver(ctx context.Context, res execution.SendReservation) (execution.SendResult, error)
 }
 
 // sendBody 是 yaml SendMessageRequest（:1175）：required [text, delivery]，attachments 可选。
@@ -358,33 +358,17 @@ func sendExecution(w http.ResponseWriter, r *http.Request, c Config, id string) 
 	}
 
 	// ── 投递：这一拍**不在任何事务里**。挂住 / 连不上 ⇒ 不密封 ⇒ 同键还能续跑。
-	out, fin, err := c.ExecutionSend.Deliver(r.Context(), res)
+	out, err := c.ExecutionSend.Deliver(r.Context(), res)
 	if err != nil {
 		writeSendError(w, r, err)
 		return
 	}
-	// 收到了收尾帧、但那个码没人裁过 ⇒ 这一次**只投递、不写终态**（边界一），
-	// 投递本身是成功的，答复照旧 202，喊那一句在 sendpipe 的 logf 里。
-	// 这里用域导出的谓词问"可不可映射"，而不是自己比字符串 —— 表只有一份。
-	writeTerminal := fin.Seen && execution.MappedTurnResultCode(fin.ResultCode)
 
-	// ── 第二笔：落投递结果（有可映射的收尾帧时先落终态 + task 投影，再密封，同一个 tx）。
+	// ── 第二笔：只落投递结果（密封）。
+	//    REQ-TURN-1「Ⅰ」之后这一笔**不再看收尾帧**：`turn/finished` 由 cmd/core 的常驻入站泵收，
+	//    终态与 §5.3 投影在泵自己那笔短事务里写（泵与这里并发、各自一笔，写面那条串行连接把它们排开）。
 	//    0 行（并发里我输了）由 sealIdempotency 回 errReplay ⇒ 409，不是静默 202 —— 第 25 条③ 要的就是这声喊。
 	if err := c.Store.Write(r.Context(), func(tx *db.Tx) error {
-		if writeTerminal {
-			// 三个事件 id 一起铸：execution 终态 + task 投影 + （仅当投影落定 AGENT_COMPLETED 时）
-			// 契约④-c 链尾那条 task_waiting_acceptance。三条都是 event_journal 的 UNIQUE 身份，
-			// 域不自己生成（§3 UUIDv7），所以缺哪个都得在这儿补上。
-			if _, _, e := c.ExecutionSend.FinishFromTurn(r.Context(), tx, id, fin.ResultCode, execution.Command{
-				EventID: newUUIDv7(), TaskEventID: newUUIDv7(), TaskWaitingAcceptanceEventID: newUUIDv7(),
-				PrincipalID: principal, CorrelationID: correlation,
-			}); e != nil {
-				// 投影被拒一类的错 ⇒ 整笔回滚：既不写终态也不密封，同键下一发还能续跑。
-				// 为什么不敢"只跳过终态、照样密封"：那会让库里出现"投递成功但没有任何收尾记录"的象，
-				// 而密封之后的重放**永远不再补**这一格。
-				return e
-			}
-		}
 		var e error
 		sealed, e = sealIdempotency(r.Context(), tx, key, viewOfSend(out))
 		return e

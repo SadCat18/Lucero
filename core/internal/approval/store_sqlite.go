@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/SadCat18/lucero/core/internal/audit"
 	"github.com/SadCat18/lucero/core/internal/eventjournal"
@@ -473,6 +474,89 @@ func (s *SQLiteStore) ListByExecution(ctx context.Context, executionID string) (
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// defaultListLimit is one number with one source, and it is deliberately the same
+// 50 internal/notification/repository.go uses: two different defaults for "the
+// caller did not say" is how a panel ends up paging two ways.
+const defaultListLimit = 50
+
+// ListPage reads one page of approvals. It writes nothing: no Tx, no event, no
+// audit row, no version — the only statement it can make is which rows match.
+//
+// Two rules are re-used rather than restated, and each has a case pinning it:
+//   - Which state values exist at all is validState's, checked by Service.ListPage
+//     before this runs.
+//   - Whether a PENDING row is still waiting is Approval.DeadlinePassed's. A set
+//     query cannot call a Go method, so the WHERE below is that predicate's SQL
+//     spelling, and TestListPagePendingAgreesWithDeadlineBoundary pins the two at
+//     the same millisecond — the same trick ExpirePending uses. A row past its
+//     deadline must disappear from a state=PENDING listing at exactly the instant
+//     BlockingState stops calling it PENDING; anything else is one approval answering
+//     two different questions, which is what REQ-A8 was raised for.
+func (s *SQLiteStore) ListPage(ctx context.Context, f ListFilter) ([]Approval, ListPosition, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	now := s.now()
+
+	var where []string
+	var args []any
+	if f.State != nil {
+		where = append(where, "state = ?")
+		args = append(args, *f.State)
+		if *f.State == PENDING {
+			// Only when the caller asks for "waiting" does the deadline matter, and
+			// then it is Approval.DeadlinePassed's rule spelled in SQL: a PENDING row
+			// past its expires_at is not waiting for anyone — BlockingState already
+			// answers NONE for it. Listing it under state=PENDING would be one
+			// approval giving two answers, which is what REQ-A8 was raised for.
+			//
+			// The clause is deliberately NOT applied to the unfiltered listing.
+			// 09-30 measurement: nothing in production calls Service.SweepExpired, so a
+			// lapsed row stays PENDING in the table indefinitely; hiding it from
+			// "every state" would make an existing approval undiscoverable rather than
+			// honestly labelled. It is listed with its real stored state, and
+			// expires_at says why the gate is not waiting on it.
+			where = append(where, `(expires_at IS NULL OR expires_at > ?)`)
+			args = append(args, now)
+		}
+	}
+	if f.After != nil {
+		// Expanded rather than a row-value comparison, matching
+		// internal/notification and internal/task: the two keyset spellings in this
+		// repo must not diverge over an SQLite version difference.
+		where = append(where, `(requested_at > ? OR (requested_at = ? AND id > ?))`)
+		args = append(args, f.After.RequestedAt, f.After.RequestedAt, f.After.ID)
+	}
+	// Guarded because the whole WHERE is now optional: with no State filter there
+	// are no clauses, and "WHERE  ORDER BY" is a syntax error (internal/notification
+	// carries the same comment because it tripped on exactly this once).
+	query := `SELECT ` + selectColumns + ` FROM approvals`
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, " AND ")
+	}
+	query += ` ORDER BY requested_at, id LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.d.Read.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, ListPosition{}, fmt.Errorf("approval: list page: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Approval
+	var last ListPosition
+	for rows.Next() {
+		a, err := scanApproval(rows)
+		if err != nil {
+			return nil, ListPosition{}, fmt.Errorf("approval: list page scan: %w", err)
+		}
+		out = append(out, a)
+		last = ListPosition{RequestedAt: a.RequestedAt, ID: a.ID}
+	}
+	return out, last, rows.Err()
 }
 
 // entry builds the audit row for one approval action. "谁以什么权限做了什么":

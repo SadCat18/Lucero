@@ -368,6 +368,7 @@ func TestFakeAdapterStartNowClosesItsRun(t *testing.T) {
 	if reply.Error != nil {
 		t.Fatalf("start_now: %s", reply.Error)
 	}
+	p.waitForTicket(t, "n1")
 	var closed *adapter.StreamFrame
 	for _, s := range framesWithTicket(p.seen, "n1", adapter.MethodTurnFinished) {
 		closed = s
@@ -377,6 +378,135 @@ func TestFakeAdapterStartNowClosesItsRun(t *testing.T) {
 	}
 	if closed.ResultCode != resultSucceeded {
 		t.Errorf("closing frame carries %q, want SUCCEEDED: this run ended on its own", closed.ResultCode)
+	}
+}
+
+// TestFakeAdapterClosingFrameFollowsItsReceipt is T-392 ①, and it is about position rather
+// than existence: a run's closing frame is the one that arrives **after** that send's
+// receipt, for both delivery modes that open a turn. The absence half is not a guess -
+// `call` reads every frame in front of its answer into the log, so a close that squeezed
+// itself before the receipt would be sitting in p.seen when the first check runs.
+//
+// This is the ordering CO-54 refused to trade away ("即时收尾"), and the reason it is a
+// criterion rather than a detail: before the receipt, "did Core catch the end?" cannot be
+// distinguished from "Core never looked", which is the whole of REQ-TURN-1's判据 (a).
+func TestFakeAdapterClosingFrameFollowsItsReceipt(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	for _, tc := range []struct{ id, delivery string }{
+		{"r1", adapter.DeliveryStartNow},
+		// The run above already closed, so §5's guide has nothing to steer into and opens
+		// its own turn (Q10) - which owes a closing frame in the same position.
+		{"r2", adapter.DeliveryGuide},
+	} {
+		reply := call(t, p, tc.id, methodSessionSend, adapter.SendParams{
+			RemoteSessionID: "s-1", Text: "go", Delivery: tc.delivery,
+			ExecutionID: "exec-" + tc.id, IdempotencyKey: "k-" + tc.id})
+		if reply.Error != nil {
+			t.Fatalf("%s send %s: %s", tc.delivery, tc.id, reply.Error)
+		}
+		if early := framesWithTicket(p.seen, tc.id, adapter.MethodTurnFinished); len(early) != 0 {
+			t.Errorf("%s: %d turn/finished arrived before reply#%s; T-392 ① puts the close after the receipt",
+				tc.delivery, len(early), tc.id)
+		}
+		fr := p.next(t)
+		s, err := adapter.DecodeStream(fr)
+		if err != nil {
+			t.Fatalf("the frame after reply#%s is not a stream notification Core can decode: %v", tc.id, err)
+		}
+		if s.Method != adapter.MethodTurnFinished || s.TurnRef != tc.id {
+			t.Errorf("frame after reply#%s = %s@%s, want this run's turn/finished", tc.id, s.Method, s.TurnRef)
+		}
+		if !strings.Contains(string(fr.Params), `"result_code":"`+resultSucceeded+`"`) {
+			t.Errorf("raw bytes after reply#%s = %s, want a %s close", tc.id, fr.Params, resultSucceeded)
+		}
+	}
+}
+
+// TestFakeAdapterTurnFinishThreeStatesOnTheWire is T-392 ③'s three-state discrimination,
+// all three readings out of one real subprocess so they are comparable rather than
+// described:
+//   - **没帧** - a preempted run never gets a turn-level code (§6 第 6 条②);
+//   - **有帧但码未裁** - a decodable frame carrying a value the table does not name;
+//   - **有帧且落终态** - the same frame carrying SUCCEEDED.
+//
+// The middle reading is the reason debug/hold takes a code at all: a turn/finished with no
+// result_code is refused by NewStream, so on this wire "未裁" can only be an unmapped
+// value, and a producer that could emit just the other two would let a consumer's
+// "表外码不写终态" branch go untested forever. `INTERRUPTED` is the value used here because
+// it is the one §6 第 6 条推论② names as not-a-turn-code: the Provider that self-reports an
+// interruption is exactly the bug the rule closes.
+func TestFakeAdapterTurnFinishThreeStatesOnTheWire(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+
+	if armed := call(t, p, "t-armed", methodDebugHold, map[string]any{"on": true, "code": "INTERRUPTED"}); armed.Error == nil {
+		t.Fatal("debug/hold accepted a code while arming; the code is the release's argument")
+	} else if armed.Error.Code != adapter.ErrInvalidParams {
+		t.Errorf("arming with a code = %s, want INVALID_PARAMS", armed.Error.Code)
+	}
+	armHold(t, p, "t-on", true)
+
+	send := func(id string) {
+		t.Helper()
+		reply := call(t, p, id, methodSessionSend, adapter.SendParams{
+			RemoteSessionID: "s-1", Text: "go", Delivery: adapter.DeliveryStartNow,
+			ExecutionID: "exec-" + id, IdempotencyKey: "k-" + id})
+		if reply.Error != nil {
+			t.Fatalf("start_now %s: %s", id, reply.Error)
+		}
+	}
+	// 没帧: a2 preempts a1's run, and what a1 says afterwards is a status delta, not a code.
+	send("a1")
+	send("a2")
+
+	// 有帧但码未裁: the release closes the turn open at that moment (a2) with this code.
+	call(t, p, "t-off", methodDebugHold, map[string]any{"on": false, "code": "INTERRUPTED"})
+	unruled := framesWithTicket(p.seen, "a2", adapter.MethodTurnFinished)
+	if len(unruled) != 1 {
+		t.Fatalf("the release produced %d turn/finished for a2, want exactly 1", len(unruled))
+	}
+	if got := string(rawClose(p.seen, "a2")); !strings.Contains(got, `"result_code":"INTERRUPTED"`) {
+		t.Errorf("raw bytes of the unmapped close = %s", got)
+	}
+
+	// 有帧且落终态: with the hold off, the next run closes on its own terms - no injection
+	// involved, which is what makes it the normal third reading rather than a fourth state.
+	send("a3")
+	p.waitForTicket(t, "a3")
+	closed := framesWithTicket(p.seen, "a3", adapter.MethodTurnFinished)
+	if len(closed) != 1 || closed[0].ResultCode != resultSucceeded {
+		t.Fatalf("the default close = %+v, want exactly one %s", closed, resultSucceeded)
+	}
+
+	// Say the first state out loud on the finished log: a1's absence is the reading, and
+	// the delta below is the proof it was preempted rather than never opened.
+	if got := framesWithTicket(p.seen, "a1", adapter.MethodTurnFinished); len(got) != 0 {
+		t.Errorf("the preempted run a1 closed with %v; §6 第 6 条② allows no turn-level code", got)
+	}
+	var preempted bool
+	for _, s := range framesWithTicket(p.seen, "a1", adapter.MethodStreamDelta) {
+		if s.Channel == adapter.ChannelStatus {
+			preempted = true
+		}
+	}
+	if !preempted {
+		t.Error("a1 put no status delta on the wire, so its missing close proves nothing about preemption")
+	}
+
+	// A code aimed at a release with nothing to close is refused loudly rather than
+	// swallowed: an injection argument that vanishes is how a criterion goes green on the
+	// wrong turn.
+	release := call(t, p, "t-off2", methodDebugHold, map[string]any{"on": false, "code": "INTERRUPTED"})
+	var res struct {
+		Closed bool `json:"closed"`
+	}
+	if err := json.Unmarshal(release.Result, &res); err != nil || res.Closed {
+		t.Errorf("the second release = %s (err %v), want closed:false", release.Result, err)
+	}
+	if !strings.Contains(p.stderr.String(), `with code "INTERRUPTED", but nothing is open`) {
+		t.Errorf("the dropped code was never reported: %q", p.stderr)
 	}
 }
 
@@ -409,10 +539,12 @@ func TestFakeAdapterGuideOnQuietSessionIsQ10(t *testing.T) {
 		t.Errorf("reason = %q, want it to say the guide opened a turn (Q10)", res.Reason)
 	}
 	// The pair is real evidence, not just a word in the reply. And the run it opened is
-	// over: §6 第 6 条③ closes it, so the trace ends with the frame the gate needs.
+	// over: §6 第 6 条③ closes it, and T-392 ① says the frame comes after the receipt -
+	// so it has to be read off the pipe rather than assumed to be in the log `call` left.
+	p.waitForTicket(t, "g1")
 	want := []string{"reply#init",
 		"turn/claimed/1@g1", "turn/dispatched/2@g1", "stream/state/3@g1",
-		"stream/delta/4@g1", "stream/item/5@g1", "turn/finished/6@g1", "reply#g1"}
+		"stream/delta/4@g1", "stream/item/5@g1", "reply#g1", "turn/finished/6@g1"}
 	if got := strings.Join(p.trace(t), " "); got != strings.Join(want, " ") {
 		t.Errorf("wire order = %s\n       want %s", got, strings.Join(want, " "))
 	}

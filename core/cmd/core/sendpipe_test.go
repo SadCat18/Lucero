@@ -213,7 +213,7 @@ func TestSendRequestLegHonorsCallersDeadline(t *testing.T) {
 
 	// 自己的 launcher：连接面换成"起得来、但一声不出"的那个替身。
 	l := newLauncher(pipeCommand("silent"), probeAttemptDeadline, nil, auditedStore{d: d}, nil)
-	pipe := &sendPipe{read: base.read, launch: l, byKey: map[string]adapterSpec{"fake": spec}}
+	pipe := &sendPipe{read: base.read, hub: silentHub(t, l, d), byKey: map[string]adapterSpec{"fake": spec}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
@@ -255,7 +255,7 @@ func TestSendRequestLegBoundsWhenCallerHasNoDeadline(t *testing.T) {
 	seedSession(t, d, "s-bound", "remote-1")
 
 	l := newLauncher(pipeCommand("silent"), probeAttemptDeadline, nil, auditedStore{d: d}, nil)
-	pipe := &sendPipe{read: base.read, launch: l, byKey: map[string]adapterSpec{"fake": spec}}
+	pipe := &sendPipe{read: base.read, hub: silentHub(t, l, d), byKey: map[string]adapterSpec{"fake": spec}}
 
 	started := time.Now()
 	rec, err := pipe.CallSendTurn(context.Background(), execution.TurnCall{
@@ -356,4 +356,15 @@ func TestSendAttemptDeadlineIsItsOwnConstant(t *testing.T) {
 	if mentionsProbe {
 		t.Errorf("`sendpipe.go` 的代码里仍出现 `probeAttemptDeadline` ⇒ ③ 那句「不再借」没落地（注释里的自述不算，parser 已剥掉注释）")
 	}
+}
+
+// silentHub 给"要一条起得来但一声不出的连接"那两条期限用例装泵。
+// svc 给 nil：这台替身从不发收尾帧，泵那一腿（要写库的那条）永远走不到；
+// 走到就说明形状变了，那时它会以 nil 解引用红得很难看 —— 那是想要的效果，不是要兜的分支。
+func silentHub(t *testing.T, l *launcher, d *db.DB) *turnHub {
+	t.Helper()
+	hub := newTurnHub(context.Background(), l, auditedStore{d: d}, nil, nil)
+	// 常驻 = 用例结束必须退役，否则这两条用例会各留一台活着的孩子（本包跑完查残留，见台账）。
+	t.Cleanup(hub.closeAll)
+	return hub
 }

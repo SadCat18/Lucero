@@ -1011,6 +1011,84 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 	}
 }
 
+// TestLateTurnFinishedClosesTheTurnItBelongsTo is the consumer half of T-392 ①: the
+// closing frame arrives **after** the send receipt, on a connection still open, and it
+// lands on the turn its ticket names. debug/hold is what chooses that moment - without it
+// "was anything terminal before the frame?" would be a race with the pump rather than a
+// fact about the wire, and a race is how this kind of assertion goes green while proving
+// nothing.
+//
+// REQ-TURN-1's判据 (a) is backend's to land in cmd/core; this is the seam under it, and it
+// says two things about the pump itself: a run whose end the Provider never reported
+// stays RUNNING with no result (Core does not manufacture one at the receipt), and a code
+// §6 第 6 条 does not name survives the trip unchanged - deciding what it means is the
+// mapping layer's job, and laundering it here is how "收到帧" would become "成功" with
+// nobody having ruled it so.
+func TestLateTurnFinishedClosesTheTurnItBelongsTo(t *testing.T) {
+	exe := buildFakeAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever,
+		Launch: func() (*exec.Cmd, error) { return exec.CommandContext(ctx, exe), nil }}
+	conn, err := sup.Connect(ctx, "0.1.0-test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	for _, tc := range []struct{ ticket, code, want string }{
+		{"l1", "", "SUCCEEDED"},              // the release this double defaults to
+		{"l2", "INTERRUPTED", "INTERRUPTED"}, // a value the §6 table does not carry
+	} {
+		holdOpen(t, ctx, conn)
+		if _, err := conn.CallTurn(ctx, "exec-"+tc.ticket, "session/send", adapter.SendParams{
+			RemoteSessionID: "s-1", Text: "late", Delivery: adapter.DeliveryStartNow,
+			ExecutionID: "exec-" + tc.ticket, IdempotencyKey: "k-" + tc.ticket}); err != nil {
+			t.Fatalf("session/send %s: %v", tc.ticket, err)
+		}
+		for _, want := range []string{adapter.MethodTurnClaimed, adapter.MethodTurnDispatch,
+			adapter.MethodStreamState, adapter.MethodStreamDelta, adapter.MethodStreamItem} {
+			if got := nextNotice(t, conn); got.Method != want {
+				t.Fatalf("%s: notification = %s, want %s", tc.ticket, got.Method, want)
+			}
+		}
+		tr := conn.Turn("exec-" + tc.ticket)
+		if got := tr.State(); got != adapter.TurnRunning {
+			t.Fatalf("%s: after the receipt and its five frames the turn reads %s, want RUNNING", tc.ticket, got)
+		}
+		if got := tr.Result(); got != "" {
+			t.Errorf("%s: Result()=%q with no turn/finished on the wire yet", tc.ticket, got)
+		}
+
+		params := map[string]any{"on": false}
+		if tc.code != "" {
+			params["code"] = tc.code
+		}
+		if _, err := conn.Call(ctx, "debug/hold", params); err != nil {
+			t.Fatalf("debug/hold release for %s: %v", tc.ticket, err)
+		}
+		var closed *adapter.StreamFrame
+		for closed == nil {
+			if s := nextNotice(t, conn); s.Method == adapter.MethodTurnFinished {
+				closed = s
+			}
+		}
+		if closed.TurnRef != "" {
+			t.Errorf("%s: the consumer view carries ticket %q (§6 规则 5 决议 ② resolves it to the Execution instead)",
+				tc.ticket, closed.TurnRef)
+		}
+		if got := tr.State(); got != adapter.TurnClosed {
+			t.Errorf("%s after its late close = %s, want CLOSED", tc.ticket, got)
+		}
+		if got := tr.Result(); got != tc.want {
+			t.Errorf("%s: Result()=%q, want the code as delivered (%q)", tc.ticket, got, tc.want)
+		}
+	}
+}
+
 // nextNotice waits for one notification that survived §6 规则 2's dedup. It waits rather
 // than polling because a pump that stops forwarding is the failure under test, and a
 // test that sleeps through it reports nothing.

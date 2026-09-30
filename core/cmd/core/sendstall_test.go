@@ -44,11 +44,18 @@ const stallToken = "stall-token"
 func stallFixtureTap(t *testing.T, mode string) (*httptest.Server, *db.DB, *int, *sendPipe, *logTap) {
 	t.Helper()
 	pid := new(int)
+	tap := &logTap{}
 	_, _, pipe, d := newBareDiscover(t, []adapterSpec{{key: "fake", displayName: "fake", command: filepath.Join(t.TempDir(), "用不上-由 pipeCommand 代")}})
 	if _, ok := pipe.byKey["fake"]; !ok {
 		t.Fatal("装配里没留下 key=fake 的 spec（这一格会退化成 501，测不到连接面）")
 	}
-	pipe.launch = newLauncher(pipeCommand(mode), sendAttemptDeadline, capturePID(pid), auditedStore{d: d}, nil)
+	// 「Ⅰ」之后连接归泵持有 ⇒ 换孩子的那一格里要换的是**泵**（泵带着 launcher），不是 pipe.launch。
+	// svc 给 nil：这两台替身（silent / exit）根本活不到发收尾帧那一步，泵那一腿永远不会被调用；
+	// 真会发帧的装配（fake-adapter）在 `turnpump_late_test.go` 里带的是真 Service。
+	pipe.hub = newTurnHub(context.Background(),
+		newLauncher(pipeCommand(mode), sendAttemptDeadline, tapPID(tap, pid), auditedStore{d: d}, nil),
+		auditedStore{d: d}, nil, tap.f)
+	t.Cleanup(pipe.hub.closeAll)
 
 	must := func(q string, args ...any) {
 		t.Helper()
@@ -67,7 +74,6 @@ func stallFixtureTap(t *testing.T, mode string) (*httptest.Server, *db.DB, *int,
 		status, state_confidence, trigger_type, created_at, updated_at)
 		VALUES ('ex-st', 'task-st', 'ai-fake', 'sess-st', 1, 'RUNNING', 'HIGH', 'INITIAL', 1, 1)`)
 
-	tap := &logTap{}
 	pipe.logf = tap.f // 装配位：sendpipe 那句"未裁的码"只走 logf，收集它才谈得上断言
 	srv := stallServe(t, d, pipe)
 	t.Cleanup(srv.Close)
@@ -81,16 +87,65 @@ func stallFixture(t *testing.T, mode string) (*httptest.Server, *db.DB, *int) {
 	return srv, d, pid
 }
 
-// logTap 把 sendPipe 的 logf 换成一个可断言的收集器（`noteTurnFinish` 那声"喊"只有从这里能看见）。
+// logTap 把 sendPipe 与泵的 logf 换成一个可断言的收集器（"喊"只有从这里能看见）。
 type logTap struct {
 	mu    sync.Mutex
 	lines []string
+	// ping 是"有新行了"那颗信号：`wait` 靠它醒，不靠睡着轮询。
+	// 缓冲 1 + 非阻塞发：两次检查之间到达的行不会被丢（那颗 ping 会留在缓冲里，下一次 select 立刻消费）。
+	ping chan struct{}
 }
 
-func (l *logTap) f(format string, args ...any) {
+func (l *logTap) note(line string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	l.lines = append(l.lines, line)
+	if l.ping == nil {
+		l.ping = make(chan struct{}, 1)
+	}
+	ping := l.ping
+	l.mu.Unlock()
+	select {
+	case ping <- struct{}{}:
+	default:
+	}
+}
+
+func (l *logTap) f(format string, args ...any) { l.note(fmt.Sprintf(format, args...)) }
+
+// wait 等一条含 sub 的喊出现：**事件驱动 + 有界**。泵是"先落库、后喊那一声"（同一 goroutine 里两句
+// 挨着），所以等到这一声就等于等到那一笔写 ⇒ 等待谓词与被断言的谓词是同一件事。
+// 到期就返回 false 把判决交回调用方，不硬等、不 sleep 轮询。
+func (l *logTap) wait(t *testing.T, sub string, within time.Duration) bool {
+	t.Helper()
+	deadline := time.After(within)
+	for {
+		l.mu.Lock()
+		var hit bool
+		for _, s := range l.lines {
+			if strings.Contains(s, sub) {
+				hit = true
+				break
+			}
+		}
+		ping := l.ping
+		l.mu.Unlock()
+		if hit {
+			return true
+		}
+		if ping == nil { // 一行都还没喊过：补一颗可等的 ping（与 note 同一颗）
+			l.mu.Lock()
+			if l.ping == nil {
+				l.ping = make(chan struct{}, 1)
+			}
+			ping = l.ping
+			l.mu.Unlock()
+		}
+		select {
+		case <-ping:
+		case <-deadline:
+			return false
+		}
+	}
 }
 
 func (l *logTap) count(sub string) int {
@@ -103,6 +158,16 @@ func (l *logTap) count(sub string) int {
 		}
 	}
 	return n
+}
+
+// tapPID 把两条"只有日志能看见"的腿合到同一个收集器上：`capturePID` 要的 pid 与泵那几声喊。
+// 装配位只有一个 logf ⇒ 合成一个，不另开第二条通道（那会变成"两处日志各说一半"）。
+func tapPID(tap *logTap, pid *int) func(string, ...any) {
+	inner := capturePID(pid)
+	return func(format string, args ...any) {
+		tap.f(format, args...)
+		inner(format, args...)
+	}
 }
 
 // stallServe 是"同一套 handler 装配"的共用段：两半的判据都得走**同一条** transport 路径，

@@ -34,11 +34,12 @@ func getExecMap(t *testing.T, srv *httptest.Server, id string) map[string]any {
 }
 
 // TestSendWritesExecutionColumnsAndReadsThemBack 两腿：
-// 帧里的码没被裁过 ⇒ 只到 RUNNING（started_at 有值、终态两列 null）；
-// 帧里的码是 FAILED ⇒ 落终态（result_code/finished_at 出真值，error 两列与 heartbeat_at 仍 null）。
+// 只投递（泵那一腿还没收帧）⇒ 到 RUNNING 为止（started_at 有值、终态两列 null）；
+// 代泵补一帧 FAILED ⇒ 落终态（result_code/finished_at 出真值，error 两列与 heartbeat_at 仍 null）。
+// 第二腿本批改的就是这一格：上一版让替身回执带 FAILED 帧、由 handler 写终态；「Ⅰ」之后那条路已经拆掉。
 func TestSendWritesExecutionColumnsAndReadsThemBack(t *testing.T) {
 	t.Run("未到终态：started_at 有值，finished_at/result_code 仍 null", func(t *testing.T) {
-		srv, d, _ := finishHarness(t, "OK") // OK 不在已裁取值表里 ⇒ 不写终态（边界一）
+		srv, d, _ := shapeHarness(t, "ex-fin") // 「Ⅰ」之后 handler 根本不看帧 ⇒ 未终态是默认形状
 		code, body := call(t, srv, http.MethodPost, "/api/v1/executions/ex-fin/send",
 			"local-user", "k-cols-open", `{"text":"未裁的码","delivery":"start_now"}`)
 		if code != http.StatusAccepted {
@@ -63,12 +64,14 @@ func TestSendWritesExecutionColumnsAndReadsThemBack(t *testing.T) {
 	})
 
 	t.Run("真到终态：result_code/finished_at 出真值，error 与 heartbeat 仍 null", func(t *testing.T) {
-		srv, d, _ := finishHarness(t, "FAILED")
+		srv, d, _ := shapeHarness(t, "ex-fin")
 		code, body := call(t, srv, http.MethodPost, "/api/v1/executions/ex-fin/send",
 			"local-user", "k-cols-fin", `{"text":"失败那一格","delivery":"start_now"}`)
 		if code != http.StatusAccepted {
 			t.Fatalf("send 该 202，实际 %d %s", code, body)
 		}
+		// 终态不再由投递那一拍写（REQ-TURN-1「Ⅰ」）⇒ 这里代泵补那一帧，列才有真值可读。
+		driveFrame(t, d, "ex-fin", "FAILED")
 		got := getExecMap(t, srv, "ex-fin")
 		row := wideFieldsOf(t, d, "ex-fin")
 		for _, k := range columnKeys() {
@@ -83,7 +86,7 @@ func TestSendWritesExecutionColumnsAndReadsThemBack(t *testing.T) {
 			t.Errorf("终态后 started_at/finished_at 该都有值，实际 started=%v finished=%v",
 				got["started_at"], got["finished_at"])
 		}
-		// 生产调用点（api/http/executions.go:375）今天不带 error 信号：
+		// 收尾那一笔不带 error 信号（`FinishFromTurn` 只吃 result_code）：
 		// turn/finished 帧只有 result_code ⇒ 这两列该是 null，**不许**把 transport 文案塞进来。
 		if got["error_code"] != nil || got["error_message"] != nil {
 			t.Errorf("这一趟没有 error 信号，error_code/error_message 该是 null，实际 %#v / %#v",

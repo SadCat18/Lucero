@@ -5,17 +5,20 @@ package main
 // 全 Core 的写停摆的地方，09-25 裁、09-27 落；见 `api/http/executions.go` 的三拍注释）。
 //
 // 三件事决定它长这样（与 discoverassembly 同一批口径）：
-//   - **一次 send 现起一条连接**：v0.1 不做连接池（C42 未裁），连完就关。
-//     每次多起一个子进程是已知代价，"连接复用后置"记在这条注释里。
+//   - **连接是常驻的，不归这一腿关**：REQ-TURN-1 裁「Ⅰ」（契约① 第 25 条 ④-b，09-28 21:4x）之后，
+//     每个 adapter key 一条常驻连接由 `turnHub` 持有（`turnpump.go`），C42 随裁放开。
+//     这里既不 `Connect` 也不 `Close`：拿一条、用完就还回泵手里。旧注释那句"一次 send 现起一条连接、
+//     连完就关"是修之前的形状，它和"回执之后收尾帧没人收"是同一件事的两面。
 //   - **必须走 CallTurn 而不是 Call**：§6 规则 5 按 turn_ref 归因证据帧，
 //     CallTurn 在出帧前把 request id 绑到 ExecutionID 上；用 Call 就没有这个绑定，
 //     turn/claimed 那一对（CO-8）会因归不上而被丢掉。
 //   - **错误归一成 *adapter.Error**：transport 的 switch 只收哨兵与 adapter.Error
 //     （契约③ §7）。Connect/Initialize/LostError/ctx deadline 等非 adapter 错误
 //     一律包成 ADAPTER_UNRESPONSIVE ⇒ 503 —— 那正是"这个 Adapter 病了"的处置。
-//   - **收尾帧在 `Close` 之前收**（甲，T-370① 裁）：v0.1 一次调用一条连接，返回就关 ⇒
-//     不在这里排空 `Inbound()`，那一帧就随连接一起没了。排空是 `sendreap.go` 那一块，
-//     非阻塞、只按帧内容认（详见那个文件的注释）。
+//
+// 这里**不再收收尾帧**（③ 给的字：`sendreap.go` 那套"只收不写 + 三态分辨"整搬进泵、回执后那条收割腿删除）。
+// 上一形状（甲，T-370①）在 `Close` 之前非阻塞扫一遍缓冲，因为那条连接马上就不在了；
+// 现在帧要么已经到（泵早一步收走）、要么晚一点到（泵等着），两种都不需要 send 这一腿自己扫。
 
 import (
 	"context"
@@ -47,14 +50,16 @@ const sendAttemptDeadline = 10 * time.Second
 
 // sendPipe 满足 execution.TurnCaller。
 type sendPipe struct {
-	read   *sql.DB
-	launch *launcher
-	byKey  map[string]adapterSpec
-	logf   func(format string, args ...any)
+	read  *sql.DB
+	hub   *turnHub
+	byKey map[string]adapterSpec
+	logf  func(format string, args ...any)
 }
 
-// CallSendTurn 反查落点 → 起连接 → 握手 → CallTurn(session/send) → 校验回执。
+// CallSendTurn 反查落点 → 取常驻连接 → CallTurn(session/send) → 校验回执。
 // 返回 TurnReceipt{Accepted, Reason}；Reason 只给调用方 logf，yaml 没有出口。
+// 握手与起孩子都在 `turnHub.connection` 里（那里用的是同一个 `cctx`：期限管这条请求腿愿意等多久，
+// 管不到连接活多久 —— 那是「Ⅰ」之后的分工）。
 func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (execution.TurnReceipt, error) {
 	// 反查 adapter_key 与远端会话 id。session 没行 ⇒ 包成 session.ErrSessionNotFound（transport ⇒ 404）。
 	// remote_session_id 为空 ⇒ ErrSessionNotLinked 家族（404 session_not_found：send 没有落点）。
@@ -89,17 +94,14 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 		defer cancel()
 	}
 
-	conn, err := p.launch.supervisorFor(adapterKey.String).Connect(cctx, coreProtocolVersion())
+	// 半装配的装配体（`hub` 为 nil）走域里那一条 `ErrTurnNotWired` ⇒ 501，与 `Deliver` 里
+	// `s.turn == nil` 那一处同一个码：这里既没有连接面也没有泵，跟"这个 Adapter 病了"（503）是两件事。
+	if p.hub == nil {
+		return execution.TurnReceipt{}, execution.ErrTurnNotWired
+	}
+	conn, err := p.hub.connection(cctx, adapterKey.String)
 	if err != nil {
 		return execution.TurnReceipt{}, unresponsive("起连接", err)
-	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			p.logf("send %s: 关闭连接失败: %v", call.ExecutionID, err)
-		}
-	}()
-	if _, err := conn.Initialize(cctx); err != nil {
-		return execution.TurnReceipt{}, unresponsive("握手", err)
 	}
 
 	// QueueStrategy 不发明：yaml SendResult 的 queue 走本地队列，不经过这条连接面；
@@ -113,6 +115,11 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 	}
 	f, err := conn.CallTurn(cctx, call.ExecutionID, "session/send", params)
 	if err != nil {
+		// 对端没了 ⇒ 这条常驻连接不再可用：退役它，下一次 send 重连（④ 那句"死亡即重连"）。
+		// 不在这里重试 —— §7.2 把 v0.1 钉在"一次调用一次尝试"上，重连是下一发的事。
+		if connectionLost(err) {
+			p.hub.retire(adapterKey.String, "session/send 里对端没了")
+		}
 		// 非 *adapter.Error（连接丢失 / ctx 超时 / 写失败）⇒ 归一成 503。
 		return execution.TurnReceipt{}, unresponsive("session/send", err)
 	}
@@ -133,12 +140,9 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 		// accepted=false 的 reason 只有 logf 这一个出口（yaml SendResult 没有 reason 键）。
 		p.logf("send %s: adapter 拒了 delivery=%s: %s", call.ExecutionID, call.Delivery, res.Reason)
 	}
-	// 甲（T-370①）：拿到回执了 ⇒ 这条连接还活着，趁 `Close`（deferred，在本函数返回之后）把缓冲里的
-	// `turn/finished` 收上来。**这里只收不写**：写终态是 handler 在第二笔短事务里问 (a) 的事。
-	// 收帧 + 三种状态的分辨都住在 `sendreap.go`（边界三：这块能整搬）；这里只留一行调用与一次交接。
-	fin := reapTurnFinished(conn.Inbound(), call.ExecutionID)
-	noteTurnFinish(p.logf, call.ExecutionID, fin)
-	return execution.TurnReceipt{Accepted: res.Accepted, Reason: res.Reason, Finish: fin}, nil
+	// 回执就是回执：收尾帧不在这里收（③ 删掉的那条收割腿），也不随返回关闭连接（「Ⅰ」）。
+	// 返回之后 `turn/finished` 什么时候到、落到哪，是 `turnpump.go` 那条泵的事。
+	return execution.TurnReceipt{Accepted: res.Accepted, Reason: res.Reason}, nil
 }
 
 // unresponsive 把一切非 adapter 错误归一成 ADAPTER_UNRESPONSIVE ⇒ 503。

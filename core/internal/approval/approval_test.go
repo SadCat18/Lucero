@@ -29,6 +29,8 @@ type fakeStore struct {
 	resolutions []resolveCall
 	expireRuns  []int64
 	revokeRuns  []int64
+	listRuns    int // how many times ListPage reached the store
+	listErr     error
 	expireErr   error
 	revokeErr   error
 	nextID      int
@@ -99,6 +101,17 @@ func (f *fakeStore) ExpirePending(_ context.Context, at int64) error {
 func (f *fakeStore) RevokeGrants(_ context.Context, at int64) error {
 	f.revokeRuns = append(f.revokeRuns, at)
 	return f.revokeErr
+}
+
+// ListPage counts the calls rather than answering them: the illegal-state leg
+// asserts the store was never reached, and a fake that returned rows here would
+// hide exactly that. The rows themselves are tested against a real database.
+func (f *fakeStore) ListPage(context.Context, ListFilter) ([]Approval, ListPosition, error) {
+	f.listRuns++
+	if f.listErr != nil {
+		return nil, ListPosition{}, f.listErr
+	}
+	return nil, ListPosition{}, nil
 }
 
 func (f *fakeStore) events() []string {

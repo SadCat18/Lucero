@@ -23,6 +23,22 @@ const (
 	CANCELLED = "CANCELLED"
 )
 
+// allStates is that domain in one place. Listing a state anywhere else invites a
+// second copy that drifts from the CHECK — the failure REQ-A8 is about.
+var allStates = []string{PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED}
+
+// validState is the only arbiter of "is this a state". An unknown value is an
+// error rather than an empty page: a typo'd filter that answers "nothing here"
+// would look like an empty inbox to whoever is checking whether an approval ran.
+func validState(s string) error {
+	for _, v := range allStates {
+		if v == s {
+			return nil
+		}
+	}
+	return fmt.Errorf("approval: %q is not an approvals.state value", s)
+}
+
 // StateNone is BlockingState's answer when nothing is bound to the execution:
 // no approval was required, or none is outstanding, so the caller may proceed.
 const StateNone = "NONE"
@@ -136,6 +152,28 @@ type requestPayload struct {
 	CorrelationID string          `json:"correlation_id,omitempty"`
 }
 
+// ListFilter is a read-only page request for the approvals list.
+type ListFilter struct {
+	// State nil means "every state". The distinction is not decoration: an empty
+	// string must not quietly mean PENDING, or the panel can no longer ask for
+	// "everything" (same ruling as the notification inbox's C26 ②).
+	State *string
+	// After is the keyset position from the previous page's last row. Internal
+	// contract §2 bans offset paging, and encoding this pair into a wire cursor is
+	// the transport's job — this package never sees a cursor string.
+	After *ListPosition
+	// Limit ≤ 0 falls back to defaultListLimit at the store.
+	Limit int
+}
+
+// ListPosition is a row's place in the (requested_at, id) keyset order. The
+// zero value means "no more pages", which is a pagination statement, not a
+// judgement about the row — the two cursor vocabularies in contract §3 stay apart.
+type ListPosition struct {
+	RequestedAt int64
+	ID          string
+}
+
 // RequesterPrincipal recovers the acting principal from request_json.
 func (a Approval) RequesterPrincipal() (string, error) {
 	var p requestPayload
@@ -170,6 +208,9 @@ type Store interface {
 	MarkResolved(ctx context.Context, current Approval, res Resolution, grant permission.Grant, at int64) (bool, error)
 	ExpirePending(ctx context.Context, at int64) error
 	RevokeGrants(ctx context.Context, at int64) error
+	// ListPage is the read-only page behind GET /api/v1/approvals: no event, no
+	// audit row, no state change, and no write of any kind.
+	ListPage(ctx context.Context, f ListFilter) ([]Approval, ListPosition, error)
 }
 
 // Service is the approval.Service of internal contract §3. BlockingState is the
@@ -306,10 +347,11 @@ func grantWindow(startsAt, expiresAt int64) error {
 }
 
 func validateResolution(res Resolution) error {
-	switch res.State {
-	case APPROVED, REJECTED, EXPIRED, CANCELLED:
-	default:
-		return fmt.Errorf("approval: Resolution.State %q is not a decision", res.State)
+	if err := validState(res.State); err != nil {
+		return err
+	}
+	if res.State == PENDING {
+		return fmt.Errorf("approval: PENDING is not a decision")
 	}
 	if res.By == "" {
 		return fmt.Errorf("approval: Resolution.By is required for audit")
@@ -397,6 +439,30 @@ func (s *Service) BlockingState(ctx context.Context, executionID string) (string
 	default:
 		return StateNone, nil
 	}
+}
+
+// ListPage answers "which approvals are there" — the read side of the same
+// aggregate, for the panel's list. It is deliberately the Service's method and not
+// a query backend may write: the approvals table is this package's to read as
+// well as to write (internal contract §3 rule 1).
+//
+// Nothing here decides anything new. The state vocabulary is validState's, the
+// "is this PENDING still waiting" rule is Approval.DeadlinePassed's (see
+// SQLiteStore.ListPage for how the SQL stays honest to it), and the keyset order
+// is the store's. An illegal State is rejected before the store is reached, so a
+// typo cannot come back as "no approvals today" — that answer would look like an
+// empty inbox while the real cause was the filter.
+func (s *Service) ListPage(ctx context.Context, f ListFilter) ([]Approval, ListPosition, error) {
+	if f.State != nil {
+		if err := validState(*f.State); err != nil {
+			return nil, ListPosition{}, err
+		}
+	}
+	list, last, err := s.store.ListPage(ctx, f)
+	if err != nil {
+		return nil, ListPosition{}, fmt.Errorf("approval: list page: %w", err)
+	}
+	return list, last, nil
 }
 
 // SweepExpired converges state that time itself decided: pending approvals past

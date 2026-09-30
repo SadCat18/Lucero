@@ -85,8 +85,12 @@ type Core struct {
 	// discover 是 sessions:discover 那条腿，与 probe 同一个 launcher、同一句"没配就是 nil"；
 	// 注入走 discoverField()，同一条 typed-nil 陷阱不解释第二遍。
 	discover *discoverService
-	ln       net.Listener
-	tickets  *httpapi.Tickets
+	// turns 是 REQ-TURN-1「Ⅰ」那条常驻入站泵（每 adapter key 一条常驻连接 + 一条泵）。
+	// 它不进任何接口：没有人"调用"它，它是自己收帧、自己落那一笔短事务的后台腿。
+	// nil = 一个 `-adapter` 都没配（见 newAdapterServices 那句），关停时 closeAll 对 nil 什么都不做。
+	turns   *turnHub
+	ln      net.Listener
+	tickets *httpapi.Tickets
 
 	state atomic.Pointer[string]
 }
@@ -208,16 +212,19 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	// T-181① / T-198：probe、discover、send 三条腿一起装配（同一份 `launcher`、同一套"这个 key 怎么起"）。
 	// 一个 `-adapter` 都没给 ⇒ 三个都是 nil ⇒ transport 那三格维持 501
 	// （"这台机器没配 Adapter"与"你给错了 key"是两种处置，不许拿 400 伪装成前者，见 probeassembly.go）。
-	probe, discover, sendPipe, err := newAdapterServices(d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
-		func(format string, args ...any) { log.Printf(format, args...) }, core.sessionSvc)
+	probe, discover, sendPipe, turns, err := newAdapterServices(ctx, d, core.store, cfg.Adapters.specs, probeAttemptDeadline, nowMillis,
+		func(format string, args ...any) { log.Printf(format, args...) }, core.sessionSvc, core.executions)
 	if err != nil {
 		core.close()
 		return nil, err
 	}
 	core.probe = probe
 	core.discover = discover
+	core.turns = turns
 	// 连接半边：send 的 start_now/guide 走这里；nil 时那两态 501 ErrTurnNotWired，queue 照常。
 	// 可以晚于 EnableSend —— 两格独立，NewService 签名不变。
+	// 「Ⅰ」之后这条腿还带一个副作用：它起的连接是**常驻**的，收尾帧由 `core.turns` 那条泵收，
+	// 回执里不再带回收尾证据（见 sendpipe.go 头部那句）。
 	if sendPipe != nil {
 		core.executions.EnableTurn(sendPipe)
 	}
@@ -480,6 +487,11 @@ func (c *Core) close() {
 	// 会让"Core 停下来了"这件事实被误报。
 	if err := c.flushAuditAnchor(); err != nil {
 		log.Printf("core: 审计锚点没收尾: %v", err)
+	}
+	// 常驻连接在孩子那一侧是**真进程**：不还回去就是一台没人认领的子进程，
+	// 而 §14 那一行会永远留在 RUNNING。排在关库之前 —— 泵的最后一笔写要还能落下去（等它退出有界，见 pumpExitBound）。
+	if c.turns != nil {
+		c.turns.closeAll()
 	}
 	if c.lock != nil {
 		c.lock.release()

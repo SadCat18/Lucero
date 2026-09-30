@@ -309,9 +309,17 @@ func (f *fake) debugHang(req *adapter.Frame) error {
 // `on` is mandatory rather than defaulting to true: a forgotten arm would make the double
 // look like an adapter that never finishes, and that is the accident this file exists to
 // keep unproducible.
+//
+// `code` is the release's argument only, and it is what makes §6 第 6 条's middle state
+// producible from this double: with no way to name the closing frame's result, the wire
+// could show 没帧 and 有帧且落终态 but never **有帧但码未裁**, and a reader that maps an
+// unmapped code by guessing success would have nothing to be caught by. An empty `code`
+// means SUCCEEDED because `NewStream` rejects a `turn/finished` without one; a code given
+// while arming is refused rather than kept for a release that may never come.
 func (f *fake) debugHold(req *adapter.Frame) error {
 	var p struct {
-		On *bool `json:"on"`
+		On   *bool  `json:"on"`
+		Code string `json:"code,omitempty"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return f.reply(errReply(req, badParams(req.Method, err)))
@@ -321,18 +329,28 @@ func (f *fake) debugHold(req *adapter.Frame) error {
 			Message: "debug/hold needs an explicit on: true|false"}))
 	}
 	if *p.On {
+		if p.Code != "" {
+			return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInvalidParams,
+				Message: "debug/hold code belongs on the release (on:false), not on the arming"}))
+		}
 		f.hold = true
 		fmt.Fprintf(f.logs, "debug/hold on: the next turn/finished arrives when the hold is released\n")
 		return f.reply(result(req, map[string]any{"armed": true}))
 	}
 	f.hold = false
+	code := p.Code
+	if code == "" {
+		code = resultSucceeded
+	}
 	open := f.open
 	if open != nil {
-		if err := f.finish(open, resultSucceeded); err != nil {
+		if err := f.finish(open, code); err != nil {
 			return err
 		}
+	} else if p.Code != "" {
+		fmt.Fprintf(f.logs, "debug/hold off with code %q, but nothing is open to close\n", code)
 	}
-	fmt.Fprintf(f.logs, "debug/hold off, closed the open turn: %v\n", open != nil)
+	fmt.Fprintf(f.logs, "debug/hold off, closed the open turn as %q: %v\n", code, open != nil)
 	return f.reply(result(req, map[string]any{"armed": false, "closed": open != nil}))
 }
 
@@ -375,7 +393,7 @@ func (f *fake) sessionSend(req *adapter.Frame) error {
 		hit.IdempotencyHit = true
 		return f.reply(result(req, hit))
 	}
-	res, err := f.accept(req.ID, p)
+	res, opened, err := f.accept(req.ID, p)
 	if err != nil {
 		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInternal,
 			Message: "fake-adapter: " + err.Error()}))
@@ -388,13 +406,19 @@ func (f *fake) sessionSend(req *adapter.Frame) error {
 		return err
 	}
 	f.sent[p.IdempotencyKey] = res
+	if opened != nil {
+		return f.settle(opened)
+	}
 	return nil
 }
 
-// accept is the part that changes state, and returns the reply only once the frames
-// that evidence it are on the wire: CO-7 forbids reporting a delivery the fake did
-// not actually open.
-func (f *fake) accept(ref string, p adapter.SendParams) (adapter.SendResult, error) {
+// accept is the part that changes state and puts this send's evidence on the wire - the
+// CO-8 pair included, so the reply never claims a delivery the fake did not actually open
+// (CO-7). It returns the turn this send **opened**, which is the one thing it does not
+// close: T-392 ① rules that a run's `turn/finished` sits **after** its own receipt, so
+// that frame is `settle`'s business once the reply is out. A nil turn means this send
+// opened nothing (queued, or steered into the turn already running).
+func (f *fake) accept(ref string, p adapter.SendParams) (adapter.SendResult, *turn, error) {
 	switch p.Delivery {
 	case adapter.DeliveryQueue:
 		f.position++
@@ -404,34 +428,34 @@ func (f *fake) accept(ref string, p adapter.SendParams) (adapter.SendResult, err
 		// No turn_id here: CO-7 lets a queued reply claim only "queued + position".
 		return adapter.SendResult{Accepted: true,
 			Reason:        fmt.Sprintf("queued behind the open turn (%s)", p.Strategy()),
-			QueuePosition: &pos}, nil
+			QueuePosition: &pos}, nil, nil
 
 	case adapter.DeliveryGuide:
 		if f.open != nil {
 			// Steering: the open turn keeps its evidence pair and gets another delta.
 			if err := f.delta(f.open, p.Text); err != nil {
-				return adapter.SendResult{}, err
+				return adapter.SendResult{}, nil, err
 			}
 			return adapter.SendResult{Accepted: true, Reason: "steered into the open turn (§5 guide)",
-				TurnID: f.open.turnID, ProviderExecutionID: f.open.providerID}, nil
+				TurnID: f.open.turnID, ProviderExecutionID: f.open.providerID}, nil, nil
 		}
 		// §5 makes guide "an interruption of the turn in flight"; with none, the only
 		// honest readings are a refusal or a new turn. The fake reports which it did,
 		// because a reply that silently opens a turn is §5's other half of the accident.
 		t, err := f.startTurn(ref, p)
 		if err != nil {
-			return adapter.SendResult{}, err
+			return adapter.SendResult{}, nil, err
 		}
 		res := started(t)
 		res.Reason = "no turn was in flight, so guide opened one (§5)"
-		return res, nil
+		return res, t, nil
 
 	default: // start_now
 		t, err := f.startTurn(ref, p)
 		if err != nil {
-			return adapter.SendResult{}, err
+			return adapter.SendResult{}, nil, err
 		}
-		return started(t), nil
+		return started(t), t, nil
 	}
 }
 
@@ -473,16 +497,29 @@ func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
 			return nil, err
 		}
 	}
-	// §6 第 6 条③: evidence() above is this run's whole output, so by default the closing
-	// frame goes right here - without it a gate watches a session where every turn opens
-	// and none ends. debug/hold is the only thing that defers it, and releasing the hold
-	// is what closes a held turn (that release is also where CO-25's drain fires).
-	if !f.hold {
-		if err := f.finish(t, resultSucceeded); err != nil {
-			return nil, err
-		}
-	}
+	// §6 第 6 条③ says this run must close, and T-392 ① says where: after the receipt this
+	// send is about to write, not here. `settle` owns that frame; startTurn opening a turn
+	// is not the same act as ending one.
 	return t, nil
+}
+
+// settle closes the turn a send opened, one step after that send's receipt went out.
+//
+// The position is the whole point (T-392 ①, and it is what CO-54 was really ruling out
+// when it refused "即时收尾"): a run's closing frame has to be a frame the reader catches
+// **while the connection is still open and after it has already answered**, because that
+// is the only ordering where a per-send reader that stops at the receipt can be told
+// apart from one that is watching. Before the receipt, "did Core see the end?" is
+// unanswerable - the frame is already in the buffer when the answer is handed over.
+//
+// debug/hold defers this exact call: held, the opened turn stays open and the release is
+// where the frame and CO-25's drain go out instead. That makes two independent witnesses
+// of the same position rather than one shape that always closes at the reply.
+func (f *fake) settle(t *turn) error {
+	if f.hold {
+		return nil
+	}
+	return f.finish(t, resultSucceeded)
 }
 
 // evidence emits turn/claimed then turn/dispatched: "the Adapter took the job" and

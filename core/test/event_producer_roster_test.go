@@ -71,17 +71,19 @@ type fnBits struct {
 // fileFacts：一个文件里能拿来做回解的四样东西（②③ 两层都在这里）。
 type fileFacts struct {
 	pkg   string
-	alias map[string]map[string]bool // 变量名/同包常量名 → 可能取的字面值（含赋值链）
-	funcs map[string]map[string]bool // 函数名 → 它可能产出的字面值（汇聚函数的来源）
-	lits  map[string]bool            // 函数体内出现过的字面量（兜底用；不含 import 路径与常量声明）
-	src   map[string]string          // 变量名 → 喂给它的那个表达式原文（看不见时点名用）
+	alias map[string]map[string]bool          // 变量名/同包常量名 → 可能取的字面值（含赋值链）
+	funcs map[string]map[string]bool          // 函数名 → 它可能产出的字面值（汇聚函数的来源）
+	lits  map[string]bool                     // 函数体内出现过的字面量（兜底用；不含 import 路径与常量声明）
+	src   map[string]string                   // 变量名 → 喂给它的那个表达式原文（看不见时点名用）
+	call  map[string]map[string]*ast.CallExpr // 函数裸名 → 变量名 → 右侧那个调用（**必须按函数分格**，见 recordCall）
 	bits  map[string]*fnBits
 }
 
 func newFileFacts(pkg string) fileFacts {
 	return fileFacts{pkg: pkg,
 		alias: map[string]map[string]bool{}, funcs: map[string]map[string]bool{},
-		lits: map[string]bool{}, src: map[string]string{}, bits: map[string]*fnBits{}}
+		lits: map[string]bool{}, src: map[string]string{}, call: map[string]map[string]*ast.CallExpr{},
+		bits: map[string]*fnBits{}}
 }
 
 func (f fileFacts) addAlias(name string, vals ...string) {
@@ -108,6 +110,7 @@ type draftTypeSite struct {
 	values  []string // 回解出的全部候选（含垃圾：格式串、错误文案）
 	covered []string // values ∩ §6 词表 ⇒ 只有这个集合算覆盖
 	byL4    []string // 只靠第四层（形参←调用点实参）才认到的名字，读数里单标
+	byL5    []string // 第五层（闭包 return 第一位）并进来的名字
 	impact  []string // 未决所及：这一处若再放宽一层会捞到哪些词表名字（只诊断，不算覆盖）
 	pkg     string   // 发射位所在包名（第四层只走同包）
 	kind    string   // literal / const / alias / call / lits / none
@@ -211,6 +214,17 @@ func collectFile(fset *token.FileSet, path string, consts constTable) (fileFacts
 					bb.refs = append(bb.refs, m.(ast.Expr))
 				case *ast.AssignStmt:
 					if len(y.Lhs) != len(y.Rhs) {
+						// 多变量 ← 单个调用（`evType, payload := eventOf(cur)`）：值得等回解，但**右侧那个调用现在就得记**，
+						// 否则第五层永远没有入口 —— 这里原来直接 return，那一格静默失踪（真树 service.go 的 :190 就是这个形状）。
+						if len(y.Rhs) == 1 {
+							if ce, ok := y.Rhs[0].(*ast.CallExpr); ok {
+								for _, lhs := range y.Lhs {
+									if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" {
+										f.recordCall(x.Name.Name, id.Name, ce)
+									}
+								}
+							}
+						}
 						return true
 					}
 					for i, lhs := range y.Lhs {
@@ -226,6 +240,9 @@ func collectFile(fset *token.FileSet, path string, consts constTable) (fileFacts
 						bb.ids = append(bb.ids, y.Rhs[i])
 						if _, has := f.src[id.Name]; !has {
 							f.src[id.Name] = renderExpr(y.Rhs[i])
+						}
+						if ce, ok := y.Rhs[i].(*ast.CallExpr); ok && id.Name != "_" {
+							f.recordCall(x.Name.Name, id.Name, ce) // 第五层入口
 						}
 					}
 				}
@@ -413,6 +430,77 @@ func (f fileFacts) constOrLit(consts constTable, fnNames map[string]bool, e ast.
 	return nil
 }
 
+// resolveClosureOrLit 是**第五层**的解析器：在第四层那一档之上只多认一种形状 ——
+// 实参本身是个 FuncLit，且它 `return` 的**第一位**是包级常量或字符串字面量。
+// 这认的就是 `s.advance(..., func(t Task) (string, any) { return EventQueued, Payload{...} })`：
+// 名字从闭包里回出来，前四层都看不见。再宽（闭包里的计算值、二层回调）一律不认 ——
+// 过程间数据流一开，"看不见"就变成"什么都算看得见"，那才是把判据换成绿灯。
+func resolveClosureOrLit(f fileFacts, consts constTable, fnNames map[string]bool, e ast.Expr) []string {
+	fl, ok := e.(*ast.FuncLit)
+	if !ok {
+		return resolveConstOrLit(f, consts, fnNames, e)
+	}
+	var out []string
+	ast.Inspect(fl.Body, func(n ast.Node) bool {
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) == 0 {
+			return true
+		}
+		out = append(out, resolveConstOrLit(f, consts, fnNames, ret.Results[0])...)
+		return true
+	})
+	return out
+}
+
+// recordCall 记下"某函数里某变量的右侧那个调用"。按函数名分格是必须的：
+// `internal/task/service.go` 里 `evType` 在 :116（`edgeEvent(...)`）与 :190（`eventOf(cur)`）各被赋过一次，
+// 不分格就是第一处吃掉第二处 —— 第五层会对着 `edgeEvent` 回解，:197 那一处永远补不上闭包的名字。
+func (f fileFacts) recordCall(fn, name string, ce *ast.CallExpr) {
+	if f.call[fn] == nil {
+		f.call[fn] = map[string]*ast.CallExpr{}
+	}
+	if _, has := f.call[fn][name]; !has {
+		f.call[fn][name] = ce
+	}
+}
+
+// enclosingFn 给表达式所在函数的**裸名**（不带接收者），与 recordCall 的键一致。
+func enclosingFn(node *ast.File, e ast.Expr) string {
+	for _, d := range node.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		if fd.Body.Pos() <= e.Pos() && e.Pos() < fd.Body.End() {
+			return fd.Name.Name
+		}
+	}
+	return ""
+}
+
+// closureCandidates 把"变量 ← 调用一个形参 ← 该形参在同包调用点收到的 FuncLit ← return 第一位"这条链走通。
+// 每一步走不通就回空（不猜）：这层是给判据加深度的，不是给绿灯兜底的。
+func closureCandidates(node *ast.File, f fileFacts, consts constTable, fnNames map[string]map[string]bool,
+	want map[string]bool, nodes map[string]*ast.File, facts map[string]fileFacts, te ast.Expr) []string {
+	id, ok := te.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	ce, has := f.call[enclosingFn(node, te)][id.Name]
+	if !has {
+		return nil
+	}
+	callee, ok := ce.Fun.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	fn, idx, ok := paramRef(node, callee)
+	if !ok {
+		return nil
+	}
+	return argValuesAt(fn, idx, f.pkg, want, nodes, facts, consts, resolveClosureOrLit, fnNames)
+}
+
 // 两个解析器：第四层用窄的那个，未决诊断用宽的那个（宽只报影响面，不进覆盖集）。
 func resolveConstOrLit(f fileFacts, consts constTable, fnNames map[string]bool, e ast.Expr) []string {
 	return f.constOrLit(consts, fnNames, e)
@@ -567,8 +655,10 @@ func runDraftScan(t *testing.T, root string, catalog []string) draftScan {
 		}
 	}
 	for _, path := range files {
-		node, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
+		// 用 P1 那份 AST，不再 parse 一次：go/token 每次 AddFile 都给新的基址，
+		// 跨 AST 比位置就永远对不上（第五层在这上面空转过一轮 —— paramRef 恒 false）。
+		node, parsed := nodes[path]
+		if !parsed {
 			continue
 		}
 		f := facts[path]
@@ -609,6 +699,20 @@ func runDraftScan(t *testing.T, root string, catalog []string) draftScan {
 					// 现在只把它报成"未决所及"：既不写"有生产者"，也不写"无生产者"。
 					s.impact = intersect(keys(f.lits), want)
 					s.kind = "lits"
+				}
+			}
+			// 第五层（T-394 给的方向）**并入**已有候选：:197 那一处的 `evType` 早被"同文件近似"认成 17 个候选，
+			// 可那 17 个里没有闭包回出来的 `task_queued`/`task_accepted` —— 只等 kind==none 才试第五层就永远轮不到它。
+			for _, v := range closureCandidates(node, f, consts, fnNames, want, nodes, facts, te) {
+				if !hasValue(s.values, v) {
+					s.values = append(s.values, v)
+					s.byL5 = append(s.byL5, v)
+				}
+			}
+			if len(s.byL5) > 0 {
+				sort.Strings(s.values)
+				if s.kind == "none" {
+					s.kind = "closure" // 只有原本什么都认不到时，才把分类改标成第五层认的
 				}
 			}
 			// **候选先与 §6 词表取交集，才算覆盖**（T-365②：不筛就会把 `task: %s`、`payload: %w` 这类
@@ -717,6 +821,9 @@ func siteLine(s draftTypeSite) string {
 	}
 	if len(s.byL4) > 0 {
 		tail += fmt.Sprintf("，仅第四层认定=%s", strings.Join(s.byL4, " "))
+	}
+	if len(s.byL5) > 0 {
+		tail += fmt.Sprintf("，第五层并进=%s", strings.Join(s.byL5, " "))
 	}
 	if len(s.impact) > 0 {
 		tail += fmt.Sprintf("，未决所及（诊断、不算覆盖）=%s", strings.Join(s.impact, " "))
@@ -939,8 +1046,11 @@ func parseProducerRoster(t *testing.T, path string) ([]string, error) {
 		return nil, errAnchor("事件契约里找不到「本名单当前是…」那句 ⇒ 名单当前态没有可锚的形状，这条判据不能凭历史段落跑")
 	}
 	if len(hits) > 1 {
-		t.Logf("名单锚句在 %s 里有 %d 处命中（行号 %s）⇒ 取最后一处；这个形状靠「当前态必须写在最后一句」这条约定，见 T-385③",
-			path, len(hits), strings.Join(hits, " "))
+		// REQ-T37 裁「甲」（主控 09-30 先把两句历史行的锚字改成「当时是」，全文件锚数回到 1）：
+		// 当前态**必须唯一**，多一处就停。以前的"取最后一句"是拿文件顺序当语义，
+		// 谁在现状之后再补一句自洽的同锚句子，判据就会安静读到那句 —— 三道自检都拦不住。
+		return nil, errAnchor(fmt.Sprintf("事件契约里有 %d 处「本名单当前是」（行号 %s）⇒ 当前态不唯一，这条判据不猜哪句是现状；"+
+			"要把历史留着，请像 09-30 那样把历史句的锚字改成「当时是」", len(hits), strings.Join(hits, ", ")))
 	}
 	var names []string
 	for _, seg := range strings.Split(line, "`") {
@@ -1050,7 +1160,8 @@ const (
 	B       = "beta_created"
 	Running = "running_state"
 	Waiting = "waiting_state"
-	LocalDup = "wrong_value"
+	LocalDup  = "wrong_value"
+	Wide      = "wide_only_state"
 )
 `)
 	// 甲之一：常量直接上发射位。
@@ -1160,8 +1271,51 @@ func emitSink(p string) db.EventDraft { return db.EventDraft{Type: p} }
 func note() string { return "sink_only_state" }
 `)
 
+	// 癸（第五层的"窄"那一头）：闭包 return 的第一位是**函数调用结果** ⇒ 第五层不许认。
+	// 不钉这一头，"任何闭包都能造生产者"就是下一个假绿洞（Q4 变异实测 SILENT 才照出来）。
+	writeFixtureGo(t, dir, "svc/wide.go", `package svc
+
+import (
+	"x/db"
+	"x/journal"
+)
+
+func pickWide(x string) string { return journal.Wide }
+
+type S2 struct{}
+
+func (s *S2) run(name string, fn func(string) (string, any)) db.EventDraft {
+	evType, _ := fn(name)
+	return db.EventDraft{Type: evType}
+}
+
+func callWide(s *S2) db.EventDraft {
+	return s.run("a", func(x string) (string, any) { return pickWide(x), nil })
+}
+`)
+
+	// 壬（T-394 方向的反例）：名字从**闭包**里回出来 —— `advance(..., func(t) (string, any) { return journal.Running, nil })`。
+	// 前四层看不见它；第五层必须并进来，否则这个名字会安静地躺在"无生产者"名单里（写进名单=写假事实）。
+	writeFixtureGo(t, dir, "svc/adv.go", `package svc
+
+import (
+	"x/db"
+	"x/journal"
+)
+
+func (s *S) advance(name string, fn func(string) (string, any)) db.EventDraft {
+	evType, _ := fn(name)
+	return db.EventDraft{Type: evType}
+}
+
+type S struct{}
+
+func callAdv(s *S) db.EventDraft {
+	return s.advance("running", func(x string) (string, any) { return journal.Running, nil })
+}
+`)
 	cat := []string{"alpha_created", "beta_created", "gamma_created", "running_state", "waiting_state", "other_created",
-		"local_only_state", "pending_via_state", "sink_only_state"}
+		"local_only_state", "pending_via_state", "sink_only_state", "wide_only_state"}
 	sc := runDraftScan(t, dir, cat)
 	if sc.files < 13 {
 		t.Fatalf("合成树只扫了 %d 个文件 ⇒ 覆盖面不对，后面的断言都无意义", sc.files)
@@ -1191,6 +1345,28 @@ func note() string { return "sink_only_state" }
 		if s.file == "" || s.line == 0 {
 			t.Errorf("未决位点没带 file:line：%+v", s)
 		}
+	}
+	mustDerived, _, _ := splitRoster(cat, sc.producible(), []string{"gamma_created"})
+	// 癸这条腿：闭包回的是**计算值** ⇒ 既不许进覆盖，也不许被说成"有生产者"；它应当留在无生产者那一侧。
+	if sc.emitted["wide_only_state"] {
+		t.Errorf("wide_only_state 只出现在闭包 return 的函数调用结果上，被第五层算成了覆盖 ⇒ 这一层放宽成万能后门")
+	}
+	if !hasValue(mustDerived, "wide_only_state") {
+		t.Errorf("wide_only_state 该留在派生的无生产者集合里却没在 ⇒ 第五层在暗处把它吞了")
+	}
+	// 壬这条腿（T-394）：闭包回出来的名字必须由第五层并进来，且单标 byL5；否则它会在名单里躺着说"没有生产者"。
+	l5 := false
+	for _, s := range sc.sites {
+		if !hasValue(s.byL5, "running_state") {
+			continue
+		}
+		l5 = true
+		if !hasValue(s.covered, "running_state") {
+			t.Errorf("byL5 有 running_state 却没进 covered ⇒ 第五层认到又没算数：%s", siteLine(s))
+		}
+	}
+	if !l5 {
+		t.Errorf("svc/adv.go 那处闭包没被第五层认出来（running_state 仍看不见）⇒ T-394 那一层空转：%s", kindsOf(sc.sites))
 	}
 	// 交集这一腿的自证（两个方向）：反例没被收进候选 = 空转；反例算进了覆盖 = 交集失效。
 	junkSite := false
@@ -1265,7 +1441,7 @@ func note() string { return "sink_only_state" }
 		t.Errorf("gamma_created 只有定义位，该在派生的无生产者集合里却没在 ⇒ 派生集合漂了：%v", dv0)
 	}
 	// 名单对拍两条腿：相等时无差集；漏登记与多登记都要各自点名。
-	_, m0, e0 := splitRoster(cat, sc.producible(), []string{"gamma_created", "other_created"})
+	_, m0, e0 := splitRoster(cat, sc.producible(), []string{"gamma_created", "other_created", "wide_only_state"})
 	if len(m0) != 0 || len(e0) != 0 {
 		t.Errorf("名单与派生集合相等时不许报差集：missing=%v extra=%v", m0, e0)
 	}
@@ -1290,12 +1466,17 @@ func TestProducerRosterParserLegs(t *testing.T) {
 			t.Fatalf("写合成契约失败：%v", err)
 		}
 	}
-	// 腿一：两句同锚（契约现在就是这个形状：旧的"三条"在前、新的"27 条"在后），必须取最后一句。
+	// 腿一（REQ-T37 裁甲之后翻转）：两句同锚 = 当前态不唯一 ⇒ **必须停**，不再"取最后一句"。
+	// 这条断的是旧行为，改行为前先 grep 到有它在断，才没有悄悄把判据换掉。
 	write("> 所以本名单当前是**三条**：`a_created` / `b_created` / `c_created`。\n" +
 		"中间\n> 所以本名单当前是 **4 条**（取代上面那句\"三条\"）：`a_created` / `b_created` / `c_created` / `d_created`。\n")
-	got, err := parseProducerRoster(t, p)
-	if err != nil || len(got) != 4 {
-		t.Errorf("多句同锚时没取到最后一句（读到 %d 个、err=%v）⇒ 名单会被读成旧的那句", len(got), err)
+	if got, err := parseProducerRoster(t, p); err == nil {
+		t.Errorf("两句同锚却照常返回（读到 %d 个）⇒ 硬闸没生效，以后有人补一句就会静默读到错的那句", len(got))
+	}
+	// 腿一乙（该放行必须放行）：单句命中要正常读全 —— 真契约 09-30 起就是这个形状（锚数 1）。
+	write("> 所以本名单当前是 **两条**：`a_created` / `b_created`。\n")
+	if got, err := parseProducerRoster(t, p); err != nil || len(got) != 2 {
+		t.Errorf("单句锚读不出 2 个名字（got=%d err=%v）⇒ 硬闸拦错了东西，真树会假红", len(got), err)
 	}
 	// 腿二：自称条数与实取名字数不一致 ⇒ 必须停（形状与内容脱节的唯一自动喊法）。
 	write("> 所以本名单当前是 **9 条**：`a_created` / `b_created`。\n")
