@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-10-01T00:22:50+08:00   ← 10-01 第一百五十四批：用户授权，首次推送完成（5ce4fbe..b9f21e8、远端回读一致、ahead=0；未交草稿 25 件按判断没跟着走）
+LAST_UPDATED: 2026-10-01T00:46:59+08:00   ← 10-01 第一百五十五批：四处同改 + T-414 入册 48c2547（25 件）、清单七条齐、纯净副本抓到 1/3 负载敏感红（T-416）、ownerID 另开一格
 
 ## Objective
 
@@ -1496,6 +1496,34 @@ test 出题时的现场是"`execution_unknown` 有发射位、但那条分支没
 - 文件构成：96 个 `.go` / 15 个 `.md` / 4 个 `.ts` / 3 个 `.sh` / 1 个 `.yaml`。
 
 **这一笔的意义**：GitHub 上第一次拿到"崩溃四腿在真子进程下实测通过 + 三处同改已登记 + 名册判据第五层"的那棵树（代码面与 `c8df8a9` 逐字相同，而 `c8df8a9` 是我用 `git archive` 干净快照跑过 18 包 ok 的那一棵）。**台账类提交也在里面**——里面有我今天认的三处错和一条被 SKIP 遮住的长期红，都在库里可查，不是只在聊天里说过。
+
+## 第一百五十五批 · 10-01 00:5x（用户说"剩下的推上去"；四处同改 + T-414 **已入册**，纯净副本抓出一枚负载敏感的红）
+
+**① 前置变了，所以 22:3x 那个"等"该解**：backend 22:44 交了 T-414（第八十九批，"停在可入册状态"）⇒ 当时不能入库的唯一理由消失。提交前我实测**所有相关文件最近一次写入是 22:54**（一个半小时前），不在任何人的写窗口里。
+
+**② 入册 = `48c2547`（25 件 +3249/−203）**，逐字路径 add、**没用 `git add -A`**。内容：四处同改（db 常量+目录／backend 的 `claim.go` 发射位与把手列／我 §6 单行／frontend 的 yaml 枚 + TS 投影）+ T-414 三件（泵期限、排空判据、`GET /api/v1/approvals` 接上 T-372 的 `ListPage`；`{id}` 与 `:resolve` 仍 501 但理由换成真话）。提交后 `git status --porcelain` = **0 件**。
+
+**③ 一处派发坐标是我错的**：我 T-414① 说"四枚外呼没带期限"，backend 把同一文件里 `h.ctx` 的外呼**列全**之后是**五条腿六处**（多 `recordClaim :499/:500` 与 `FinishFromTurn :546/:547`），它按同一款违规一起办、并把多出的两处报给我 ⇒ **教训进记忆：派发行里的坐标清单必须是穷举的结果 + 计数，不能举例**。
+它还额外用判据钉住量级：`TestPumpCallDeadlineMatchesItsFamily` 断 `pumpCallDeadline == sendAttemptDeadline == probeAttemptDeadline` 且 `pumpExitBound < pumpCallDeadline` —— 这正是"数我裁、那一行由执行者写并自证"该有的形状。
+
+**④ 入册读数（清单七条齐了，全带时刻）**：
+- 默认面：`go build` RC=0、`gofmt -l` 空；`go test -v ./...` = **18 包 ok / 顶层 656 PASS / 25 SKIP / 0 FAIL** @00:32:25；C8-12 `目录 66 / 常量 66、两个"独有"皆空`；C8-13 `三格相等 §6=66 / yaml=66 / 常量=66、四条边全空`；名册锚句自检 21=21。
+- 真子进程面（工作树那趟）：`./cmd/core/` **ok 62.985s**、`./test/` **ok 21.682s**、**140 PASS / 3 SKIP / 0 FAIL** @00:33:28。
+- 归属门：`check_ownership.sh` 0 越界 `OWN_RC=0`；`--selftest` OK `SELFTEST_RC=0`；七族 50 条 ID 去重后仍 50。
+- 指纹：`5cec753547d4f3460eddea3e8151b8a4`（构建 00:34:52）。
+- **第 7 条（纯净副本复验）没白跑**：`git archive HEAD` 导出后 `go test -v ./...` = **19 ok / 656 PASS / 25 SKIP / 0 FAIL**（SNAP_RC=0 @00:39:45），但**带旗标那一趟 `./cmd/core/` FAIL 1 条**（SNAP_FLAG_RC=1 @00:40:50）。
+
+**⑤ 那枚红的真相是"负载敏感"，我量化到能派活的程度**：失败的是 `TestPumpReconnectsAfterTheAdapterDies`（`turnpump_late_test.go:239`「重连之后那一发该被接住」拿到 `ADAPTER_UNRESPONSIVE`）。同一份代码：工作树整包跑 **过**（00:33:28）、快照整包跑 **红**（00:40:50）、快照整包再跑 **过**（00:45:10）⇒ **整包 3 趟 1 红 ≈ 1/3**；而**孤立连跑 `-count=5` = 5/5 全绿、5.858s**（00:43:30）。⇒ 不是那条重连逻辑坏了，是它在整包负载下（真起子进程、端口、连接）偶发。**派 T-416 → backend 判性质**：负载时序还是包内共享状态；**不许用 `-count=1` 的一次绿当交付**，也不许为了躲它把旗标关掉。
+
+**⑥ 另开一格、不混本批**：backend 上报 `ownerID` 那腿走 `d.Read.QueryRow`（**没有 ctx 形参**、读池 4 条连接）⇒ 它不是第 23 条⑧款那张**唯一写连接**，加期限要改签名，属另一件事。**裁：本批不动**，我记账待裁（要不要给读面也立"每次调用自带期限"，等 Wave-3 面板那批一起看，那时读面并发才真吃紧）。
+
+**⑦ 我没跑的一格明写**：`apps/desktop` 与 `packages/api-client` 是 TS，本趟只跑 Go 面 ⇒ **前端构建/测试未验**，归 Wave-3 面板那一格；它们进这笔只为不与 yaml 留下"定义有、投影没有"的悬空态。
+
+## 待投递 · 第一百五十五批
+
+| # | 目标 role | 状态 | 指令 |
+| --- | --- | --- | --- |
+| T-416 | backend | **待投递** | 一枚**负载敏感的红**归你判性质（不是新缺陷，别去改产品逻辑凑它）。 事实我量齐了，同一条代码：`TestPumpReconnectsAfterTheAdapterDies`（`turnpump_late_test.go:239`，拿到的错是 `ADAPTER_UNRESPONSIVE: send session/send: adapter process is gone; in-flight state is unknown … no reply`）——工作树整包 **过** @00:33:28；`git archive HEAD` 快照整包 **红** @00:40:50；同一快照整包再跑 **过** @00:45:10 ⇒ **整包 3 趟 1 红 ≈ 1/3**；**孤立 `-count=5` 5/5 全绿**（5.858s @00:43:30）。 要三件：**① 判性质**——是负载/端口/进程时序，还是包内共享状态（同一 test binary 里前一条用例留下的资源）；给能区分这两种的读数，不要只给猜测。 **② 复现跑法固定下来**：`LUCERO_TEST_FAKE_ADAPTER=1 go test -count=3 ./cmd/core/`（整包、带旗标）作为这一格的验收跑法，**三次都要报**；不许用 `-count=1` 的一次绿当交付，也不许为了躲它把旗标关掉或给用例加 sleep。 **③ 若判出来是"用例之间抢资源"**，修法在用例自己的隔离（各起各的子进程、各占各的端口、收尾等干净），不在生产码里加兜底。 出处：台账第一百五十五批 ④／⑤。交账带 numstat、`bash scripts/build_stamp.sh` 指纹、`=== RUN` 计数（非 `-v` 看不见 SKIP）。 |
 
 ## 待投递 · 第一百五十二批（09-30 21:3x：直投被封，走巡检）
 
