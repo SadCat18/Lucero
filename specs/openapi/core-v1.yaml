@@ -873,7 +873,7 @@ components:
         task_state_corrected,
         execution_created, execution_starting, execution_started, execution_output_flushed, execution_paused,
         execution_resumed, execution_approval_requested, execution_approval_resolved,
-        execution_cancelled, execution_failed, execution_succeeded, execution_interrupted,
+        execution_cancelled, execution_failed, execution_succeeded, execution_interrupted, execution_unknown,
         approval_requested, approval_resolved, approval_expired, approval_cancelled,
         grant_issued, grant_revoked, grant_expired,
         policy_created, policy_updated,

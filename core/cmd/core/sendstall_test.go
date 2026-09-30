@@ -54,7 +54,7 @@ func stallFixtureTap(t *testing.T, mode string) (*httptest.Server, *db.DB, *int,
 	// 真会发帧的装配（fake-adapter）在 `turnpump_late_test.go` 里带的是真 Service。
 	pipe.hub = newTurnHub(context.Background(),
 		newLauncher(pipeCommand(mode), sendAttemptDeadline, tapPID(tap, pid), auditedStore{d: d}, nil),
-		auditedStore{d: d}, nil, tap.f)
+		auditedStore{d: d}, nil, nil, nil, tap.f)
 	t.Cleanup(pipe.hub.closeAll)
 
 	must := func(q string, args ...any) {
@@ -146,6 +146,19 @@ func (l *logTap) wait(t *testing.T, sub string, within time.Duration) bool {
 			return false
 		}
 	}
+}
+
+// lineWith 返回最后一条含 sub 的行（判据要看某一声明白里的数字，不只看有没有喊过）。
+func (l *logTap) lineWith(sub string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	last := ""
+	for _, s := range l.lines {
+		if strings.Contains(s, sub) {
+			last = s
+		}
+	}
+	return last
 }
 
 func (l *logTap) count(sub string) int {

@@ -363,7 +363,7 @@ func TestSendAttemptDeadlineIsItsOwnConstant(t *testing.T) {
 // 走到就说明形状变了，那时它会以 nil 解引用红得很难看 —— 那是想要的效果，不是要兜的分支。
 func silentHub(t *testing.T, l *launcher, d *db.DB) *turnHub {
 	t.Helper()
-	hub := newTurnHub(context.Background(), l, auditedStore{d: d}, nil, nil)
+	hub := newTurnHub(context.Background(), l, auditedStore{d: d}, nil, nil, nil, nil)
 	// 常驻 = 用例结束必须退役，否则这两条用例会各留一台活着的孩子（本包跑完查残留，见台账）。
 	t.Cleanup(hub.closeAll)
 	return hub

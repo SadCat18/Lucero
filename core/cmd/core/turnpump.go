@@ -41,6 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
@@ -66,13 +67,32 @@ type turnHub struct {
 	launch *launcher
 	store  auditedStore
 	svc    *execution.Service
-	logf   func(format string, args ...any)
+	// health 是 §7.2 那一列的**唯一写口的调用位**（T-402 ① 把它开在 `internal/adapter`：
+	// `(*adapter.SQLiteStore).DowngradeHealth`）。泵只调用、不写那条 SQL，也不自己拼第二份健康模型（§7.2）。
+	// nil = 没配健康写口（测试里可以不带），那时死亡只喊、不动 health。
+	health *adapter.SQLiteStore
+	// facts 是崩溃那一支要的过程事实（按 adapter_instance_id 取）。SQL 住在本层，域不碰那张表（§0）。
+	facts execution.ProcessFacts
+	logf  func(format string, args ...any)
 	// ctx 是 Core 的生命周期，不是任何一次请求的：泵与连接都挂它。
 	// 请求腿自己的期限在 `sendpipe.go`（`sendAttemptDeadline`），两件事不能混。
 	ctx context.Context
 
 	mu    sync.Mutex
 	links map[string]*residentLink
+
+	// flights 是"这台连接上还没收到收尾的执行"，键是 execution_id。它的存在理由只有一个：
+	// 崩溃那一支要一份**可归属的在飞名单**（协议 §8：崩溃只影响该 Adapter 上的 in-flight Execution）。
+	// 名单不能从库里猜（"哪些 RUNNING"会把别的 Core 世代、别人的连接也算进来），只能是**我自己发过帧的那些**。
+	// provider id 记在这里：契约② §6 规则 3 要它挂在 `turn/claimed` 那一刻，泵是全仓唯一看见那一帧的地方。
+	flightsMu sync.Mutex
+	flights   map[string]flight
+}
+
+// flight 一条在飞执行的观察：挂在哪个 key 上 + claimed 带回来的 Provider 把手（没有则空串，不猜）。
+type flight struct {
+	adapterKey string
+	providerID string
 }
 
 // residentLink 一个 key 的常驻面：一份 Supervisor（`Rec`/生命周期写口只构造一次）+ 当下这条连接 + 它的泵。
@@ -83,6 +103,18 @@ type residentLink struct {
 	mu   sync.Mutex
 	sup  *process.Supervisor
 	conn *process.Connection
+	// child 是这条连接骑的那个进程（T-398 ① 的 `NewConnection` 要求"本 Supervisor 自己起的"，
+	// 死亡观察也要它：`Child.Wait` 是 `Run` 用的同一个原语）。
+	child *process.Child
+	// closing = "是我们主动关的"（Core 关停）。死亡观察拿它区分"对端死了"与"我们收了它"，
+	// 拿不准就宁可不当崩溃处理 —— 把一次正常关停写成一片 UNKNOWN 改判是更坏的错。
+	closing atomic.Bool
+	// watchCancel 只停"死亡观察"这一件事。它必须存在并且只在**主动关停**时按：
+	// `Child.Wait` 在整个等待期间持有 `waitMu`，而 `Connection.Close` 第一句之后要问
+	// `Child.Reaped()`（同一把锁）—— 一个不被取消的长 Wait 与一次 Close 就是死锁，
+	// 本批实测的栈：goroutine A 在 `Child.Wait` 里持锁等孩子死，goroutine B 在 `Close`→`Reaped` 上等那把锁，
+	// 而孩子只有走完 B 的 Kill 才会死。cancel 是打破环的那只手，不是超时兜底。
+	watchCancel context.CancelFunc
 	// stop 由退役方关（请泵收工），done 由泵自己关（退役方等它）。两个 channel 分开放是必须的：
 	// 只有一个的话，"我已经请它退"和"它真的退了"就分不清，关停顺序就只能靠运气。
 	stop chan struct{}
@@ -91,12 +123,63 @@ type residentLink struct {
 }
 
 func newTurnHub(ctx context.Context, launch *launcher, store auditedStore, svc *execution.Service,
+	health *adapter.SQLiteStore, facts execution.ProcessFacts,
 	logf func(format string, args ...any)) *turnHub {
 	if logf == nil {
 		logf = func(format string, args ...any) {}
 	}
-	return &turnHub{launch: launch, store: store, svc: svc, logf: logf, ctx: ctx,
-		links: map[string]*residentLink{}}
+	return &turnHub{launch: launch, store: store, svc: svc, health: health, facts: facts,
+		logf: logf, ctx: ctx, links: map[string]*residentLink{}, flights: map[string]flight{}}
+}
+
+// watch 登记一次在飞：send 腿在把 `session/send` 写出去**之前**调它。
+// 早于出帧登记是因为反过来会漏：帧一写出去对端就可能已经开了轮次，而它对这发 send 的回执还没回来。
+func (h *turnHub) watch(adapterKey, executionID string) {
+	h.flightsMu.Lock()
+	defer h.flightsMu.Unlock()
+	if h.flights == nil {
+		h.flights = map[string]flight{}
+	}
+	h.flights[executionID] = flight{adapterKey: adapterKey}
+}
+
+// noteClaim 是契约② §6 规则 3 在本层的落点：`turn/claimed` 到的那一刻把 Provider 的把手记下来。
+// 它今天只能停在观察 + 日志这一格：**`executions.provider_execution_id` 没有合法的无事件写口**
+// （聚合行的 UPDATE 只能走 `Touch` ⇒ 必须配一条 §6 事件，而 §6 没有 claimed 那一行；
+// `UpdateOnce` 明确拒绝聚合表，`narrowTables` 只放 `idempotency_keys`）。命令原文与两条候选形状在第 305 条。
+func (h *turnHub) noteClaim(executionID, providerID string) {
+	h.flightsMu.Lock()
+	defer h.flightsMu.Unlock()
+	f, ok := h.flights[executionID]
+	if !ok || providerID == "" || f.providerID == providerID {
+		return
+	}
+	f.providerID = providerID
+	h.flights[executionID] = f
+	h.logf("turn 泵: execution=%s 的 claimed 带回 provider_execution_id=%s（这一列今天落不下去，见第 305 条上报）",
+		executionID, providerID)
+}
+
+// dropFlight 在"这一轮确认没开起来"时注销（对端明确拒绝 / 回执形状不合 / accepted=false）。
+// 挂住的 send **不注销**：那一轮在对端可能还在跑，注销就等于把崩溃时该改判的执行悄悄从名单里抹掉。
+func (h *turnHub) dropFlight(executionID string) {
+	h.flightsMu.Lock()
+	defer h.flightsMu.Unlock()
+	delete(h.flights, executionID)
+}
+
+// takeFlights 一次性取走这台 key 上的在飞名单（取走即清空）：崩溃处理与重连之间不许有第二次认领。
+func (h *turnHub) takeFlights(adapterKey string) map[string]string {
+	h.flightsMu.Lock()
+	defer h.flightsMu.Unlock()
+	out := map[string]string{}
+	for id, f := range h.flights {
+		if f.adapterKey == adapterKey {
+			out[id] = f.providerID
+			delete(h.flights, id)
+		}
+	}
+	return out
 }
 
 // connection 交出这个 key 的常驻连接，没有就起一条并开泵。
@@ -112,8 +195,19 @@ func (h *turnHub) connection(ctx context.Context, key string) (*process.Connecti
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("turn 泵 %s: 请求腿已经没有期限可用: %w", key, err)
 	}
-	conn, err := link.sup.Connect(ctx, coreProtocolVersion())
+	// T-404 ① 的接线：起孩子与建连接分成两步，第二步走 `NewConnection`。
+	// 为什么不用 `Connect`（它就是 Start + NewConnection）：泵要的是**那个孩子本身** ——
+	// 死亡观察靠 `Child.Wait`（`Run` 用的同一个原语），而 `NewConnection` 的归属检查
+	// （`attach`：不是本 Supervisor 起的孩子 ⇒ `ErrForeignChild`；一个孩子两根泵 ⇒ `ErrChildBusy`）
+	// 只有在"我先起了它、再把它交给自己"这条路上才是真的被走到的代码，而不是文档里的承诺。
+	child, err := link.sup.Start(ctx)
 	if err != nil {
+		return nil, err
+	}
+	conn, err := link.sup.NewConnection(child, coreProtocolVersion())
+	if err != nil {
+		// 孩子已经起来、连接没建成 ⇒ 当场收，不留没人认领的进程（`Connection.Close` 还没上场）。
+		h.stopChild(key, link.sup, child, "连接没接上")
 		return nil, err
 	}
 	if _, err := conn.Initialize(ctx); err != nil {
@@ -123,14 +217,20 @@ func (h *turnHub) connection(ctx context.Context, key string) (*process.Connecti
 		return nil, err
 	}
 	link.conn = conn
+	link.child = child
 	link.stop = make(chan struct{})
 	link.done = make(chan struct{})
+	link.closing.Store(false)
 	link.gen++
 	gen := link.gen
-	// 一条连接一个泵 goroutine，挂在连接的生命周期上（退役方关 `stop`、Core 关停关 `h.ctx`）——
-	// §9.2 规则 5 禁的是没有主人、没有退出条件的裸 goroutine，不是这条。
+	// 一条连接一个泵 goroutine + 一条死亡观察，都挂在这条连接的生命周期上（退役方关 `stop`、
+	// Core 关停关 `h.ctx`）—— §9.2 规则 5 禁的是没有主人、没有退出条件的裸 goroutine，不是这两条：
+	// 两者的退出条件都是显式的，且 `Start` 自己就已经为这个孩子挂了一枚 per-child 的 Wait goroutine。
 	go h.pump(key, conn, gen, link.stop, link.done)
-	h.logf("turn 泵 %s #%d: 常驻连接已起（%s 之后帧由泵收，不随回执关闭）", key, gen, "turn/finished")
+	wctx, cancelWatch := context.WithCancel(h.ctx)
+	link.watchCancel = cancelWatch
+	go h.watchDeath(key, link, child, gen, wctx)
+	h.logf("turn 泵 %s #%d: 常驻连接已起（pid=%d，%s 之后帧由泵收，不随回执关闭）", key, gen, child.PID, "turn/finished")
 	return conn, nil
 }
 
@@ -167,6 +267,104 @@ func (h *turnHub) pump(key string, conn *process.Connection, gen uint, stop <-ch
 	}
 }
 
+// watchDeath 是崩溃那一支的**触发点**（契约① 第 25 条 ④-a :713 那句"触发点 = Supervisor 观察到子进程死亡"）。
+// 它等的就是 `Child.Wait` —— `Supervisor.Run` 用的同一个原语，区别只在这里等完是去改判而不是去重启：
+// §7.2 把 v0.1 钉在"一次尝试"上（`RestartNever`），重启阶梯那一格仍归 `Run`（今天拒在有连接挂着，
+// 见 `ladderMayStart`，`Close` 之后才允许）。
+func (h *turnHub) watchDeath(key string, link *residentLink, child *process.Child, gen uint, wctx context.Context) {
+	_, werr := child.Wait(wctx)
+	if werr != nil || link.closing.Load() || h.ctx.Err() != nil {
+		// 三种"不是对端死了"：观察被主动取消（见 watchCancel 那段，err 就是它）、我们自己在收（关停）、
+		// 或 Core 已经在退出路上。宁可什么都不写 —— 把一次正常关停写成一片 UNKNOWN 改判是更坏的错。
+		return
+	}
+	h.logf("turn 泵 %s #%d: 观察到对端进程终止 pid=%d ⇒ 走崩溃那一支（REQ-RC-2）", key, gen, child.PID)
+	h.retire(key, "对端进程已终止")
+	h.handleDeath(key, gen, child.PID)
+}
+
+// handleDeath 处理"这台上的在飞执行"与 §7.2 的健康列，两件各自独立、都必须出声：
+//   - 在飞的每一条 ⇒ 一笔短事务调 `MarkCrashUnknown`（协议 §8：崩溃只影响该 Adapter 上的 in-flight，
+//     一律转 `UNKNOWN`，不折成 FAILED）。今天这一笔会被平台事件目录挡下（§6 还没有 `execution_unknown` 那行，
+//     登记方式见契约① :724 与本批上报），**挡下也必须喊**，不许退化成"只改状态不发事件"；
+//   - 健康列 ⇒ `DowngradeHealth(key, UNAVAILABLE)`。写口在 `internal/adapter`（T-402 ①），泵只调用。
+//     没有实例行时它返回 `db.ErrAggregateNotFound` 并明说"登记是 probe 的事" ⇒ 泵照它喊，不去补建行。
+func (h *turnHub) handleDeath(key string, gen uint, pid int) {
+	flights := h.takeFlights(key)
+	marked := 0
+	if len(flights) == 0 {
+		h.logf("turn 泵 %s #%d: 对端终止 pid=%d，这台没有在飞的执行 ⇒ 不改判任何一条", key, gen, pid)
+	} else if h.svc == nil || h.facts == nil {
+		// 半装配的泵：不静默跳过，这一格要喊出来（崩溃观察已经发生，改判却没做）。
+		h.logf("turn 泵 %s #%d: 有 %d 条在飞但泵没接改判面（svc/facts 未装配）⇒ 一行不写",
+			key, gen, len(flights))
+	} else {
+		instanceID, err := h.launch.ownerID(key)
+		if err != nil {
+			h.logf("turn 泵 %s #%d: 反查 adapter_instances 失败，改判先停手: %v", key, gen, err)
+		} else {
+			facts, err := h.facts(h.ctx, instanceID)
+			if err != nil {
+				h.logf("turn 泵 %s #%d: 取进程事实失败，改判先停手: %v", key, gen, err)
+			} else if len(facts) == 0 {
+				h.logf("turn 泵 %s #%d: 这台没有进程行可归属 ⇒ %d 条在飞一律不改判（CO-44②）",
+					key, gen, len(flights))
+			} else {
+				for id, providerID := range flights {
+					if h.markCrash(key, gen, id, providerID, facts) {
+						marked++
+					}
+				}
+			}
+		}
+	}
+	// §7.2 那一列：走 adapter 的唯一写口。三种结局各喊一声，然后**最后**再落那声收尾。
+	health := healthWord(h.health)
+	if h.health != nil {
+		changed, err := h.health.DowngradeHealth(h.ctx, key, adapter.HealthUnavailable)
+		switch {
+		case err != nil:
+			h.logf("turn 泵 %s #%d: 降健康没写成: %v", key, gen, err)
+			health = "写失败"
+		case changed:
+			h.logf("turn 泵 %s #%d: 健康已降 %s（对端进程终止）", key, gen, adapter.HealthUnavailable)
+			health = "已降"
+		default:
+			h.logf("turn 泵 %s #%d: 健康已是 %s ⇒ 不重复写（没有变化的变化不是一条事件）", key, gen, adapter.HealthUnavailable)
+			health = "已在该档"
+		}
+	}
+	// **收尾一声必须是本函数最后一条**：判据等它 = 等崩溃处理整个跑完。
+	// （上一版把它放在健康那笔之前，用例等到的是一条"还没做完"的行，读健康列就读成旧值 ——
+	//  同一个族的老规矩：等待谓词必须就是被断言的那个谓词。）
+	h.logf("turn 泵 %s #%d: 崩溃处理收尾：在飞 %d 条、改判 %d 条、健康 %s", key, gen, len(flights), marked, health)
+}
+
+// markCrash 一条在飞执行的改判：一笔短事务，与 send/扫描那两笔同形（写面只有一条连接，REQ-S-1）。
+func (h *turnHub) markCrash(key string, gen uint, executionID, providerID string, facts []execution.ProcessFact) bool {
+	err := h.store.Write(h.ctx, func(tx *db.Tx) error {
+		_, e := h.svc.MarkCrashUnknown(h.ctx, tx, executionID, facts)
+		return e
+	})
+	if err != nil {
+		h.logf("turn 泵 %s #%d: execution=%s 的崩溃改判没落成（provider 把手=%q）⇒ 这一格不动: %v",
+			key, gen, executionID, providerID, err)
+		return false
+	}
+	h.logf("turn 泵 %s #%d: execution=%s 判为 UNKNOWN（对端终止，provider 把手=%q）",
+		key, gen, executionID, providerID)
+	return true
+}
+
+// healthWord 给"没接写口"那一格用：参数取**具体类型**而不是 any —— `*adapter.SQLiteStore` 装进接口之后
+// 即使是 nil 指针，`store == nil` 也是 false（平台层那条 typed-nil 老坑，`main.go` 的 adaptersField 就是为它存在的）。
+func healthWord(store *adapter.SQLiteStore) string {
+	if store == nil {
+		return "写口未装配"
+	}
+	return "未调用"
+}
+
 // retire 丢掉这条 key 的当前连接（泵收工 + 孩子交回），并把"这里没有连接了"留下 ——
 // 下一次 send 于是重连。这就是 ④ 那句"死亡即重连"今天能落的形状：重连发生在**下一次有人要它**，
 // 不是一个自己转的重启循环（那个归 `Supervisor.Run`，见文件头）。
@@ -195,6 +393,21 @@ func (h *turnHub) retireLocked(key string, gen uint, conn *process.Connection, s
 	h.logf("turn 泵 %s #%d: 连接退役（%s）⇒ 下一次 send 重连", key, gen, why)
 }
 
+// stopChild 收的是"连接还没建成"那种半成品：没有 `Connection` 就没有 `Close` 可走，
+// 只能按 `Connection.Close` 的同一条顺序自己来一遍 —— 先还管道再杀进程是第 19 条判过的反例，
+// 所以顺序是 Kill（`Supervisor.Stop`）在前、`CloseStreams` 在后。
+func (h *turnHub) stopChild(key string, sup *process.Supervisor, child *process.Child, why string) {
+	// Stop 是 Supervisor 唯一的 Kill 通道（泵不自己拿进程句柄）；错误里"目标早不在"那一格由
+	// 导出的 ChildAlreadyGone 过滤，与 duplexPipe.Close 同一个判据（第 19 条那格）。
+	err := sup.Stop(child, pumpExitBound)
+	child.CloseStreams()
+	if err != nil && !process.ChildAlreadyGone(err, child.PID) {
+		h.logf("turn 泵 %s: 连接没建成、孩子也没收干净（%s）: %v", key, why, err)
+		return
+	}
+	h.logf("turn 泵 %s: 连接没建成，孩子已当场收回（%s）", key, why)
+}
+
 func (h *turnHub) closeConn(key string, conn *process.Connection, why string) {
 	if err := conn.Close(); err != nil {
 		// 关不掉是"这台孩子我没收干净"的实情，不许静默：孤儿进程会把 §14 那一行留在 RUNNING。
@@ -211,6 +424,13 @@ func (h *turnHub) closeAll() {
 	}
 	h.mu.Unlock()
 	for _, k := range keys {
+		l := h.link(k)
+		l.closing.Store(true)
+		// 顺序要紧：先放手观察（释放 `waitMu`），再走 `retire`→`Connection.Close`。
+		// 反过来就是本批踩过的那次死锁 —— Close 在 `Reaped()` 上等一把只有孩子死了才会放的锁。
+		if l.watchCancel != nil {
+			l.watchCancel()
+		}
 		h.retire(k, "Core 关停")
 	}
 }
@@ -243,10 +463,16 @@ func finishOf(msg process.Inbound) (observedFinish, bool) {
 //
 // 三种都不 sleep、都不轮询、都不替 Provider 编状态。
 func (h *turnHub) handle(key string, gen uint, msg process.Inbound) {
+	// `turn/claimed` 是 Provider 把手进来的那一帧（契约② §6 规则 3：时机就在这里，早不早都不算）。
+	if msg.Err == nil && msg.Frame != nil && msg.Frame.Method == adapter.MethodTurnClaimed && msg.ExecutionID != "" {
+		h.noteClaim(msg.ExecutionID, msg.Frame.ProviderExecutionID)
+	}
 	fin, ok := finishOf(msg)
 	if !ok {
 		return
 	}
+	// 收尾到了 ⇒ 这一条不再"在飞"（不管落不落得成终态，崩溃那一支都不该再改判它第二次）。
+	defer h.dropFlight(fin.executionID)
 	// 先问域"这个码裁过没有"，再决定要不要占那一条串行写连接：表外的码注定写不成，
 	// 不该为它开一笔事务再回滚（取值表只有一份，所以这里调的是导出的谓词而不是自己比字符串）。
 	if !execution.MappedTurnResultCode(fin.resultCode) {

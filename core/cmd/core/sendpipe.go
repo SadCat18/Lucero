@@ -113,6 +113,8 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 		ExecutionID: call.ExecutionID, Delivery: call.Delivery,
 		IdempotencyKey: call.IdempotencyKey,
 	}
+	// 在飞名单登记必须早于出帧（崩溃那一支的名单来源，见 `turnHub.watch`）。
+	p.hub.watch(adapterKey.String, call.ExecutionID)
 	f, err := conn.CallTurn(cctx, call.ExecutionID, "session/send", params)
 	if err != nil {
 		// 对端没了 ⇒ 这条常驻连接不再可用：退役它，下一次 send 重连（④ 那句"死亡即重连"）。
@@ -125,16 +127,23 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 	}
 	if f.Error != nil {
 		// Adapter 明确拒了（delivery_mode_unsupported / session_not_found / …）：
-		// 原样上抛，transport 的 probeErrorOf 按 §15.2 表映射。
+		// 原样上抛，transport 的 probeErrorOf 按 §15.2 表映射。这一轮没开 ⇒ 从在飞名单里注销。
+		p.hub.dropFlight(call.ExecutionID)
 		return execution.TurnReceipt{}, f.Error
 	}
 	var res adapter.SendResult
 	if err := json.Unmarshal(f.Result, &res); err != nil {
+		p.hub.dropFlight(call.ExecutionID)
 		return execution.TurnReceipt{}, fmt.Errorf("%w: session/send 回执不是 §5 的形状: %v",
 			&adapter.Error{Code: adapter.ErrInternal, Message: "send result decode"}, err)
 	}
 	if err := res.Validate(call.Delivery); err != nil {
+		p.hub.dropFlight(call.ExecutionID)
 		return execution.TurnReceipt{}, err
+	}
+	if !res.Accepted {
+		// 没接 ⇒ 也没有轮次在飞（挂住/超时不走这一支，见 watch 的注释）。
+		p.hub.dropFlight(call.ExecutionID)
 	}
 	if !res.Accepted && p.logf != nil {
 		// accepted=false 的 reason 只有 logf 这一个出口（yaml SendResult 没有 reason 键）。

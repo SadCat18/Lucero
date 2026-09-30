@@ -91,10 +91,12 @@ func (s *Service) EnableRecovery(d RecoveryDeps) { s.recovery = d }
 //   - **Core 重启那一支（本函数今天唯一的场景，启动扫描）⇒ RUNNING→INTERRUPTED**：FIRST SPRINT §7
 //     原话就是"重启 Core 后正确识别 interrupted / recoverable"，事件 execution_interrupted §6 现成、
 //     auditRequired 已含 ⇒ 撞不到 §6 那堵墙；
-//   - **Adapter 崩溃那一支（Core 活着、对端进程死）⇒ →UNKNOWN，本轮不接线**：触发点是 Supervisor
-//     观察到子进程死亡，依赖 W2-7 点名的 Supervisor.Run 那一格（生产码零调用点，归 backend/process）；
-//     事件名已裁 execution_unknown，但**登记授权随落地批**、现在不登 §6（C8-12 是双向对拍，
-//     先登行必红）⇒ 所以本函数不为那一支留半个口子。
+//   - **Adapter 崩溃那一支（Core 活着、对端进程死）⇒ →UNKNOWN，本函数不喊它**：触发点是 Supervisor
+//     观察到子进程死亡，依赖 W2-7 点名的 Supervisor.Run 那一格（生产码零调用点；导出面已派 adapter，
+//     T-398①）。T-401 落的"登记授权"只到**常量 + 落点 + 用例**那一半（`MarkCrashUnknown`），
+//     §6 那一行由主控在我交账后同批补（:718~719：先登 §6 会撞 C8-12 双向对拍）；
+//     而"谁喊它"这一腿仍等 adapter 交账 —— 本函数不为那一支加半个口子，也不许顺手把 UNKNOWN
+//     塞进 boot 扫描的结果里（那等于绕过 Run 手搜一条触发路径，T-401③ 明禁）。
 //
 // 调用方拿到非 nil err 时整笔回滚 ⇒ 报告里的 Marked 只在 err == nil 时可信；报告本身不受回滚影响，
 // 是为了让日志照样说得出"读到了什么、卡在哪一步"。
@@ -205,6 +207,101 @@ func recoveryReason(e Execution, facts []ProcessFact) string {
 		fmt.Fprintf(&b, "，%s(pid=%d status=%s)", f.ID, f.PID, f.Status)
 	}
 	fmt.Fprintf(&b, "；本代 Core 启动扫描时尚未接管这些进程，in-flight %s v%d 判为可恢复（FIRST SPRINT §7 interrupted/recoverable）",
+		e.ID, e.Version)
+	return b.String()
+}
+
+// MarkCrashUnknown 是「Adapter 崩溃那一支」的落点（契约① 第 25 条 ④-a，`contracts-internal-v0.1.md:713`：
+// "Core 活着、对端进程死；触发点 = Supervisor 观察到子进程死亡 ⇒ `→UNKNOWN`"）。
+//
+// **今天它没有生产调用者，这是裁定的形状而不是欠账**：那一格的接线按 :716 明写「依赖 `Supervisor.Run`
+// 那一格 ⇒ 排在本轮之后」，导出面已派 adapter（T-398①）。T-401②③ 给我的范围是「常量 + 落点 + 用例」，
+// 并明写「别为了提前变绿去手搜一条绕过 `Run` 的路」⇒ 我不在这里造触发条件，也不让 `ScanRecovery`
+// 顺手喊它（boot 扫描那一支的正身是 INTERRUPTED，09-29 裁的「分」）。
+//
+// 落库四件，与 `markInterrupted` 同一条序列、不同的态与不同的词：
+//  1. Check(cur→Unknown, **Occasion=Recovery**, Evidence 非空) —— §5.5 三条件的"Recovery + 非空 Evidence"；
+//     "非终态"那一条件由 `statemachine.go:93~98` 那句 `!Terminal(from)` 把守：已定局的行不许被改判成
+//     UNKNOWN（§12 丢历史红线）。**这里不另立第二个判断**；
+//  2. 事件类型只从 `EventOf` 来。这一支不再写一道 `evType == ""` 的守卫：`EventOf(x, Unknown)` 今天恒返回
+//     `EventUnknown`，那道空值检查是死分支；真正的兜底在第 3 步 —— `eventPayload` 的 default 支会带着
+//     `ErrNoEventForTransition` 出声，且它跑在任何写之前，所以"§6 没这行"依然一行都不写。
+//  3. payload = `from` + `reason`（契约 :717 点名那两个键，见 `UnknownPayload` 注释里我报的那处字面分歧）；
+//     Touch 只动 status/updated_at —— `Terminal(Unknown) == false` ⇒ **不写 finished_at**，这正是"不可判定"
+//     与"已失败"在列上的区别，别为了"看起来完整"去补那一列。
+//  4. 同事务 Audit：`RequiresAudit(EventUnknown)` 为真（:717「Audit 必带」），链/脱敏/归因仍住在 cmd/core（C14）。
+//
+// **不发 §5.3 的 task 投影**：契约 :720~723 明写 `execution_unknown` 不进那七条边、task 留在 `RUNNING`
+// 是矩阵不是欠账 ⇒ 这里一次都不调 projector，也不喊"投影被拒"。要动 task 态的是恢复扫描的 INTERRUPTED 那一支。
+//
+// facts 由调用方递（同 `ScanRecovery`：本包不碰 `process_instances` 的 SQL，§0 跨包禁令）；
+// 空 facts ⇒ 没有主体可归属，按 CO-44② 明确拒绝、一行不写 —— 与扫描那条"查不到行就不改判"同一口径。
+func (s *Service) MarkCrashUnknown(ctx context.Context, tx *db.Tx, id string, facts []ProcessFact) (Result, error) {
+	if s.recovery.NewEventID == nil || s.recovery.PrincipalID == "" || s.recovery.Audit == nil {
+		return Result{}, fmt.Errorf("execution: 崩溃改判没装配齐（NewEventID/PrincipalID/Audit）: %w", ErrRecoveryNotWired)
+	}
+	if len(facts) == 0 {
+		return Result{}, fmt.Errorf("execution: %s 这一支没有进程行可归属（崩溃观察无主体）⇒ 一行不写: %w", id, ErrRecoveryNotWired)
+	}
+	e, err := NewRepository(tx).Get(ctx, id)
+	if err != nil {
+		return Result{}, err
+	}
+	reason := crashReason(e, facts)
+	if err := Check(e.Status, Unknown, Recovery, Evidence{Reason: reason}); err != nil {
+		return Result{}, fmt.Errorf("execution: %s→%s（崩溃恢复，REQ-RC-2）不在 §5.1 矩阵里或证据不足: %w", e.Status, Unknown, err)
+	}
+	evType := EventOf(e.Status, Unknown)
+	eventID, err := s.recovery.NewEventID()
+	if err != nil {
+		return Result{}, fmt.Errorf("execution: 崩溃改判铸事件 id: %w", err)
+	}
+	cmd := Command{EventID: eventID, Reason: reason}
+	payload, err := eventPayload(e.Status, Unknown, cmd)
+	if err != nil {
+		return Result{}, err
+	}
+	now := time.Now().UnixMilli()
+	setSQL, setArgs := columnWrites(e, Unknown, cmd, now)
+	res, err := tx.Touch(db.AggExecution, e.ID, setSQL, setArgs, db.EventDraft{
+		EventID: eventID, Type: evType, Aggregate: db.AggExecution, AggregateID: e.ID,
+		PrincipalID: s.recovery.PrincipalID, Payload: payload,
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("execution: touch %s（→UNKNOWN, Occasion=Recovery）: %w", e.ID, err)
+	}
+	if !RequiresAudit(evType) {
+		return Result{From: e.Status, To: Unknown, Advanced: true, Version: res}, nil
+	}
+	if err := s.recovery.Audit(ctx, tx, AuditRecord{
+		ExecutionID: e.ID, TaskID: e.TaskID, EventID: eventID,
+		PrincipalID: s.recovery.PrincipalID, Reason: reason,
+	}); err != nil {
+		// 与扫描那条同一个处置：审计行落不下去 ⇒ 整笔回滚，不改判"有证据没有"的半真历史。
+		return Result{}, fmt.Errorf("execution: %s 的 %s 没带上 §6 要的 audit 行: %w", e.ID, evType, err)
+	}
+	return Result{From: e.Status, To: Unknown, Advanced: true, Version: res}, nil
+}
+
+// crashReason 是「不可判定」那一支的依据文本。词与扫描那条**刻意不同**：
+// FIRST SPRINT §7 的 interrupted/recoverable 说的是"Core 自己重启、进程没被接管"，
+// 而这一支是"Core 还活着、对端那台死了" —— 协议 §8 给它的是 UNKNOWN（非 FAILED），
+// 所以这里不许出现"可恢复"或"失败"任何一个词，也不许把 status 折算成"死了"：行原样搬。
+// 还有一个不那么显然的约束：**reason 里不写否定句**（原话里带 "不是 FAILED" 那种写法，会让
+// "reason 里不许出现那个词"这条判据咬到自己 —— 探针 M-k 就是这么抓出来的）。裁定那句留在注释与契约里，
+// reason 只说观察与结论。
+func crashReason(e Execution, facts []ProcessFact) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "崩溃恢复（REQ-RC-2）：%s 上登记过进程行", e.AdapterInstanceID)
+	for _, f := range facts {
+		if f.Attempt > 0 {
+			fmt.Fprintf(&b, "，%s(pid=%d status=%s attempt=%d)", f.ID, f.PID, f.Status, f.Attempt)
+			continue
+		}
+		fmt.Fprintf(&b, "，%s(pid=%d status=%s)", f.ID, f.PID, f.Status)
+	}
+	fmt.Fprintf(&b, "；调用方（触发点 = Supervisor 观察到子进程死亡，那一格尚未接线）报告这些进程已终止，"+
+		"而 Core 仍活着 ⇒ in-flight %s v%d 的轮次结果不可判定（协议 §8：崩溃那一支转 UNKNOWN）",
 		e.ID, e.Version)
 	return b.String()
 }

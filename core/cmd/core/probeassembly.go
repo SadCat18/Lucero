@@ -121,7 +121,9 @@ func newAdapterServices(ctx context.Context, d *db.DB, store auditedStore, specs
 	}
 	// 泵先装配：send 腿要的是一条**有主**的常驻连接，不是一个自己起自己关的连接。
 	// ctx 是 Core 的生命周期（`boot` 那份），不是任何一次请求的 —— 见 `turnpump.go` 的 `turnHub.ctx`。
-	hub := newTurnHub(ctx, launch, store, execSvc, logf)
+	// 泵多两件注入：健康写口的调用位（同一个 `pstore` —— 一台库两份 store 实例是既成事实，
+	// 泵与 probe 用同一份配置的理由与 `supervisorFor` 同一条）+ 崩溃那一支要的过程事实（SQL 在本层）。
+	hub := newTurnHub(ctx, launch, store, execSvc, pstore, processFactsOf(d.Read), logf)
 	pipe := &sendPipe{read: d.Read, hub: hub, byKey: byKey, logf: logf}
 	return &probeService{reg: reg}, discover, pipe, hub, nil
 }

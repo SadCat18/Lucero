@@ -216,6 +216,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `execution_approval_requested` | approval | `approval_id` `action` `resource` `risk_level` | ✓ |
 | `execution_approval_resolved` | approval | `approval_id` `state` `grant_id` `resolved_by` | ✓ |
 | `execution_cancelled` / `_failed` / `_succeeded` / `_interrupted` | execution | `result_code` `error_code` `usage` | ✓(failed/interrupted) |
+| `execution_unknown` | execution | `from` `reason` | ✓ |
 | `approval_requested` / `_resolved` / `_expired` / `_cancelled` | approval | 同上 | ✓ |
 | `grant_issued` / `grant_revoked` / `grant_expired` | permission | `scope_type` `scope_id` `action` `expires_at` | ✓ |
 | `policy_created` / `policy_updated` | permission | `scope_type` `scope_id` `action_pattern` `effect` | ✓ |

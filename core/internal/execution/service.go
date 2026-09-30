@@ -270,6 +270,11 @@ func eventPayload(from, to State, cmd Command) (map[string]any, error) {
 		v = ResumedPayload{From: from}
 	case EventPaused:
 		v = PausedPayload{Reason: cmd.Reason}
+	case EventUnknown:
+		// 键集按契约① :717 那句点名的 `from` + `reason`（与 execution_interrupted 的 §6 行不是同一套键，
+		// 分歧已写在 UnknownPayload 的注释里并报主控）。reason 是这一支的**唯一证据来源**：
+		// §5.5 三条件里"非空 Evidence"与 payload 里那个键必须同值，不许一个说真话一个留空。
+		v = UnknownPayload{From: from, Reason: cmd.Reason}
 	case EventSucceeded, EventFailed, EventCancelled, EventInterrupted:
 		v = ResultPayload{ResultCode: cmd.ResultCode, ErrorCode: cmd.ErrorCode, Usage: map[string]any{}}
 	default:

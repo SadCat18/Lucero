@@ -105,6 +105,15 @@ type Child struct {
 	waited bool
 	code   int
 	werr   error
+
+	// sup is the Supervisor that started this child, and it is what makes
+	// "from the supervised child" checkable rather than assertable: unexported, so no
+	// caller can hand NewConnection a *Child it built itself and get the crash budget,
+	// the §14 rows and the pipes owned by two different authorities.
+	sup *Supervisor
+	// conn is the protocol connection riding this process, guarded by sup.mu.
+	// One child, one pump: two Connections would put two readers on one stdout pipe.
+	conn *Connection
 }
 
 // Wait blocks until the child exits and reports its exit code. It is repeatable: the
@@ -309,10 +318,47 @@ type Supervisor struct {
 	// MaxCrashes overrides MaxConsecutiveCrashes when non-zero; it exists so a test
 	// can watch the ladder terminate without five real children.
 	MaxCrashes int
+
+	// mu guards the claim below, and nothing else: which process this Supervisor last
+	// started is the fact two entry paths have to agree about.
+	mu sync.Mutex
+	// last is the newest child this Supervisor started. It is what makes
+	// "one Supervisor, one process" checkable: a connection attached to it is a promise
+	// that a protocol pump owns that process, and Run must not start another one beside it.
+	last *Child
 }
 
 // ErrUnavailable means the §8 budget is spent and the child will not be restarted.
 var ErrUnavailable = errors.New("adapter is UNAVAILABLE: restart budget exhausted")
+
+// Two entry paths can put a process behind one Supervisor: Run's supervision ladder and a
+// protocol connection (Connect, or NewConnection over a child the caller already started).
+// T-398 ① rules they must not each start one, and the reason is a row, not aesthetics: the
+// §14 process_instances row, the §8 crash budget and the health downgrade all describe
+// *one* pid, so two live children behind one Supervisor means one of them is being
+// accounted for under somebody else's identity.
+//
+// The refusal runs one way: Run declines while a connection is live, because that is the
+// direction a caller reaches by accident (the ladder is what a Supervisor is *for*, so
+// somebody wiring a resident connection will call it too). The reverse - Connect beside a
+// running ladder - is not refused, and could not be usefully refused: Run keeps its child
+// inside the loop, so the caller has no handle to attach to. Which shape the ladder should
+// hand back per child is recorded in Coordination CO-57 as the open half.
+//
+// Connection.Close releases the claim, so a caller that retires a dead connection (what
+// cmd/core's pump does) gets the ladder back.
+//
+// What this does **not** cover, so nobody reads it as a blanket guarantee: a caller that
+// calls Start twice and never closes the first connection still gets two processes, because
+// a bare Start is legal on purpose (`cmd/core`'s health/discovery pipe uses it on the same
+// Supervisor to run a short-lived probe). The claim is per child; only Run is gated.
+var (
+	// ErrChildBusy names the process standing in the way, because the caller's only
+	// remedy is to hand that one back first.
+	ErrChildBusy = errors.New("this Supervisor already holds a live child")
+	// ErrForeignChild is NewConnection's refusal to wrap a process it did not start.
+	ErrForeignChild = errors.New("child was not started by this Supervisor")
+)
 
 func (s *Supervisor) max() int {
 	if s.MaxCrashes > 0 {
@@ -373,12 +419,66 @@ func (s *Supervisor) backoff(attempt int) time.Duration {
 	return BackoffFor(attempt)
 }
 
+// ladderMayStart is Run's half of the one-process rule: the ladder supervises a process of
+// its own, so it declines to begin while a child this Supervisor started carries a
+// connection. Carrying one is the whole test - not whether that process is still alive:
+// a dead connection nobody closed would otherwise let Run start a second process beside a
+// Connection whose trackers still claim to describe the first one, which is the two-pids-
+// behind-one-§14-row accident wearing a different costume. Close is the way back.
+func (s *Supervisor) ladderMayStart() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last != nil && s.last.conn != nil {
+		return fmt.Errorf("%w: pid %d carries the protocol connection; Connection.Close is what hands it back before Run supervises a process of its own",
+			ErrChildBusy, s.last.PID)
+	}
+	return nil
+}
+
+// attach hands a child this Supervisor started to a Connection, and is the single place
+// that decides whether the process may be ridden by a pump.
+func (s *Supervisor) attach(c *Child, conn *Connection) error {
+	if c == nil {
+		return fmt.Errorf("%w: no child to attach", ErrForeignChild)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.sup != s {
+		return fmt.Errorf("%w: pid %d was started by somebody else's Supervisor, so its crash budget, §14 row and pipes are not this one's to hand over",
+			ErrForeignChild, c.PID)
+	}
+	if c.conn != nil {
+		return fmt.Errorf("%w: pid %d already carries a connection; two pumps would read one stdout pipe",
+			ErrChildBusy, c.PID)
+	}
+	c.conn = conn
+	return nil
+}
+
+// release drops the connection's claim on its process so Run, or a fresh Connection over a
+// newly started child, is allowed again. It only clears the claim if the connection asking
+// still owns it: a caller that closes an already-closed Connection must not revoke a
+// reconnect that happened in between.
+func (s *Supervisor) release(c *Child, conn *Connection) {
+	if c == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.conn == conn {
+		c.conn = nil
+	}
+}
+
 // Run supervises one child until ctx is cancelled, the child exits and is not
 // restarted, or the crash budget is spent. It returns the last exit status observed.
 //
 // The loop is single-goroutine-per-supervised-process (no bare goroutines, 交接包 §9.2 rule
 // 5): the child's Wait result is delivered on Child.done by Start.
 func (s *Supervisor) Run(ctx context.Context) error {
+	if err := s.ladderMayStart(); err != nil {
+		return err
+	}
 	crashes := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -450,7 +550,10 @@ func (s *Supervisor) Start(ctx context.Context) (*Child, error) {
 		return nil, fmt.Errorf("start: %w", err)
 	}
 	c := &Child{Stdin: stdin, Stdout: stdout, Stderr: stderr, PID: cmd.Process.Pid,
-		cmd: cmd, done: make(chan error, 1)}
+		cmd: cmd, done: make(chan error, 1), sup: s}
+	s.mu.Lock()
+	s.last = c
+	s.mu.Unlock()
 	go func() { c.done <- cmd.Wait() }() // one goroutine per child, tied to its lifetime
 	s.emit(Event{Kind: EventStarted, PID: c.PID, Status: StatusStarting})
 	return c, nil

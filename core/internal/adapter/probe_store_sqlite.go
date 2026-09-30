@@ -252,19 +252,114 @@ func (s *SQLiteStore) MarkUnverified(ctx context.Context, adapterKey, displayNam
 			// transition.
 			return nil
 		}
-		_, err = tx.Touch(db.AggAdapter, existing.id,
-			"health = ?, last_healthcheck_at = ?, metadata_json = ?, updated_at = ?",
-			[]any{HealthUnavailable, at, reasonJSON(reason), at}, db.EventDraft{
-				EventID: s.newID(), Type: eventjournal.AdapterHealthChanged, Aggregate: db.AggAdapter,
-				AggregateID: existing.id,
-				Payload:     map[string]any{"from": existing.health, "to": HealthUnavailable, "confidence": "HIGH"},
-			})
-		return err
+		return s.healthWrite(ctx, tx, existing, adapterKey, HealthUnavailable, at, reason)
 	})
 	if err != nil {
 		return "", fmt.Errorf("record failed probe of %s: %w", adapterKey, err)
 	}
 	return written, nil
+}
+
+// DowngradeHealth is the pump's door for §7.2's health column (T-402 ①): lower one Adapter
+// by `adapter_key`, writing `health`, `last_healthcheck_at` and `updated_at` in the same
+// statement. It reports whether a row actually moved, so a caller that fires on every
+// reconnect attempt learns "already down here" without reading the table back.
+//
+// Why it sits beside MarkUnverified instead of being the same call: MarkUnverified answers
+// "a probe could not reach this Adapter", and a probe *is* the registration act, so it may
+// create the row and it carries the failure reason. The pump answers "the process we were
+// talking to died" - it must never register an Adapter it only lost, and its honest value can
+// be DEGRADED rather than UNAVAILABLE. Both go through `healthWrite`, so the trio is
+// assembled in exactly one place and this package does not grow a second writer of one fact.
+//
+// There is no reason parameter on purpose: the event contract gives `adapter_health_changed`
+// three payload keys - `from` `to` `confidence` (specs/events/event-contract-v0.1.md:185) -
+// and a fourth would be a contract change smuggled in through a signature.
+func (s *SQLiteStore) DowngradeHealth(ctx context.Context, adapterKey, to string) (bool, error) {
+	if !contains(healthValues, to) {
+		return false, &Error{Code: ErrInvalidParams,
+			Message: fmt.Sprintf("adapter %s: health %q is not one of %v", adapterKey, to, healthValues)}
+	}
+	at := s.now()
+	changed := false
+	err := s.d.Write(ctx, func(tx *db.Tx) error {
+		existing, found, err := lookupInstance(ctx, tx, adapterKey)
+		if err != nil {
+			return err
+		}
+		if !found {
+			// Wrapped, not invented: the caller matches on errors.Is(err, db.ErrAggregateNotFound),
+			// and the sentence names why a pump may not register what it only lost.
+			return fmt.Errorf("downgrade adapter %s to %s: %w (no instance row; registration belongs to a probe)",
+				adapterKey, to, db.ErrAggregateNotFound)
+		}
+		if existing.health == to {
+			return nil // already there: no write, no journal row for a change that did not happen
+		}
+		if !isDowngrade(existing.health, to) {
+			return &Error{Code: ErrInvalidParams,
+				Message: fmt.Sprintf("adapter %s is %s: %s is not a downgrade - health going back up is probe evidence, not the absence of a death signal",
+					adapterKey, existing.health, to)}
+		}
+		if err := s.healthWrite(ctx, tx, existing, adapterKey, to, at, ""); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("downgrade adapter %s: %w", adapterKey, err)
+	}
+	return changed, nil
+}
+
+// healthDowngrades is the closed set this door takes. Note the column's CHECK list is wider
+// than this table: 000001:93-96 also allows STARTING and STOPPED, which nothing in this tree
+// writes (the protocol enum in healthValues has four values, and handshake.go:185 refuses any
+// other). A row that somehow holds one of those is refused here rather than guessed about.
+//
+// The pairs it does take: UNKNOWN -> UNAVAILABLE is in because
+// a process we were talking to dying is evidence, while UNKNOWN -> DEGRADED is not: nothing
+// observed says part of the Adapter still works. Anything raising health is refused - that is
+// what a successful probe is for (RecordProbe) - and ->UNKNOWN is refused because §8's
+// "UNKNOWN 不得折成 UNAVAILABLE" cuts both ways: UNKNOWN is the absence of evidence, not a
+// status a caller may choose.
+var healthDowngrades = map[string][]string{
+	HealthHealthy:     {HealthDegraded, HealthUnavailable},
+	HealthDegraded:    {HealthUnavailable},
+	HealthUnknown:     {HealthUnavailable},
+	HealthUnavailable: nil,
+}
+
+func isDowngrade(from, to string) bool {
+	for _, allow := range healthDowngrades[from] {
+		if allow == to {
+			return true
+		}
+	}
+	return false
+}
+
+// healthWrite is the one place that puts a health transition on the table. The trio is the
+// point (T-402 ① "同笔把 updated_at／last_healthcheck_at 一起走，别只改一列"): a row that says
+// UNAVAILABLE with yesterday's check time is unreadable, and a row whose updated_at lags the
+// health cannot be told apart from a stuck writer. `reason` is non-empty only on the probe
+// path, where §7.2 allows the reason into metadata_json (the table has no reason column and
+// 000001 is frozen). The event is mandatory with every aggregate write in this tree, and
+// `from`/`to`/`confidence` are exactly the payload keys §6 lists.
+func (s *SQLiteStore) healthWrite(ctx context.Context, tx *db.Tx, existing instanceRow, adapterKey, to string, at int64, reason string) error {
+	set := "health = ?, last_healthcheck_at = ?, updated_at = ?"
+	args := []any{to, at, at}
+	if reason != "" {
+		set = "health = ?, last_healthcheck_at = ?, metadata_json = ?, updated_at = ?"
+		args = []any{to, at, reasonJSON(reason), at}
+	}
+	_, err := tx.Touch(db.AggAdapter, existing.id, set, args, db.EventDraft{
+		EventID: s.newID(), Type: eventjournal.AdapterHealthChanged, Aggregate: db.AggAdapter,
+		AggregateID: existing.id,
+		Payload:     map[string]any{"from": existing.health, "to": to, "confidence": "HIGH"},
+	})
+	return err
 }
 
 // healthOf maps §3's capability row to its own health column. A capability's health is

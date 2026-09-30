@@ -102,6 +102,19 @@ func (s *Supervisor) Connect(ctx context.Context, coreVersion string) (*Connecti
 	if err != nil {
 		return nil, err
 	}
+	return s.NewConnection(child, coreVersion)
+}
+
+// NewConnection builds the protocol connection over a child **this Supervisor already
+// started**, without starting anything. It is T-398 ①'s exported entry: until now the only
+// way to get a Connection was Connect, which starts its own process, so a caller that also
+// wanted the §8 restart ladder on that same adapter got two children behind one Supervisor -
+// and `cmd/core`'s pump could not reach the pipes of the process Run was supervising.
+//
+// "This Supervisor already started" is checked, not assumed: the ownership is what keeps the
+// crash budget, the §14 row and the pipes describing one and the same pid. The refusal on
+// the other side lives in Run (ladderMayStart), and Close is what hands the process back.
+func (s *Supervisor) NewConnection(child *Child, coreVersion string) (*Connection, error) {
 	conn := &Connection{
 		child: child, w: adapter.NewWriter(child.Stdin), r: adapter.NewReader(child.Stdout),
 		sup: s, coreVersion: coreVersion,
@@ -111,6 +124,9 @@ func (s *Supervisor) Connect(ctx context.Context, coreVersion string) (*Connecti
 		execByRef: map[string]string{},
 		inbound:   make(chan Inbound, 64),
 		dead:      make(chan struct{}),
+	}
+	if err := s.attach(child, conn); err != nil {
+		return nil, err
 	}
 	go conn.read()
 	return conn, nil
@@ -363,6 +379,13 @@ func (c *Connection) Close() error {
 	}
 	c.closed = true
 	c.mu.Unlock()
+	// Releasing the claim on the process is what lets Run, or a reconnect over a fresh
+	// child, use this Supervisor again - so it happens on every way out of Close, including
+	// the one that reports a failed reap. A refused reap that locked the Supervisor forever
+	// would turn one shutdown problem into an adapter that can never be restarted.
+	if c.sup != nil {
+		defer c.sup.release(c.child, c)
+	}
 	c.kill(errors.New("connection closed"))
 	// Why Reaped() is checked even though ChildAlreadyGone exists: the two answer
 	// different questions. ChildAlreadyGone asks the OS "is this pid still mine", and after

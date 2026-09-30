@@ -17,6 +17,13 @@ const (
 	EventFailed        = "execution_failed"
 	EventCancelled     = "execution_cancelled"
 	EventInterrupted   = "execution_interrupted"
+	// EventUnknown 是「Adapter 崩溃那一支」（Core 活着、对端进程死）的事件名，出处不是我：
+	// 契约① 第 25 条 ④-a 那句「REQ-RC-2 裁「甲」：`→UNKNOWN` 的 §6 事件名**定 `execution_unknown`**」
+	// （`specs/contracts-internal-v0.1.md:717`，T-401 ① 把这三段原文重新指给我，之前我说"没落契约正文"是错的）。
+	// **§6 那一行不在本批里由我加**：:718~719 明写「现在不登 §6 —— C8-12 是双向对拍，先登行必红；
+	// 登记授权随落地批给出：backend 落 UNKNOWN 路径的同一提交里加常量 + 主控批 §6 行」。
+	// 所以本常量是那一枚"落地批的码"半边，§6 行 + `internal/eventjournal` 目录那半边分别归主控与 db。
+	EventUnknown = "execution_unknown"
 )
 
 // EventOf 返回该迁移对应的事件类型；"" 表示该迁移不由本包发事件
@@ -35,6 +42,11 @@ func EventOf(from, to State) string {
 		return EventCancelled
 	case Interrupted:
 		return EventInterrupted
+	case Unknown:
+		// 这一支今天没有生产调用者：触发点是 Supervisor 观察到子进程死亡（契约① :716 明写
+		// 「这条的接线依赖 `Supervisor.Run` 那一格 ⇒ 排在本轮之后」，导出面已派 adapter = T-398①）。
+		// 加这一格是为了让"落点 + 用例"先到位（T-401②③），**不是**为了绕过那条依赖去手搜触发路径。
+		return EventUnknown
 	case Paused:
 		return EventPaused
 	case Running:
@@ -48,8 +60,11 @@ func EventOf(from, to State) string {
 	return ""
 }
 
-// auditRequired = §6 目录的 Audit 列 ✓(failed/interrupted)：这两个事件必须同事务带一条 audit_entries。
-var auditRequired = map[string]bool{EventFailed: true, EventInterrupted: true}
+// auditRequired = §6 目录的 Audit 列 ✓：这三个事件必须同事务带一条 audit_entries。
+// `EventUnknown` 在列里是契约① :717 那句「Audit 必带」的落点（与 `execution_interrupted` 同待遇）；
+// §6 那一行由主控在同批补，**这一张表先于表**是本批的形状，不是越界登记 —— 登记（写 §6）与
+// 消费（这里要不要审计）是两件事，后者归执行落地的那一方，前者归 specs。
+var auditRequired = map[string]bool{EventFailed: true, EventInterrupted: true, EventUnknown: true}
 
 func RequiresAudit(eventType string) bool { return auditRequired[eventType] }
 
@@ -110,4 +125,18 @@ type ResultPayload struct {
 	ResultCode string         `json:"result_code"`
 	ErrorCode  string         `json:"error_code"`
 	Usage      map[string]any `json:"usage"`
+}
+
+// UnknownPayload 是 §6 将来那一行 `execution_unknown` 的 payload，键按契约① :717 那句点名的
+// **`from` + `reason`** 装配，不复用 ResultPayload。
+//
+// 这里有一处字面分歧，我按"键名那句"走、把分歧报给主控而不是自己抹平：:717 写的是
+// 「与 `execution_interrupted` 同形，payload `from` + `reason`」，而 §6 现在那行 `execution_interrupted`
+// （`event-contract-v0.1.md:218` 的合并格）登记的键是 `result_code` `error_code` `usage` ——
+// 这两句不可能同时成立，所以"同形"只能读成"同样是一行 execution 域事件 + Audit 列 ✓"，
+// 键集以它显式点名的 `from` + `reason` 为准。**若主控落 §6 时选择把 `_unknown` 并进 :218 那条合并行**
+// （即键沿用 result_code/error_code/usage），这一格要跟着改回来 —— 那是两行形状之差，不是改名。
+type UnknownPayload struct {
+	From   State  `json:"from"`
+	Reason string `json:"reason"`
 }

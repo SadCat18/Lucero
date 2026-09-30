@@ -738,6 +738,21 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
         写列归 `internal/execution`（backend），**随泵的接线同批做**（它不该单独开一批去写这一列）。
         若 v0.2 真要做 lease：**先补文档（Runner 定义 + owner_id + acquire/release + TTL 数值），再走 §1.1.13 扩表门**，
         顺序反了就会得到「表建好了没人写、写了没人读」的那种僵尸面。
+      - **REQ-RC-3 通道裁 (i)（09-30 19:3x，回 backend 第 304 条 ① 的甲/乙问）**：**新增一行 §6 事件 `execution_claimed`**
+        （aggregate `execution`、载荷 `provider_execution_id`、Audit `–`，与 `execution_started` 同域不同事）。
+        **为什么非要一个新事件**：§6 今天只有 :214 `execution_started` 带 `provider_execution_id`，而契约② 那条规则 3 明写
+        「`provider_execution_id` **必须挂在 `claimed` 上**，因为 **Core 可能在 claimed-未-dispatched 这个窗口里死掉**；
+        Recovery 要先拿它去问 Provider，**才允许**把这轮判成 `UNKNOWN`。少了这个字段，崩溃恢复就只能猜」；而规则 1 又明写
+        「`claimed` 故意不带 `turn_id`——接下了不等于开始了，**唯一的开始证明是 `dispatched`**」⇒ **claimed 与 started 是两个时刻，
+        把列推迟到 started 写就是亲手把那个窗口打开**。现读盘上这个风险是真的：泵已经把 claimed 的 id 记进内存
+        （`cmd/core/turnpump.go:150 noteClaim`），**Core 一死内存就没了**。
+      - **拒 (ii)（db 开一个「聚合行无事件列写」的入口）**：它要在平台层永久留一个「版本推进可以不配事件」的口子，
+        而「每一次 `Touch` 都带一条事件」正是审计链与 §5.5 三条件能成立的地基（REQ-DB-2 那三个入口是**收口**、不是留缝）。
+        为了少加一行 §6 去拆地基，代价不成比例；且它会让「这条列有没有审计」变成随调用方心情的事。
+      - **落法与边界**：`execution_claimed` 走**三处同改**（§6 行 = 我、`core-v1.yaml` 的 `EventType` 枚举 = frontend、
+        常量 + 目录 = db/execution），**与 `execution_unknown` 那批合成同一批入册**（省一轮，且 C8-12／C8-13 是双向对拍，
+        半批必红）。**时机硬要求**：只在 `turn/claimed` 帧到达那一刻写，**不许**在 `dispatched` 补写、**不许**顺带改状态显示
+        （running 的证明仍只认 `dispatched`，规则 2 照读）。事件名是我批的、不是 backend 自造的 —— 它若需要改这枚名字，走 REQ 报我。
     - **④-b `REQ-TURN-1`（09-27 16:5x 立项，随 CO-54=丙 那道"借来的绿"一起登记，排 Wave-2 之后、真 adapter 接入之前必须裁）**：
       **`turn/finished` 与 send 回执的先后时序在 v0.1 未定义**。今天的形状是"`start_now` 一次调用一条连接、返回即 `Close`"
       （C42 连接复用后置未裁），而 `cmd/fake-adapter` 的收尾在**排水**那一步、不在 send 那一跳内 ⇒
