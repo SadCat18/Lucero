@@ -136,6 +136,18 @@ func request(id, method string, params any) *adapter.Frame {
 		Params: raw, RequestID: "req-" + id}
 }
 
+// armHold drives §10's debug/hold (T-386 ①): on=true stops a turn from closing at the end
+// of its own output, on=false closes whatever is open at that moment - which is also the
+// one drain point CO-25 keeps. Tests that need "a turn in flight" must ask for it instead
+// of relying on the double never finishing anything.
+func armHold(t *testing.T, p *fakeProcess, id string, on bool) {
+	t.Helper()
+	reply := call(t, p, id, methodDebugHold, map[string]any{"on": on})
+	if reply.Error != nil {
+		t.Fatalf("debug/hold on=%v: %s", on, reply.Error)
+	}
+}
+
 // call sends one request and returns its reply, recording every frame it passed
 // through on the way. Matching on the id rather than "the next frame" is what lets a
 // session/send answer with notifications before its response - but the frames it read

@@ -36,6 +36,7 @@ const (
 	methodQuotaRead    = "quota/read"
 	methodDebugFail    = "debug/fail"
 	methodDebugHang    = "debug/hang"
+	methodDebugHold    = "debug/hold"
 	methodDebugNoQuota = "debug/unknown_quota"
 )
 
@@ -66,6 +67,10 @@ type fake struct {
 	sent       map[string]adapter.SendResult // §4 Idempotency-Key -> first answer
 	fail       *injection                    // armed debug/fail
 	quotaBlind bool                          // armed debug/unknown_quota
+	// hold is armed debug/hold: while it is on, an opened turn does not close at the end
+	// of its own output (§6 第 6 条③'s mandatory signal then arrives when the hold is
+	// released, not when the send returns). T-386 ① is what licenses this endpoint.
+	hold bool
 	// db is the fake's whole world: sessions, their logs and the approvals a turn
 	// raises. service.go explains why it is compiled in rather than read from disk.
 	db *store
@@ -108,6 +113,13 @@ const envBadExecutionID = "LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID"
 // id-shaped: an audit row that later has to explain itself reads better with a value that
 // could have been real than with "WRONG".
 const conflictingExecutionID = "0194f4c2-7c3e-7fff-8000-000000000bad"
+
+// resultSucceeded is the turn-level code this double puts on the wire when a run ends on
+// its own. §6 第 6 条 keeps **one** table - the Execution state constants in
+// internal/execution - and aligns producers by name, so this is a name aligned to that
+// table, not a second enumeration: the fake must not import a Core domain package to say
+// "this run succeeded", and `"OK"` (what it used to send) is not in that table.
+const resultSucceeded = "SUCCEEDED"
 
 // run serves the protocol until stdin closes. logs receives everything that is not a
 // frame, so a caller can keep stdout and stderr apart the way Core's supervisor does.
@@ -183,6 +195,8 @@ func (f *fake) serve(req *adapter.Frame) error {
 		return f.debugFail(req)
 	case methodDebugHang:
 		return f.debugHang(req)
+	case methodDebugHold:
+		return f.debugHold(req)
 	case methodDebugNoQuota:
 		f.quotaBlind = true
 		return f.reply(result(req, map[string]any{"quota_unknown": true}))
@@ -283,6 +297,43 @@ func (f *fake) debugHang(req *adapter.Frame) error {
 		}
 		return f.reply(result(req, map[string]bool{"cancelled": true}))
 	}
+}
+
+// debugHold arms or releases §10's fifth injection (T-386 ① licenses it, and only its
+// existence here). Held on: an opened turn does not close at the end of its own output,
+// so a test can still put two executions on one connection for real (§6 规则 5's
+// acceptance item), steer a guide into the turn in flight (§5), or leave a queue waiting
+// behind a running turn (§5's position). Held off: the turn open at that moment ends
+// there, which is where its closing frame and CO-25's one drain belong.
+//
+// `on` is mandatory rather than defaulting to true: a forgotten arm would make the double
+// look like an adapter that never finishes, and that is the accident this file exists to
+// keep unproducible.
+func (f *fake) debugHold(req *adapter.Frame) error {
+	var p struct {
+		On *bool `json:"on"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return f.reply(errReply(req, badParams(req.Method, err)))
+	}
+	if p.On == nil {
+		return f.reply(errReply(req, &adapter.Error{Code: adapter.ErrInvalidParams,
+			Message: "debug/hold needs an explicit on: true|false"}))
+	}
+	if *p.On {
+		f.hold = true
+		fmt.Fprintf(f.logs, "debug/hold on: the next turn/finished arrives when the hold is released\n")
+		return f.reply(result(req, map[string]any{"armed": true}))
+	}
+	f.hold = false
+	open := f.open
+	if open != nil {
+		if err := f.finish(open, resultSucceeded); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(f.logs, "debug/hold off, closed the open turn: %v\n", open != nil)
+	return f.reply(result(req, map[string]any{"armed": false, "closed": open != nil}))
 }
 
 // quotaRead answers §7. The self-Validate is the same rule selfHandshake applies to
@@ -409,7 +460,25 @@ func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
 			Channel: adapter.ChannelStatus, Text: "interrupted by a start_now (§5)"}); err != nil {
 			return nil, err
 		}
-		if err := f.finish(prev, "INTERRUPTED"); err != nil {
+		// §6 第 6 条②: a preempted run gets **no** turn-level code. "被打断" is Core's
+		// observation about a process that died (Occasion=Recovery, REQ-RC-1); self-reporting
+		// it from this side is what `finish(prev, "INTERRUPTED")` used to do, and it would
+		// make the crash-recovery cell unmeasurable.
+		//
+		// The drain stays, though, and that split is deliberate: CO-25 pins the queue's one
+		// drain point at "a turn ended", not at "a closing frame went out". Dropping the
+		// frame together with the drain strands everything queued behind the preempted run
+		// (measured: the queued turn never reaches the wire at all).
+		if err := f.drainQueue(); err != nil {
+			return nil, err
+		}
+	}
+	// §6 第 6 条③: evidence() above is this run's whole output, so by default the closing
+	// frame goes right here - without it a gate watches a session where every turn opens
+	// and none ends. debug/hold is the only thing that defers it, and releasing the hold
+	// is what closes a held turn (that release is also where CO-25's drain fires).
+	if !f.hold {
+		if err := f.finish(t, resultSucceeded); err != nil {
 			return nil, err
 		}
 	}
@@ -463,6 +532,12 @@ func (f *fake) delta(t *turn, text string) error {
 // first. A queued send that ran gets the same evidence pair as one that started
 // immediately, because that is the only difference between "ran" and "never left the
 // queue".
+//
+// A drained turn closes at the end of its own run even while debug/hold is armed, and that
+// is deliberate: hold defers the close of the turn the caller is holding *open* - the one
+// §5's guide and queue positions are about - while CO-25's drain is observed at exactly
+// these closings. Making hold swallow them would move the drain point instead of deferring
+// a turn.
 func (f *fake) drainQueue() error {
 	drained := f.queued
 	f.queued = nil
@@ -471,7 +546,7 @@ func (f *fake) drainQueue() error {
 		if err := f.evidence(t, "queued prompt"); err != nil {
 			return err
 		}
-		if err := f.finish(t, "OK"); err != nil {
+		if err := f.finish(t, resultSucceeded); err != nil {
 			return err
 		}
 	}
@@ -487,6 +562,12 @@ func (f *fake) drainQueue() error {
 // nobody sends to again, and a stranded queue is invisible: the reply already said
 // "queued, position 1", so every symptom reads as success.
 func (f *fake) finish(t *turn, code string) error {
+	// A closed turn is no longer something a guide can steer into: leaving f.open pointed
+	// here would let a later delta land *after* the closing frame, which is the
+	// misattribution §6 规则 5 exists to prevent.
+	if t == f.open {
+		f.open = nil
+	}
 	if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodTurnFinished, ResultCode: code}); err != nil {
 		return err
 	}
@@ -598,7 +679,8 @@ func initializeResult() adapter.InitializeResult {
 				Metadata: json.RawMessage(`{"reason":"Phase 0 §5: deep links unverified for all five"}`)},
 			// §9: debug.* is legal only for adapter_key=fake AND only at EXPERIMENTAL.
 			debugCapability("debug.crash"), debugCapability("debug.fail"),
-			debugCapability("debug.hang"), debugCapability("debug.unknown_quota"),
+			debugCapability("debug.hang"), debugCapability("debug.hold"),
+			debugCapability("debug.unknown_quota"),
 		},
 	}
 }

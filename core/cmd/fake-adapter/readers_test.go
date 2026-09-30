@@ -437,6 +437,10 @@ func TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend(t *testing.T) {
 	p := startFakeAdapter(t)
 	initialize(t, p)
 
+	// CO-25's whole question - "did the close drain it, or did the next send?" - only
+	// exists while a turn is in flight, and since §6 第 6 条③ an ordinary run closes
+	// itself. debug/hold is how this test asks for a run that is still going (T-386 ①).
+	armHold(t, p, "dq0", true)
 	call(t, p, "dq1", methodSessionSend, adapter.SendParams{RemoteSessionID: "rsn-1",
 		Text: "running", Delivery: adapter.DeliveryStartNow,
 		ExecutionID: "exec-dq1", IdempotencyKey: "k-dq1"})
@@ -482,8 +486,10 @@ func TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend(t *testing.T) {
 	if claim != nil && claim.ExecutionID != "exec-dq2" {
 		t.Errorf("queued turn claimed execution %q, want exec-dq2", claim.ExecutionID)
 	}
-	if finish != nil && finish.ResultCode != "OK" {
-		t.Errorf("queued turn closed %q, want OK", finish.ResultCode)
+	// §6 第 6 条 fixes the legal codes (SUCCEEDED / FAILED / CANCELLED) and this path is a
+	// run that ended on its own, so the old `"OK"` - a value nobody ruled - is gone.
+	if finish != nil && finish.ResultCode != "SUCCEEDED" {
+		t.Errorf("queued turn closed %q, want SUCCEEDED", finish.ResultCode)
 	}
 	// Position, not just presence: the queued claim must land *after* dq1's close frame.
 	// The check is unconditional because both frames are in the log by now - a guard like
@@ -659,6 +665,9 @@ func TestFakeAdapterStopEndsTheTurn(t *testing.T) {
 		}
 		return res
 	}
+	// §4's stop is about "the turn in flight", and since §6 第 6 条③ an ordinary run no
+	// longer stays in flight by itself - hold is how this test keeps one open (T-386 ①).
+	armHold(t, p, "s0", true)
 	first := send("s1", "exec-1")
 
 	var stopped sessionStopResult
@@ -717,6 +726,7 @@ func TestFakeAdapterChainIsClaimedThenDispatched(t *testing.T) {
 			RemoteSessionID: "rsn-1", Text: "x", Delivery: adapter.DeliveryStartNow,
 			ExecutionID: exec, IdempotencyKey: "k-" + id})
 	}
+	armHold(t, p, "c0", true)
 	send("c1", "exec-1")
 	// An interruption lands on the running turn rather than opening a second one.
 	steer := call(t, p, "c2", methodSessionSend, adapter.SendParams{

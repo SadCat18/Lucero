@@ -5,7 +5,7 @@ SCOPE: Core↔Adapter 协议实现（帧编解码/握手/capability/三态/流�
 EVIDENCE_DIR: .qoder/progress/adapter.md（本轮为纯单测证据，不落 .qoder/evidence/）
 SCRATCH_DIR: D:\Project\Lucero\.scratch\adapter\（T-47：一次性产物只准落这里，仓库已 ignore；
              永不碰 /tmp、%TEMP%、$env:TEMP 的通配删除；只删自己建的具体文件名）
-LAST_UPDATED: 2026-09-24T10:59:46+08:00  # 本机 date 实读（第 19 轮收尾：头部五字段各 =1、^## =12、旧五段降级留档未删）
+LAST_UPDATED: 2026-09-27T17:13:13+08:00  # 本机 date 实读（第 30 轮：T-386 丙已落地；两面绿取于 17:10:26，未入册）
    # 自纠两处（T-43）：① 本行上一度写成 `14:36:20`，那**不是** `date` 读出来的、是估的（当时最后一次实读是
    # 14:31:49）；② 09-21 11:11 我用一条 `\S+` 的正则改这行，把 `LAST_UPDATED:` 前缀 itself 吃掉了，
    # 当场用 Edit 修回 —— 记账本自己的教训：**改标头行必须锚全文，不能用 `^KEY: \S+` 这种吞前缀的写法**。
@@ -49,25 +49,241 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
 
 ## Current checkpoint
 
-- Stage: **第 18 轮已交付（09-24 10:46）= 生命周期写口 + 只读解析出口 + 黑盒注入门三件都在盘上**。
-  `internal/process/lifecycle.go`（`LifecycleStore`，按契约① §1.1 第 20 条三句裁定落码）、
-  `internal/adapter` 的 `(*SQLiteStore).ResolveInstance`（T-263）、
-  `cmd/fake-adapter` 的 `LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID` 门（T-275，默认关、只在 fake、不改帧形状）。
-  **backend 已把写口接进 `cmd/core`（10:01 复量 5 命中、10:42:56 整包带 flag `ok`）⇒ `LUCERO_REQ_DB2=1` 那格已转 PASS**。
-- Status: **idle（等令，无阻塞）**。
-- Last verified action: **起 09-24 10:54:03、收 10:54:11（两个时刻各自 `date -Iseconds` 求值），`exit=0`**，
-  `CGO_ENABLED=0 go test -count=1 -timeout 900s -v ./internal/... ./cmd/... ./api/...` ⇒
-  **469 PASS / 6 SKIP / 0 FAIL、17 个包全 `ok`、`build failed` 0、无 `panic: test timed out`**；
-  逐包 `internal/adapter` 53/0/0、`internal/process` 32/1SKIP/0、`cmd/fake-adapter` 26/1SKIP/0；
-  `grep -rn ZMUT core/` = 0、`gofmt -l` 我三目录空；HEAD 实取 `978a72e`（10:46:22）。
-  **"全" = 17 包，不含 `core/test/`（`test` 的门）与 `scripts/`**——这条集合口径是 T-255 之后新加的，
-  因为 09:03 主控点名的红正好在我没扫的那个目录里。
-- Verification: 最新一条在 `## Verification evidence` 顶部 = **"第 19 轮（T-276 落规）"**，
-  其判据命令就是上面 `Last verified action` 那一行（10:54:03→10:54:11，日志 `.scratch/adapter/final-r19.log`）；
-  再往上是第 18 轮（T-275 门控 + 6 发变异）与第 17 轮（T-263 只读解析 + 5 发变异）的三项交账。
-- Next action: **idle。三格"等"，每格都写谁解锁（10:54 复量）**：
-  ① **等主控发合验令** —— 等什么：`test` 侧的 Wave-2 合验开跑；谁解锁：主控（我这边协议侧与三件交付随时能交，
-  不需要任何人先动码）；② **等 backend 补终态边判据** —— 等什么：§1.1 第 17 条"三条腿 + 每腿反例"里
+- Stage: **第 30 轮 = T-386 的"丙"落地：`debug/hold` 存在且只推迟收尾，`start_now`/`guide` 默认发
+  `turn/finished{SUCCEEDED}`**。③Ⅰ 现在有专名用例钉在真子进程的原始线节点上；
+  "解除那一刻才是收尾点"另有一条钉住（否则 `on:false` 无人证）。
+  定形并留了反例的一处：**排干出来的轮次不受 hold 影响**（让 hold 吞掉排干＝移动 CO-25 的排干点，正是甲被否的原因）。
+  变异两包同跑（基线 74 PASS/0 FAIL）= **h1/h2/h3/h5 FIRED、h4 SILENT 且已查到机制**
+  （`Handshake.Call` 不查能力表 ⇒ 那行声明不是闸门）⇒ 开 CO-55 请裁要不要立判据。
+  两面绿：A 面 **121 PASS / 2 SKIP / 0 FAIL**（三包 ok）、B 面 **544 PASS / 8 SKIP / 0 FAIL、17 包 ok**；
+  指纹换成 **`internal/process be4ef95cdea707dc`**、**`cmd/fake-adapter baa270cd1cba56bd`**（第 29 轮那两枚作废）。
+- Status: **idle-ready；本轮未入册，等复跑/入册 + §10 补第五枚那一行**。被验面带我 5 件，另有 backend/test 13 件。
+- Last verified action: **17:10:01→17:10:26 两面各一次**（`bash .scratch/adapter/delivery-r25.sh` +
+  `go test -v` 三包，日志 `delivery-r25-171001.log` / `faceA-r386.log`）：A 面 `exit=0`、顶层 **121 PASS / 2 SKIP / 0 FAIL**、
+  三包全 ok、我这 5 条关键用例在 :26/:30/:217/:227/:229 全 `--- PASS:`；
+  B 面 **544 PASS / 8 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**。
+  指纹 **`internal/process = be4ef95cdea707dc`**、**`cmd/fake-adapter = baa270cd1cba56bd`**（构建时刻 17:10:03），
+  `deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f` 未变；HEAD `cde8d79`。
+  变异 `mut-r386.py` + h3 补跑：锚点命中全=1、每枚按字节还原并 assert sha，
+  **`main.go` 现读 sha `26a0604493beab5c` 与变异批 PRE-SHA 同值 ⇒ 判据证在交付字节上**。
+  ZMUT = 0、`zz_*` 残留 0。**"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+- Verification: `## Verification evidence` 顶部 = **"第 30 轮（T-386 丙：`debug/hold` + 即时收尾）"** ——
+  落地形状、"排干不受 hold 影响"这条定形与它的反例、③ 三条现在各自钉在哪、五行变异判决表
+  （含 h4 SILENT 的机制核查）、§10 拟稿那一行、REQ-TURN-1 的记账口径、两面读数与两个时刻的脏件清单都在里面；
+  往下是第 29 轮（T-382 ②、岔口与那条流程教训）、第 28 轮（T-362 对拍）、第 27 轮补、第 27 轮（停摆后复量）。
+  本轮真跑过的判据命令：`python .scratch/adapter/mut-r386.py`（+ h3 补跑那一枚）、
+  `bash .scratch/adapter/delivery-r25.sh`、
+  `cd core && CGO_ENABLED=0 go test -count=1 -v ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`。
+- Next action: **idle-ready，等主控点名**。六格"等"写全：
+  ① 等什么：**本轮（第 30 轮）被复跑/入册**（谁解锁：主控；当场可复量 `bash .scratch/adapter/delivery-r25.sh`）；
+  ② 等什么：**§10 的"故障注入（`debug/*`）"表补上第五枚 `debug/hold` 那一行**（谁解锁：主控，`specs/**` 归他；
+  拟稿在第 30 轮正文）；
+  ③ 等什么：**CO-55 裁"要不要把能力声明与可达方法的一致性做成判据"**（谁解锁：主控。h4 证明今天没人查表；
+  我不擅自往 `Handshake.Call` 加门，那会改变所有能力的调用语义）；
+  ④ 等什么：**backend 复跑端到端那一腿**（挂住留 `RUNNING`+503、崩溃不许写成功；谁解锁：backend，
+  按 T-382④ 不替它跑）+ **backend 把 `cmd/core/processpipe.go:228` 改成调用 `ChildAlreadyGone`**（CO-51 收尾）；
+  ⑤ 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
+  判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+  ⑥ 等什么：**`REQ-TURN-1`**（`turn/finished` 与 send 回执的先后时序在 v0.1 未定义；谁解锁：主控，
+  排 Wave-2 之后、真 adapter 接入之前）。**我不拿本轮的绿去填它。**
+  我名下没有欠着的动作：五件改动都在 `core/cmd/fake-adapter/` 与我包的两条消费者用例里，等入册。
+  - 【以下五格是第 29 轮（09-27 16:12~16:33，T-382）写的，按 T-276 原样留档、不当现状读；其中「① 未落 / Ⅰ 交不了」那两句已被第 30 轮取代】
+  - Stage: **第 29 轮 = T-382 的 ② 两半落地、① 交回一个岔口（CO-54）**。
+    关键发现：**被抢占那一帧同时是 CO-25 的排干点** —— 只删帧会把排在它后面的队列饿死
+    （实测 `dq2`/`dq3` 一线节都没有），所以我把"一轮结束"与"发 turn 级码"拆开：排水留、帧不发。
+    `"OK"` → `SUCCEEDED`（按名字对齐 §6 第 6 条那一份表，不抄第二份）。消费者侧
+    `TestConnectionSendOverRealPipe` 按裁定改写并**把"没有那一帧"做成断言**。
+    ① 我实现过、也回退了：即时收尾会同时撞掉 §5 转向 / §5 stop / CO-25 / §6 规则 5 四个现裁形状（5 条红），
+    三条可选形状与代价都在 CO-54。变异 **n1..n4 全 FIRED**，其中 **n4 跨包**（恢复被禁的那一帧 ⇒ fake 侧与我包侧同时红）。
+    两面绿：A 面 119 PASS / 2 SKIP / 0 FAIL（三包 ok），B 面 541 PASS / 8 SKIP / 0 FAIL、17 包 ok（仍含别家在途件）。
+  - Status: **idle-ready；① 等 CO-54 裁定，其余无欠账**。被验面带我 4 件在途（未入册），另有 backend 约 10 件在途。
+  - Last verified action: **16:29:48→16:30:09 两面各一次**：A 面（`./internal/process/... ./internal/adapter/...
+    ./cmd/fake-adapter/...`）`exit=0`、顶层 **119 PASS / 2 SKIP / 0 FAIL**、三包全 ok；
+    B 面整仓 **541 PASS / 8 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**（`delivery-r25-162946.log`）。
+    指纹 **`cmd/fake-adapter = 46377e8752bf1298`**、**`internal/process = 33d54df2a154e3ee`**（旧 `397a7b999dc89720` 作废），
+    `deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f` 未变。HEAD `f1558cc`。
+    变异 `mut-r38.py` + `mut-r38b.py`：基线两包 72 PASS / 0 FAIL、锚点命中全 = 1、**4/4 FIRED**、按字节还原 assert sha。
+    ZMUT = 0、`zz_*` 残留 0。**"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+  - Verification: `## Verification evidence` 顶部 = **"第 29 轮（T-382）"** —— ②-b 那个排干点发现、① 的回退与三条
+    可选形状、断言改写的理由、n1..n4 判决表（含 n4 跨包那枚）、两面读数与脏件清单、以及"改 fake 必须连消费者包一起跑"
+    那条流程教训都在里面。可当场复跑：`bash .scratch/adapter/delivery-r25.sh`、
+    `python .scratch/adapter/mut-r38.py`、`python .scratch/adapter/mut-r38b.py`。
+  - Next action: **等 CO-54 裁定**（"一个 `start_now` 轮次何时算跑完"），裁完我才能把 ① 与 ③Ⅰ 交出去；
+    裁之前我不拿"队列那一路也发 `SUCCEEDED`"冒充。其余四格同前（本步入册、§22 发射点、`core/test/` 端到端、
+    backend 若开口我陪一次共享 `gateTurn`）。另按 ④ 请转告 backend：**端到端那一腿现在可以复跑了**。
+  - 【以下五格是第 28 轮（09-27 13:44~13:53，T-362/T-382 之间）写的，按 T-276 原样留档、不当现状读】
+  - Stage: **第 28 轮 = T-362 三句都办了：CO-51 对拍 + 单一来源导出、CO-53 落点按小节名指认、第 11 格没碰**。
+    对拍是机械的：两份 `childAlreadyGone` 函数体**逐字节相同**（212B / sha `7364ae9e5ca630a8`）⇒ 语义一致 ⇒
+    我包内那枚改名导出 **`ChildAlreadyGone`** 作唯一来源，`cmd/core` 那份等 backend 改调用（我不碰他们面包）。
+    新增 `TestChildAlreadyGoneAnswersBothQuestions`（两问分开判），本步变异 **m6a/m6b/m6c 全 FIRED**；
+    **A 面 `exit=0`、119 PASS / 2 SKIP / 0 FAIL**，我那 8 条用例逐条 `--- PASS:`；
+    B 面整仓 525 PASS / 0 FAIL 但**含 backend 3 改 + test 1 新**，只记"这一跑 0 红"、不写全仓绿。
+    **`internal/process` 指纹换成 `397a7b999dc89720`**（这次是真改码，旧枚 `9c750c42077d17c0` 失效）。
+  - Status: **idle-ready，无阻塞、无欠账**；CO-51 从"等裁"转"等 backend 一次改调用"。
+    被验面带我 4 件在途（本步改动**未入册**），另外 3 改 1 新是 backend / test 的。
+  - Last verified action: **13:50:36→13:50:54 两面各一次**：A 面（我的三包）`exit=0`、
+    顶层 **119 PASS / 2 SKIP / 0 FAIL**、8 条我的用例在 `faceA-r28.log` :32/:34/:36/:38/:42/:44/:46/:97
+    全 `--- PASS:`；B 面整仓 **17 包全 ok / 0 FAIL / build failed 0 / panic 0**（`delivery-r25-135034.log`，
+    HEAD 跑前跑后同 `9660e68`）。指纹 **`internal/process = 397a7b999dc89720`**（13:50:36 构建）、
+    其余三面未变。变异批 `mut-r28.py`：基线 46 PASS / 0 FAIL、锚点命中全 = 1、**3/3 FIRED**、
+    两份被改文件按字节还原且 sha 与跑前同值。ZMUT = 0、`zz_*` 残留 0。"全" = 17 包，不含 `core/test/` 与 `scripts/`。
+  - Verification: `## Verification evidence` 顶部 = **"第 28 轮（T-362）"** —— 对拍的命令原文与两个 sha/字节数、
+    单一来源的归属交代、新用例的两问设计（以及第三问为什么不放单测）、m6a/m6b/m6c 三枚判决、
+    两面读数与两个时刻的脏件清单都在里面；往下是第 27 轮补（CO-53 实测 + 三条腿回报）、第 27 轮（停摆后复量）、
+    第 26 轮（第二批 5 FIRED）。本步可当场复跑：`bash .scratch/adapter/delivery-r25.sh`、
+    `python .scratch/adapter/mut-r28.py`、`cmp -s <(sed -n '/^func ChildAlreadyGone/,/^}/p' …) <(…)`。
+  - Next action: **idle-ready，等主控点名**。五格"等"写全：
+    ① 等什么：**backend 把 `cmd/core/processpipe.go:228` 那枚副本改成调用 `ChildAlreadyGone`**
+    （谁解锁：backend，T-361⑤/T-362① 已派；我不碰那三个文件）；
+    ② 等什么：**本步（第 28 轮）被复跑/入册**（谁解锁：主控；当场可复量 `bash .scratch/adapter/delivery-r25.sh`）；
+    ③ 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
+    点名时我要的判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+    ④ 等什么：`core/test/` 六类全量的端到端复核（`turn_evidence_test.go`，谁解锁：`test`，我不代跑也不算进自己的绿）；
+    ⑤ 等什么：**backend 若开口，我陪一次那枚共享 `gateTurn` 的间歇挂**（谁解锁：backend；我不进他们文件）。
+    我名下没有欠着的动作：本步四件全在 `core/internal/process/`，等入册。
+  - 【以下五格是第 27 轮 / 第 27 轮补（09-27 12:32~13:09）写的，按 T-276 原样留档、不当现状读】
+  - Stage: **第 27 轮 = 停摆 47h 后的盘上复量（09-27 12:49），零代码改动、零新判据**。
+    结论三句：**两批都已在 HEAD**（第一批 `ba03ce2`、第二批 `ae26c61` = `connection.go +63/−8` +
+    `connection_test.go +108/0`）；**我的绿 = A 面三包**（`internal/process`/`internal/adapter`/`cmd/fake-adapter`，
+    12:51:40→47、`exit=0`、118 PASS / 2 SKIP / 0 FAIL、我那 7 条用例逐条 `--- PASS:`）；
+    **整仓那一跑（17 包 ok）只记"这一跑 0 红"、不写成全仓绿** —— 它含 backend / test 的未提交件（T-343 补口径 12:36）；
+    **`internal/process` 指纹 `9c750c42077d17c0` 与 09-25 交付时一字不差**
+    ⇒ 这两天没人动我的包，我名下 dirty = 0。期间我看到 backend 在落 REQ-S-1 停摆那一半（四件在途 + 一枚新测试）。
+  - Status: **idle-ready，无阻塞、无欠账**。我名下三个可写路径全干净；`core/` 现在的脏件全是 backend / test 的。
+  - Last verified action: **12:51:40→12:51:59 两面分取**（`bash .scratch/adapter/two-face-r27.sh`，
+    一次跑完 A/B、同一时刻读 HEAD 与 porcelain）：**A 面 = 我的三包 `exit=0`、顶层 118 PASS / 2 SKIP / 0 FAIL**
+    （`faceA-r27.log`，我那 7 条用例在 :32/:34/:36/:38/:42/:44/:46 全 `--- PASS:`）、
+    **B 面 = 整仓 17 包 ok / 包 FAIL 0**（12:51:50→59；该跑没带 `-v`，所以顶层计数是 0，不是没跑）。
+    两面同处 HEAD `67f064b`。**"全仓绿"这个写法我 12:36 之后不再用**：被验面此刻有 4 改 2 新全是 backend / test 的。
+    更早 12:48:49→59 那次整仓（`delivery-r25-124848.log`、521 PASS / 7 SKIP / 0 FAIL）同属 B 面性质。三面指纹 `deps 67a1287e29df29c3` / `afbc9a1b8fa9b74f` / `38a594aa65efbca8` /
+    **`internal/process 9c750c42077d17c0`（构建时刻 12:48:49）** —— 后三枚与 09-25 那两批同值。
+    **前一次 12:32:45→12:42:52 那份是 `exit=1`（16 包 ok、`api/http` 整包 `panic: test timed out after 10m0s`）**，
+    挂点在 backend 在途件的 `gateTurn` 替身上、且他们 12:46:07 还在写 ⇒ **我没记成他们的红**，12:48 同命令已过。
+    我这 7 条用例在该 log 里逐条 `--- PASS:`（行号 :821/:823/:825/:827/:831/:833/:835，见第 27 轮正文）。
+    **"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+  - Verification: `## Verification evidence` 顶部 = **"第 27 轮（09-27 停摆后复量）"** —— 两批的 `git show --numstat`
+    原文、7 条用例的行号与行首前缀、两份全量（红的与绿的）、"没报出去的那条红"的完整形状与两条分辨命令都在里面；
+    往下是第 26 轮补 2 / 第 26 轮补 / 第 26 轮（第二批 5 FIRED）、第 25 轮补、第 25 轮（T-314 三处点名 + ⑤）。
+    判据命令今天真跑过：`bash .scratch/adapter/delivery-r25.sh`（两份日志）、
+    `cd core && CGO_ENABLED=0 go test -count=1 -timeout 100s ./api/http/`（复挂用，归 backend）。
+  - Next action: **idle-ready，等主控点名**。四格"等"写全（内容与 09-25 交账时同，只是今天重新按字复量过）：
+    ① 等什么：**CO-51 裁"哪一份 `childAlreadyGone` 成唯一来源"**（谁解锁：主控；裁成包内这枚的话，
+    backend 下一次动 `processpipe.go` 时改调用它 —— 我不碰那两个文件）；
+    ② 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
+    点名时我要的判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+    ③ 等什么：`core/test/` 六类全量的端到端复核（`turn_evidence_test.go`，谁解锁：`test`，我不代跑也不算进自己的绿）；
+    ④ 等什么：**backend 若开口，我陪一次那枚共享 `gateTurn` 的间歇挂**（谁解锁：backend；我不进他们文件、不主动查，
+    两条分辨命令与留档证据已在第 27 轮正文）。
+    当场可复量任一格：`bash /d/Project/Lucero/.scratch/adapter/delivery-r25.sh`。
+    我这边没有欠着的动作：`git status --porcelain -- core/internal/process/ core/internal/adapter/ core/cmd/fake-adapter/` = **0 条**。
+  - 【以下五格是第 26 轮 / 第 26 轮补（09-25 21:2x~21:54）写的，按 T-276 原样留档、不当现状读】
+  - Stage: **第 26 轮 = 第二批（可取消的 `write`，T-326③ 裁定形状）已落地并 5 FIRED/0 SILENT；第一批已在 `ba03ce2`**。
+    形状一句话：写放在一枚**有界可放弃**的 goroutine 上、`select { 写完 / ctx.Done() / c.dead }`、
+    超时**只标死连接**、回收仍归 `Close`（`sendpipe.go:76-80`、`discoverassembly.go:89` 两条腿都真的 defer 了 `Close`，
+    我按字核过）。实测 **44.8055391s → 400.8158ms**（同一条探针命令、改前改后两份日志都在盘上）。
+    **本轮最该被读的一句**：我在 `abandon` 里顺手写了 `c.closed = true`，而 `Close()` 顶上那句
+    `if c.closed { return nil }` 会让它**早退不杀孩子** ⇒ 3 枚 goroutine 永久挂 + 孤儿，
+    **正好把第一批刚闭的泄漏在那条新路上开回去**；是我为"§9.2 那句注释"补的泄漏用例抓的（两次差值稳定 = 3）。
+    **21:4x 更正一格措辞**：巡检发现我把 `--- FAIL` 行的 30.44s 当耗时写进了 `Close` 的注释（已随 `ba03ce2` 入册），已重写为「慢且红、不是单步计时」，承重依据换成 `cmd/core` 先例；判据与结论未动，第二批证据整批重取过（5 FIRED 不变、交付跑 21:48:53 仍 `exit=0`）。
+  - Status: **两批都交完、第二批未入册**；T-339 ⑤ 与我手里另两封给的排程**读出不一样**，已上交等主控处置（不撤、不自己入册）。被验面现带我 2 件 + backend 4 改 1 新，我这侧 21:44:48 起已停笔。
+    被验面现带我 2 件 + backend 4 改 1 新。
+  - Last verified action: **第二批更正注释后的重取 = 交付跑 21:48:42→21:48:53**
+    （`bash .scratch/adapter/delivery-r25.sh`，日志 `delivery-r25-214842.log`），`exit=0`、
+    **518 PASS / 7 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**；三面指纹与 21:38 那批**完全相同**
+    （`internal/process 9c750c42077d17c0`、`deps 67a1287e29df29c3`、`afbc9a1b8fa9b74f`、`38a594aa65efbca8`）
+    —— 因为这次注释是 **7 行换 7 行、没有位移行号**（上午那次净 +1 行就换了枚，见验证"第 26 轮补"）。
+    `mut-r26.py` 在更正后的字节上整批重跑：基线 45 PASS/0 FAIL、锚点命中全 = 1、**m1..m5 仍 5 FIRED / 0 SILENT**、
+    还原 sha 同值（`fb4982ac1a69a41e`，`mut-r26-out-214504.log`）。第一批三条 `TestClose*` 全程未红。
+    **44.8 那一格现在有三份留档输出**（改前 44.8059183s / 44.8055391s、第二批后 400.8158ms），
+    恢复成"可复跑事实"的那一步已按 §24 ⑤ 其四做完。**"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+  - Verification: `## Verification evidence` 顶部 = **"第 26 轮（第二批 = 可取消的 `write`）"** ——
+    改前/改后成对读数、§9.2 原文核对、⑤ 那件自引入回归与它的抓法、第二批五条变异判决、交付跑三证都在里面；
+    往下是第 25 轮补（注释降级 + 指纹换枚 + 那份被别家在途件吃掉的全量）、第 25 轮（T-314 三处点名 + ⑤）、
+    第 24 轮（ctx 三段，"没有 Kill"那句已作废留档）。四条判据命令都真跑过：
+    `bash .scratch/adapter/ctx-probe2.sh`、`python .scratch/adapter/mut-r26.py`、
+    `bash .scratch/adapter/delivery-r25.sh`、`bash .scratch/adapter/ctx-probe3.sh`。
+  - Next action: **idle-ready，等主控点名**。四格"等"写全：
+    ① 等什么：**第二批（可取消的 `write`）被复跑/入册**（谁解锁：主控；当场可复量：
+    `bash /d/Project/Lucero/.scratch/adapter/delivery-r25.sh` + `python .../mut-r26.py`）；
+    ② 等什么：**CO-51 裁"哪一份 `childAlreadyGone` 成唯一来源"**（谁解锁：主控；裁成包内那枚的话，
+    backend 下一次动 `processpipe.go` 时改调用它，我不碰那两个文件）；
+    ③ 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
+    点名时我要的判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+    ④ 等什么：`core/test/` 六类全量的端到端复核（`turn_evidence_test.go`，谁解锁：`test`，我不代跑也不算进自己的绿）。
+    **REQ-S-2（`%15` 那格）按 T-328④ 登记为 P2 观察项：不排在 Wave-2 之前、不为它改 `Wait` 语义、今天不派活。**
+    我这边没有欠着的动作：`git status --porcelain -- core/internal/process/` 只有我这 2 件、untracked **0 条**。
+
+  - 【以下五格是第 25 轮 / 第 25 轮补（09-25 20:31~21:15）写的，按 T-276 原样留档、不当现状读】
+  - Stage: **第 25 轮 = T-314 三处点名已量、⑤ 的 `Close→Stop` 已落地（09-25 20:55 交付跑绿）**。
+    三处各一句：**(a) `Start`/`Connect` 不读 ctx**（已取消仍花 588ms 起一个没人负责的孩子）、
+    **(b) `Cancel` 签名里没有 ctx ⇒ `request` 的 ctx 分支之后还有第二道不可取消步骤**（管道已满时 3s 窗内未返回）、
+    **(c) `Close` 从"瞬间返回 + 孩子存活"变成"2ms + 孩子已收走"，并解开那次卡住的 write**。
+    **⑤ 落地时量出两件必须一起处理的缺陷**：`Stop` 要排在还管道**之前**（否则就是那一次 30.44s 的带载红）、
+    孩子自己先死时 `Kill` 给 `kill: invalid argument`（⇒ 正常收尾被报成失败）⇒ 复刻 `cmd/core` 的
+    `childAlreadyGone`，两份归一开成 **CO-51**。
+    **21:1x 接令**：T-326③ 已裁 `write` 那一格（放进可放弃的 goroutine、`select { 写完/ctx.Done()/c.dead }`、
+    超时标死连接交给 `Close`），**明确排在『本批交账之后』、且两批判据不许合成一批** ⇒ 那是我的下一批、不是这一批。
+  - Status: **已交账，回到 ready（无阻塞、无欠账）**。**被验面带着我自己的 4 件脏件**
+    （T-321② 已按要求明写：这一批读的就是这 4 件在制品，不是干净面）。
+  - Last verified action: **新字节上我能归因的绿 = `internal/process` 单包，21:11:54**
+    （`go test -count=1 -v ./internal/process/` → `exit=0`、**顶层 `--- PASS` 36 / SKIP 1 / FAIL 0**；
+    连子用例那一面是 42，两面别混用；`Close` 四条用例全 PASS）。
+    **17 包全绿那一份 = 21:04:28→21:04:39（508 PASS / 7 SKIP / 0 FAIL，porcelain 只有我那 4 件）**；
+    其后 21:10:30→21:10:40 复取 **`exit=1`**、`包 ok` = **16** —— `api/http` 因 backend 未跟踪在制品
+    `tasks_get_test.go`（`strconv` 未用 / `httptest` 未定义 ×3 / `itoa` 未定义）**整包 build failed**，
+    按 T-323② 我不引用别家那份绿、也不把这条红算进自己。
+    **`internal/process` 指纹再换一枚：`c64734a5309c1a89`（构建时刻 21:10:30），`341c5cd8fce19e0f` 作废**
+    （改注释也挪行号表 ⇒ 哈希变；"只改注释 ≠ 哈希不变"）。另三面未变
+    （`deps 67a1287e29df29c3`、`afbc9a1b8fa9b74f`、`38a594aa65efbca8`）。
+    变异批 `mut-r25.py`（**在 21:10 的注释降级之前跑的**）：基线 42/0、锚点命中全 = 1、
+    m1/m5 FIRED、m2/m3/m4 SILENT、还原 sha 同值。"全" = 17 包，不含 `core/test/` 与 `scripts/`。
+  - Verification: `## Verification evidence` 顶部 = **"第 25 轮（T-314 三处点名 + ⑤ 落地）"** ——
+    那张"三处 × {吃不吃 ctx、卡死孩子下耗时、孩子去向}"表、两件新缺陷、五行变异判决表、交付跑三证都在里面；
+    往下依次是第 24 轮（ctx 三段量测，**其中"没有 Kill"那句本轮已按字作废、原文留着**）、第 23 轮（空机复跑）、
+    第 22 轮（合验）。四条判据命令全部真跑过：`ctx-probe3.sh`、`ctx-probe4.sh`、`mut-r25.py`、
+    `delivery-r25.sh`（都在 `.scratch/adapter/`）。
+  - Next action: **idle-ready，等主控点名**。四格"等"写全：
+    ① 等什么：**CO-51 裁"哪一份 `childAlreadyGone` 成唯一来源"**（谁解锁：主控；解锁后那一步：
+    若裁成包内这一枚，backend 下一次动 `processpipe.go` 时改调用它 —— 我不碰那两个文件）；
+    ② 等什么：**CO-52 —— `request` 的 ctx 分支里 `c.Cancel(id)` 这道第二不可取消步骤要不要界住**
+    （谁解锁：主控。加期限/改异步都是 §23 的形状决策，三个可选形状在 CO-52 正文里，我只在注释里点名、没动行为；实测数字在正文 ①）；
+    ③ 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我但不排在闸门之前；谁解锁：主控；
+    点名时我要的判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+    ④ 等什么：`core/test/` 六类全量的端到端复核（`turn_evidence_test.go`，谁解锁：`test`，我不代跑也不算进自己的绿）。
+    解锁后任一格都能当场复量这一条：`bash /d/Project/Lucero/.scratch/adapter/delivery-r25.sh`。
+    我这边没有欠着的动作：`git status --porcelain -- core/` 只有我自己这 4 件、untracked **0 条**。
+  - 【以下五格（`Stage`/`Status`/`Last verified action`/`Verification`/`Next action`）是第 24 轮
+    （09-25 20:06~20:09）写的，按 T-276 **原样留档、不当现状读**】
+
+  - Stage: **第 24 轮 = T-310 的 ctx 量测已交（09-25 20:09）；三张交付仍在盘上，本轮零交付改动**。
+    量的结论：**不可取消那一段是 `Start`/`Connect`** —— 传**已取消**的 ctx 进去，`Start` 仍花 **588ms** 真起一个孩子、
+    `err=nil`、孩子存活；`Connect` 本体 **2.25ms** 且**不等 hello**（主控 ① 那句前提我纠正了）。
+    **`request` 腿安全**：400ms 期限 → **400.31ms** 返回、err 带 `sent $/cancel`、`pending` 归 0 不泄漏。
+    **三条路径都不收孩子**（`Child` 只有 `Wait`/`CloseStreams`，没有 `Kill`）。
+  - Status: **已交账，回到 ready（无阻塞、无欠账）**。
+  - Last verified action: 探针跑窗 **20:09:08→20:09:12**（`bash /d/Project/Lucero/.scratch/adapter/ctx-probe.sh`，
+    临时件 `trap` 删除、包内残留 = 0，被验的 `internal/process` 零脏件）。
+    **空机复跑没欠**（T-310 ④）：19:43:15→19:43:28 与 19:52:50→19:53:02 两批，与带载的 19:12 那批
+    **数字全同**（`exit=0`、498 PASS / 7 SKIP / 0 FAIL、17 包全 ok）且三面指纹一字未变
+    （`deps 67a1287e29df29c3`、`afbc9a1b8fa9b74f`/`c6a53803aa7ce5c1`/`38a594aa65efbca8`）。
+    **20:06:00 复量后不再取第四份全量**：`git status --porcelain -- core/` 现读 **7 条**（backend 在写
+    `internal/notification`/`api/http`，最新 mtime 20:0x）⇒ 现在跑就是拿正在被改的树做合验，
+    **这次拦住我的是我自己那条 `idle_probe()` 判据**。**"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+  - Verification: `## Verification evidence` 顶部 = **"第 24 轮（T-310 ctx 量测）"** ——
+    那张"三段 × {吃不吃 ctx、实测耗时、孩子去向}"的表 + 可复跑命令都在里面；往下依次是第 23 轮（空机复跑三批）、
+    第 22 轮（合验交账）、第 21 轮（T-295 口径）。
+  - Next action: **idle-ready，等主控点名**。三格"等"写全：
+    ⓪ **REQ-S-1 的两段落点**（归 backend：两段式 `Connect`）——我的读数替他定位了**不可取消那一段是 `Start`/`Connect`、不是 `request`**；
+    谁解锁：backend/主控。**我不会去改 `cmd/core`，也不会擅自给 `internal/process` 加"顺手杀进程"的行为**——
+    那属于 §23 的形状决策（谁杀、何时杀、失败怎么喊），要主控裁；
+    ① 等什么：**Wave-2 闸门之后 `adapter_downgraded` 发射点的点名**（§22 归我，但明确不排在闸门之前；谁解锁：主控；
+    点名时我要的判据是"降级那一刻发一条、`effective == requested` 时不发"两侧都有用例）；
+    ② 等什么：`core/test/` 六类全量的端到端复核（`turn_evidence_test.go`，谁解锁：`test`，我不代跑也不算进自己的绿）；
+    ③ 等什么：若还要一份空机读数，**重跑同一条命令即可**（我不改任何人的文件去凑干净）。
+    我这边没有欠着的动作：三门交付都在 HEAD、`git status --porcelain -- <我三路径>` = **0 条**。
+  - （**旧 `Next action`，09-24 10:54 写的，按 T-276 留档不当现状**；live 的那条在上面）：
+  "idle。三格'等'，每格都写谁解锁"：① **等主控发合验令** —— 等什么：`test` 侧的 Wave-2 合验开跑；谁解锁：主控；
+  ② **等 backend 补终态边判据** —— 等什么：§1.1 第 17 条"三条腿 + 每腿反例"里
   "改行腿在装配好的形状下被驱动"那一腿（10:46 复量：`cmd/core` 里 `RecordExit/RecordCrash` 只 1 处、且那是 nil-store 支）；
   谁解锁：backend（配方在他手里：先 start 再落边、断 `status`/`exited_at`/`exit_code`，反例 = 摘掉 `TouchTransition` 那条腿必须红）；
   ③ **等 backend 用 `ResolveInstance` 接完分派腿** —— 谁解锁：backend，我不催、不替他接。
@@ -912,6 +1128,133 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   - 现在的头部五字段自检读数（10:59）：`^- Stage:`=1、`^- Status:`=1、`^- Last verified action:`=1、
     `^- Next action:`=1、`^- Verification:`=1，`^## `=12。
 
+- **第 20 轮（09-25 18:32~18:36，T-288 条件式合验令）· 到 ready，且把"预备"做成一条可复跑的命令**。
+  - **先复量触发前提，不照抄巡检那份清单**（18:32:51 实读）：巡检说的两件已经变了 ——
+    `core/api/http/tasks.go` **不再脏**、`scripts/check_ownership.sh` **不再脏**（他 18:20 那份已过期），
+    现在脏的是 **backend 的 T-286 在途**：`core/cmd/core/sendpipe.go`(M) + `?? core/cmd/core/sendpipe_test.go` + `core/internal/task/service.go`(M)，
+    外加 frontend 两件与五本台账。⇒ **判据"backend 那件消失 + HEAD 前进"未成立，本轮不是触发**。
+  - **一条对主控 ② 有直接影响的坏消息（好消息是我这边不欠）**：我那三个未跟踪件（`lifecycle.go`、`lifecycle_test.go`、`badexec_test.go`）
+    **已在 HEAD 里**（`git log -1 -- <文件>` 三件都指 `2c56023`），所以"工作区必须干净"这一条**不会再被我的在制品卡住**；
+    现在卡住它的是 backend 那三件 + frontend 那两件 + 台账。
+  - **协议侧六项逐条落到具体用例名**（不是为了好看，是因为 T-288 要求"逐条带读数"，而"整包绿"给不出逐条）：
+    握手 = `TestNegotiate`/`TestNewHandshake`/`TestFakeAdapterHandshakeSatisfiesCore`/`…RefusesBeforeHandshake`/
+    `TestConnectionStreamBeforeInitializeIsRefused`/`…RefusesBeforeInitialize`/`…InitializeStartsThePump`（7 条）；
+    能力核定 = `TestEffectiveCapabilities` + Probe 六条 + `TestSQLiteStoreRecordsOneProbeEndToEnd`（8）；
+    `CarriesTurnRef` 六条 = `TestStreamNotificationsMatchContractTables`（契约双向对拍）+ `TestStreamFrame*`（运行时构造/解码）（2）；
+    票号↔`execution_id` **两侧都有** = 正例 `TestConnectionDedupsAndTracksTurn`、`TestConnectionAgainstRealFakeAdapter`、
+    `TestBadExecutionIDGateOffEchoesWhatCoreBound`；反例 `TestConnectionDropsContradictoryIdentity`、
+    `…DropsUnboundTurnRef`、`TestBadExecutionIDGateOnContradictsTheBinding`（8）；
+    丢弃到审计接缝 = `TestDroppedFrameReachesTheAuditSeam` + 写口的 `TestEdgeWithoutARow…AuditSentinel`（2）；
+    链 = `TestFakeAdapterChainIsClaimedThenDispatched`、`…QueueDrainsAtTurnFinishedNotAtNextSend`、
+    `TestConnectionChainClosesBeforeItOpens`（3）。**六项 30 条，实跑非绿 = 0**。
+    **一处归属要说清**：六条全量的端到端那份在 `core/test/turn_evidence_test.go:234`（`test` 的门），
+    **不在我这 17 包里** —— 我这边是"契约对拍 + 运行时两侧"，别把我的读数当成第六类全量的替代。
+  - **预备脚本本身被抓出一次错**：第一版 `item()` 里我写成 `${pat)}` ⇒ 六项全部打印 `bad substitution`、
+    数字全空。是我的 dry-run 抓的（**"抄进契约/脚本的命令行必须先真跑一次"这条老规矩又一次生效**）；
+    修好 + 加"编译不过的包名与首条错误"两行后才拿到上面那组数。
+  - **合验该等不等得到，我给了个客观信号**：同一条命令两次跑，`internal/task/service.go` 的**首条编译错都变了**
+    （18:34 `:227:31 undefined: session` → 18:35 `:309:10 undefined: newLinkID`）⇒ backend 正在写；
+    而我三包的构建指纹两次**完全一致**（`afbc9a1b…`/`c6a53803…`/`38a594aa…`、`deps 67a1287e29df29c3`）
+    ⇒ **被验面里属于我的那一半没有动**，这就是"合验不能跑在正在被改的树上"的现形版本。
+
+- **第 21 轮（09-25 18:53~18:55，T-295 归因口径）· 零代码改动，预备读数换了一代**。
+  - **T-295 我按"报告形状"落地，不是按"记一条规矩"落地**：把预备脚本的 `item()` 改成**印用例名清单**
+    （= 主控要的"覆盖的判据行"），**输出里不出现任何人名/作者字段**——归属只进这本台账，不进合验结论。
+    改完真跑一次才算数（老规矩：抄进交付物的命令行必须真跑过），输出见本轮 Verification。
+  - **触发判据我自己复量（18:53:17，不抄巡检那份）**：HEAD `4b4739e`（18:47:07）；
+    porcelain 15 条 = 六本台账（含我自己这本）+ frontend 两件 + **backend 五件 ` M`**
+    （`core/api/http/tasks.go`、`cmd/core/sendpipe.go`、`internal/task/{domain,repository,service}.go`）
+    + **两件 `??`**（`api/http/tasks_link_test.go`、`cmd/core/sendpipe_test.go`）
+    ⇒ 主控那两条（backend 那几件消失 + HEAD 从 `4b4739e` 前进）**都还没到位**，我不启动。
+  - **但一个障碍已经消失，这条必须报，否则下一轮的人还会去找那四包**：18:54:09→18:54:2x 那次全量
+    **`exit=0`、498 PASS / 7 SKIP / 0 FAIL、17 包全 `ok`、`build failed` = 0**
+    —— 我 18:36 那次读到的"4 包编译不过（根因 `internal/task/service.go` 未定义符号）"**已经被 backend 自己修掉了**，
+    他们现在只是**没提交**、不是**编不过**。⇒ T-293① 那道"预检不过就不起采样"的门，此刻**预检是过的**；
+    挡着的只剩"未提交"这一条，而那正是主控判据的内容，不由我判。
+  - **`95b01ca` 那个事实我核过，写进台账**：`git show --stat 95b01ca` = 4 个文件
+    （`orchestration.md +22/−4`、**`scripts/check_ownership.sh +20/−3`**、`api-contract +17`、`contracts-internal +4`），
+    message 只写 "specs+ledger" ⇒ 确实漏的是**message 没写**、不是"混提"本身；
+    形状 E 那道排除**归属仍记 `test`**，我这边一句"这是谁写的"都不写，按新口径只写指纹与覆盖行。
+  - 我的三面指纹两次一致（构建时刻 18:34:48 与 18:54:13）：`deps 67a1287e29df29c3`、`bin internal/adapter afbc9a1b8fa9b74f`、
+    `internal/process c6a53803aa7ce5c1`、`cmd/fake-adapter 38a594aa65efbca8`，
+    **而 HEAD 从 `95b01ca` 前进到了 `4b4739e`** ⇒ "被验的是不是那份码"这件事，**HEAD 变了不等于我的面变了，HEAD 没变也不等于没人在改**（backend 五个文件在两个 HEAD 之间一直是脏的）。
+    这正是 T-295 要的结论：**能归因的是指纹，不是提交字段。**
+
+- **第 22 轮（09-25 19:11~19:15，T-297 合验令已执行）· 协议侧 + 行级两条腿的反例都在同一棵树上跑完**。
+  - **发单前提我先自己复量（19:11:54），两条都成立**：HEAD `f25ee6c`（19:04:01，父 `a9f975e`）、
+    `git status --porcelain -- core/` = **空输出**、全仓只剩六本台账 + `apps/desktop` 两件 + `scripts/flaky_watch.sh`
+    —— 与主控/巡检那份**逐字对得上**（我不抄，是自己量的）。
+  - **协议侧六项 30 条覆盖行、非绿 = 0**（19:12:39→19:12:4x 那次，全量 `exit=0`、498 PASS / 7 SKIP / 0 FAIL、17 包全 ok、
+    `build failed` 0）；三面指纹与 18:35/18:54 两次**一字不差**（`deps 67a1287e29df29c3` + 三个 bin），
+    即"上一代对照"这一段（巡检 19:10 建议留着，我留了）。
+  - **行级那一半今天第一次真跑（带 `LUCERO_REQ_DB2=1`）**：`TestLifecycleColumnAssertionsHaveTeeth`、
+    `TestLifecycleWriterLandsRowAndShouts`、**`TestLifecycleThreeLegsEachMoveTheRow`**、`TestLifecycleRowLandsTheFiveColumns`
+    **四条全 PASS**、包 `ok`（19:12:5x）。
+  - **§17 "三条腿 + 每腿一条反例"我按字验了，两条反例都是真红**（摘我包里的入口、字节级还原在同一条命令内、`restored_identical=True`）：
+    摘建行腿 ⇒ `cmd/core` **三条全红**（首行 `process_instances 该恰好一行…: sql: no rows in result set`）+ 我自己包 **5 条红**；
+    摘改行腿 ⇒ **`TestLifecycleThreeLegsEachMoveTheRow` 红**，首行
+    `干净那条腿该把行改成 EXITED/exit_code=3，实际 STARTING / 有=false 值=0` + 我包 **4 条红**。
+    ⇒ **CO-50① 那个缺口今天由 backend 的 `TestLifecycleThreeLegsEachMoveTheRow` 补上，并有反例证明它有牙**，我这边判闭（不是"看它绿了"）。
+  - **一条我自己差点交上去的空判决，如实记**：反例脚本第一版我用 `-run 'TestLifecycle…'` 去过滤**我自己的包**，
+    可我包里的用例叫 `TestStartLands…`/`TestExitMoves…` ⇒ **一条都没匹配上，输出 "PASS=0 FAIL=0 exit=0"**，
+    长得像"我的包不敏感"。是我自己那行 `基线 internal/process | PASS=0` 的可疑零逼我回去看的（`-run` 空匹配也报 ok 那条老规矩）。
+    改成不过滤重跑才是上面那两组数（32 基线 / 5 红 / 4 红）。**如果不补这一趟，我就把一次"没跑"报成了"跑了没红"。**
+  - **并发负载（T-297 要求写明）**：`test` 的 FL-10 电池**在我这批跑的同时在动**——起跑前探针
+    19:12:36 见 `flaky10b_seg_190822.log` 6088B 且 3 秒前刚写过；19:12:59 那个文件已不在；19:14:03 又出现
+    `flaky10c_run.out`/`flaky10b_segments.txt`。⇒ **我的读数是带载测的**。
+    **为什么我没等它**：我这批全是**判决型**断言（PASS/FAIL、反例必须红），不是量级/时序型；
+    而"等不等"这件事本身我没有可验证的收敛条件（电池何时结束不由我知）。**若哪条真红了，我会单包复跑一次再归因**，
+    这批一次都没红，所以没触发那条。**这条判断留给主控复核**：如果合验结论要参与量级腿的对比，应当只取"无并发"那一批。
+
+- **第 23 轮（09-25 19:42~19:46，T-302 ①②③④：同一条命令的空机复跑）· 零代码改动**。
+  - **复跑与 19:12 那批逐项对齐，两句都成立**（指纹一字不差 **且** 读数一致）：
+    `deps 67a1287e29df29c3`、`bin afbc9a1b8fa9b74f`/`c6a53803aa7ce5c1`/`38a594aa65efbca8`（与 18:35、18:54、19:12 四代同值）；
+    全量 **`exit=0`、498 PASS / 7 SKIP / 0 FAIL、17 包全 ok、`build failed` 0**（起跑 19:43:15、构建时刻 19:43:18、收 19:43:28）；
+    六项 7/8/2/8/2/3 = **30 条，非绿 0**；行级带 `LUCERO_REQ_DB2=1` **4 条全 PASS**；
+    两条反例照旧真红（摘建行腿 cmd/core 3 红 + 我包 **5 红**；摘改行腿 `…ThreeLegsEachMoveTheRow` 红 + 我包 **4 红**），
+    `restored_identical=True`。⇒ **19:12 那批不是靠并发凑出来的**，主控要的"无并发补一份"已交。
+  - **"空机"两证按当下盘量，不照抄谁的基线数**：`tasklist` 在 19:42:33 / 19:43:42 / 19:44:14 / 19:44:35 / 19:45:36 / 19:46:02
+    **六次探针都没有 `go.exe`、`test.exe`**；`.scratch/test/` 最新项在**我 harness 起跑前**（19:43:15）是
+    `selftest_recheck.log` **19:28:18**（静默约 15 分钟）⇒ **主批次确实是空机**。
+    **但有两件必须如实写，不许把复跑说成全程空机**：
+    ① test 在 **19:44:36** 开始写 `oc_now.log`（11450B，19:45:04 末次）⇒ 我 **19:44:14~19:44:35 那次 legs 重跑落在它恢复活动的边界上**，
+    所以我**又跑了一腿 19:45:36→19:46:02**，那一段的前后探针里 `oc_now.log` 的 mtime **停在 19:45:04 不动**、tasklist 仍无 go.exe
+    ⇒ **报告里用的 legs 读数是这一腿（干净的）**，19:44 那一腿只当重复确认；
+    ② 19:43:42 我一度得到"` .scratch/test/` 不存在"的读数——**那是假的**：那条命令的 cwd 在 `core/`，
+    我用的是相对路径 ⇒ **会话 cwd ≠ 仓库根造出的经典假否定**。改用绝对路径后目录一直在，19:44:36 起还在被写。
+    **如果我没回头核，我会把"test 把自己的目录删了"当成一条空机证据报上去。**
+  - **③ 的判据我按主控的口径实现，不写成"HEAD 等于某个值"**：HEAD 现读 **`c46339c`**（19:42:00）——**不是**主控那份里说的 `6b28868`
+    （它是父提交，19:38:34，两笔都只动 specs 与台账）。三条证据：`git status --porcelain -- core/` = **空**；
+    三面指纹与 19:12 一字不差；**再加一条更硬的**：`git diff --name-only f25ee6c..HEAD -- core/` = **0 个文件**
+    ⇒ 从被验那批（`f25ee6c`）到现在，**Go 面一个字没变**，HEAD 前进的两笔全是 specs/台账。
+  - **⑤ `:sync` 的 503 半格：登记、今天不做、不阻塞任何人**。按契约① 第 22 条原文落账：
+    发射时机 = **只在降级发生的那一刻**（握手 / probe 核定出 effective < requested 那一处，在我 `internal/adapter` 的核定域里）；
+    **`:sync` 的 503 出口只回码、不发事件、不 Touch 任何聚合**——`backend` 现在的形状是**正确终态**，不许为它开"半个事件"的口子；
+    响应里要说明"为什么降级"走**读**已落库的 capability/health 行，不在响应路径上写（一次轮询刷一条 journal = C36① 同一条理由）。
+    **今天盘上事实**：`adapter_downgraded` 只有 `eventjournal/events.go:14`（常量）与 `:77`（catalog 登记）两处非测试命中
+    ⇒ **有名字、无发射点**，这条我按 §17 那把尺标成"未实现"，**不许**有人拿常量在位当"已接线"。
+    解锁方式：Wave-2 闸门之后主控点名发射；点名时我要的判据是"降级那一刻发一条、`effective == requested` 时**不发**"两侧都有用例。
+
+- **第 24 轮（09-25 20:06~20:09，T-310）· 零交付改动，量"连接面吃不吃 ctx"**。
+  形状：**临时探针 + 一条可复跑命令**（`.scratch/adapter/ctx-probe.sh`：把 `ctxprobe_test.go.txt` 复制成
+  `core/internal/process/zz_ctxprobe_test.go` → 跑 → `trap` 删除；跑完 `ls | grep -c ctxprobe` = **0**，包内不留件）
+  —— 本封明写"零代码改动、只要事实"，所以探针不进交付物，但留在 `.scratch` 里可复跑。
+  - **主控 ① 的前提有一处要纠正**：`Connect` **不等 hello**（它只 `Start` + 组装 + `go conn.read()` 就返回，
+    实测 2.25ms）；等 hello 是在 `Initialize`→`request` 里。⇒ 三段实际是"起子进程 / Connect 本体 / 等回应"。
+  - **量的结果（表在下条，含耗时与"孩子去向"）三句话**：
+    ① **`Start(ctx)` 全文不读 ctx**——传一个**已经取消**的 ctx 进去，它照样花 **588ms** 真起了一个孩子、返回 `err=nil`、
+    孩子**存活**；② `request` 那一腿**确实吃 ctx**（400ms 期限 → 400.31ms 返回，err 里带 `sent $/cancel`，
+    `pending` 归 0 不泄漏）；③ **三条路径没有一条会收走孩子**（cancel、判死、期限都只处理连接，`Child` 根本没有 `Kill`）。
+  - **一个我没预料到的分支**：`Initialize` 对"永远只回 `pong`、从不成帧"的孩子，**4.9ms 就返回**了，
+    走的是 **`c.dead`（连接判死）那一腿、不是 ctx**，err = `adapter process is gone; in-flight state is unknown …
+    (ADAPTER_UNRESPONSIVE)` ⇒ **"很快就返回"不等于"ctx 生效"**，这一格如果只看耗时会误判成安全。
+  - **④ 空机复跑没欠着**：T-302 那封要的"同一条命令 + 无并发"我已经交过两次 ——
+    **19:43:15→19:43:28** 与 **19:52:50→19:53:02**（后者起跑前后 `ins_completed.py` mtime 停在 19:48:27 未变、
+    `tasklist` 两次无 `go.exe`），两批与带载那批（19:12）**数字全同**：`exit=0`、498 PASS / 7 SKIP / 0 FAIL、17 包全 ok、
+    三面指纹一字未变。**20:06 之后不再取第四份**：`git status --porcelain -- core/` 现读 **7 条**
+    （backend 在写 notification/`api/http`，最新 mtime 20:0x）⇒ 现在跑就是拿正在被改的树做合验，
+    正是我自己判据该拦的那件事（`idle_probe()` 这次确实拦住了我）。**要第四份，等 `core/` 干净，一条命令即可。**
+
 ## Remaining
 
 - FakeAdapter 剩余 **6 个 C→A 方法**（14:2x `grep -c 'case "<method>"'` 量的，见 Verification）：
@@ -998,6 +1341,91 @@ Process Supervisor，并用 FakeAdapter 的 11 个方法 + 4 种故障注入跑�
   A-11 依赖真子进程与 Supervisor 在线，现在做只能拿假链路验证。等主控确认顺序，我不跳步。
 
 ## Coordination
+
+
+
+- **CO-54（09-27 16:30，T-382 ① 的岔口，请裁"一个 `start_now` 轮次何时算跑完"）**：② 我照办了（字面 + 不发帧），
+  ① 照字做完会把 §5/CO-25/§6 规则 5 三条现裁同时撞掉（实测 5 条红，含队列永久搁浅），所以已回退、不交半成品。
+  三条可选形状与代价写在验证「第 29 轮」正文：**(甲)** 即时收尾 + 修 CO-25 的排干点；**(乙)** §4 加一个
+  "正常结束"的调用（协议变更）；**(丙)** 一个 `debug/hold` 注入（需要 T-275"不新增 debug/*"的豁免）——
+  **我倾向 (丙)**，只有它同时保住"两轮同时在飞"这个 §6 规则 5 的验收形状。谁解锁：主控。
+  裁之前 ③Ⅰ 交不了，我不会拿"队列那一路也发 SUCCEEDED"冒充它。**已按 ④ 请主控转告 backend**：
+  端到端那一腿（挂住留 `RUNNING`+503、崩溃不许写成功）现在可以复跑了，两包绿、且 n4 证到跨包有牙。
+
+- **CO-54 · 已按裁定（T-386 丙）落地（09-27 17:10）**：`debug/hold` 存在于 fake-adapter、
+  `start_now`/`guide` 默认在输出结束时发 `turn/finished{SUCCEEDED}`，解除才是被按住那一轮的收尾点。
+  变异 4 FIRED / 1 有原因的 SILENT；两包 74 PASS 基线、A 面 121 PASS/0 FAIL。⇒ 从"等裁"转"等入册 + 等 §10 补一行"。
+- **CO-55（09-27 17:10，h4 的 SILENT 查出来的，请裁要不要立判据）**：§9 说 `debug/*` 只对
+  `adapter_key=fake` 且 `EXPERIMENTAL` 合法，但今天**没有判据**区分"声明了却没资格 / 没声明却被调用"：
+  `Handshake.Call`（`internal/adapter/handshake.go:342-369`）只查 §2 未握手、§2.2 重复协商、§3 `write_entry`
+  三件事，**不查能力表**（查表的是 `Handshake.Delivery`），所以我把 `debugCapability("debug.hold")` 删掉后
+  两包 74 条全绿（变异 h4 = SILENT）。⇒ 声明的作用目前是"对外诚实"，不是强制。
+  要不要把它做成判据、放在哪一层（fake 侧自查 / Core 侧调用前查 / `core/test` 对拍声明与可达方法），
+  **请主控裁**；我不擅自往 `Handshake.Call` 加门——那会改变所有能力的调用语义，超出 T-386 授权。
+- **CO-51 · 已按裁定办
+  （212B、sha 前缀 `7364ae9e5ca630a8`），语义一致 ⇒ `internal/process` 那枚**已改名导出为 `ChildAlreadyGone`**
+  作为单一来源；**`cmd/core/processpipe.go:228` 那份请 backend 下次动该文件时改成调用包内这一枚**
+  （T-361⑤ 已派，我不去动）。两条判据已重证：m6a（改名后的 m5）与 m6b/m6c 全 FIRED。
+  ⇒ 这一格从"等裁"转"等 backend 的一次改调用"，**我这边没有欠账**。
+- **CO-53（09-27 13:06 量出来的，零代码改动）：连接面对"不带期限的 ctx"不检测、不自救 ⇒ 请把它写成契约里的调用方义务**。
+  实测（探针 7，`.scratch/adapter/co53-probe7-130609.log`，`--- PASS`，跑窗 13:06:09→13:06:18）：
+  孩子不再读 stdin 时，`request(context.Background(), 256KB)` 这一发 ——
+  **A 5s 内未返回、`c.dead` 仍=false、`pending` 残留 1、`writeMu` 被永久占住**（也就是"没期限就没有任何自救"）；
+  **B 排在它后面、自己带 400ms 期限的那一条仍在 400ms 返回**（第二批的 `abandon` 生效，楔子不扩散给有期限的一侧）；
+  **D 唯一能解开它的是 `Close`：实测 2ms**，随后那条无期限的写在 5.551s 带着
+  `adapter process is gone…` 回来、goroutine 排空、孩子被收（E：存活=否）。
+  ⇒ 结论按字：这不是"我包里少写了一个 watchdog"，而是**⑤ 明令不许新增第三种期限**的必然推论；
+  期限必须在调用方，所以它需要一句契约，而不是我擅自补一个常量。
+  **拟稿（我的笔不碰 `specs/**`，请主控落）**：接在契约① §1.1 第 23 条不变量那段之后 ——
+  「**凡走 `process.Connection`（`Connect`/`Initialize`/`Call`/`CallTurn`）的调用必须自带期限**；
+  连接面对无期限的调用**不检测、不自救**（实测：写堵死时 `c.dead` 不会关、`pending` 会残留，只有 `Close` 能解开）。
+  因此新加一条走连接面的腿时，兜底期限是**这条腿的责任**，不许依赖包内超时。」
+  **顺带把 §23 里那句"后两条今天是否同形，由当事人自己量了回报"一次答清**（三条腿我逐条读了码，13:0x 现量）：
+  - **send** = `cmd/core/sendpipe.go:66-69`：`ctx` 无期限时兜 `probeAttemptDeadline` ⇒ **有兜底，但用的是 probe 的 10s 常量**
+    （§23 自己已经标了"send 要自己的期限、且期限只是止痛"，这一格仍归 backend）；
+  - **discover** = `cmd/core/discoverassembly.go:78-81`：**与 send 同形**（同一个 `probeAttemptDeadline` 兜底），
+    而且它 :74-75 的注释已经把这条 invariant 写在码上了（"连接这条路必须有期限…没期限就是挂住的 Adapter 拖住一条 handler 线程"）；
+  - **probe** = `internal/adapter/probe.go`：**不同形、也不需要走连接面** —— 它用 `Launcher` 给的
+    `io.ReadWriteCloser`（:86），且 `exchange`（:277-286）**自己兜底**：调用方无期限时用 `defaultProbeTimeout`，
+    有期限则取剩余时间、且把"已过期"钉成 1ns 而不是无界。⇒ **probe 这条腿不依赖调用方，也不受 CO-53 这一格影响**。
+  **我这轮零改动**：没碰 `cmd/core`、`api/http`、`internal/execution`（backend 在途）、没碰 `specs/**`；
+  探针件跑完 `zz_*` 残留 = 0、`grep -rn "ZMUT" core/` = 0。A 面读数不受影响（下一节复量）。
+
+- **CO-52（09-25 21:0x，T-314 ②(b) 量出来的，请裁要不要界住；我不擅自改形状）**：
+  `Connection.request` 的 ctx 分支在期限到期后要发一句 `c.Cancel(id)`，而
+  **`Cancel` 的签名里没有 ctx**（`connection.go:212`）⇒ 那是 `request` 里**第二道不可取消的步骤**。
+  实测：孩子不再读 stdin、且另有一次 write 正卡在管道里时，`Cancel` **在 3s 观察窗内没有返回**
+  （探针 b2；对照组"管道未满"是 0s、`err=nil`）。
+  ⇒ REQ-S-1 那条"别的写必须在一个明确上界内恢复"如果只界住 `Connect`/`Call`，这一格仍会从 `send` 那条腿漏出去。
+  **三个可选形状**（都超出 ⑤ 的授权范围，所以我一个都没做，只在 `Cancel` 的注释里点名）：
+  ① 给 `Cancel` 收 ctx；② `request` 的 ctx 分支把 cancel 丢成"发了就算"的一次有界写（带 deadline 的 write）；
+  ③ 不改 `Cancel`，改成"`request` 到期即返回、cancel 交给写泵串行投"。
+  **我倾向 ③**（它不新增期限、也不让调用方等第二次），但这是 §23/§1 的形状决策、且会碰 `internal/adapter` 的写面，
+  **谁解锁：主控。裁定前我不动它。**
+  **【21:1x 主控已裁（T-326 ③，契约① §1.1.23 第 ④ 处）】**：`write` 要放进**可放弃的 goroutine**，
+  `select { 写完 / ctx.Done() / c.dead }`，超时即**标死连接、交给 `Close`**（不新增期限种类、不加第二种 Kill）。
+  **顺序：先把 `Stop` 接线这一批交账，再补 `write` 那一格；两批判据不同，不许合成一批。**
+  ⇒ CO-52 从"等裁"转"等我自己实现"，我那三个可选形状作废（裁的是形状 ② 的加强版）。
+
+- **CO-52 · 第二批已实现（21:39，等复跑）**：按裁定形状落了 `writeWithin`（可放弃 goroutine +
+  `select { 写完 / ctx.Done() / c.dead }`）+ `abandon` 只标死、回收仍归 `Close`。
+  CO-52 那句"第二道不可取消步骤"由 `Cancel` 拒绝死连接一并关掉，实测从"3s 窗内未返回"变成快拒（<1s）。
+  两批判据分开：第一批三条 `TestClose*`、第二批三条，各自一套变异批（第二批 **5 FIRED / 0 SILENT**）。
+  **等主控点名复跑/入册**（谁解锁：主控）。附带一条**只上交不自裁**的引用勘证：验证 ② 与 ③ ——
+  `ctxprobe_out.txt` 不是我脚本的产物、`§9.2 规则 5` 的限定词是"无限"（`processpipe.go` 的注释丢了它）。
+  我不改 `cmd/core`，要不要回改那句注释归 backend。
+- **CO-51（09-25 20:56，T-314 ⑤ 落地时量出来的，请裁哪一份成唯一来源）**："孩子已经不在了"这条规则现在有两份：
+- **CO-51（09-25 20:56，T-314 ⑤ 落地时量出来的，请裁哪一份成唯一来源）**："孩子已经不在了"这条规则现在有两份：
+  `cmd/core/processpipe.go:228` 的 `childAlreadyGone`（backend 的在制品，我没动）与
+  `core/internal/process/supervisor.go` 里我新加的同名私有副本。两份是同一条判断
+  （`errors.Is(err, os.ErrProcessDone)` ∨ `os.FindProcess(pid)` 失败），因为 `Stop` 的 `Kill` 对一个
+  已被 `cmd.Wait` 释放句柄的孩子返回的是 `kill: invalid argument`（Windows 实测），不吞它就会把一次
+  **正常收尾报成失败**。
+  **我的建议：唯一来源放 `internal/process`**（`Stop` 就在这个包里，"它能不能收口"的知识属于它），
+  backend 下一次动 `processpipe.go` 时改成调用包内那一枚。反面选项是"两份并存 + 跨包对拍判据",
+  那正是 09-25 裁过要避免的形状（词表两处各存那一次）。谁解锁：主控。
+  **裁定前我这枚已经能用，不阻塞 REQ-S-1 的任何一半**（⑤ 那一半我已闭，`sendPipe` 的两段式仍是 backend 的）。
+- **CO-50（第 22~23 轮）· 已闭**：① 判闭；`:sync` 的 503 半格按 §22 只登记不做，发射点等 Wave-2 闸门后点名。
 
 - **T-9 的"新红点"当场不复现（附命令，本机 18:01~18:02）**：投递说"`ErrorCode` 收紧成具体类型后
   `internal/adapter` 与 `core/test` 的调用/测试没跟改（db 全量跑时暴露）"。实测：
@@ -1600,6 +2028,76 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
   我不去动 `cmd/core` 的任何文件，也不提前跑合验。
 
 ## Changed files
+
+- **第 30 轮（09-27 T-386）· `git diff --numstat HEAD` 现读（17:10）**：
+  `cmd/fake-adapter/main.go +85/−3`、`delivery_test.go +75/−8`、`readers_test.go +12/−2`、
+  `main_test.go +12/−0`（`armHold` 助手）、`internal/process/connection_test.go +32/−19`
+  ⇒ **5 files changed, 216 insertions(+), 32 deletions(-)**。
+  - `main.go`：`methodDebugHold` 常量、`fake.hold` 字段、`debugHold()`（`on` 必须显式，缺省即拒）、
+    `startTurn` 末尾的默认收尾、`drainQueue` 的"排干不受 hold 影响"定形注释、`debug.hold` 能力声明。
+  - 四枚 fake 用例改造 + 两枚新增（`…StartNowClosesItsRun` = ③Ⅰ、`…HoldReleaseIsWhereTheCloseGoes`）。
+  - `internal/process/connection_test.go`：两条消费者用例改用 `holdOpen()` 要一个在飞的轮次
+    （§6 第 6 条③ 改了默认，"有轮在飞"不再是免费的前提）。
+  - **没碰** `api/http`、`internal/execution`、`cmd/core`、`specs/**`、`docs/**`。
+    证据留档：`mut-r386-out-170753.log`、`faceA-r386.log`、`delivery-r25-171001.log`。
+
+- **第 29 轮（09-27 T-382）· `git diff --numstat HEAD` 现读（16:31）**：
+  `cmd/fake-adapter/main.go +18/−2`、`cmd/fake-adapter/delivery_test.go +17/−6`、
+  `cmd/fake-adapter/readers_test.go +4/−2`、`internal/process/connection_test.go +19/−19`
+  ⇒ **4 files changed, 58 insertions(+), 29 deletions(-)**。
+  （`connection_test.go` 那 19/19 几乎成对，是因为改写的是同一段通知循环：换条数、换断言，不是加代码。）
+  - `main.go`：`resultSucceeded` 常量（按名字对齐 §6 第 6 条，不抄第二份枚举）；
+    抢占分支 `finish(prev, "INTERRUPTED")` → `drainQueue()`（**排水留、帧不发**）；`drainQueue` 的字面换掉。
+  - 两枚 fake 测试：线节顺序去掉那一帧 + **明写"不许有那一帧"的循环断言**；`"OK"` 断言换 `"SUCCEEDED"`。
+  - `connection_test.go`：消费者侧 `TestConnectionSendOverRealPipe` 按裁定改写（7→6 条通知、
+    tracker 必须留 `RUNNING`/空码、线节上不得出现被抢占轮的收尾帧）。
+  - **没碰** `api/http`、`internal/execution`、`cmd/core`、`specs/**`、`docs/**`（backend 正在落 REQ-S-1 那几件）。
+
+- **第 28 轮（09-27 13:44~13:51，T-362）· `git diff --numstat HEAD -- core/internal/process/` 现读**：
+  `connection.go +4/−4`、`connection_test.go +1/−1`、`supervisor.go +7/−5`、`supervisor_test.go +19/−0`
+  ⇒ **4 files changed, 31 insertions(+), 10 deletions(-)**（`--stat` 的每列是缩放数，这里全是 numstat 真实行数）。
+  - `supervisor.go`：`childAlreadyGone` → **`ChildAlreadyGone`（导出，单一来源）**，文档注释写进对拍数字
+    （212 字节 / sha `7364ae9e5ca630a8` / 两份定义的行号）。
+  - `connection.go` + `connection_test.go`：**只是跟着改名**（调用点 1 处 + 注释 4 处），无行为变化。
+  - `supervisor_test.go`：**新增** `TestChildAlreadyGoneAnswersBothQuestions`（+19/−0），并补 `fmt` import。
+  - **没碰** `cmd/core/processpipe.go`（那份副本按裁定由 backend 改调用，不是我去改）、
+    没碰 `api/http`、`internal/task`、`specs/**`、`docs/**`。
+
+- **第 26 轮（第二批 = 可取消的 `write`）· 只在 `core/internal/process/`，`numstat` 对 HEAD `99a30f0`**：
+  `git diff --numstat HEAD -- core/internal/process/` = **`connection.go +56/−1`、
+  `connection_test.go +108/−0`，合计 2 files changed, 164 insertions(+), 1 deletion(-)**
+  （第一批那 4 件已在 `ba03ce2` 里，不重复计入本轮）。
+  - `connection.go`：`writeWithin`（写放可放弃 goroutine + `select { 写完 / ctx.Done() / c.dead }`）、
+    `abandon`（只 `kill`，**不设 `c.closed`** —— 原因见验证 ⑤）、`request` 首次写改走 `writeWithin`、
+    `Cancel` 增看 `c.dead`。**`Close`/`Stop`/`write` 三处一字未改**（第一批的形状没动）。
+  - `connection_test.go`：三条用例（期限快返 / `Cancel` 快拒 / **goroutine 不泄漏**），
+    加 `TestAbandonedWriteComesBackInsideTheDeadline` 里那行把实测耗时**印出来**的 `t.Logf`
+    —— 只断言不打印的判据，别人复核不了我到底量的是什么。
+  - **没有** `cmd/core/**`、**没有** `api/http/**`、**没有** `specs/**`、`docs/**`。
+    证据一律留在 `.scratch/adapter/` 并**活到入册之后**（§24 ①）：`mut-r26-out-213345.log`、
+    `ctxprobe2-retake-211821.log`、`ctxprobe2-retake2-212000.log`、`ctxprobe2-after-batch2-213733.log`、
+    `delivery-r25-213855.log`。包内 `zz_*` 残留 0、`grep -rn "ZMUT" core/` = 0。
+
+- **第 25 轮（09-25 20:31~20:56，T-314 三处点名 + ⑤ 落地）· 只动 `core/internal/process/**`**：
+  `git diff --stat HEAD -- core/internal/process/` 现读 = **4 files changed, 176 insertions(+), 6 deletions(-)**
+  （21:13:47 复量；这一批之后我又按 T-326④ 降级过一次注释，175→176 就是那一次。
+  **`--stat` 那列是缩放数、`--numstat` 才是真实行数**，两枚数长得不一样，别互相抄）
+  （**命令按包限定**：21:06 起 `core/` 还有 backend 的 `api/http/tasks.go`，按 `-- core/` 数就不是这个数了）
+  - `connection.go` **numstat +46/−3**（`--stat` 那一列显示 49，是缩放数）：`const closeReapTimeout = 2 * time.Second`；`Close()` 接上既有
+    `Supervisor.Stop`（先 `Stop` 后还管道、`childAlreadyGone` 过滤）；`Cancel` 的注释点名
+    "`request` 的 ctx 分支之后还有第二道不可取消步骤"（**没改它的行为、没加期限**）；
+    删掉一条被本轮实现推翻的旧注释（`Close stops the pump … It does not kill the child`）。
+  - `supervisor.go` **+33**：`(*Child).Reaped()`、`childAlreadyGone(err, pid)`、补 `os` import。
+    **`Stop` 本体没改**（⑤ 要的是"接上它"，不是"改它"）。
+  - `connection_test.go` **numstat +91/−2**：4 条新用例（`TestCloseReapsTheChild`、
+    `…AfterAnExistingReapStaysQuiet`、`…WithoutASupervisorReapsNothing`、
+    `…AfterTheChildAlreadyCrashedStaysQuiet`）+ 一条 **flake 修正**
+    （`TestConnectionDeathMarksTurnUnknown` 的等待谓词换成被断言的那个谓词）。
+  - `supervisor_test.go` **numstat +6/−1**：助手模式 `sleep`（不理 stdin、30s 后自退 = 卡死孩子形状）。
+  - **没有** `cmd/core/**`、**没有** `api/http/**`（T-314 ③ 的硬边界），**没有** `specs/**`、`docs/**`；
+    探针与脚本全在 `.scratch/adapter/`（`ctx-probe3.sh`+`ctxprobe3_test.go.txt`、
+    `ctx-probe4.sh`+`ctxprobe4_test.go.txt`、`ctxprobe5_test.go.txt`、`mut-r25.py`、
+    `delivery-r25.sh`、`delivery-r25-205535.log`、`delivery-r25-203909.log`、`probe4-full.log`）。
 - 第 18 轮（09-24 10:37~10:46，T-275 黑盒注入门）：**只动 `core/cmd/fake-adapter/**`，产品码零改动**
   （`git diff --stat HEAD -- core/cmd/fake-adapter/main.go` = **1 file changed, 32 insertions(+), 3 deletions(-)**；
   sha256 `fb6bc82e643f617a8024ee7d…`，634 行）
@@ -1731,6 +2229,644 @@ CO-8 `min(core,peer)`、CO-9 两条假设、§12.11 写方法清单。
 - `core/internal/adapter/stream.go` — §4.2 的两处结论落地：`CarriesTurnRef` 只含四条、
   `turn/dispatched` 放开 Provider 句柄（CO-13）、跟踪器同口径；注释与 §4.2 载荷表对齐
 ## Verification evidence
+
+- **第 30 轮（09-27 16:52~17:10，T-386：CO-54 裁"丙" ⇒ `debug/hold` + 即时收尾）· 取代第 29 轮里"① 未落"那一格**
+  （第 29 轮的正文与判决不删，按 T-276 当历史读；被取代的只有"① 未满足 / Ⅰ 交不了"那两句）。
+  - **落地的形状**：`startTurn` 在 `evidence()` 之后默认 `finish(t, SUCCEEDED)` —— §6 第 6 条③ 那一格从此在
+    **真子进程的原始线节点上**可见（`turn/finished/6@…`）；`debug/hold{on:true}` 把这一轮的收尾**推迟**，
+    `{on:false}` 就是收尾点本身。⇒ 需要"有轮在飞"的形状（§5 转向、§4 stop、§5 队列位次、§6 规则 5 交错）
+    现在**明着要**，不再靠双进程"永远不收尾"这个副作用。
+  - **一处我主动定形并留了判据的选择**：**排干出来的那一轮不受 hold 影响**（它仍然在自己的运行结束时收尾）。
+    理由写进 `drainQueue` 的注释了：hold 推迟的是"调用方按住的那一轮"，而 CO-25 的排干点正是"某一轮结束"；
+    让 hold 把排干也吞掉就等于**移动排干点**，那是甲被否掉的原因。**h5 变异就是这一格的反例**
+    （把排干改成也听 hold ⇒ `TestFakeAdapterDeliversThreeStates` 与 CO-25 那条同红）。
+  - **③ 三条现在的状态**：
+    **Ⅰ 已交**：`TestFakeAdapterStartNowClosesItsRun`（真起进程、一次 start_now、断的是**帧**不是回执，
+    并要 `result_code == SUCCEEDED`）；另加 `TestFakeAdapterHoldReleaseIsWhereTheCloseGoes` 钉住
+    "收尾出现在**解除那一刻**、不是下一次 send、不是计时器"（`on:false` 那半边没有这条就没人证，我先量到了这点）。
+    **Ⅱ/Ⅲ 的 emit 侧**：被抢占/挂住/崩掉三档都不发 turn 级码 —— 由 `TestFakeAdapterDeliversThreeStates` 里
+    "线节点上不许出现属于被抢占轮的 `turn/finished`"那段循环 + 消费者侧 `TestConnectionSendOverRealPipe` 钉住。
+    **Core 侧**（挂住留 `RUNNING`+503、崩溃不许写成功）按 ④ 归 backend，**我没跑、也没替它跑**。
+  - **变异（两包同跑，基线 74 PASS / 0 FAIL；锚点命中全=1；每枚按字节还原并 assert sha；
+    `main.go` 现读 sha = `26a0604493beab5c` 与变异批 PRE-SHA 同值 ⇒ 证的就是交付字节）**：
+    | 变异 | 摘掉的是什么 | 判决 | 红的用例 |
+    |---|---|---|---|
+    | h1 | 默认收尾（① 丢） | **FIRED** | `…StartNowClosesItsRun` + `…GuideOnQuietSessionIsQ10` |
+    | h2 | hold 失效（装了照收） | **FIRED** | **7 条**：三态、链、队列排干、stop、解除点、+ 我包两条消费者用例 |
+    | h3 | 解除时不收尾 | **FIRED** | `…HoldReleaseIsWhereTheCloseGoes` |
+    | h4 | 能力表不声明 `debug.hold` | **SILENT**（**有原因，见下**） | — |
+    | h5 | 让排干也听 hold（= 移动 CO-25 的排干点） | **FIRED** | 三态 + `…QueueDrainsAtTurnFinishedNotAtNextSend` |
+    **h4 的 SILENT 我查了机制才敢登记**：`Handshake.Call`（`internal/adapter/handshake.go:342-369`）只查三件事——
+    §2 未握手、§2.2 不得重复协商、§3 `write_entry` ——**不查方法在不在能力表里**；查表的是 `Delivery()` 与
+    消费侧。所以那行 `debugCapability("debug.hold")` 的作用是"**对外诚实声明**"，不是运行时闸门：
+    去掉它，双进程仍然照收 `debug/hold`。⇒ 开 **CO-55**：§9 说"`debug/*` 只对 `adapter_key=fake` 且
+    EXPERIMENTAL 合法"，今天**没有任何判据**在"声明了却没资格"或"没声明却被调用"之间做区分（fake 侧 h4 静默、
+    Core 侧无门槛）。要不要把这条做成判据、归谁做，请主控裁——我不擅自去 `Handshake.Call` 里加一道门，
+    那会改变所有能力的调用语义，超出 T-386 授权。
+  - **§10 的表还缺第五枚**（specs 归主控）：`specs/adapter-protocol/adapter-protocol-v0.1.md` 的
+    "故障注入（`debug/*`，EXPERIMENTAL）"表现在只有 `debug/fail`/`crash`/`hang`/`unknown_quota` 四行。
+    拟稿一行：**`| `debug/hold` | `{on:true|false}`：按住则本轮不在输出结束时收尾，解除即收尾（并触发 CO-25 的排干）。T-386 ① 授权 |**
+  - **REQ-TURN-1 我按 ③ 记账、不越界**：这一格证的是"**Core 收得到帧并正确落终态**"，
+    **不等于**"生产语义里帧什么时候到已经定了"。今天 `start_now` 的连接是"一次调用一条、返回即 `Close`"
+    ⇒ 真 adapter 的收尾帧几乎必然后到。这条不裁死，Wave-2 的绿就是借来的绿——我不拿本轮的绿去填它。
+  - **交付读数（两面，两个时刻的 HEAD 与脏件清单都带）**：
+    A 面（`./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/`）**`exit=0`、顶层 121 PASS / 2 SKIP / 0 FAIL**、
+    三包全 ok；本轮五条关键用例在 `faceA-r386.log` 的行号与行首前缀：
+    `:26 --- PASS: TestConnectionChainClosesBeforeItOpens (0.86s)`、`:30 --- PASS: TestConnectionSendOverRealPipe (0.86s)`、
+    `:217 --- PASS: TestFakeAdapterDeliversThreeStates`、`:227 --- PASS: …HoldReleaseIsWhereTheCloseGoes`、
+    `:229 --- PASS: …StartNowClosesItsRun`。
+    B 面整仓 17:10:03→17:10:26、**`exit=0`、544 PASS / 8 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**
+    （`delivery-r25-171001.log`）；**那一刻 `core/` 有 18 条脏件（我 5 件、其余是 backend/test 的）** ⇒ 只记"这一跑 0 红"。
+    指纹：**`internal/process = be4ef95cdea707dc`**、**`cmd/fake-adapter = baa270cd1cba56bd`**
+    （第 29 轮那两枚 `33d54df2a154e3ee` / `46377e8752bf1298` 自此作废），`deps 67a1287e29df29c3`、
+    `internal/adapter afbc9a1b8fa9b74f` 未变。HEAD `cde8d79`（16:59:02）。
+    **"全" = 17 包，不含 `core/test/` 与 `scripts/`。** 我名下 .go 最新 mtime 17:09:44（那是变异还原的写回，
+    sha 已核与跑前同值）早于 17:10:01 起跑 ⇒ 绿的是最后一次的字节。
+
+- **第 29 轮（09-27 16:12~16:30，T-382：`turn/finished` 这一格）· ② 两半都落了、① 交回一个岔口**。
+  改动全在 `core/cmd/fake-adapter/**` + 我包内一条被裁定改写了行为的用例（`internal/process/connection_test.go`）。
+  - **②-a 字面**：`drainQueue` 的 `"OK"` → `const resultSucceeded = "SUCCEEDED"`。注释里写明
+    §6 第 6 条只有一份取值表（住在 `internal/execution` 的状态常量），这里是**按名字对齐**、不是第二份枚举 ——
+    fake 不该为了说"这轮成功了"去 import Core 的领域包。
+  - **②-b 不发帧，但排水留着（本轮最要紧的一条发现）**：被 `start_now` 抢占的那一轮现在只发
+    `stream/delta`(STATUS) 然后 `drainQueue()`，**不再发 `finish(prev, "INTERRUPTED")`**。
+    我第一版是"整段删掉"，结果 **CO-25 那条"队列只在 turn/finished 处排干"的排干点就是这一帧** ——
+    删帧连同删排水会让排在被抢占轮后面的队列**永久搁浅**（实测：`dq2`/`dq3` 一线节点都没有，
+    `TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend` 直接红）。
+    ⇒ 把"**一轮结束了**"与"**发一个 turn 级码**"拆成两件事：前者保留（排水照走），后者按 ② 取消。
+  - **① 没照字落，因为照字落会撞掉另一条已裁的规矩**。我实现了"evidence 发完即 `finish(t, SUCCEEDED)`"
+    并跑了一遍：**5 条红**，其中至少一条是真回归（队列搁浅，同上），另外三条是 §5 的
+    `guide 转向正在跑的轮次`、`session/stop 结束在飞的轮次`、§6 规则 5 的交错 ——
+    **一轮一旦即时收尾，这些形状在 fake 里就都不可达了**（`f.open` 永远是 nil）。
+    我没有留下这个半成品（已回退），因为它同时违反 §5 与 CO-25 的现裁；三条可选形状与代价都在下面 ③。
+  - **③ 交回主控的岔口：一个 `start_now` 轮次究竟何时算"跑完"** —— ① 要收尾帧，而 fake 的"跑完"目前没有内部边界：
+    - **(甲) 即时收尾 + 修 CO-25**：`accept` 在"无人飞行时收到 queue"就地排干 ⇒ 需改一条已裁的排干点，
+      且 §5 的"queued behind the open turn"回话文案要跟着变；
+    - **(乙) Core 给一个"这一轮跑完了"的调用**：§4 那 11 个方法里现在没有（`session/stop` 的语义是 CANCELLED，
+      用它发 SUCCEEDED 就是替 Core 编终态）⇒ 要新增方法，属协议变更；
+    - **(丙) 一个"让这一轮先别完"的注入**（`debug/hold` 之类）：能把 ① 与 §5/规则 5 的形状都保住，
+      但 T-275 定过"不新增 `debug/*`"，要这条豁免。
+    **我的倾向是 (丙)** —— 只有它让"瞬时假适配器"仍能演出"两轮同时在飞"，而那是 §6 规则 5 的验收项；
+    但三条都要动契约或动已裁的规矩，不是我这一格能自决的。
+  - **③ 那三条自证现在能交到哪（不含水分）**：
+    Ⅰ **未满足**（就是要 ① 那格裁完才有）；`SUCCEEDED` 这个值本身**已经在真子进程的线节点上出现过**
+    （队列排干那一路，`TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend` 读的就是原始线节），
+    但"start_now 自己那一轮"还发不出收尾帧 —— 我不拿前者冒充后者。
+    Ⅱ/Ⅲ 的 **emit 侧**由我包内 `TestConnectionSendOverRealPipe` 钉住（下面那条断言更新），
+    **Core 侧**（留 `RUNNING` + 503 `adapter_unresponsive`、崩溃那档不许写成功）按 ④ 归 backend，我没跑也不替它跑；
+    本轮改完已具备让它复跑的条件（两包绿 + 跨包有牙）。
+  - **断言更新（裁定改掉了被测行为，不是我的实现坏了）**：`internal/process/connection_test.go` 里
+    `TestConnectionSendOverRealPipe` 原钉 `exec-1 = CLOSED/"INTERRUPTED"`、并要求读到 **7** 条通知；
+    现按 ② 改成 **6** 条 + 两条新断言：**线节点上没有任何 `turn/finished` 属于被抢占的那一轮**、
+    且 tracker 必须留在 `RUNNING`/空码（"没有收尾信号"不许被读成终态，§7、CO-8 同一口径）。
+    它同时仍是 §6 规则 5 的验收位置：交错还在（exec-1 的尾巴落在 exec-2 的五帧之后），只是少了那一帧。
+  - **本步变异（4 枚全 FIRED；基线两包 72 PASS / 0 FAIL；每枚按字节还原并 assert sha）**：
+    | 变异 | 摘/换的是什么 | 判决 | 红的用例 |
+    |---|---|---|---|
+    | n1 | 连排水一起删掉（= ② 的"顺手做法"，帧与排水一起没了） | **FIRED** | `TestFakeAdapterDeliversThreeStates` |
+    | n2 | 字面退回 `"OK"` | **FIRED** | `…QueueDrainsAtTurnFinishedNotAtNextSend` |
+    | n3 | 给被抢占的一轮补 `turn/finished`（SUCCEEDED） | **FIRED** | `TestFakeAdapterDeliversThreeStates` |
+    | **n4** | **把被禁的 `INTERRUPTED` 那一帧放回去** | **FIRED（跨包）** | 生产者 `TestFakeAdapterDeliversThreeStates` **+** 消费者 `TestConnectionSendOverRealPipe` |
+    n4 是这一步真正的牙：**fake 少发/多发一帧，消费侧的用例会一起红**，因为
+    `buildFakeAdapter` 现编 `cmd/fake-adapter`（`connection_test.go:883-894`）而不是引一个旧二进制。
+  - **交付读数（两面，跑指纹与交账同一时刻各读一次 HEAD/脏件）**：
+    A 面（我的三包）`exit=0`、顶层 **119 PASS / 2 SKIP / 0 FAIL**，`internal/process`/`internal/adapter`/`cmd/fake-adapter` 全 ok；
+    B 面（整仓 17 包）16:29:48→16:30:09、**`exit=0`、541 PASS / 8 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**
+    （`delivery-r25-162946.log`）。**B 面这一刻仍含别家在途件**：`M api/http/executions.go`、`M cmd/core/sendpipe.go`、
+    `M internal/execution/{send,service}.go` + `?? cmd/core/{sendreap,sendstall,sendwedge}*`、`?? internal/execution/finish*.go`、
+    `?? api/http/send_finish_test.go` ⇒ 那 541 只记"这一跑 0 红"。
+    指纹：**`cmd/fake-adapter = 46377e8752bf1298`**、**`internal/process = 33d54df2a154e3ee`**（我改了它的用例）；
+    `deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f` 未变。HEAD `f1558cc`（16:28:03）。
+    "全" = 17 包，不含 `core/test/` 与 `scripts/`。
+  - **一条流程教训（我差点只交半面）**：16:25 那次我只跑了 `cmd/fake-adapter` 那一包就准备往下走，
+    全量重跑才看见 `internal/process` 红 —— **改 fake 的行为必须连消费者包一起跑**，
+    因为这两个包之间是"现编二进制"的真实依赖，不是编译期依赖，`go build ./...` 与单包测试都看不见它。
+
+- **第 28 轮（09-27 13:44~13:51，T-362：CO-51 对拍 + CO-53 落点指认 + 单一来源导出）**。
+  代码改动只在 `core/internal/process/`（四件、`numstat` 见 `## Changed files`），
+  **没碰** backend 在途的 `api/http/send_two_phase_test.go`、`cmd/core/sendpipe.go`、`cmd/core/sendpipe_test.go`，
+  没碰 `specs/**`。
+  - **① 对拍结果（机械证明，不是目测）**：两份 `childAlreadyGone` 的**函数体逐字节相同** ——
+    `cmp -s <(sed -n '/^func childAlreadyGone/,/^}/p' internal/process/supervisor.go) <(…cmd/core/processpipe.go)`
+    ⇒ **相同**；两份各 **212 字节**、sha256 前缀同值 **`7364ae9e5ca630a8`**；两边的 import 面也同（`errors`×1、`os`×1）。
+    定义位置现读：`internal/process/supervisor.go:154`、`cmd/core/processpipe.go:228`。
+    语义一致 ⇒ **按裁定做单一来源**：我包内那枚**改名导出为 `ChildAlreadyGone`**，
+    `cmd/core` 那份由 **backend 下次动该文件时改成调用它**（T-361⑤ 已派，我不去动他们面包）。
+    **注释里我把对拍数字写进了函数文档**，这样"谁是原件"这件事不依赖这条账本活着。
+  - **① 附带的牙**：导出一个谓词而不钉它，等于把一条规则交给调用方的自觉。新增
+    `TestChildAlreadyGoneAnswersBothQuestions` —— 两问分开判：
+    (a) `fmt.Errorf("kill: %w", os.ErrProcessDone)` **即使 pid 是本进程**也必须读成"已不在"（错误本身就是答案）；
+    (b) `kill: invalid argument` + **活着的 pid**必须读成"真失败"（不许把杀不掉的错误吞掉）。
+    第三问（pid 真没了）**不放单测**：它要一个已回收的 pid，撞上 pid 复用就变成 flaky 见证，
+    而它已由端到端那条 `TestCloseAfterTheChildAlreadyCrashedStaysQuiet` 覆盖 —— 这一句取舍写进注释了。
+  - **② CO-53 的落点我按小节名指认**（不引编号行，编号会漂）：契约① §1.1 第 23 条里新增的那款
+    **「调用方义务：连接面上每一次调用必须自带期限」**（现读 `specs/contracts-internal-v0.1.md:592`）。
+    内容与我的实测一致（5s 未返回、`c.dead=false`、`pending=1`、`writeMu` 永久占、只有 `Close` 2ms 解开），
+    出处记的是 `.scratch/adapter/co53-probe7-130609.log`，并附了"该 log 灭失后只按'曾量到'引用"那句 ——
+    与第 24 条⑤款同口径。**我这边不改契约、也不再打算在包里加 watchdog**：
+    把 `closeReapTimeout`（2s，语义=收尸）挪成写期限就是混语义，而⑤明令不新增第三种期限。
+  - **③ 第 11 格我不碰**：`turn/finished` 的**发射侧**在我包里有（六类通知 + `TestConnection*` 钉着），
+    缺的是 Core 的**消费腿**，已派 backend（T-361①）。我没有、也不会去动 `internal/task` 或 `cmd/core` 帮它过。
+  - **本步自己的变异批（3 枚，全 FIRED；改名之后必须重证一次牙还在）**：
+    `python .scratch/adapter/mut-r28.py` → 判决留档 `mut-r28-out-134939.log`。基线 **46 PASS / 0 FAIL**、锚点命中全 = 1、
+    每枚按字节还原并 assert sha（`connection.go dea3a88e47479d9e`、`supervisor.go d77bf094b9f42f17` 还原一致）。
+    | 变异 | 摘掉的是什么 | 判决 | 红落在哪 |
+    |---|---|---|---|
+    | m6a | `Close` 里那层过滤（退回 `if err != nil`） | **FIRED** | `TestCloseAfterTheChildAlreadyCrashedStaysQuiet` |
+    | m6b | 谓词第一问（`ErrProcessDone` 那一支删掉） | **FIRED** | `TestChildAlreadyGoneAnswersBothQuestions` |
+    | m6c | 谓词第二问（末尾 `return false` 改成 `true`） | **FIRED** | 同上新用例 |
+    **m6a 就是改名后的 m5**：第一批那条"过滤器有牙"的判决在新符号名下复现，没有因为改名变成 SILENT。
+  - **交付读数（两面分开，两个时刻的 HEAD 与脏件清单都带）**：
+    - **A 面（能算我的）** = `./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/...` 三包：
+      **`exit=0`、顶层 119 PASS / 2 SKIP / 0 FAIL**（含子用例那一面 125）；我那 8 条在 `faceA-r28.log` 的
+      **:32 / :34 / :36 / :38 / :42 / :44 / :46 / :97** 逐条 `--- PASS:`（前缀不是 FAIL，行首就是 `--- PASS:`）。
+    - **B 面（整仓 17 包，含别家在途件，只记"这一跑 0 红"）**：13:50:36→13:50:54、`exit=0`、
+      **525 PASS / 7 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**（`delivery-r25-135034.log`）。
+      量指纹那一刻 13:50:34 的 `git status --porcelain -- core/` = 我 4 件 +
+      `M api/http/send_two_phase_test.go`、`M cmd/core/sendpipe.go`、`M cmd/core/sendpipe_test.go`、
+      `?? core/test/event_producer_roster_test.go` ⇒ **有 3 改 1 新不是我写的**，B 面那 525 不能当我的验收。
+    - **指纹**：**`internal/process` = `397a7b999dc89720`**（13:50:36 构建）—— 这一步是真改了码，所以**换枚是应当的**；
+      `deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f`、`cmd/fake-adapter 38a594aa65efbca8` 未变
+      ⇒ 我没碰它们的编译面。旧值 `9c750c42077d17c0`（第二批入册时那枚）自此失效，对拍的人请换新值。
+      跑前后 HEAD 同为 `9660e68`（13:36:52）。"全" = 17 包，不含 `core/test/` 与 `scripts/`。
+      **补一句免得 HEAD 标签对不上**：13:53 现读 HEAD 已到 `00bb3c4`，而那笔 `git show --stat HEAD -- core/`
+      **无输出**（只动台账）⇒ 编译面自我读数以来未变，这两面读数对**当前码树**仍成立；
+      要引"截至哪棵树"就写 `9660e68`（读数那一刻）并注明后续两笔皆非码。
+
+- **第 27 轮补（09-27 13:06~13:08）· 一格可测的边界 + §23 那句"后两条同形与否"的回报**。
+  零代码改动；证据 `.scratch/adapter/co53-probe7-130609.log`（探针 7，`--- PASS`）。
+  内容全在 **CO-53**（`## Coordination` 顶部那条）：连接面对无期限 ctx **不检测、不自救**（A：5s 未返回、
+  `c.dead=false`、`pending=1`、`writeMu` 永久占；B：排在后面的有期限请求仍 400ms 返回；D：只有 `Close` 解得开，2ms），
+  以及三条腿的逐条读码结果（send `:66-69` 兜底 / discover `:78-81` 同形且注释已立该不变量 /
+  probe `probe.go:277-286` 自己兜底且根本不走连接面）。
+  **A 面复量确认（13:08:44）**：`go test -count=1 ./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/...` = **exit=0、三包全 ok**，HEAD 已到 `2964ecb`（这一小时里又推进了两笔），我名下脏件仍 **0 条**。
+  ⚠ **同一次我差点报出一条假红**：那轮回量是用 python 的 `subprocess` 跑的，而我**重造了 env**（只塞 `CGO_ENABLED`/`PATH`，丢了 `SystemRoot`/`TEMP`）⇒ `exit=1` 且**一条 `ok`/`FAIL` 都没有**。形状记住：**退出码非 0 + 没有任何包级结果行 = 我的命令坏了，不是树坏了**；改用正常 shell 重跑就是 exit=0。报红之前先看自己的命令是不是构造对了。
+  **为什么不顺手在包里加个 watchdog**：⑤ 明令"不新增第三种期限"，而把 `closeReapTimeout`（2s，语义是收尸）
+  挪用成写期限就是混语义；所以这一格以**契约句**交回，不以我的常量补掉。
+
+- **第 27 轮（09-27 12:32~12:49，停摆 47h52m 之后的复量）· 零代码改动、零新判据**。
+  起手先按"被打断就重量盘上"办：T-343 到我手上时落款还是 09-25 21:3x，而中间发生过 47h 停摆 + 两批都已入册，
+  所以那一封的 ①②③④ 我不照抄回答，全部换成今天的读数。
+  - **② 两批分开报，数字从 git 现读**（不引任何人转抄过的瞬时数）：
+    第一批 = **`ba03ce2`（09-25 21:17:25）**；第二批 = **`ae26c61`（09-25 22:02:21）**，
+    `git show --numstat ae26c61 -- core/` = **`connection.go +63/−8`、`connection_test.go +108/0`**
+    ⇒ 合计 2 files, **171 insertions / 8 deletions**。（巡检 21:41 量的 `55/0 + 108/0` 是我 30.44s 注释
+    更正**之前**的那一枚快照，两个数都对，只是不同时点。）两条判据各自成套：**回收** = 三条 `TestClose*`，
+    **可取消** = 三条 `TestAbandoned*`/`TestCancelAfter*`，没有合批。
+  - **③ 今天的行号级读数**（树 = HEAD `67f064b`，日志 `.scratch/adapter/delivery-r25-123245.log`）：
+    行首前缀全部是 `--- PASS:` —— `:821 TestCloseReapsTheChild (0.48s)`、`:823 …AfterAnExistingReapStaysQuiet`、
+    `:825 …WithoutASupervisorReapsNothing`、`:827 …AfterTheChildAlreadyCrashedStaysQuiet`、
+    `:831 TestAbandonedWriteComesBackInsideTheDeadline (0.41s)`、
+    `:833 TestCancelAfterAnAbandonedWriteRefusesFast (0.40s)`、
+    `:835 TestAbandonedWriteDoesNotLeakItsGoroutine (0.40s)`；我的包 `:886 ok … internal/process 7.462s`。
+    **该批尾部是 `FAIL` 收尾**（`exit=1`、16 包 ok、`api/http` `panic: test timed out after 10m0s`），
+    所以那一份不能当验收交；**随后 12:48:49→12:48:59 整仓过了**（`exit=0`、521 PASS / 7 SKIP / 0 FAIL、
+    17 包全 ok、`delivery-r25-124848.log`），但我 **12:36 主控口径已到：整仓那一跑含别人未提交件 ⇒ 只记"这一跑 0 红"，
+    不写"全仓绿"、更不是我的验收**。⇒ 报绿改认下面那行的 **A 面**。
+  - **12:36 口径落地的形状（两面 + 两个时刻的 HEAD 与脏件清单）**，脚本
+    `.scratch/adapter/two-face-r27.sh`（一次跑完两面）：
+
+    | 面 | 集合 | 读数 | 时刻 | 算不算我的 |
+    |---|---|---|---|---|
+    | **A 我的面** | `./internal/process/... ./internal/adapter/... ./cmd/fake-adapter/...` = **3 包** |
+    |   `exit=0`、顶层 **118 PASS / 2 SKIP / 0 FAIL**、7 条用例逐条 `--- PASS:`（`faceA-r27.log` :32/:34/:36/:38/:42/:44/:46） |
+    |   12:51:40→12:51:47 | **算** |
+    | **B 整仓** | `./internal/... ./cmd/... ./api/...` = 17 包 | `exit=0`、**17 包 ok / 包 FAIL 0**；
+    |   顶层 PASS 计数 0 是**这一跑没带 `-v`** 所致（不是没跑，别当假绿读） | 12:51:50→12:51:59 | **不算**（含在途件） |
+
+    两面同处 **HEAD `67f064b`**（跑前跑后各读一次，同值）。
+    **12:54:19 我第三次自量同一枚清单 = 6 条**（4 改 2 新，HEAD 仍 `67f064b`，我名下 0 条）。与主控 12:34:28 / 12:36:36 两次的 **5 条不矛盾**：多的那一条是 `M core/api/http/send_test.go`，即 backend 在 12:36:36 之后、我 12:51:40 之前开始动它 —— **两次都对，只是不同时点**，别让下一个人以为谁数错了。（主控 12:53 自报的那处分钟错我已核：**我台账里从来没引过那个分钟** —— 没抄过，无需回改；**这条备注本身也不写下那个数字，否则「几处命中」那句会被它自己证伪。**）**量指纹那一刻与交账那一刻的脏件清单**：
+    12:32:45 = `M api/http/executions.go`、`M api/http/tasks.go`、`M internal/execution/send.go`、
+    `?? api/http/send_two_phase_test.go`、`?? core/test/event_producer_roster_test.go`；
+    12:51:40 = 以上五条**仍在**、并多一条 `M api/http/send_test.go` ⇒ **两时刻都有两家在写，我只多干了一件事：
+    把"含别人在途件"这句写在读数旁边，而不是等下一个人自己发现**。
+  - **A 面能脱开 backend 的在途件，这条是硬证不是说法**：`go list -deps -test` 我那三包的闭包 = **12 个包**，
+    `grep -E 'api/http|internal/execution|cmd/core'` = **0 命中**（清单 `faceA-deps-r27.txt`）⇒ 我这枚绿
+    不经过他们正在写的三个件；反向我也不引他们的（T-323 ②）。
+  - **REQ-S-1 不关单，我这侧再钉一次**（12:36 主控那句提醒与本封同紧）：泄漏半只闭到"**走过 `Close()` 的那条腿**"，
+    "取消就不该起孩子"那一格仍开着（`Start` 不读 ctx，量测在第 24/25 轮）；停摆半归 backend 的两段式。
+    这轮我**没碰** backend / test 在写的那四个件 —— 自证：
+    `git status --porcelain -- core/internal/process/ core/internal/adapter/ core/cmd/fake-adapter/` = **0 条**。
+  - **一条我没报出去的红（形状要写清，别让下次照抄）**：12:44 那次整包跑挂住的是 backend 在途件里的
+    `TestSendConcurrentSealLoserShouts`（栈停在 `api/http_test.(*gateTurn).CallSendTurn`，**两个 goroutine 共享同一枚
+    `gateTurn` 指针**；dump 里 `internal/process` 帧数 = **0** ⇒ 不是我的连接面）。
+    但我 **没把它记成 backend 的缺陷**：`core/api/http/executions.go` mtime = **12:46:07**（挂住那次之后、
+    复跑之前），HEAD 也从 `98ff8ee` 推到 `67f064b`，而 12:48 同一条整包命令**过了**、隔离跑 0.05s 也过。
+    ⇒ 我读到的是**别人正在写的树**，按第 24 条与"别把自己的读数排到别人正在写的树上"这条不算一条红。
+    **只留一句风险给他们**（查不查归他们，我不进他们文件）：那枚 gate 是共享状态、曾在编辑中途的树上挂满 100s，
+    若真有间歇挂，两条命令能分辨 —— 挂：`cd core && CGO_ENABLED=0 go test -count=1 -timeout 100s ./api/http/`；
+    不挂：`… -run 'TestSendConcurrentSealLoserShouts' ./api/http/`。证据留档 `api-http-hang-r27.log`。
+  - **归属与"两天里没人动我的包"三证**：HEAD 里我那五处关键行（`closeReapTimeout` / `Stop(c.child, closeReapTimeout)` /
+    `childAlreadyGone(err, …)` / `writeWithin` / `abandon`）**5/5 在原位**；`git log -1 -- core/internal/process/`
+    = `ae26c61`（我自己那笔）；`internal/process` 编译指纹 **`9c750c42077d17c0` 与 09-25 21:38/21:48 那两批一字不差**。
+    我名下三个可写路径 `git status --porcelain` = **0 条**；`zz_*` 残留 0、`grep -rn ZMUT core/` = 0。
+  - **排程**：T-343 ⑤ 那句"`write` 那批排在 backend 之后"的争议已不需要裁定 —— 第二批在 09-25 22:02 就入了册。
+    REQ-S-1 我这半边（回收 + 可取消）两格都算交完；**停摆那一半今天在动的是 backend**
+    （`internal/execution/send.go`、`api/http/{executions,tasks,send_test}.go`、`?? send_two_phase_test.go` 全在途）。
+
+- **第 26 轮补 2（21:52，T-339 巡检核到行号这一格按字补齐）· 零代码改动**。
+  - **② 取代关系按第 24 条第 ⑥ 款的形状写全**（两枚行号我 21:52 现读，不是抄巡检的）：
+    旧红 = `.scratch/adapter/delivery-r25-203909.log` **第 822 行** `--- FAIL: TestCloseReapsTheChild (30.44s)`
+    （同文件 :820 是 RUN）→ 新绿 = `.scratch/adapter/delivery-r25-210428.log` **第 821 行**
+    `--- PASS: TestCloseReapsTheChild (0.55s)`（:820 也是 RUN），后者 `grep -c -e '^--- FAIL'` = **0**。
+    ⇒ **那条 20:39 的红被 21:04 那份逐字取代，我这边不再为它写任何解释性计时**（它的成因已在第 25 轮正文 ③
+    归到"顺序"那一格，而它作为**秒数**已从我的代码注释里撤掉，见第 26 轮补）。
+    **命令坑记一条**：`grep -c '--- FAIL' 文件` 会被 GNU grep 当成选项而 exit 2 ⇒ 一律写 `-e '^--- FAIL'`
+    （巡检 21:23 也踩过同一枚）。
+  - **④ 主控指的那条路我走了**：`bash .scratch/adapter/ctx-probe4.sh` 重跑并留住输出 =
+    **`.scratch/adapter/probe4-retake-215219.log`**（21:52:19→21:52:24，`--- PASS` ×3 + `ok … 2.896s`），
+    三档现读：`A5 Stop(child,2s) 耗时=1ms err=<nil>` + `A6 Reaped()=true`、
+    `B1 Stop 先 0s` + `B2 CloseStreams 后 0s`，以及**C3 那一格 = `C2 Reaped()=false` 而 `C3 Stop 之后才来 err=kill: invalid argument`**。
+    ⇒ 但**C3 现在不该只活在探针日志里**：同一形状在我包里已是用例
+    `TestCloseAfterTheChildAlreadyCrashedStaysQuiet`，并有反例变异 **m5 钉住（FIRED）**。以后要引就引用例，别引秒数。
+  - **④ 我对"用行为断言写"的答复，含一句不同意见**：**"先 `Stop` 再还管道"这个顺序本身没有确定性观测量**
+    （第一批 m4 = 换成 pipes-first 后整包全绿，我如实登记过 SILENT）—— 因为**决定"留不留孤儿"的是
+    有没有调用 `Stop`，不是它排在 `CloseStreams` 前还是后**。所以可断言的是**结果**而不是顺序，
+    我按三种孩子形状各钉一条、正好凑成 ④ 要的那组行为判据：
+    | 孩子形状 | 用例 | 反例变异 |
+    |---|---|---|
+    | 卡死、不理 stdin | `TestCloseReapsTheChild`（断 `Reaped()` 为真，不断秒数） | m1 FIRED |
+    | 已崩、句柄已被 `cmd.Wait` 释放 | `TestCloseAfterTheChildAlreadyCrashedStaysQuiet`（断 `Close` 不报错） | m5 FIRED |
+    | 已被别人收走 | `TestCloseAfterAnExistingReapStaysQuiet` | **m2 SILENT**（`childAlreadyGone` 吞掉同一个可观测量，理由与无判据分开写） |
+    外加 `TestCloseWithoutASupervisorReapsNothing`（无监管者的收尾）。**若主控仍要把"顺序"本身做成判据**，
+    唯一我能想到的确定性观测量是"礼貌 EOF 到底有没有送达孩子"（需要一个会自报 EOF 的助手模式）——
+    但那会把"我今天选择不先关 stdin"这个**后果**冻成契约，所以我没有擅自加，等一句话。
+  - **③ 一处时效更正（只报事实，不重开裁定）**：主控 21:2x 量"44.8 那两份也灭失"，
+    而我按 T-337 ②/§24 ⑤ 其四做的重跑**现在在盘上**（21:18/21:20 两批）：
+    `test -f .scratch/adapter/ctxprobe2-retake-211821.log` = **在**（`E … 实测返回=44.8059183s`）、
+    `test -f .scratch/adapter/ctxprobe2-retake2-212000.log` = **在**（`44.8055391s`）、
+    `test -f .scratch/adapter/ctxprobe2-after-batch2-213733.log` = **在**（`400.8158ms`，第二批之后同一支命令）。
+    ⇒ "曾量到、输出未留存"这一句对 `30.44` 成立（它本来就不该当计时用，我已从注释撤掉），
+    对 **`44.8` 现在不成立**。改不改契约那句是主控的笔，我只把 `test -f` 原文放这儿。
+  - **⑤ 排序冲突上交，不自裁**：本封说"`write` 可取消那批排在 backend 的 REQ-S-1 写面之后"，
+    而我手里另外两封（T-326 ③ 原文"顺序：先把 Stop 接线这一批交账，**再补 `write` 那一格**"、
+    以及 `ba03ce2` 落账时那句"落完直接继续第二批，不用等我点名"）读出来的顺序是**排在我自己的第一批之后**。
+    事实：第二批已在 21:24~21:39 落地、判据独立成套、21:45 与 21:48 重取过，**未入册、仍在盘上等我复跑**。
+    两批在码上不互相依赖（我没碰 `cmd/core`/`api/http`），所以先后只影响合流摩擦、不影响正确性。
+    **处置权在主控**：要我先按住等 backend 落完再入册，我按住；要我撤，我还原得出来（`git diff` 全在这两枚文件里）。
+  - **① 复取状态**：全包级绿已取过三份（21:20:51→21:21:00、21:38:57→21:39:08、**21:48:42→21:48:53**），
+    最新那份 **518 PASS / 7 SKIP / 0 FAIL、17 包全 ok**，三面指纹与 21:38 那批一字不差
+    （`internal/process 9c750c42077d17c0`）。等树安静这件事我这边已经停笔（21:44:48 之后无 `.go` 写）。
+
+- **第 26 轮补（21:43~21:48，T-337 巡检核打到我已入册的注释上）· 一条措辞更正 + 一次证据重取**。
+  - **巡检抓对的那条**：`delivery-r25-203909.log` 里 **`grep -c killStreams` = 0**、`30.44` 只命中一处 =
+    第 822 行 **`--- FAIL: TestCloseReapsTheChild (30.44s)`**（同一文件尾部第 1592 行就是 `FAIL` 收尾）。
+    我 21:4x 亲量两条一致。⇒ 那是**一条红的用时**，不是任何一步的耗时；而我在 `Close` 上的注释
+    （已随 `ba03ce2` 入册）写成了 "a full-suite run showed pipes-first **taking 30.44s**" ——
+    **正是主控在契约① 第 24 条第 ⑥ 款自己收回的那类错，我把它带进代码注释里了。**
+  - **改法**：那段注释重写为"**慢且红**（30.44s 挂在 `--- FAIL` 行上）、不是任何单步的计时读数、
+    空机复现不出来（探针 A 同几步 0s）"，并把顺序的**承重依据换成 `cmd/core` 的先例 + ⑤ 那句"与 processpipe 同值"**，
+    明写"下面这段不要求你相信任何秒数"。**判据与结论一个字没改**（`Stop` 先、还管道在后不变）。
+  - **一次实测把上午那条记忆证伪了一半**（重要，别再传错）：这次注释是 **7 行换成 7 行**，
+    `go test -c` 的 `internal/process` 哈希 **`9c750c42077d17c0` 一字未变**；而我 21:0x 那次注释降级
+    **净 +1 行**，哈希就从 `341c5cd8…` 变成 `c64734a5…`。⇒ 真正的判据是**行数有没有位移**
+    （现读 `git diff --numstat` 的增/删是否相等），不是"改没改注释"。第 39 条我已按这个改口径。
+  - **证据重取（不偷懒，全部留档）**：`mut-r26.py` 在更正后的字节上**整批重跑** = 基线 45 PASS/0 FAIL、
+    锚点命中全 = 1、**m1/m2/m3/m4/m5 仍 5 FIRED / 0 SILENT**、还原 sha 同值
+    （`PRE-SHA fb4982ac1a69a41e`，判决 `mut-r26-out-214504.log`）；交付跑 **21:48:42→21:48:53、`exit=0`、
+    518 PASS / 7 SKIP / 0 FAIL、17 包全 ok、build failed 0、panic 0**（`delivery-r25-214842.log`），
+    三面指纹与 21:38 那批**完全相同**（`9c750c42077d17c0` + `67a1287e29df29c3` + `afbc9a1b8fa9b74f` + `38a594aa65efbca8`）。
+    **"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+  - **44.8 那一格的现状（交主控定口径，我不重开归属之争）**：主控 ① 撤裁定时量的"两份都灭失"
+    已被我 21:18/21:20 的两次重跑取代，**输出这次留在盘上**：
+    `ctxprobe2-retake-211821.log` = **44.8059183s**、`ctxprobe2-retake2-212000.log` = **44.8055391s**、
+    第二批落地后同一支 = `ctxprobe2-after-batch2-213733.log` = **400.8158ms**。
+    ⇒ 按第 24 条 ⑤ 其四"要恢复成事实只有一条路：重跑"，这一格**现在是可复跑事实**；
+    要不要请主控把"曾量到、输出未留存"那句改回去，是他的笔、我不改契约。
+  - **③ 里两份证据我只引真的那份**：`probe4-full.log`（巡检逐字对得上，含 A5/B1/**C3**，
+    尾部 `--- PASS` + `ok … 2.159s`）**作 REQ-S-2 的现成反例主证**；
+    `delivery-r25-203909.log` **只作"那条红出现过、且已被后续四批绿取代"的证据**，
+    后续绿 = 20:55:37→47、21:04:28→39、21:20:51→21:21:00、21:38:57→21:39:08、21:48:42→53
+    （同一枚用例每批都在里面 PASS；`TestCloseReapsTheChild` 全文再无 FAIL）。
+  - **排程事实（T-335③ 独占 `core/` 那条现在被破了，我只报不拆）**：21:48:42 现读
+    `git status --porcelain -- core/` = 我 2 件 + backend 4 改 1 新
+    （`api/http/{handler,tasks,tasks_test}.go`、`cmd/core/main.go`、`?? api/http/tasks_get_test.go`）。
+    **我这侧从 21:44:48 起已停笔**（之后只有台账与记忆的写），第二批判据也已重取完 ⇒
+    **`core/` 的写窗口对他们让开**；第二批随时可入册，入册后我这面就干净了。
+
+- **第 26 轮（第二批 = 可取消的 `write`，T-326③ 落地，09-25 21:24~21:39）· 与第二批之外的东西不合批**。
+  可复跑：`bash .scratch/adapter/ctx-probe2.sh`（改前/改后同一支）、`python .scratch/adapter/mut-r26.py`
+  （判决全文留在 `.scratch/adapter/mut-r26-out-213345.log`）、`bash .scratch/adapter/delivery-r25.sh`。
+  - **① 先按 §24 ⑤ 其四把 44.8 那一格救回"可复跑事实"**：我重跑了 E 探针**并这次把输出留住**
+    （`.scratch/adapter/ctxprobe2-retake-211821.log` = **44.8059183s**、
+    `ctxprobe2-retake2-212000.log` = **44.8055391s**，两批同形状）。第二批落地后同一条命令再跑
+    （`ctxprobe2-after-batch2-213733.log`）= **400.8158ms** ⇒ **改前/改后成对**，比值 112 倍。
+    探针在改后当场记到"E 孩子去向=存活"（那一刻 `Close` 还没跑）——**这不是回归，是裁定的形状本身**：
+    超时只标死连接，回收归 `Close`。
+  - **② 一条引用勘误（不改契约，交给主控落笔）**：`.scratch/adapter/ctxprobe_out.txt` **不是我任何脚本的产物**。
+    `grep -rn "ctxprobe_out" .scratch/adapter/` = **0 命中**（我那四支探针全部只往 stdout 打印，没有一支重定向过文件名），
+    而且被引作依据的那一行 `took=44833.49ms` 无论**格式**还是**数值**都不是我的输出（我的形状是
+    `实测返回=44.8055391s`，见 ①）。⇒ 第 24 条 ⑤"只有它还能复跑"那句引用的不是我这枚文件。
+    **我不需要据此重判归属**：按 ⑤ 其三（`internal/process` 归 adapter 由归属表支撑）+ 其四（我已重跑并留存），
+    这一格现在的事实不靠那个文件名成立。同理 T-328 ④ / T-332 ③ 里那个 `got=%d`：
+    `grep -rn --include=*.go --include=*.txt --include=*.sh -e 'got=%d' -e '%15' -e 'took=' .scratch/adapter/` =
+    **0 命中**（只有 `.exe` 里 Go runtime 的格式串会命中，那不是"我日志里的漏参"）。
+  - **③ §9.2 规则 5 的原文我核过才动手**（这条决定我能不能起那枚 goroutine）：
+    `docs/handoff/Lucero_Qoder_Handoff_v0.1.md` §9.2 第 5 条原话是 **"不裸启动<u>无限</u> goroutine"**（限定词是"无限"），
+    而"禁止散落裸 goroutine；通过 Supervisor/WorkerPool/Scheduler 启动**长任务**"在 **§3.4**。
+    ⇒ `cmd/core/processpipe.go` 的注释"§9.2 规则 5 禁'裸 goroutine'"是**条款号对、限定词丢**，
+    照它字面理解会得出"任何 watchdog 都不许起"的错结论。**我没改那个文件**（backend 的落点），只把原文记在这儿。
+    我起的这枚是有界的：单次 send 进缓冲通道、`Close` 杀掉孩子之后三枚 goroutine 全部退出（m4 是它的反例）。
+  - **④ 实现**（只在 `internal/process`，`numstat` 见 `## Changed files` 第 26 轮那条）：
+    `(*Connection).writeWithin(ctx, f)` = `select { 写完 / ctx.Done() / c.dead }`，写放在一枚可放弃 goroutine 上；
+    `abandon(method, cause)` 只做 `kill(...)`；`request` 的首次写改走 `writeWithin`；
+    `Cancel` 在 `closed` 之外**增看 `c.dead`**，死了直接 `ErrConnectionLost`，不排到那把卡住的 `writeMu` 后面。
+    超时返回的错误是 `errors.Join(ctx.Err(), lostError(...))` ⇒ `errors.Is` 对
+    `context.DeadlineExceeded` 与 `ErrConnectionLost` **两问都答 yes**（调用方按哪一档分支都行）。
+  - **⑤ 我自己引入、又被判据抓回去的一件回归（这条是本轮最该被读到的一句）**：
+    `abandon` 第一版顺手写了 `c.closed = true` ⇒ `Close()` 顶上那句 `if c.closed { return nil }`
+    **早退、一步都不杀孩子** ⇒ 泵、reaper、被放弃的写 goroutine 三枚永久挂着 + 孩子活着
+    ——**正好把第一批刚闭掉的"孤儿"在那条新路上开了回去**。抓到它的就是我为"注释里那句 §9.2"补的
+    `TestAbandonedWriteDoesNotLeakItsGoroutine`：两次跑出 **11 vs 基线 8**、**20 vs 17**（差值稳定 3，不是噪声），
+    栈 dump 直接点名三枚的落点（`adapter.(*Reader).Read` / `adapter.(*Writer).Write` / `Supervisor.Start.func1`）。
+    修法 = `abandon` 只 `kill`、拒绝新写改由 `Cancel` 看 `c.dead`。**m3 就是这一格钉住的反例（FIRED）**。
+    ⇒ 一句纪律：**"标死"与"关掉"是两个状态，把它们合并到一个 flag 上会让另一个拥有者的收尾变 no-op。**
+  - **⑥ 第二批自己的判据（与第一批两套，不共用一条）**：
+    用例三条 = `TestAbandonedWriteComesBackInsideTheDeadline`（400ms 期限 → 实测 400/401ms、
+    两个 `errors.Is` 都成立、第二次写被**快拒** <1s）、
+    `TestCancelAfterAnAbandonedWriteRefusesFast`（CO-52 那第二道不可取消步骤：3s 观察窗内必须有返回、
+    且 err 是 `ErrConnectionLost`）、`TestAbandonedWriteDoesNotLeakItsGoroutine`（⑤）。
+    变异批 `mut-r26.py`（**整包不过滤 -run**，基线 45 PASS / 0 FAIL、锚点命中全 = 1、每枚按字节还原并 assert sha）：
+
+    | 变异 | 摘掉的是什么 | 判决 | 红落在哪 |
+    |---|---|---|---|
+    | m1 | `request` 退回不界住的 `c.write` | **FIRED** | 期限那条 + 泄漏那条（2 红） |
+    | m2 | `abandon` 不再 `kill` | **FIRED** | 期限那条 + `Cancel` 那条（2 红） |
+    | m3 | 把 `c.closed = true` 塞回 `abandon`（⑤ 那个 bug） | **FIRED** | 泄漏那条 |
+    | m4 | `done` 改成无缓冲 | **FIRED** | 泄漏那条（被放弃的写无处可送） |
+    | m5 | `Cancel` 不再拒绝死连接 | **FIRED** | `Cancel` 那条 |
+
+    **5 FIRED / 0 SILENT**，还原后 `POST-SHA == PRE-SHA`（`9a0cbcb0e698077a`）。第一批那三条 `TestClose*` 全程未红。
+  - **⑦ 交付跑（报绿只认这批）**：21:38:57→21:39:08、`exit=0`、**518 PASS / 7 SKIP / 0 FAIL、17 包全 ok、
+    `build failed` 0、panic 0**（`.scratch/adapter/delivery-r25-213855.log`）。三面指纹里
+    **`internal/process` = `9c750c42077d17c0`（构建时刻 21:38:57）**，`deps 67a1287e29df29c3` /
+    `afbc9a1b8fa9b74f` / `38a594aa65efbca8` 未变 ⇒ **第二批起 `internal/process` 是新的**（T-323 ③ 要的那句）。
+    **"全" = 17 包，不含 `core/test/` 与 `scripts/`。**
+    被验面现读：`git status --porcelain -- core/` = 我 2 件（`connection.go`/`connection_test.go`）
+    + backend 4 改 1 新（`api/http/handler.go`、`tasks.go`、`tasks_test.go`、`cmd/core/main.go`、
+    `?? api/http/tasks_test…` 那族），第一批的 `supervisor*.go` 已随 `ba03ce2` 进 HEAD（我 21:39:23
+    按字复量：`git show HEAD:...connection.go` 里那三行关键改动 **3/3 在原位**）。
+    这批比 21:10 那次干净是因为 backend 那枚编不过的在途件已能编译；**我不引用别家的绿、也不替它担红**。
+  - **⑧ 生产侧前提我核过（只读，没动文件）**：`cmd/core/sendpipe.go:76-80` 与
+    `cmd/core/discoverassembly.go:89` 两条腿都 `defer conn.Close()` ⇒ 裁定那句"超时即标死、交给 `Close`
+    回收孩子"**今天真的有人接**。若哪天某条腿不 Close，⑤ 那三枚 goroutine 就会回来——泄漏用例是唯一的闸。
+
+- **第 25 轮补（21:08~21:12，接 T-323 / T-326）· 一次注释降级 + 一次没拿到绿的复取**。
+  可复跑：`bash .scratch/adapter/delivery-r25.sh`（同一支脚本，读数按批次换文件）。
+  - **① T-326 ④ 的处置**：`connection.go` 里那句"the measured case: … blocked 44.8s …"**降级成**
+    "有一条探针读数、**未入册前不许下游当事实引用**"（只动 `//` 行，可执行语句一字未进出 ——
+    这条我按自己那次编辑的 old/new 两端陈述，**不是 diff 证据**：21:04 与现在之间没有提交点可对照）。
+  - **② 新字节上我能归因的那份绿**：`CGO_ENABLED=0 go test -count=1 -v ./internal/process/` →
+    `exit=0`、**顶层 `--- PASS` = 36 / SKIP = 1 / FAIL = 0**（**另一个计数面**：连子用例一起数是 42，
+    变异批报的就是这一面，两面别混用）；`Close` 那 4 条用例全 PASS；两趟 `ok` 5.261s / 6.356s。
+    日志 `.scratch/adapter/proc-r25b-2111.log`（21:11:54）。
+  - **③ 全量复取今天拿不到**（这是 ② 与"17 包全绿"分开写的那一半）：21:10:30→21:10:40 那批 `exit=1`、
+    **`包 ok` = 16**、`api/http` = **`[build failed]`**；五条编译错全部落在
+    **`core/api/http/tasks_get_test.go`**（`"strconv" imported and not used`、`undefined: httptest` ×3、
+    `undefined: itoa`）⇒ 那枚是 **backend 的未跟踪在制品**（`?? core/api/http/tasks_get_test.go`，
+    同刻 `core/` 有 8 改 1 新，我名下仍只有那 4 件）。`api/http` 整包编不出来 ⇒ 顶层 PASS 从 508 掉到 398，
+    **那 110 的差不是回归、是一包没跑**。按 T-323 ②"**谁也不许引用对方那一份当自己的依据**"：
+    我不引用 backend 的 18 包绿，也不把这一条红算成我的。**我的 17 包全绿那一份仍是
+    21:04:28→21:04:39（源码为 21:0x 那版字节）**。
+  - **④ 指纹又换了一枚，这条要喊给 `test`**：`internal/process = `**`c64734a5309c1a89`**（构建时刻 21:10:30），
+    **`341c5cd8fce19e0f` 只活了 6 分钟即作废** —— 改注释会挪行号表、哈希跟着变，所以
+    **"只改注释" ≠ "哈希不变"**，别拿这个直觉省复采。`deps 67a1287e29df29c3`、
+    `internal/adapter afbc9a1b8fa9b74f`、`cmd/fake-adapter 38a594aa65efbca8` 三面仍未变。
+  - **⑤ 探针第六封**（T-326 ③ 之前先替 ③ 量清楚，21:08:36，`.scratch/adapter/ctxprobe6_test.go.txt`）：
+    已取消的 ctx 进 `Connect` → **仍真起一个孩子**（这批量到 833ms，第 24 轮 588ms ⇒ **毫秒数受负载影响、
+    别当常量引用**，稳的是"起了一个真进程"这个结构结论）；随后 `Close()` **1ms、孩子已收走**。
+    **没人调 `Close` 时孩子照样活着**（pid 35648）⇒ 我对 T-321 ③ 只认领"**走过 `Close()` 的腿不再留孤儿**"，
+    **"取消就不该起孩子"那一格不写进我的关闭权**（要 `Start` 读 ctx 或 backend 的两段式才算）。
+    临时件跑完 `zz_*` 残留 = 0、`grep -rn "ZMUT" core/` = 0。
+
+- **第 25 轮（T-314 三处点名 + ⑤ 落地，09-25 20:31~20:56）**。可复跑命令四条：
+  `bash /d/Project/Lucero/.scratch/adapter/ctx-probe3.sh`（(b)(c) 两处，跑窗 **20:32:15→20:32:22**）、
+  `bash .../ctx-probe4.sh`（把 Close 拆成四步各自计时，**20:42:40→20:42:44**，完整读数在
+  `.scratch/adapter/probe4-full.log`）、`python .../mut-r25.py`（变异批）、
+  `bash .../delivery-r25.sh`（交付跑 + 三面指纹）。三份临时探针件都 `trap` 删除，包内 `zz_*` 残留 = 0
+  （每封跑完当场 `ls` 量过），`grep -rn "ZMUT" core/` = **0 命中**。
+
+  **① T-314 ② 那三处的读数**（承接第 24 轮的表，本轮补 (b)(c)，并把"卡死孩子"那一列做实）：
+
+  | 处 | 是否 select `ctx.Done` | 卡死孩子下的实测返回耗时 | 孩子进程去向 |
+  |---|---|---|---|
+  | (a) `Connect` 起孩子 + 等 hello | **`Start` 函数体一次都不读 ctx**；`Connect` 只透传 | **`Connect` 2.25ms、不等 hello**；传已取消的 ctx 进去 `Start` 仍花 **588.0ms** 真起一个孩子 `err=nil` | **存活**（第 24 轮量的） |
+  | (b) ctx 分支里那句 `c.Cancel(id)` | **签名里没有 ctx ⇒ 根本没有可 select 的腿**（`connection.go:212`） | 管道未满：**0s、err=nil**；另一次 write 正卡在管道里：**3s 观察窗内未返回**（探针 b2） | 不适用（它不碰进程） |
+  | (c) `sendPipe` 的 `defer conn.Close()` | 无 ctx | **修法前 0s**（第 24 轮 F 探针：瞬间返回 + 孩子存活）；**⑤ 之后 2ms**，并且**把那次卡住的 write 解开**（探针 c′：401ms 后带 `write \|1: file already closed` 返回） | **修法前：存活 ⇒ 孤儿**；**修法后：已退出/已收走** |
+
+  由此定死三句：**(b) 是 `request` 在 ctx 到期之后的第二道不可取消步骤**（我只在 `Cancel` 的注释里点名，
+  **没有擅自给它加期限** —— 那是 §23 的形状决策，开成上面 `Next action` 第 ② 格）；
+  **(c) 的 44.807s 与 30.44s 是两件事**，前者在 `select` **之前**（`c.write`，第 24 轮 E 探针），
+  后者是 `Close` 自己的步骤顺序（下面 ③）；**`Cancel` 不背"回收孩子"这一格**，孩子由 (c) 收。
+
+  **② ⑤ 的落地**：`Connection.Close()` 现在接**既有的** `Supervisor.Stop(c.child, closeReapTimeout)`，
+  `closeReapTimeout = 2 * time.Second`（与 `cmd/core/processpipe.go:212` 同值）。
+  **不新增 Kill、不新增第三种期限、`Stop` 本身一个字没改**。新增两枚：`(*Child).Reaped()`、
+  `childAlreadyGone(err, pid)`（原因见 ③②）。
+
+  **③ 落地时量出两件必须和 ⑤ 一起处理的缺陷（都是量出来的，不是想到的）**：
+  1. **顺序**：`Stop` 必须排在把管道还回去**之前**。我第一版按"先关管道是礼貌一步"的字面写成
+     `CloseStreams → Stop`，**带载全量跑里 `Close` 花了 30.44s**（≈ 助手生命期）；同几步在空机是 **0s**
+     （探针 A1/A2/A3 全 0s），探针 B 的 `Stop→CloseStreams` = **1ms + 0s**。
+     **30.44s 那一次我事后复现不出来**，所以"关一个还挂着读的句柄要等孩子本身"这句按**排除法留下的解释**读，
+     不当测量定律：`Connect`/`Reaped` 亚毫秒、`Stop` 被 2s 界住，`Close` 里唯一能等满孩子生命期的只剩关句柄那一步。
+     `cmd/core` 的 `duplexPipe.Close`（`:207-221`）早就是这个顺序 ⇒ ⑤ 那句"与 processpipe 同值"含这一层。
+     ⇒ **"关 stdin 让孩子自退"我最后没有排在 `Stop` 前面**：⑤ 说它"可以作为礼貌一步"、不是机制，
+     而把它排前面正好制造下面第 2 件那个"孩子已死"分支。
+  2. **already-gone**：孩子**自己先死了**（crash / 握在手里崩掉）时，后台 reaper goroutine 的 `cmd.Wait`
+     已释放进程句柄 ⇒ `Stop` 的 `Kill` 拿到 **`kill: invalid argument`**（探针 P1 实测，从 `Close` 返回给调用方）
+     ⇒ 一次正常收尾被报成失败。`cmd/core` 对同一个孩子已有 `childAlreadyGone` 这一层过滤，我在自己包里
+     复刻了同一条规则 ⇒ 两份归一开成 **CO-51**（我不动 `cmd/core`）。
+     顺带一条按字结论：**`Reaped()` 那道闸拦不住这一件** —— 它读的是"有人调过我的 `Wait`"，不是"孩子死了"。
+
+  **④ 变异批（`mut-r25.py`，整包不过滤 `-run`，2 FIRED / 3 SILENT）**：基线 `exit=0`、包内
+  **42 PASS / 0 FAIL**；五枚锚点命中数全 = 1（**没有 INVALID**）；每枚跑完立刻按字节还原并 assert sha 相同
+  （`PRE-SHA == POST-SHA = f9fc7e9df5ef43ed`，跑前跑后各测一次）。
+
+  | 变异 | 摘掉的是什么 | 判决 | 红落在哪一条 |
+  |---|---|---|---|
+  | m1 | `Stop` 那一句不执行 | **FIRED** | `TestCloseReapsTheChild`：`Close returned while pid 44660 is still unreaped` |
+  | m2 | `!c.child.Reaped()` 那道闸 | **SILENT** | —（见下面整段"m2 翻过案"） |
+  | m3 | `c.sup != nil` | **SILENT** | —（`Stop` 自己第一行 `c.cmd == nil ⇒ return nil` 先给出同一个答案） |
+  | m4 | 换成"先还管道再 `Stop`" | **SILENT** | —（30.44s 只在带载那一次出现，做不成确定性判据） |
+  | m5 | `childAlreadyGone` 过滤 | **FIRED** | `TestCloseAfterTheChildAlreadyCrashedStaysQuiet`：拿到原话 `kill: invalid argument` |
+
+  **m2 翻过案，这段要按字读**：第一遍批里 m2 判 **FIRED**，红的却是**别人** ——
+  `TestConnectionDeathMarksTurnUnknown`（`connection_test.go:361`
+  `turn state before the crash = "CLAIMED", want RUNNING`）。我查了机制：那条用例等的是
+  `c.LastSeq() == 2`（游标，在 `c.mu` 里推进），断的却是 tracker 状态（`applyTurn` 在**放锁之后**才跑）
+  ⇒ **等的信号和断的东西不是同一个**，带载就能错开；而它用的是 `pipeConnection`（`sup == nil`），
+  m2 那个改动**在字面上碰不到它**。我把等待谓词换成被断言的那个谓词（`LastSeq` 那格降级成第二条断言、
+  没有删），改完同一枚 m2 复跑判 **SILENT**。
+  ⇒ 两个结论：① **同一枚变异在修掉一条 flake 前后给出不同判决，这件事本身就是那一次红的归属证明**；
+  ② `Reaped()` 从此**没有确定性判据**（它防的是 pid 复用，测试里造不出来），我按
+  "有理由、无判据"登记，**不拿 `TestCloseAfterAnExistingReapStaysQuiet` 冒充它有牙**
+  （那条用例的注释已改成这么写，代码注释里 m2/m3/m4 三格也都标了 SILENT）。
+
+  **⑤ 交付跑（报绿只认最后一次重跑）**：跑窗 **20:55:37→20:55:47**，`exit=0`、
+  **508 PASS / 7 SKIP / 0 FAIL、17 包全 ok、`build failed` 0、panic 0**
+  （日志 `.scratch/adapter/delivery-r25-205535.log`）。**其后 21:04:28→21:04:39 又复跑一批，
+  数字与三面指纹全同**（`delivery-r25-210428.log`，HEAD 已推进到 `a579fc5`，跑窗内
+  `git log --oneline 1bcdcfd..HEAD -- core/` 仍为空）⇒ 报绿认这一批。**"全" = 那 17 个包，不含 `core/test/` 与 `scripts/`**；
+  498→508 的差额里含我本轮新增的 4 条 `Close` 用例，其余是别家自 19:43 以来入库的，我没有逐条分账。
+  - **三面指纹 + 构建时刻**：`deps 67a1287e29df29c3`、`internal/adapter afbc9a1b8fa9b74f`、
+    `cmd/fake-adapter 38a594aa65efbca8` 三枚**未变**；**`internal/process 341c5cd8fce19e0f` 变了**
+    —— 变的正是我改的那个包，构建时刻 **20:55:37**。（旧值 `c6a53803aa7ce5c1` 自此失效，别再拿它对拍。）
+  - **被验面（T-321② 要求明写）**：`git status --porcelain -- core/` = **4 条，全部我自己**
+    （`connection.go`/`connection_test.go`/`supervisor.go`/`supervisor_test.go`），untracked **0 条**
+    ⇒ **这一批的读数不在干净被验面上**，它验的就是我这 4 件在制品；跑窗内
+    `git log --oneline 1bcdcfd..HEAD -- core/` = **空**（没有别人把码落进 `core/`），HEAD 现读 **`6763a18`**。
+  - **负载披露**：交付跑起跑前 `tasklist` 无 `go.exe`、`.scratch/test/` 最新项 **20:44:56**（起跑前 10 分 41 秒静）
+    ⇒ 比 20:39 那批干净得多，但只能声称"近似空机"、不能声称整机静。
+    **上一条 20:39:13→20:39:52 是带载的**（`test` 的变异批在跑：`mut{A,B,C}.out` 20:33~20:34、
+    `tmp.K3M9ILd1RF` 20:38:43），它 `exit=1`、506 PASS / 7 SKIP / **1 FAIL**，红的就是
+    `TestCloseReapsTheChild` 的 30.44s —— **那一条红把我引到了顺序缺陷上，我没有把它当 flake 放过去**。
+- **第 24 轮（T-310 连接面 ctx 量测，09-25 20:06~20:09）**。可复跑命令：
+  **`bash /d/Project/Lucero/.scratch/adapter/ctx-probe.sh`**（探针源 `.scratch/adapter/ctxprobe_test.go.txt`，
+  跑完 trap 删除；本次跑窗 **20:09:08→20:09:12**，包内残留 = 0）。被验的包 `internal/process` **零脏件**
+  （`git status --porcelain -- core/internal/process` 只出现那枚临时件），所以结论与 backend 同时在写的
+  `notification`/`api/http` 无关。
+
+  | 段 | 是否 select `ctx.Done` | 实测返回耗时（ctx 状态） | 孩子进程去向 |
+  |---|---|---|---|
+  | **`Supervisor.Start(ctx)`**（起子进程） | **否**——函数体内一次都不读 ctx | **588.0ms**（传入**已取消**的 ctx，仍真起进程）`err=nil` | **存活**（pid 41188；`Wait` 60ms 期限到都没退出） |
+  | **`Supervisor.Connect(ctx)`**（组装 + 起读循环，**不等 hello**） | 否（透传给 `Start`） | **2.25ms**（已取消的 ctx）`err=nil` | **存活**（pid 39856） |
+  | **`Initialize`→`request`**（等 hello / 等回应） | **是**（`connection.go:337` 的 `case <-ctx.Done()`，全文唯一一处） | **400.3ms**（400ms 期限，孩子 `debug/hang` 挂着不回包）err=`debug/hang: context deadline exceeded (sent $/cancel)` | **存活**（cancel 只是通知，不 kill） |
+  | 旁支：**`request` 走 `c.dead`**（连接判死那一腿） | 不是 ctx | **4.9ms**（400ms 期限远未到期就返回）err=`adapter process is gone; in-flight state is unknown: adapter/initialize: no reply (ADAPTER_UNRESPONSIVE)` | **存活** |
+
+  两条附赠事实：**`pending` 在 ctx 取消与判死两条路径上都归 0**（`forget` 有效、不泄漏）；
+  **`Child` 只有 `Wait(ctx)` 与 `CloseStreams()`、没有 `Kill`** ⇒ 收尸要么靠"关 stdin 让孩子自己退"（`live` 助手就是这样），
+  要么根本没有。**这是盘上现状的陈述，不是我对 REQ-S-1 的建议**；给 backend 的定位是：
+  **不可取消的那一段是 `Start`/`Connect`（588ms 量级、已取消仍起进程、无人收），不是 `request`。**
+  **更正（T-314 ④，09-25 20:5x）**：上面那句"`Child` 只有 `Wait(ctx)` 与 `CloseStreams()`、没有 `Kill`"
+  **不实，原文按"历史不静默改"留着**。`Child` 自己确实没有 `Kill`，但 **`Supervisor.Stop(c, timeout)` 里就是
+  `c.cmd.Process.Kill()` + 有期限的 `Wait`**（本轮现读 `internal/process/supervisor.go:460/:466`）。
+  真相不是"缺这个能力"，是 **`Connection.Close()` 一步都没走向它**。照那句行事会去新开一个 Kill，
+  而那正是 ⑤ 明确禁止的形状。第 25 轮的实现与读数在本节最上面一条。
+- **第 23 轮 = 空机复跑（T-302 ③④，09-25 19:42~19:46）· 零代码改动**。三段的原文都在
+  `.scratch/adapter/heyen-fp.txt` + `heyen-idle.log`（19:43 这批）与 `legs-r22.py` 的 stdout 里：
+  - **① 指纹 / 构建时刻 / HEAD**：`git rev-parse --short HEAD` = **`c46339c`**（19:42:00；主控派发行里写的 `6b28868` 是它的父，
+    19:38:34，两笔 `--stat` 都只有 specs 与台账）；`go list -deps` = **`67a1287e29df29c3`**；
+    `go test -c` 三面 = `afbc9a1b8fa9b74f` / `c6a53803aa7ce5c1` / `38a594aa65efbca8`；构建时刻 **19:43:18**（起跑 19:43:15）。
+    **与 18:35 / 18:54 / 19:12 四代同值** ⇒ "被验的是不是那份码"这一问在四个 HEAD 之间都是"是"。
+  - **② 被验面干净的三证**：`git status --porcelain -- core/` = **空**；三面指纹一字不差；
+    **`git diff --name-only f25ee6c..HEAD -- core/` = 0 个文件**（这条最硬：从合验那批到现在 Go 面没动过）。
+    全仓 porcelain 现读 **8 条**（六本台账 + 两个 `apps/desktop` TS + `scripts/flaky_watch.sh`，都不在 Go 编译面）。
+  - **③ 读数与带载那批完全一致**：全量 `exit=0`、**498 PASS / 7 SKIP / 0 FAIL、17 包全 ok、`build failed` 0、无超时 panic**；
+    六项 = 7/8/2/8/2/3（**30 条，非绿 0**）；行级带 `LUCERO_REQ_DB2=1` = **4 条全 PASS**（`ok ./cmd/core 0.651s`）。
+  - **两条反例（19:45:36→19:46:02 这一腿，前后探针 `oc_now.log` 停在 19:45:04 不动、tasklist 无 go.exe）**：
+    摘建行腿 ⇒ `cmd/core` 红 3（`TestLifecycleWriterLandsRowAndShouts`、`…ThreeLegsEachMoveTheRow`、`…RowLandsTheFiveColumns`，
+    首行 `sql: no rows in result set`）+ 我包红 **5**；摘改行腿 ⇒ `…ThreeLegsEachMoveTheRow` 红
+    （首行 `该把行改成 EXITED/exit_code=3，实际 STARTING / 有=false 值=0`）+ 我包红 **4**；
+    我包基线（不过滤）= 32 PASS / 1 SKIP / 0 FAIL；`restored_identical=True`。
+  - **同一把尺子当场又抓到我一次假否定**（记下来因为它差点变成"空机证据"）：19:43:42 那条 `ls -t .scratch/test/`
+    是在 `cwd=core/` 下跑的相对路径 ⇒ 报"目录不存在"。**目录一直在**（19:44:14 绝对路径可列、19:44:36 起还在被写）。
+    判据换成：**探针一律用绝对路径**，并且"空机"这件事只用**同一判据的前后两次一致**来支撑，不用"某目录消失"这种意外。
+  - **同一轮内补正（19:49:18，收到巡检那封"HEAD 已换值"之后当场复量）**：我报告里贴的 **`c46339c` 就是当前值**
+    （19:49:18 复读未再前进）⇒ **不存在要改的读数**；`6b28868`→`c46339c` 之间 `git diff --name-only … -- core/` = **0 个文件**，
+    而我用的是更宽那道（`f25ee6c..HEAD -- core/` = **0**）⇒ ③ 的"Go 面没变"三方独立量到同一结论。
+    **顺手把"HEAD 是易腐品"变成可复跑的动作**：`heyen-readout.sh` 印的 HEAD 是**跑那一刻自己量的**；之后任何人要复核这批还不可信，
+    只需 `git diff --name-only c46339c..HEAD -- core/` **为空** + 三面指纹同值，**不要求 HEAD 仍等于 `c46339c`**。
+    再记一条时间线，免得后来人以为我这批全程空机：`.scratch/test/` 最新项 19:43:15 = `selftest_recheck.log`(19:28:18)、
+    19:44:36 起 = `oc_now.log`(末次 19:45:04)、**19:48:27 又出现 `ins_completed.py`** ⇒ test 在我这批**之后**恢复写入；
+    三次 `tasklist` 探针（19:45:36 / 19:46:02 / 19:49:18）都无 `go.exe`/`test.exe` ⇒ 它写的是脚本产物，不是 Go 负载。
+    **T-305（19:42 落账那句更正）与已交付这批同义 ⇒ 未重跑代码，只补空机复跑与一枚复核章**：
+    **账上不钉 HEAD 值**（19:43=`c46339c`、19:49=`c46339c`、19:52 又前进到 `a5ea0da`，全是台账/ specs），
+    可复跑的判据写成两句：**`git status --porcelain -- core/` = 空** + **`git diff --name-only f25ee6c..HEAD -- core/` = 0 个文件**
+    （`c46339c..HEAD` 同样 0），再叠三面指纹逐字同 19:12 / 19:43 两批（`deps 67a1287e29df29c3`、
+    `afbc9a1b8fa9b74f`/`c6a53803aa7ce5c1`/`38a594aa65efbca8`）⇒ 主控那两条判据（**不是"HEAD 等于某个值"**）持续成立。
+    **第三份空机读数（19:52:50→19:53:02，脚本自带两证了）**：起跑前后 `.scratch/test/` 最新项都是
+    `ins_completed.py` **19:48:27 未变**、`tasklist` 两次都无 `go.exe` ⇒ 全量 **`exit=0`、498 PASS / 7 SKIP / 0 FAIL、17 包全 ok**，
+    与 19:12（带载）、19:43（空机）**三批数字完全一致**。
+    **同一轮里我又踩了一次自己三分钟前刚记下的坑**：19:51:02 那次探针我又拿相对路径 `ls .scratch/test/`（cwd 在 `core/`）
+    ⇒ 又读到"目录不存在"这个假否定，绝对路径重探才是上面那个值。
+    **这条教训已经从"写在账本里"落进工具本体**：`heyen-readout.sh` 现在有 `idle_probe()`，
+    在**起跑前与收完后各印一行**（`.scratch/test/` 最新项的绝对路径 mtime + `tasklist` 有无 `go.exe`），
+    19:52:50 / 19:53:02 那两行就是它自己打出来的 ⇒ **这份"空机"从此不依赖我手敲命令时记不记得用绝对路径**。
+  - **窗口何时关闭，写死在这里，免得我的"core/ 为空"被以后的人当常态读**：
+    三批读数的干净时刻分别有实测撑着 —— 19:12 那批是 19:11:54 量到 `core/` 空；19:43 那批是 19:49:18 / 19:51:02 / **19:53:23 三次都 = 0**；
+    19:52:50→19:53:02 那批复用的是同一时刻前后的 `ins_completed.py` 19:48:27 未变 + 无 `go.exe`。
+    **19:54:05 复量：窗口关闭** —— `git status --porcelain -- core/` 现在 = **2 条**
+    （`M core/internal/notification/service.go` mtime 19:53:34、`M core/api/http/notifications.go` mtime 19:54:02，
+    `git diff --stat` = +73/−7，是通知 `HANDLED` 那一格），**backend 又开始写了**。
+    **两条限定**：① 这两个包**都不在我三面指纹的依赖里**（`go list -deps ./internal/adapter ./internal/process ./cmd/fake-adapter`
+    不含 `internal/notification`/`api/http`；我三路径脏件 = **0**），所以**我的三面读数不被它影响**；
+    ② 但"17 包全量"那一份**跨了它**——所以 **19:43 / 19:52 那两份全量读数的有效期就到 19:53:3x**，
+    之后任何人要引用"全量 exit=0"，得在 `core/` 重新变干净之后再取一次。**我不重跑**：现在跑就是拿一棵正在被改的树做合验，
+    正是 09-24 那批作废读数那一族。这一条留给主控决定下一个窗口。
+  - 头部五字段自检（T-276）：`^- Stage:`=1、`^- Status:`=1、`^- Last verified action:`=1、`^- Next action:`=1、
+    `^- Verification:`=1；`^## `=12。`grep -rn ZMUT core/` = **0**。
+- **第 22 轮 = 合验交账（T-297 已执行，09-25 19:11~19:15）**。判据命令：`bash .scratch/adapter/heyen-readout.sh`
+  + `LUCERO_REQ_DB2=1 … -run 'TestLifecycle…' ./cmd/core/` + `.scratch/adapter/legs-r22.py`（两条反例）。
+  - **① 被验树指纹 / 构建时刻 / HEAD**（19:12:39→19:12:43，两个时刻各自 `date -Iseconds`）：
+    `git rev-parse --short HEAD` = **`f25ee6c`**（19:04:01，父 `a9f975e`）；`go list -deps` 三面 = **`67a1287e29df29c3`**；
+    编译指纹 `internal/adapter afbc9a1b8fa9b74f`、`internal/process c6a53803aa7ce5c1`、`cmd/fake-adapter 38a594aa65efbca8`
+    —— **与 18:35、18:54 两次一字不差**（这一代里我的被验面没有动过，跨了 `95b01ca`→`4b4739e`→`f25ee6c` 三个提交）。
+  - **② 工作区原样贴**（19:12:4x，`git status --porcelain` 共 **9 条**，**我没有为了"看着干净"动过任何人的文件**）：
+    ` M .qoder/progress/{adapter,backend,db,frontend,orchestration,test}.md`、
+    ` M apps/desktop/src/__tests__/live-core.test.ts`、` M apps/desktop/src/stores/panel.ts`、` M scripts/flaky_watch.sh`。
+    **它们为什么不影响被验面**：`git status --porcelain -- core/` = **空输出**（六本台账是文档、两个 TS 在 `apps/desktop`、
+    `flaky_watch.sh` 是 `test` 的脚本，都不进 Go 编译面），合验的指纹与判据都来自 `core/`。
+  - **③ 协议侧六项逐条**（全量 `exit=0`、**498 PASS / 7 SKIP / 0 FAIL、17 包全 `ok`、`build failed` 0、无超时 panic**）：
+    握手 7 / 能力核定 8 / `CarriesTurnRef` 2 / 票号↔`execution_id` **两侧** 8 / 丢弃到审计接缝 2 / 链 3 = **30 条，非绿 0**，
+    覆盖的用例行清单在 `heyen-fp.txt` 里逐条印着（本报告不写任何"这一格是谁写的"，按 T-295）。
+  - **行级那一半（今天第一次真跑，带 `LUCERO_REQ_DB2=1`）**：`TestLifecycleColumnAssertionsHaveTeeth`、
+    `TestLifecycleWriterLandsRowAndShouts`、`TestLifecycleThreeLegsEachMoveTheRow`、`TestLifecycleRowLandsTheFiveColumns`
+    = **4 条全 PASS**、`ok ./cmd/core`。
+  - **两条反例（§17 "每腿一条"）**：摘建行腿 ⇒ cmd/core **3 条红** + 我包 **5 条红**；摘改行腿 ⇒
+    **`TestLifecycleThreeLegsEachMoveTheRow` 红**（`…该把行改成 EXITED/exit_code=3，实际 STARTING / 有=false 值=0`）+ 我包 **4 条红**。
+    我包基线（不带 `-run` 过滤）：**32 PASS / 1 SKIP / 0 FAIL**，含子用例 6 条。**CO-50① 判闭。**
+  - **并发负载披露**：`test` 的 FL-10 电池与这批同时跑（19:12:36 见其日志在涨、19:14:03 又出现新文件）
+    ⇒ 本批是**带载读数**；我的断言全是判决型不是量级型，且**全程零红**，所以未触发"红先单包复跑再归因"那条。
+  - **一次我自己差点交上去的空判决**：反例脚本第一版用 `-run 'TestLifecycle…'` 过滤**我自己的包**（我包用例名不匹配），
+    得到 `PASS=0 FAIL=0 exit=0`，长得像"我的包不敏感"——**是那个可疑的 0 让我回去看的**，改成不过滤重跑才有上面那组数。
+    记这条是因为它属于我最熟的那一族：**"`-run` 空匹配也报 ok"，而"0 红"必须先证明它跑过。**
+- **第 21 轮（T-295 口径落地，09-25 18:53~18:55）· 零代码改动**。判据命令仍是 `bash .scratch/adapter/heyen-readout.sh`：
+  （已按新口径改成印"覆盖的判据行"，输出零人名字段；日志 `.scratch/adapter/heyen-run-185409.log`、汇总 `heyen-fp.txt`）：
+  - **① 被验树指纹**：HEAD `4b4739e`（18:47:07）、`deps 67a1287e29df29c3`、
+    `bin internal/adapter afbc9a1b8fa9b74f` / `internal/process c6a53803aa7ce5c1` / `cmd/fake-adapter 38a594aa65efbca8`，
+    构建时刻 **18:54:13**（起跑 18:54:09，两个时刻各自 `date -Iseconds`）。
+  - **② 工作区**：`git status --porcelain` **非空 = 15 条**（18:54:09 实读；含我自己这本 `adapter.md`）。
+    **本轮报告里我不写任何一条"这是谁写的"** —— 归属在上一节正文里，按 T-295 只留台账。
+  - **③ 全量 + 六项逐条**：`exit=0`、**498 PASS / 7 SKIP / 0 FAIL、17 包全 `ok`、`build failed` 0、无超时 panic**。
+    六项覆盖的判据行（= 30 条，非绿 0）：
+    握手 7 = `TestNegotiate` `TestNewHandshake` `TestConnectionStreamBeforeInitializeIsRefused`
+    `TestConnectionRefusesBeforeInitialize` `TestConnectionInitializeStartsThePump`
+    `TestFakeAdapterRefusesBeforeHandshake` `TestFakeAdapterHandshakeSatisfiesCore`；
+    能力核定 8 = `TestEffectiveCapabilities` `TestSQLiteStoreRecordsOneProbeEndToEnd` + Probe 六条
+    （`…RecordsWhatTheHandshakeSaid`/`…TriesOnceAndNeverRetries`/`…KeepsTheTwoRefusalsApart`/
+    `…RefusesAnotherMajorWithoutGuessing`/`…GivesUpOnTheCallersDeadline`/`…CarriesEveryRequiredAdapterInstanceField`）；
+    `CarriesTurnRef` 2 = `TestStreamNotificationsMatchContractTables` `TestStreamFrameMustBeNotification`；
+    票号↔`execution_id` 两侧 8 = `TestConnectionDedupsAndTracksTurn` `TestConnectionDropsUnboundTurnRef`
+    `TestConnectionDropsContradictoryIdentity` `TestConnectionAgainstRealFakeAdapter` + 门控四条
+    （`…OffEchoesWhatCoreBound`/`…OnContradictsTheBinding`/`…MovesNoFrameShape`/`…IgnoresOtherValues`）；
+    丢弃接缝 2 = `TestDroppedFrameReachesTheAuditSeam` `TestEdgeWithoutARowWritesNothingAndReturnsAuditSentinel`；
+    链 3 = `TestConnectionChainClosesBeforeItOpens` `TestFakeAdapterQueueDrainsAtTurnFinishedNotAtNextSend`
+    `TestFakeAdapterChainIsClaimedThenDispatched`。
+    **"全" = 17 包，不含 `core/test/`（六条全量的端到端 `turn_evidence_test.go` 在那儿，归 `test` 带）与 `scripts/`。**
+  - **上一条 18:36 那代读数（`exit=1`、4 包 build failed）已被本轮取代**，两份都留着：前者是"预检会拦住"的现场证据，
+    后者是"预检已过、只差未提交"的现场证据。**别拿前一份当现状。**
+  - 头部五字段自检（T-276）：`^- Stage:`=1、`^- Status:`=1、`^- Last verified action:`=1、`^- Next action:`=1、
+    `^- Verification:`=1；`^## `=12。
+- **第 20 轮（T-288 预备，09-25 18:32~18:36）· 零代码改动**：
+  - **判据命令 = `bash .scratch/adapter/heyen-readout.sh`**（一次产出 T-288 要的三段；今天**真跑两次**，
+    第一次暴露我自己的 `${pat)}` 拼写错，第二次才是下面这组数）。日志
+    `.scratch/adapter/heyen-run-183444.log` 与 `heyen-run-183551.log`，汇总 `heyen-fp.txt`；
+    `.scratch/` 在 `.gitignore:31` 里 ⇒ **这条预备跑不会把被验树弄脏**（脚本连编译出的 `.test.exe` 都落在 `.scratch/adapter/` 里并即时删掉，
+    不碰 `/tmp`）。
+  - **① 被验树指纹 + 构建时刻 + HEAD**：HEAD `95b01ca`（09-25 18:29:43）；`deps 67a1287e29df29c3`；
+    编译指纹 `internal/adapter afbc9a1b8fa9b74f`、`internal/process c6a53803aa7ce5c1`、`cmd/fake-adapter 38a594aa65efbca8`；
+    构建时刻 18:34:48 / 18:35:5x 两次，**三包指纹两次一致**。
+  - **② 工作区**：`git status --porcelain` **非空**（18:35 读到 10 条：5 本台账 + frontend 2 + backend 的
+    `cmd/core/sendpipe.go`(M)/`?? sendpipe_test.go` + `internal/task/service.go`(M)）。**"我的在制品"不在其中**
+    （三件都已进 HEAD `2c56023`）⇒ 触发时 ② 通不通只取决于 backend/frontend 收口 + 台账，与我无关。
+  - **③ 六项逐条读数**（`-v` 全量 304 PASS / 2 SKIP / 0 FAIL、13 包 ok、**4 包 build failed**）：
+    握手 7/7、能力核定 8/8、`CarriesTurnRef` 2/2、票号↔`execution_id` 8/8、丢弃接缝 2/2、链 3/3，**非绿合计 0**。
+    **那 4 个 build failed 全不在我被验的三包内**，根因一条：`internal/task/service.go` 未定义符号（backend 在途）。
+    **"全" = 17 包，不含 `core/test/`（`test` 的门）与 `scripts/`**；六条全量的端到端在 `core/test/turn_evidence_test.go`，
+    不在我的读数面上 —— 合验时那条由 `test` 自己带。
+  - **头部五字段自检**（T-276 那把尺，本轮又用了一次）：`^- Stage:`=1、`^- Status:`=1、`^- Last verified action:`=1、
+    `^- Next action:`=1、`^- Verification:`=1、`^## `=12。**旧的四段全部降级留档，没有删**。
 - **第 19 轮（T-276 落规，09-24 10:53~10:56）**：
   - **头部自检（这条就是新规矩的判据本身）**：`grep -c '^- Stage:'`、`^- Status:`、`^- Last verified action:`、`^- Next action:`
     **四个都必须 = 1**（多于 1 = 有旧行没降级成留档，等于 0 = live 指针丢了）；

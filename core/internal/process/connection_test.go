@@ -694,6 +694,17 @@ func TestInboundNeverCarriesTheTicket(t *testing.T) {
 // guide lands on the running turn, session/stop closes it, and exec-2's claim must
 // arrive after exec-1's close - all asserted through resolved execution_ids, with no
 // hand-written sequence numbers and no ticket ever reaching the consumer (§6 规则 5 决议 ②).
+// holdOpen arms §10's debug/hold on the real double (T-386 ① licenses the endpoint).
+// Since §6 第 6 条③ an ordinary run closes itself on the wire, so anything asking about
+// "while a turn is in flight" - §5's guide, §4's stop, §6 规则 5's interleaving - has to
+// ask for the open turn rather than rely on the double never finishing one.
+func holdOpen(t *testing.T, ctx context.Context, conn *Connection) {
+	t.Helper()
+	if _, err := conn.Call(ctx, "debug/hold", map[string]any{"on": true}); err != nil {
+		t.Fatalf("debug/hold: %v", err)
+	}
+}
+
 func TestConnectionChainClosesBeforeItOpens(t *testing.T) {
 	exe := buildFakeAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -708,6 +719,7 @@ func TestConnectionChainClosesBeforeItOpens(t *testing.T) {
 	if _, err := conn.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
+	holdOpen(t, ctx, conn) // this test is about a turn that is still running (§6 第 6 条③ changed the default)
 
 	send := func(id, execID, delivery string) adapter.SendResult {
 		t.Helper()
@@ -915,6 +927,7 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 	if _, err := conn.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
+	holdOpen(t, ctx, conn) // this test is about a turn that is still running (§6 第 6 条③ changed the default)
 
 	send := func(id, execID string) adapter.SendResult {
 		t.Helper()
@@ -960,34 +973,34 @@ func TestConnectionSendOverRealPipe(t *testing.T) {
 			tr1.TurnID(), tr1.ProviderExecutionID(), first.TurnID, first.ProviderExecutionID)
 	}
 
-	// A second start_now interrupts the turn in flight (§5), so exec-1's own
-	// turn/finished arrives *after* exec-2 opened: two executions, one connection, and
-	// each frame landing on the tracker its ticket names. That is §6 规则 5's acceptance
-	// item, asserted where it actually bites.
+	// A second start_now interrupts the turn in flight (§5), so exec-1 is still talking
+	// after exec-2 opened: two executions, one connection, each frame landing on the
+	// tracker its ticket names. That is §6 规则 5's acceptance item, asserted where it
+	// actually bites.
 	send("2", "exec-2")
-	sawFinish := ""
-	// The second send puts seven notifications out before its reply: its own five
-	// (claimed, dispatched, state, delta, item) and the preempted turn's tail plus its
-	// turn/finished. Reading fewer than seven would miss the close and look like a
-	// missing mandatory signal.
-	for i := 0; i < 7; i++ {
+	// §6 第 6 条② (09-27): an interrupted run puts **no** turn-level code on the wire -
+	// "被打断" is Core's observation to make, and this is where the fake used to steal it
+	// with `INTERRUPTED`. So the second send releases six notifications before its reply:
+	// its own five, plus the preempted turn's status tail. Six is the assertion: the frame
+	// that is *not* there is the thing being pinned.
+	codes := []string{}
+	for i := 0; i < 6; i++ {
 		s := nextNotice(t, conn)
 		if s.Method == adapter.MethodTurnFinished {
-			// C20 inverts what this line used to demand: the consumer-facing view must
-			// carry the resolved Execution and never the ticket, and the ticket itself
-			// is pinned on the wire (TestFakeAdapterDeliversThreeStates) and at the
-			// boundary (TestInboundNeverCarriesTheTicket).
+			// C20: the consumer-facing view carries the resolved Execution and never the
+			// ticket; the ticket is pinned on the wire and at the boundary instead.
 			if s.TurnRef != "" {
 				t.Errorf("turn/finished leaked the ticket %q past the pump boundary", s.TurnRef)
 			}
-			sawFinish = s.ResultCode
+			codes = append(codes, s.ResultCode)
 		}
 	}
-	if sawFinish == "" {
-		t.Error("exec-1 never received its turn/finished (§6 规则 1: it is the mandatory signal)")
+	if len(codes) > 0 {
+		t.Errorf("an interrupted run produced turn/finished %v; §6 第 6 条② allows none", codes)
 	}
-	if tr1.State() != adapter.TurnClosed || tr1.Result() != "INTERRUPTED" {
-		t.Errorf("exec-1 = %s/%q, want CLOSED/INTERRUPTED: it was preempted, not completed", tr1.State(), tr1.Result())
+	if tr1.State() != adapter.TurnRunning || tr1.Result() != "" {
+		t.Errorf("exec-1 = %s/%q, want RUNNING/\"\": with no closing frame the pump must not"+
+			" invent an end for it (§7、CO-8: 没有收尾信号不许读成失败)", tr1.State(), tr1.Result())
 	}
 	if tr2 := conn.Turn("exec-2"); tr2.State() != adapter.TurnRunning {
 		t.Errorf("exec-2 = %q, want RUNNING: the interrupted turn must not drag the new one down", tr2.State())

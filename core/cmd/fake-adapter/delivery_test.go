@@ -50,6 +50,11 @@ func TestFakeAdapterDeliversThreeStates(t *testing.T) {
 		return res
 	}
 
+	// §6 第 6 条③ makes an ordinary run close itself, so "a turn is still in flight" is
+	// no longer the default: this test needs one, and §5's guide/queue shapes only exist
+	// while something is running. debug/hold is the sanctioned way to ask for it (T-386 ①).
+	armHold(t, p, "hold1", true)
+
 	now := send("1", adapter.DeliveryStartNow, "k1", "hello")
 	if now.TurnID == "" || now.ProviderExecutionID == "" || now.IdempotencyHit {
 		t.Errorf("start_now = %+v, want a turn and a Provider handle", now)
@@ -91,6 +96,7 @@ func TestFakeAdapterDeliversThreeStates(t *testing.T) {
 	// reply. sequence_no is pinned in each label, so §6 规则 2's monotonic rule is here too.
 	want := strings.Join([]string{
 		"reply#init",
+		"reply#hold1", // arming debug/hold is a call, and its reply belongs on the log
 		// A turn now opens with the whole normal path §10 ① asks for, and every frame
 		// of it - the CO-8 pair included - names the same ticket.
 		"turn/claimed/1@1", "turn/dispatched/2@1", "stream/state/3@1", "stream/delta/4@1", "stream/item/5@1",
@@ -99,16 +105,27 @@ func TestFakeAdapterDeliversThreeStates(t *testing.T) {
 		"reply#3", // queued: a position, and no turn on the stream yet
 		"reply#4", // idempotent hit: nothing at all on the stream
 		// the send after them interrupts the running turn: B opens on ticket 5, and A
-		// is still talking afterwards - its tail and its turn/finished carry ticket 1.
+		// is still talking afterwards - its tail carries ticket 1, and §6 第 6 条② says
+		// that is the last anyone hears of A: a preempted run sends no turn-level code.
 		"turn/claimed/7@5", "turn/dispatched/8@5", "stream/state/9@5", "stream/delta/10@5", "stream/item/11@5",
-		"stream/delta/12@1", "turn/finished/13@1",
-		// then the queued send runs, on its own ticket, with its own evidence pair.
-		"turn/claimed/14@3", "turn/dispatched/15@3", "stream/state/16@3", "stream/delta/17@3", "stream/item/18@3",
-		"turn/finished/19@3",
+		"stream/delta/12@1",
+		// then the queued send runs, on its own ticket, with its own evidence pair -
+		// it moved because the preempted turn *ended*, not because a frame went out (CO-25).
+		"turn/claimed/13@3", "turn/dispatched/14@3", "stream/state/15@3", "stream/delta/16@3", "stream/item/17@3",
+		"turn/finished/18@3",
 		"reply#5",
 	}, " ")
-	if got := strings.Join(p.trace(t), " "); got != want {
+	got := strings.Join(p.trace(t), " ")
+	if got != want {
 		t.Errorf("wire order = %s\n       want %s", got, want)
+	}
+	// Say the absence out loud: the order above would still match if a closing frame for
+	// A merely moved position, and "no turn-level code for an interrupted run" is the
+	// thing §6 第 6 条② actually rules.
+	for _, fr := range strings.Fields(got) {
+		if strings.HasPrefix(fr, "turn/finished/") && strings.HasSuffix(fr, "@1") {
+			t.Errorf("A (ticket 1) got a turn-level code (%s); §6 第 6 条② forbids self-reporting an interruption", fr)
+		}
 	}
 }
 
@@ -314,6 +331,55 @@ func TestFakeAdapterHangWaitsForCancel(t *testing.T) {
 	}
 }
 
+// TestFakeAdapterHoldReleaseIsWhereTheCloseGoes pins the other half of debug/hold: while
+// it is armed nothing closes, and the mandatory frame appears **at the release** - not at
+// the next send, not on a timer. Without this case the `on:false` branch has no witness
+// and a mutation that drops it would sit silently.
+func TestFakeAdapterHoldReleaseIsWhereTheCloseGoes(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+	armHold(t, p, "h-on", true)
+	call(t, p, "h1", methodSessionSend, adapter.SendParams{RemoteSessionID: "s-1",
+		Text: "held", Delivery: adapter.DeliveryStartNow,
+		ExecutionID: "exec-h1", IdempotencyKey: "k-h1"})
+	if got := framesWithTicket(p.seen, "h1", adapter.MethodTurnFinished); len(got) != 0 {
+		t.Fatalf("a held run closed on its own (%d finished frames): hold is not holding", len(got))
+	}
+	armHold(t, p, "h-off", false)
+	got := framesWithTicket(p.seen, "h1", adapter.MethodTurnFinished)
+	if len(got) != 1 {
+		t.Fatalf("the release produced %d turn/finished, want exactly 1", len(got))
+	}
+	if got[0].ResultCode != resultSucceeded {
+		t.Errorf("the release closed with %q, want SUCCEEDED", got[0].ResultCode)
+	}
+}
+
+// TestFakeAdapterStartNowClosesItsRun is T-382 ③ Ⅰ: the real subprocess, one start_now
+// send, and the assertion on the **frame** rather than on any reply - §6 规则 1 makes
+// turn/finished the one mandatory closing signal and 第 6 条③ names this path as the gap
+// that used to leave it unsent. A green here means Core can watch a run end.
+func TestFakeAdapterStartNowClosesItsRun(t *testing.T) {
+	p := startFakeAdapter(t)
+	initialize(t, p)
+	reply := call(t, p, "n1", methodSessionSend, adapter.SendParams{
+		RemoteSessionID: "s-1", Text: "go", Delivery: adapter.DeliveryStartNow,
+		ExecutionID: "exec-n1", IdempotencyKey: "k-n1"})
+	if reply.Error != nil {
+		t.Fatalf("start_now: %s", reply.Error)
+	}
+	var closed *adapter.StreamFrame
+	for _, s := range framesWithTicket(p.seen, "n1", adapter.MethodTurnFinished) {
+		closed = s
+	}
+	if closed == nil {
+		t.Fatal("no turn/finished on the wire for a start_now run: §6 第 6 条③ is unmet")
+	}
+	if closed.ResultCode != resultSucceeded {
+		t.Errorf("closing frame carries %q, want SUCCEEDED: this run ended on its own", closed.ResultCode)
+	}
+}
+
 // TestFakeAdapterGuideOnQuietSessionIsQ10 pins the 2026-09-21 ruling: steering a
 // session that has no turn running is not a failure. accepted stays true, the reply
 // carries a turn_id, and the reason field is what tells Core it became a new turn -
@@ -342,10 +408,11 @@ func TestFakeAdapterGuideOnQuietSessionIsQ10(t *testing.T) {
 	if !strings.Contains(res.Reason, "guide") {
 		t.Errorf("reason = %q, want it to say the guide opened a turn (Q10)", res.Reason)
 	}
-	// The pair is real evidence, not just a word in the reply.
+	// The pair is real evidence, not just a word in the reply. And the run it opened is
+	// over: §6 第 6 条③ closes it, so the trace ends with the frame the gate needs.
 	want := []string{"reply#init",
 		"turn/claimed/1@g1", "turn/dispatched/2@g1", "stream/state/3@g1",
-		"stream/delta/4@g1", "stream/item/5@g1", "reply#g1"}
+		"stream/delta/4@g1", "stream/item/5@g1", "turn/finished/6@g1", "reply#g1"}
 	if got := strings.Join(p.trace(t), " "); got != strings.Join(want, " ") {
 		t.Errorf("wire order = %s\n       want %s", got, strings.Join(want, " "))
 	}
