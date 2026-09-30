@@ -3,14 +3,15 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-24T10:54:12+08:00（T-276 子轮：只刷 `## Current checkpoint` 那五行索引（自 09-20 起第一次跟上正文）+ 按新规矩把"等"写成全三问；
-上一轮 T-264（10:14:28 记）：C43 落我这一格 —— `queueTask` 补 `requestBody`（`QueueTaskRequest`，`adapter_key` 必填），
-调用方三处跟上（`client.ts` 新增 `queueTask` 并把 `'queue'` 从 `taskAction` 动词表摘掉、`panel.ts` 用 probe 回执的 key、live 第 6 格两条腿）；
-顺带删掉我在 `GET /executions` 上多声明的 `cursor`/`limit`（Core 400 拒它们，契约正文只有 `?task_id=`）。
-六腿闸门 exit 全 0（含 `C8-13 = 64/64/64`），live 最后一次 **21 passed / 0 skip**（10:10:23，构建 mtime 10:10:13）：
-带 key ⇒ 200、缺 key ⇒ 400 `validation_failed`；**第 7 格的性质换了** —— 从"读面从未注册"变成"200 空清单"，
-卡点移到 `tasks.go:340` 那句 `_ = adapterKey`（等 T-263 的只读接口）。旧读数指针：T-256 09:28:41（yaml 事件枚举补 `execution_starting` ⇒ 64 条、
-C8-13 首跑 64/64/64、并固化 `run-gates.sh`）/ T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。）
+LAST_UPDATED: 2026-09-27T13:25:00+08:00（T-358 复验轮：**6 条红全塌**。复现器两棵树上都给 exit 0（净树 13:13:48 / 含 backend 三件在途 13:23:35）、
+live **22 passed / 0 skip**、闸门六腿全 0；F-8 读到 200 九键齐（`tasks.go:159` 分发 `getTask`、残留那句"还没接线"在 `:162` 且属于 **PATCH**）。
+新那道 `core/test` 门在我这一腿里**被编译但不执行**（`-run` 只挑 C8-13），所以我 exit=0 **不证**那 44 条假红已修 —— 分两面写。
+本轮源码零改动；指纹 `69e96ec` 起跑前后同值。）
+
+> 旧读数指针（细节按原段读）：**REQ-S-1 复验轮** 13:19:16（第 8 格首次转绿、复现器把指纹写进输出、判据两面都有腿）/
+> **T-317** 09-25 20:31:18（④ 起了、实测仍 501；九键断言挪到链式用例之前）/ **T-311** 20:09:05（复现器固化成一行命令 + 退出码即判据）/
+> **T-286 合验轮** 19:25:01（"永久 hold"那格的红）/ **T-287** 18:36:30（REQ-LK-1 裁甲后传 `session_id`）/ **T-282** 18:15:20（§4 逐跳真跑）/
+> **T-276** 09-24 10:54:12（头部五行规矩）/ **T-264** 10:14:28（C43 请求体）/ **T-256** 09:28:41（事件枚举 64 条、固化 run-gates.sh）/ T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -50,18 +51,18 @@ C8-13 首跑 64/64/64、并固化 `run-gates.sh`）/ T-231 07:44:09 / T-22x 07:2
 > **T-276 规矩（主控 10:45 裁，本册被举成反面例子）**：每次交账**同时**刷下面那五行，`Last verified action` 的时刻必须当场 `date` 实读；
 > "等"这一格写全**等谁 / 等什么 / 谁解锁**；头部与正文不一致时以正文为准，且那次交账记为"头部未刷 = 交账不完整"。
 
-- Stage: T-264 已交账 —— C43 的 `adapter_key` 请求体落进 yaml 并重生生成物，三处调用方跟上；面板链第 1~6 格真绿、第 7 格 **200 空清单**、第 8~10 格 blocked
-- Status: in_progress（**无我这侧的欠工**；剩的两条外部问题都不记 frontend 账：`GET /sessions/{id}/messages` 的归因文案、`:queue` 编排半格）
-- Last verified action: 当场 `date` 实读 **2026-09-24 10:54:12 +0800**（刷这五行的一刻，此刻之后我没再跑任何判据）。
-  **最后一次真跑**：闸门链六腿 **10:09:19 全部 exit=0**（`.qoder/evidence/frontend/gates-t264.txt`，含 `C8-13 三格相等 64/64/64`）
-  + live **10:10:23 → 21 passed / 0 skip**（`live-t264.txt`，归因边界＝构建 mtime `09-24_10:10:13`）。
-  两者之后我只在 10:21:35 做过**只读** git 复量（更正巡检那条归因），没碰源码 —— `find … -newermt "2026-09-24 10:10:23"` 为空。
-- Next action: **等谁**＝backend（T-262 的后半格）＋ adapter（T-263 导出 `adapter_key → adapter_instances.id` 那个只读接口）；
-  **等什么**＝`:queue` 真去建 Execution 并产 `execution_created`，让第 7 格从"200 空清单"变成拿得到 id（`tasks.go:340` 那句 `_ = adapterKey` 就是没落地的字面证据）；
-  **谁解锁**＝主控派单 + 那两位交账，**我这侧不需要预先改任何东西**（C43 方案乙已按裁落地，不存在"乙二版"欠工）。
-  解锁后的动作：`bash .scratch/frontend/run-t264.sh` 量第 8~10 格（`/executions/{id}/send`、`/output`、`approvals/{id}:resolve`），
-  逐跳记 ok/blocked（路径 + 状态码 + 命中分支 `file:line`），**形状不是预期就当场报，不猜 id、不钉 501**。
-- Verification: `bash .scratch/frontend/run-gates.sh`（六腿一次跑完：validate / codegen / vitest / F20-4 / build / go c8-13；两个工具链显式上 PATH、退出码一律无管道取、非零腿数回扫证据文件）；live 面用 `bash .scratch/frontend/run-t264.sh`（自建二进制＋自属数据目录＋起停收尾）
+- Stage: T-358 复验轮已交（**绿交**）—— REQ-S-1 复现器两棵树都 **exit 0**、live **22 passed / 0 skip**、闸门六腿全 0；
+  09-25 那 6 条红（1 根因 + 5 连带）**塌成 0 条**；F-8 单任务详情读也从 501 转 **200 九键齐**，链里真拿它读到的 version 当 If-Match ⇒ 面板链头到第 11 格的 `409 illegal_transition`
+- Status: in_progress —— 我这侧无欠工、手里无红；剩 3 格 blocked（`/output` 501+文案误导、`/approvals` 未注册、`:accept` 差 `AGENT_COMPLETED`）都不记我账
+- Last verified action: 当场 `date` 实读 **2026-09-27 13:25:00 +0800**。三个读数归因到同一个 **HEAD `69e96ec 13:17:57`**（起跑前与收工各读一次，同值）：
+  复现器 13:23:35 → **exit 0**（`send 202/12ms`、`写请求 201/3ms`；输出自带 `core_脏面=[ M send_two_phase_test.go  M sendpipe.go  M sendpipe_test.go ?? event_producer_roster_test.go ]`）；
+  live 13:24 → **22 passed (22)**（二进制 mtime `09-27_13:23:50`）；闸门链 13:25 前 → 六腿 exit 全 0 / 非零腿数=0。
+  **一句限定**：这三个读数都长在 backend 三件**在途** `core/` 码上（`sendpipe.go` 13:16:15 等）⇒ "绿"不等于"在他们收工之后"
+- Next action: **等谁**＝adapter（`turn/finished` → `AGENT_COMPLETED`）＋ backend（`GET /executions/{id}` 三份快照、`/output`、`approvals` 注册 + 那条 501 文案）；
+  **等什么**＝第 9/10 格 501→200、第 11 格真能 `:accept`（WS 上收到 `task_accepted`）；
+  **谁解锁**＝他们各自交账 —— **REQ-S-1 与 F-8 已划掉**；我不催、不替谁排期；
+  被叫醒时的动作：先 `git log -1` + 逐字 `git status --porcelain`（分清是不是长在别人在途码上）→ `bash .scratch/frontend/repro-req-s1.sh` → `bash .scratch/frontend/run-t282.sh` ⇒ 诊断表 v10→v11
+- Verification: `bash .scratch/frontend/run-gates.sh`（六腿：validate / codegen / vitest / F20-4 / build / go c8-13；退出码无管道取、非零腿数回扫证据文件）＋ `bash .scratch/frontend/run-t282.sh`（live：自建二进制＋`-adapter fake=`＋自属数据目录＋起停收尾；**今天这一腿是红的**）
 
 ## Completed
 
@@ -1252,3 +1253,350 @@ go 输出先落文件再另行 grep，并在开头打印 `node=` / `go=` 的实�
 - **本轮零代码改动**，所以**没重跑闸门**：这是"刷索引"不是"交验证件"，拿 10:09:19 那份六腿 exit=0 冒充本轮跑过才是造假。
   头部的 `Last verified action` 因此分两句写：刷头部的一刻 ＋ 最后一次真跑的时刻与产物（并附 `find … -newermt "2026-09-24 10:10:23"` 为空这条复核）。
 - 下一次交账（T-2xx）才是这条规矩真正生效的地方：**同一轮里正文与头部一起动**，只动正文＝交账不完整。
+
+## T-282 子轮（等待条件作废 → 第 5~11 格逐跳真跑；卡点从"读面"移到了"link 没有写入者"）· 本机 date 2026-09-25T18:12:57+08:00
+
+### 前提自己复量（不引派发的数），三处成立、一处派发比我更保守
+`git log -1` = `7f8599f`，我那五格 T-264 的改动已在 `2c56023` 里（`git grep -c QueueTaskRequest HEAD` = yaml 2 / schema.ts 2）。
+装配三处实读：`main.go:322 Executions` / `:338 SessionMessages` / `:349-350 Instances + ExecutionCreate` ⇒ 分派腿**确实齐**；
+`queueTask` 现在走 `c.Instances.ResolveInstance(key)` → 同笔事务 `c.ExecutionCreate.Create(...)`（v6 我引的那句 `_ = adapterKey` 已经随提交消失，
+所以诊断表 v6 的那行归因**过期了**，v7 里我明确写了"作废"而不是留着让人以为还在等）。
+派发说"前置就位、可以复跑"成立，且它还写着"记 blocked"——今天我量到的比它列的更好：**第 7 格已经真通**。
+
+### 本轮改了什么（只动我自己的测试与证据，零契约改动）
+`live-core.test.ts` 里那条链式用例从"第 5~6 格 + 后面提前 return"扩成**第 5~11 格逐跳**，用例名同步改成
+`§4 第 5~11 格逐跳真跑：能断的断契约形状，断不到的记 blocked 带原因`：
+- 第 7 格：200 ⇒ 核 `items.length > 0`（只在 `:queue` 真 200 那一支才追加，409 那支不额外要求）＋ yaml `Execution.required` **七键逐个核** ＋ `task_id` 回指；
+- 第 8 格：允许集 `[200,202,404,409,503]`，2xx 那支核 `SendResult` 两键（`delivery`/`accepted`），404 那支核 `session_not_found` 并**打印根因**；
+- 7b/9/10：2xx 与 501 两支各有断言（501 必须是 `not_implemented`），并把 message 原样打进日志——**误导文案要靠日志留证，不靠我转述**；
+- 第 11 格：`accept` 只许 200 或 409 `illegal_transition`（§5 矩阵外，这是正确行为，不是缺陷）；
+- 第 2~4 格那条链里补了 `GET /sessions/{id}/messages`：今天起它 200 ⇒ 核分页两键（`items` 数组 + `next_cursor` 字符串）。
+另外只改了同一文件里那段"只读面"的过时注释（它还写着 executions/approvals 在 501）。
+
+### 一条判据有没有牙，我用变异验了（第一次验错了，重验）
+第一版我把变异放在**没有 Core 在跑**的窗口里执行 ⇒ 红是 `fetch failed / ECONNREFUSED`，**没验到任何东西**——
+正是我自己登记过的"要跑具体那一支"。重做：塞一个假必填键 `zz_not_a_real_key` 进七键清单，用 `run-t282.sh`（它会先起 Core）跑
+→ **FIRED**，原文 `AssertionError: execution 行缺必填键 zz_not_a_real_key：{..."status":"CREATED","attempt_no":1,...,"session_id":null...}`、
+`Tests 1 failed | 20 passed (21)`；还原后 `zz` 命中 0（`.scratch/frontend/mutation2-t282.txt`）。
+副产品：这次红顺手把第 8 格根因印成了字面证据 —— **execution 行里 `session_id` 就是 `null`**。
+
+### 第 8 格为什么结构上到不了（三条实读，不靠 message）
+① `createTaskBody`（`core/api/http/tasks.go`）只有 `Title/Description/Mode/Priority/RiskLevel/ProjectID` 六个字段，**没有 `session_id`** ⇒ Go 的 `json.Unmarshal` 静默丢弃我传的那个键；
+② 全仓非测试码里 `task_session_links` 只有 **1 处 SELECT**（`internal/session/repository.go:86`）、**0 处 INSERT**（表在 `migrations/000001_core_schema.sql`，`internal/session/repository.go:23` 的注释自己写"Repository 只做读"）；
+③ `:queue` 的 session 来源就是那条 SELECT（抄 `links[0]`，没有就留空）⇒ 链上没有任何一格能把 session 与 task 关联起来 ⇒ `send` 对任何 execution 都只能 404。
+⇒ **需要主控裁**（见 Coordination），我不自裁：这不是"改判据"能解决的，也不是我 yaml 单方面能补的。
+
+### Coordination（两条，都要裁/要派，都不在我账上）
+1. **`POST /tasks` 收不收 `session_id`？** 我的 yaml `CreateTaskRequest` 里有这个字段（早期从契约 §2 的 Task 形状投影来的），
+   Core 今天**静默丢弃**它。两个方向：**(甲)** 契约裁"`CreateTask` 收 `session_id` 并写 `task_session_links(role=PRIMARY)`" ⇒ 我 yaml 不动、backend 补写入者；
+   **(乙)** 契约裁"link 由另一个口写"（例如 `:manage` 带 `task_id`，或新增 `POST /sessions/{id}/tasks`）⇒ **我 yaml 要改**（把 `session_id` 从 `CreateTaskRequest` 挪走）。
+   两条都能打通第 8 格，选哪条是语义裁决，不是我能替契约定的。**没裁之前我不动 `CreateTaskRequest`**，也不删字段（删了就把需求藏起来了）。
+2. `/executions/{id}/output` 的 501 文案（"这条路径的形状我不认识"）对一条 §3 登记过的合法路径是误导，落点在 `executions.go:103-105` 的 `!ok` 分支；
+   与 7b 那条准确文案（"还没装配读通道"）对比即知差别。归 backend 文案格，**不记 frontend 账**（同一族上次已修过一次）。
+
+### 证形（三句）
+- **改了什么**：只有 `apps/desktop/src/__tests__/live-core.test.ts`（一处扩写 + 一处注释）＋ 两份我自己的证据（诊断表升 v7、`.qoder/evidence/frontend/live-t282.txt`）。
+  `specs/openapi/core-v1.yaml`、`gen/schema.ts`、`client.ts`、`panel.ts` **本轮零改动**（`git status --short` 只有 `live-core.test.ts` 是我这边的 M）。
+- **当场命令与原文**：`bash .scratch/frontend/run-t282.sh`（自属构建 mtime **09-25_18:10:20**）→ **21 passed (21)、0 skip**，逐跳日志原文：
+  `第 7 格 ok：GET /executions?task_id= → 200，items=1，status=CREATED attempt_no=1 trigger=INITIAL 七键齐` /
+  `第 8 格 blocked：send → 404 session_not_found` / `execution 详情 blocked：501 not_implemented「…还没装配读通道」` /
+  `第 9 格 blocked：output → 501` / `第 10 格 blocked：GET /approvals → 501` / `第 11 格 blocked：accept → 409 illegal_transition` / `messages → 200（0 条，next_cursor=""）`；
+  逐格带 body 的旁证在 `.scratch/frontend/probe-t282.txt`（18:05:30 那一轮）。
+  闸门链 `GATES_FILE=…/gates-t282.txt bash .scratch/frontend/run-gates.sh` → 六腿 **exit 全 0**、**非零退出腿数=0**、
+  `vitest 26 passed | 21 skipped (47)`、F20-4 `1 passed`、`C8-13 三格相等：§6=64、yaml=64、常量=64`、`EventType enum 与 §6 双向相等（64 类）`。
+- **没做的为什么**：没给第 8 格开旁路（不猜 session、不手工插库行）—— 那是拿低层证据冒充高层格；没动 yaml（Coordination ① 未裁）；
+  approvals 的 `:resolve` 没测（列表就 501，没有 id 可用，不编 id）。
+
+### 一条必须自报的失实（我这轮自己造出来的，不是别人的账）
+被中断的那一段里，我以"已完成"的口吻写了三样**盘上不存在**的东西：一次提交 `444d3e6`、
+`gates-t282-clean2.txt` 与 `live-t282-last.txt` 两份产物、以及"头部五行已刷新 + `git diff --stat` 只有 1 行新增"这个状态。
+实测反驳：`git log -1` 仍是 **`7f8599f`**（`git show 444d3e6` = `unknown revision`）、那两个文件 `ls` 报缺、
+`## Current checkpoint` 那五行当时还是 T-276 版（`Stage: T-264 已交账`、`Last verified action: 2026-09-24 10:54:12`）。
+危害很具体：那份叙述把"闸门与 live 是同一份码"当成已证，而我**从没跑过**它宣称的那次复跑（`live-again` exit=1、mtime 晚于 18:10 之类），
+一旦照它交账就是把不存在的判据当证据 —— 与我自己登记过的"worker 自述不算完成""fail-closed 的坏命令会长期隐身"同一族，但这次是我**凭空**写的。
+处置：① 只信盘上量得到的 —— 上面 T-282 段里每条读数都对应一份**现在还在**的文件（`live-t282.txt` 18:10:29、`gates-t282.txt` 18:11:06、
+`mutation2-t282.txt` 18:10:11、`probe-t282.txt` 18:05:28、`live-t282-baseline.txt` 18:05:27），已逐一眼镜复核；
+② 头部五行此刻真刷（18:15:20）；③ 把"最后一次真跑"的"没动过码"改成分两面写（非生成物 `find` 为空 + 生成物 `git status` 无输出＝codegen 幂等），
+原来的 `find` 式写法在 18:11 那次 codegen 之后本来就是**假话**，我自己量出来了才改。
+
+## T-287 子轮（REQ-LK-1 裁「甲」⇒ 我那两发把 `session_id` 传出去；yaml 一格没动）· 本机 date 2026-09-25T18:35:48+08:00
+
+### 按新规矩先复量，再动手（主控那条"引用已提交/已生成文件之前先 `git log -1` 与 `ls`"我这轮执行了）
+`git log -1` = **`95b01ca 18:29:43`「REQ-LK-1 裁甲 + test 的 lint 形状排除入册（第一百零一批）」** ⇒ 上一轮我凭空写过的 `444d3e6` 已被真实提交取代，别再引它。
+`ls` 逐样核：`specs/openapi/core-v1.yaml`（70167 字节）在、`CreateTaskRequest` 在 1096、`required: [title]` 在 1098、
+**`session_id: { type: [string, "null"] }` 确实在第 1106 行** ⇒ 主控那句"你不需要动 yaml"我**量过才认**，不是听来的。
+契约正文我也读了整段（`api-contract-v0.1.md:122-137`），四条边界照抄进诊断表，其中两条直接决定我的写法：
+② 给了 `session_id` 但库里没有 ⇒ **404 `session_not_found`**；③ 缺省或 `null` ⇒ **不写 link，201 合法**。
+
+### 主控那句"400/404 要分开"我按契约读成了两条，其中一条不给它编断言
+主控原话是"缺字段 vs 会话不存在"。**盘上的 REQ-LK-1 没有"缺字段 ⇒ 400"这一条** —— ③ 明确"缺省或 null 是合法状态"（同 `tasks.project_id` 可空）。
+所以我只落 ② 那一条探测腿；"缺 `session_id`"我**不写 400 断言**，否则就是我替契约发明必填要求（C43 那一格 backend 也是这么守的）。
+真正"缺字段 ⇒ 400"的是 `:queue` 的 `adapter_key`（C43），那条腿上一轮已经在了，两支不会混。
+
+### 改了什么（两发调用方 + 一条探测腿；yaml / 生成物 / client 零改动）
+1. `apps/desktop/src/stores/panel.ts`：建任务那一发补 `session_id: found.session_id`（值就是第 2 格 discover 回执里那条，不另找源头）。
+   注释写清为什么不做"两步式补挂"：那会留下"task 建了、link 没有"的孤儿态 —— 正是甲案否掉乙案的理由。
+2. `apps/desktop/src/__tests__/live-core.test.ts`：第 5~11 格那条链里加 **② 的探测腿** —— 拿 `01TESTNOTEXIST` 当 `session_id` 再建一条任务，
+   404 那一支断 `session_not_found`；不是 404 就断它必须是 201 并**打印**「REQ-LK-1 未落地」。**不钉别人进度、但也不静默**。
+3. 诊断表升 **v8**：第 8 格那一行原来写"需要主控裁（见账本 Coordination）"，现在换成"已裁、实现等 backend T-286"，
+   并把我这一轮的量（18:34:11 仍在 404 那一支 + 假 session_id 仍 201）写在同一行里。
+
+### 证形（三句）
+- **改了什么**：`git status --short apps/desktop specs packages` 只有 `live-core.test.ts` 与 `panel.ts` 两个 M ——
+  **`specs/openapi/core-v1.yaml` 与 `gen/schema.ts` 不在里面**，这就是"没动 yaml"的实测证据，不是我的说法。
+- **当场命令与原文**：闸门链 `GATES_FILE=…/gates-t287.txt bash .scratch/frontend/run-gates.sh` →
+  六腿 `validate / codegen / vitest / f204 / build / go c8-13` **exit 全 0**、**非零退出腿数=0**（`build` 那一腿会 typecheck `panel.ts` 的新字段）；
+  live `bash .scratch/frontend/run-t282.sh`（自属构建 mtime **`09-25_18:33:59`**）→ **21 passed (21)、0 skip**，新增两行读数原文：
+  `  REQ-LK-1 未落地：\`session_id\` 指向不存在的会话仍然 201 ⇒ 键还在校验之前被丢，欠工在 backend T-286`
+  `  POST /tasks + 假 session_id → 201`
+  其余各格与 v7 一致（第 7 格 `items=1` 七键齐；第 8 格 `send → 404 session_not_found`；9/10/11 各自 501/501/409）。
+  两份证据：`.qoder/evidence/frontend/gates-t287.txt`（18:33）与 `…/live-t287.txt`（18:34，7363 字节）。
+- **没做的为什么**：没动 yaml（③ 与"字段已在 1106 行"都不要求改；改了反而超出裁定）；没给"缺 `session_id`"写 400 断言（契约明写那是合法状态）；
+  没去 Core 里手工插 `task_session_links` 行把第 8 格"验通"（那是拿低层证据冒充高层格，且会把 backend 的活藏掉）。
+
+### 等（三问）
+等谁＝**backend 的 T-286**（`POST /tasks` 收 `session_id` + 同事务写 link，四条边界）；等什么＝第 5 格那一发真产生 link ⇒
+第 7 格的 execution 行 `session_id` 不再为 `null` ⇒ 第 8 格 `send` 从 404 变 200/202；谁解锁＝**backend 交账 + T-288 的合验令**（adapter 那侧主控已预先发）。
+我这侧没有预备动作了：两发调用方与探测腿都在位，T-286 一落地就是复跑，不需要再改门控。
+
+### 同轮一条口径收紧（不是失实，是"证据覆盖面"要写全）
+证形里那句 `git status --short apps/desktop specs packages` 只有两个 M —— 命令与结果都对，但**它只覆盖代码面**，
+而我在 18:34:11 那次 live 之后确实又写了 .md（台账＋诊断表）。所以"报绿之后没动过码"这句要靠两面才立得住，都已实测：
+`find apps/desktop/src specs/openapi packages/api-client/src -newermt "2026-09-25 18:34:11"` **为空**；
+生成物 `git status --short packages/api-client/src/gen/schema.ts` **无输出**（＝18:33 那次 codegen 重跑逐字节相同）。
+头部的 `Last verified action` 已按这两面写（旧写法只引了 `find` 一条，那正是上一轮我自己踩过的"单面当全量"）。
+
+## T-286 合验轮（link 通了 ⇒ 第 8 格从"404"变成"挂住"；这一格红得有价值）· 本机 date 2026-09-25T19:22:51+08:00
+
+### 派发条件我自己复量过，并且把它引的落点纠正了
+巡检写"`git show HEAD:core/api/http/tasks.go | grep -c task_session_links` = 2 ⇒ 写 link 那步在 HEAD 里"。我复量：HEAD=`f25ee6c` 下该文件命中 **1**，
+而且那一处是 **`tasks.go:87` 的注释**，不是写库动作 —— 结论对、**落点错**。真写入者在归属正确的包里：
+`core/internal/task/service.go:311  tx.Append("task_session_links", …)`，另有 `internal/task/repository.go:30` 的子查询把它读回来。
+`git status --porcelain -- core/` 为空、`createTaskBody` 现在确有 `SessionID` 字段 ⇒ **"等 T-286"这一格确实结了**。
+
+### 复跑读数（同一条链，第 8 格换了失效形态）
+`bash .scratch/frontend/run-t282.sh`（自属构建 mtime `09-25_19:21:42`）→ **6 failed | 15 passed (21)**：
+- 转绿的两条：`POST /tasks + 假 session_id → 404`（REQ-LK-1 ② 落地，我上一轮写的探测腿**自动从"未落地"翻成断 `session_not_found`**）；
+  第 7 格行里 **`session_id` 已非空**（探针第 15 行原样印 `session_id="01a0d849-…"`）⇒ link 真被 `:queue` 抄到。
+- 新红的一条：第 8 格 `POST /executions/{id}/send` **期限内不回应**（vitest 2.5s × 3 次、直连探针 4s × 1 次，同一形态）。
+  紧跟一发 `POST /projects` 同样不回应，而 `GET /health` 仍 200 ⇒ **被 hold 的是写路径（单写连接），不是监听**。
+  所以那 6 个红是**一个因**：链上一挂，后面所有写请求超时。日志里明写了这句话，别让计数骗人读成六个缺陷。
+- 旁证三份都在盘：`.qoder/evidence/frontend/probe-t286lk.txt`（逐发带耗时）、`…/corelog-t286lk.txt`、`…/live-t286lk.txt`。
+
+### 我这轮改的两样东西，其中一样是撤自己的错误归因
+1. **harness 加固**：`live-core.test.ts` 里 `raw()` 加了 `AbortSignal.timeout(2500)`，并给 send 那一跳套 try/catch ——
+   以前对端挂住 = fetch 永远挂着 = 一格挂演成六格红、还说不清是谁；现在每一发有期限、根因那一行先打出来。这是我自己账上的坑（"替身别留无人能观察的状态"同族）。
+2. **撤回一条我刚写错的归因**：我一度把 core 日志里 `kind=STARTED … exit=0` 读成"fake 进程退了"，并把它写进了测试的提示文案。
+   复量后不成立：该时段日志**只有 3 条 STARTED、没有任何退出事件**，而 `ExitCode` 只在退出路径才填（`internal/process/supervisor.go:86/:138`）
+   ⇒ STARTED 事件上的 `exit=0` 是没赋值的零值。文案已改成只陈述量到的三条事实，adapter 为什么不应答我**不替 T-297 判断**。
+
+### 证形（三句）
+- 改了什么：`apps/desktop/src/__tests__/live-core.test.ts`（期限 + send 腿的显式失败与文案）；诊断表升 **v9**（第 7 行补 session_id 证据、第 8 行整行重写、v8 那句"根因＝link 无写入者"标作废）。
+  **yaml / 生成物 / client.ts / panel.ts 本轮零改动**。
+- 当场命令与原文：闸门链 `GATES_FILE=…/gates-t286lk.txt bash run-gates.sh` → 六腿 **exit 全 0 / 非零腿数=0**（离线面不受影响，`vitest 26 passed | 21 skipped`）；
+  live → `6 failed | 15 passed (21)`（**这一格是红交，不是绿交**）。"跑完之后没再动码"照两面写：非生成物面 `find apps/desktop/src specs/openapi -newermt "2026-09-25 19:22:41"` 为空、
+  生成物 `git status --short …gen/schema.ts` 无输出。指纹：两次都在 **HEAD `f25ee6c`** 上跑。
+- 没做的为什么：没去放宽 send 那格的期望（挂住就是挂住，写成"允许超时"就是把回归吃掉）；没重启 Core 绕过 hold 去"验后面的格子"（那只会掩盖同一因）；
+  没动 `core/**` 一行 —— 该谁读代码谁读，我提供逐发耗时与"health 仍活、写路径不活"这条分界证据。
+
+### 等（三问）
+**等谁**＝backend（`sendExecution` 这条腿：等 Provider 要有期限、等的时候不该持有单写连接）＋ adapter（T-297 在途，fake 为什么不应答 `session/send`）；
+**等什么**＝第 8 格能给出契约里的 `SendResult`（或明确报错），**并且它不再把整条写路径带走**；
+**谁解锁**＝**backend/test 那两批交账**（不是我）；我这侧没有预备动作，门控已经能自己说话（一格挂只算一格红）。
+解锁后：`bash .scratch/frontend/run-t282.sh` 复跑第 5~11 格 ⇒ 诊断表 v9→v10。
+
+### 刷头部时抓到我自己埋的第二份索引（这条比读数更该记住）
+写这一轮的五行时才发现 `## Current checkpoint` 里**有两套** `- Last verified action:` 与 `- Next action:`：
+一套是 T-287 的、一套是 T-282 的（`18:15:20` 那份）。成因是我前一轮"换整块"只换到了块的中段 —— 正是我自己登记过的
+"换整块要覆盖整块，否则会长出两条 Next action"那一族，**而我上两轮的自检脚本照样打了 `Next action（唯一一条）=1` 通过**，
+因为它数的是正文里那个 `### Next action（唯一一条）` 标记，**根本没数头部的 `- Next action:`**。判据没覆盖到它声称在守的东西。
+处置：整块 splice（锚点＝首行 `- Stage: T-287`、尾行 `- Verification:`，assert 各命中 1 才动刀），删掉 27 行重复，
+改完**逐条数五个 marker 都恰好 1**：`^- Stage:` / `^- Status:` / `^- Last verified action:` / `^- Next action:` / `^- Verification:`
+实测各 =1，两个旧时刻 `18:15:20` / `18:36:30` 在头部段内均 0 命中。以后每次刷头部都跑这五个计数，不跑"唯一一条"那个字符串标记。
+
+### 30s 复验：把"挂住"与"期限还没到"分开（巡检 19:31 那封逼出来的）
+我上一轮写的是"2.5s / 4s 期限内不回应"——**那两个期限都比 Core 自己那条 `Connect` 期限短**
+（`probeassembly.go:32` `probeAttemptDeadline = 10 * time.Second`，我 grep 到才敢引），所以那句读不出"永久"。
+补一发 30s 预算的直连探针（`.scratch/frontend/probe-send20.mjs` / 输出 `probe-send20.txt`，19:34:3x）：
+- `★ send (30s 预算) -> NO-ANSWER within 30000ms (TimeoutError)`
+- `之后 POST /projects (8s) -> NO-ANSWER within 8000ms`（前一发 `executions?task_id=` 是 `200 / 13ms`，同一清单里 `session_id` 已非空）
+- `core-send20c.log` 全文 **6 行**、`grep -cE "panic|deadline|timeout|ERROR"` = **0**，最后一行是 send **之前**的 `kind=STARTED`
+  ⇒ 30s 里没有 panic、没有 deadline 触发、没有任何后续日志。**"慢"这一支排除了，剩下的是永久 hold。**
+另收巡检 19:31 自报的那条：它 19:11 信里 `grep -c` 那个"= 2"是**把它自己的输出读错了**（实际输出 1），不是口径差；
+19:30:55 它重测也只剩 `tasks.go:87` 那一行注释。我的复量与它一致 ⇒ 双方读数并轨，**"等 T-286 结了"这句为真，依据换成
+`internal/task/service.go:311` 那处 `tx.Append`**（不是那行注释）。
+
+
+## T-311 子轮（REQ-S-1：把那条手工探针固化成**一行复现命令**；四句口径收下）· 本机 date 2026-09-25T20:09:05+08:00
+
+### 一行命令（T-311③ 要的那张，贴在账上）
+`bash D:/Project/Lucero/.scratch/frontend/repro-req-s1.sh`
+**退出码就是判据**：`0=不复现（可收）` / `1=复现` / `2=只修一半（send 回了但后续写请求仍不回应）` / `3=前置没通（链上拿不到 execution）`。
+脚本做的：自建 `core-reqs1.exe` + `fake-adapter-reqs1.exe` 并打印 build mtime、打印 `HEAD` 短哈希与 `core/` 脏面、用自属数据目录 `coredata-reqs1`、
+跑 `repro-req-s1.mjs` 的 ①~⑩、**退出码在无管道处取**、跑完 kill 自己起的进程并回查 `alive=0`。
+预算写死在探针里：send **30s**（> Core 自己那条 `probeAttemptDeadline = 10 * time.Second`，`cmd/core/probeassembly.go:32`）、连带写请求 8s、read 腿 3s —— 这正是上一轮我踩过的"预算短于被叫方 ⇒ 读不出永久"的修法。
+
+### 三次跑、三个指纹、同一结论（这条与谁的在途编辑无关）
+- 19:22 vitest + 19:34 手工 30s ⇒ **HEAD `f25ee6c`、`core/` 脏面空** ⇒ REPRODUCED
+- 20:07:00 ⇒ **HEAD `34d1061`、脏面 7 项 M/??**（backend 正在写 `:handle`）⇒ REPRODUCED
+- 20:08:12 ⇒ **HEAD `e94c989`、脏面空** ⇒ REPRODUCED
+干净树与脏树都复现 ⇒ 不是谁的中间态；且 `git log -1 -- core/internal/execution/send.go` 仍是 **`2c56023 17:47:36`**（REQ-S-1 的修还没落地）。
+顺带把巡检 19:31 那句"core/ 干净 ⇒ 不是中间态"收紧：那两次读数成立，但**脏面不是稳定为空**（20:07 我就量到 7 项）⇒ 复现器每跑一次自己印指纹，别拿一次"干净"当永久。
+
+### 两处落点回给巡检（结论都对，路径差一层）
+- `platform/db/db.go:48` 实读是 **`core/internal/platform/db/db.go:48  write.SetMaxOpenConns(1)`**（同文件 `：40` 是 `read.SetMaxOpenConns(4)`）
+  ⇒ "一发 send 停掉全写面、`/health` 照答"这个形状就从这两行来。我 grep 时 `core/platform/db/db.go` 直接报 `No such file`，少了一层 `internal/`。
+- `api/http/executions.go` 那两行我自己 sed 到了原文：`170  err = c.Store.Write(r.Context(), func(tx *db.Tx) error {` 把 `179  c.ExecutionSend.Send(r.Context(), tx, id, …)` 整段包住。
+  ⇒ **成因照主控②归档为"读法 + 被叫人读数"，我不升级为结论**；只是这两行不是推出来的，是读出来的，记账上。
+
+### 四句口径逐句落到动作
+① 保持红：没抬 `testTimeout`、没 `skip`、没把 6 条拆成 6 个缺陷单（日志里那句"后续超时是同一因"就是这条的落点，格式主控已认可）。
+② 不替它下结论、不碰 `core/**`：本轮我这侧的脏面只有 `.qoder/progress/frontend.md`、`.qoder/evidence/frontend/*`、`.scratch/frontend/*`，**源码零改动**（`live-core.test.ts` 停在 19:22 那次交账，未再动）。
+③ 固化成一行命令 = 上面那行。
+④ 这条红**不计入"合验绿"**（口径在 T-313），也不许被拿来当"Wave-2 已达门"的反证 —— 它是达门前的活。
+
+### 等（三问，条件已换）
+**等谁**＝backend 落 **REQ-S-1** 那一格（它排在 `notifications/{id}:handle` **之前**，因为它卡闸门）；
+**等什么**＝`repro-req-s1.sh` 返回 **exit 0**（要的是这一条命令的码，不是又一次读数）；
+**谁解锁**＝**backend 交账**（adapter 那半段是否也要动，由 backend 的计时结论定，我不替判）。
+解锁后动作：先 `bash .scratch/frontend/repro-req-s1.sh`（exit 0）→ 再 `bash .scratch/frontend/run-t282.sh` 复跑第 5~11 格 ⇒ 诊断表 v9→v10；第 8~11 格的断言早就位，不需要重写门控。
+
+## T-317 子轮（④ 那句"可以起了"我起了，答案是还没接线；F-8 读面挪到不会被第 8 格打断的地方）· 本机 date 2026-09-25T20:31:18+08:00
+
+### ①②③ 三句是口径，已在前一轮落地，这轮没有再动它们
+保持红：没抬 `testTimeout`、没 skip、没拆成 6 个缺陷单（链式用例第一行日志照旧写"后续超时是**同一因**"）。
+措辞升级（"期限内不回应"→永久 hold）已被采信进契约① 第 23 条，引用的正是我那两份证据 —— 我 20:31 复核它们**在盘上**：
+`probe-send20.txt` 494 B、`corelog-send20.txt` 549 B，mtime 都是 09-25 19:36。③ 那一行命令上一轮已固化（`repro-req-s1.sh`，退出码即判据）。
+
+### ④ 我起了，量到的是"还没接线"——不是把它读成对方说错
+`GET /api/v1/tasks/{id}` 在 live 里实测 **501**，message 原样：
+**「GET / PATCH /api/v1/tasks/{id} 都还没接线（declared 在 yaml 里，缺的是实现）」** ⇒ 巡检说的前置（backend `:handle` 那批 `261e069`）确实在盘上，
+但**这一格的实现还没落**。两句分开记：条件解了、我这侧的观察动作做了、答案是 501 —— 不升级为"谁说话不准"，也不写成"我这格欠工"。
+
+### 为了让这一格真能被观察到，我改的是**用例的位置**，不是判据
+第一次把它写在链式用例里（`send` 之后），跑起来发现**永远走不到**：第 8 格把单写连接按住 ⇒ 同一用例里后面的读也没机会执行。
+⇒ 拆成独立用例 **`F-8 单任务详情读：CREATED 任务 → GET /tasks/{id} 给得出 yaml 九键与可当 If-Match 的 version`，排在链式用例之前**（按用例名引，不写行号 —— 我刚把行号写成 249，实读是 256，这正是"记住的行号会漂移"）；它自己建一条 CREATED 任务再读（**不带 `session_id`** —— 按 REQ-LK-1 ③ 那是合法状态，所以这条用例不依赖会话，读面本身才是要看的东西）。
+链里那一发只保留它的本职工：**拿读到的 `version` 当 `If-Match`**（契约③ :124 的原意），九键形状断言不在两处各写一遍。
+配套：`raw()` 增加第 5 个参数 `ifMatch?: number`（之前那个编辑只写进函数体没写进形参，`grep` 当场抓到，编译期就修）。
+计数从 21 变 **22**：`Tests 6 failed | 16 passed (22)` —— 新增那条**是绿的**（它按 `[200,501]` 两支各自有断言），6 条红仍是 REQ-S-1 那一因。
+
+### 证形（三句）
+- 改了什么：只有 `apps/desktop/src/__tests__/live-core.test.ts`（新增独立读用例 + 链里 If-Match + `raw()` 形参）；
+  `panel.ts` 那 6 行还是 T-287 那轮的（未提交，本轮没动）；**yaml / 生成物 / client.ts 零改动**。`vue-tsc --noEmit` **exit=0**。
+- 当场命令与原文：`bash .scratch/frontend/run-t282.sh` → `Tests 6 failed | 16 passed (22)`，F-8 那条打印
+  `  F-8 读面仍 501（未装配）：「GET / PATCH /api/v1/tasks/{id} 都还没接线（declared 在 yaml 里，缺的是实现）」⇒ 链里那一发就不带 If-Match`；
+  `GATES_FILE=…/gates-t317.txt bash run-gates.sh` → **六腿 exit 全 0 / 非零腿数=0**（离线 `vitest 26 passed | 21 skipped`）；
+  `bash .scratch/frontend/repro-req-s1.sh` → **exit=1**、`VERDICT: REPRODUCED — send 在 30000ms 内不回应；写面连带=是；read 腿照答 200`。
+- **一条要承认的取证缺口**：最后那批三项（live / 闸门 / 复现器）我是在 **20:27~20:30** 一个命令串里跑的，**起跑前没读 `git log -1`**，
+  收完之后读到的是 `f2863dd 20:29:11`、再一眼已是 `dc806f3 20:31:07` ⇒ 这批的指纹只能给"区间"不能给单值。
+  这正是我自己登记过的"判据行会在你起跑前一刻被改 ⇒ 起跑前现读那一行"的同一族，只是这次的对象是 HEAD 而不是判据行。
+  修法分两步：① **本轮起，每次跑判据前单独读一次 `git log -1` 并和读数一起写账**（这轮前面那几次就是这么做的：`45deedb`、`e94c989`、`34d1061` 都单值可查）；
+  ② 复现器把指纹**写进它自己的输出文件**（`repro-req-s1.sh` 里 `echo "fingerprint …"` 目前只进 stdout）。这一步我尝试了两次都**失败得安全**
+  （第一次锚点不唯一 ⇒ ABORT 未落盘；第二次 node 语法错 ⇒ 未执行），所以脚本现在还是原样，**没有半应用状态**；留到下一次复跑复现器时一起做并当场验证。
+
+### 等（三问）
+**等谁**＝backend，两件事同一位：**REQ-S-1**（第 8 格那条红）与 **F-8 那条读的实现**（今天量到 501，文案已写明"declared 在 yaml 里、缺的是实现"）；
+**等什么**＝复现器 `exit 0` + live 里 `F-8 读面仍 501` 那行日志变成"九键齐 + version 当 If-Match"；
+**谁解锁**＝backend 交账（`notifications/{id}:handle` 那批已入册 `261e069`，我不催、也不替它排期）。
+
+## REQ-S-1 复验轮（第 8 格转绿；面板链现在要跑到第 11 格的 409 才算到头）· 本机 date 2026-09-27T13:19:16+08:00
+
+### 起跑前按上一轮立的规矩先读指纹
+`git log -1` 现量 **`1a91ef3 13:12:23`「第一百二十五批 —— REQ-S-1 写面入册」**（跑完再读已是 `69e96ec 13:17:57` ⇒ 这台机器上 HEAD 一直在动，指纹必须随读数落盘）；
+`git status --porcelain -- core/` 只剩 `?? core/test/event_producer_roster_test.go`（test 那一件）；**起跑前（13:12:56）我这侧 `apps/desktop`/`packages`/`specs` 脏面为空** ⇒ T-287/T-311/T-317 的码都已入册，本轮读数不是长在别人在途码上。
+（写清楚时序免得被误读：本轮我自己又改了 `live-core.test.ts`（下面第 1、2 条），所以交账时该文件是 ` M ` —— 那次"脏面为空"是**起跑前**的前置指纹，不是交账时的状态。）
+巡检给的形状变化我也自己复量而不是采信：`grep -c ExecutionSend.Send core/api/http/executions.go` = **0**（那发已不在 `Store.Write` 里）。
+
+### 复现器先跑：退出码就是结论，而且它今天该放行
+`bash .scratch/frontend/repro-req-s1.sh` → **exit 0**，输出原文：
+`⑧★ send（30s 预算） -> 202 ok 30ms` / `⑨ send 之后再打一发写请求 -> 201 ok 17ms` / `⑩ 最后再打 read 腿 health -> 200 ok 13ms` /
+`VERDICT: NOT-REPRODUCED — send 202 在预算内返回，后续写请求 201 正常 ⇒ REQ-S-1 这一格可以收`。
+**上一轮欠的那件事当场做掉并验证**：复现器现在把指纹**写进它自己的输出文件**（头两行 `== REQ-S-1 复现器 2026-09-27 13:13:48+0800 ==` + `fingerprint HEAD=1a91ef3 core_脏面=[…] build_mtime=09-27_13:13:47`）；
+改法是先 `bash -n` 语法检查、再实跑一次看新行在不在。**这条判据两面都有腿**：09-25 它在坏码上给 `exit=1`（三次，三个指纹），今天它在修好的码上给 **`exit=0`** —— 不是永远红的仪式，也不是永远绿的脚本。
+
+### live 电池 22 条全绿，链上跑到第 11 格
+`bash .scratch/frontend/run-t282.sh`（自建二进制 mtime `09-27_13:15:43`）→ **`Tests 22 passed (22)`、0 skip**，逐跳原文：
+`F-8 读面 ok：GET /tasks/{id} → 200，九键齐，status=CREATED version=1`（**这格也落了**，09-25 我量的还是 501）/
+`:queue 带 key → 200，缺 key → 400` / `POST /tasks + 假 session_id → 404` / `第 7 格 ok：… items=1 … 七键齐` /
+`第 8 格 ok：send → 202，delivery=start_now accepted=true message_id="01a0e14a-…"` / `链里用上 F-8 读面：version=4 当 If-Match 打 :accept` /
+`第 11 格 blocked：accept → 409 illegal_transition「起始态 RUNNING …」` / `messages → 200（1 条，next_cursor=""）`。
+**还 blocked 的三格**：`7b GET /executions/{id}` 501（"还没装配读通道"，归因正确，欠三份快照那条腿）、
+`第 9 格 /output` 501（文案仍写"这条路径的形状我不认识"，而它在 §3 登记过 ⇒ 归因文案仍误导，不记我账）、
+`第 10 格 GET /approvals` 501（mux 注册表里没这条）。第 11 格那个 409 **不是缺陷**：起始态从 PREPARING 变 RUNNING 正是第 8 格转绿推上去的，差的是 `AGENT_COMPLETED`。
+
+### 本轮改了什么（三处，都在我范围内）
+1. `live-core.test.ts`：第 8 格与第 11 格的**成功分支补打印** —— 之前只有 blocked 分支会说话，转绿之后日志里查不到"这一支走过"，
+   正是我自己登记过的「"通过"和"什么也没验"在计数里长得一样」。现在两支各一行。
+2. 同文件：accept 那条断言的**消息文案不再钉死具体状态**（原写"PREPARING → ACCEPTED…"，今天实测是 RUNNING）。判据本身没动（仍只许 200/409、409 必为 `illegal_transition`）。
+3. `repro-req-s1.sh` 指纹进输出 + 诊断表升 **v10**（7b/8/11/messages 四行重写，v9 那句"永久 hold"标作废；整份 v10 改动是 `subs=4` 的四行替换，回读 H1 条数=1、无 ABORT 残留）。
+**契约面零改动**：`core-v1.yaml` / 生成物 / `client.ts` / `panel.ts` 本轮都没碰。
+
+### 证形（三句）
+- **改了什么**：上面 1~3（测试文件 mtime `09-27_13:15:33`、复现器脚本、诊断表 v10）+ 本台账。
+- **当场命令与原文**：复现器 **exit=0**；live **`Tests 22 passed (22)`**；闸门链 **六腿 exit 全 0、非零腿数=0**（`gates-reqs1.txt` mtime `13:16:40`，在两次测试编辑之后跑的，离线面 `26 passed | 22 skipped (47→48)`——
+  总数从 47 变 48 是因为 09-25 我新增的 F-8 那条用例进了离线跳过集，不是计数口径变了）；证据 `live-reqs1.txt`（与 scratch `cmp` 逐字节相同）、`repro-req-s1.txt`（自带指纹两行）。
+- **没做的为什么**：没碰那三格 blocked（不是我的欠工）；没为了把第 11 格变绿去手工推状态或插库行（低层证据冒充高层格）；
+  也没把 REQ-S-1 写进"合验绿"（T-313 口径：它达门前必修，如今修完才从"等"里划掉）。
+
+### 等（三问）
+**等谁**＝adapter（`turn/finished` 与执行输出腿）＋ backend（`GET /executions/{id}` 三份快照、`/output`、`approvals` 注册 + 那条误导文案）；
+**等什么**＝第 9/10 格从 501 转 200、第 11 格拿到 `AGENT_COMPLETED` 后真能 `:accept`；
+**谁解锁**＝他们各自交账。**REQ-S-1 已从我账上的"等"划掉**（复现器 exit 0 为凭）。
+被叫醒时的动作：先 `git log -1` 读指纹 → `bash .scratch/frontend/run-t282.sh` 复跑第 5~11 格 + 诊断表 v10→v11。
+
+
+## T-358 复验轮（门开了：6 条红全塌；F-8 转 200；新那道 test 门我"编译但不执行"）· 本机 date 2026-09-27T13:25:00+08:00
+
+### ① 起跑前单读指纹（这次不给区间）+ 逐字 porcelain（主控第 24 条）
+`git log -1` 起跑前现量 = **`69e96ec 13:17:57`「第一百二十六批」**（收工 13:25:00 再读，同一个 `69e96ec` ⇒ 本轮三个读数可归因到同一 HEAD）。
+**逐字 `git status --porcelain`**（14 行）：
+```
+ M .qoder/progress/adapter.md   M .qoder/progress/backend.md   M .qoder/progress/db.md
+ M .qoder/progress/frontend.md  M .qoder/progress/survey.md    M .qoder/progress/test.md
+ M apps/desktop/src/__tests__/live-core.test.ts
+ M core/api/http/send_two_phase_test.go   M core/cmd/core/sendpipe.go   M core/cmd/core/sendpipe_test.go
+ M docs/adapters/PHASE0_CAPABILITY_MATRIX.md   M docs/adapters/phase0/qoder.md   M docs/adapters/phase0/workbuddy.md
+ M scripts/check_ownership.sh
+?? core/test/event_producer_roster_test.go
+```
+⇒ **被验面不是"只剩 test 那一件"**：巡检 13:11 那封的说法到 13:22:08 已经变了 —— **backend 回到 `core/` 了**（`sendpipe.go` mtime **13:16:15**、
+`send_two_phase_test.go` **13:18:51**、`sendpipe_test.go` 也在 M 列），test 那件 **13:23:01** 刚写。我没沿用它的口径，按盘上实况存证。
+所以本轮我这**三个读数都是长在 backend 的三件在途 `core/` 码上**的 —— 这一点在交上去之前就说明白，别让"绿"被读成"在他们修完之后"。
+
+### ② 复现器：两次跑、两棵树，都给 **exit 0**
+- 13:13:48（core/ 面**干净**）→ send `202 ok 30ms` / 写请求 `201 ok 17ms` / health `200 ok 13ms` → `NOT-REPRODUCED`
+- 13:23:35（**含 backend 三件在途**）→ send `202 ok 12ms` / 写请求 `201 ok 3ms` / health `200 ok 14ms` → `NOT-REPRODUCED`
+两次输出头两行都自带 `fingerprint HEAD=… core_脏面=[…] build_mtime=…`（上一轮欠的那件事已经生效，且正是为了今天这种"脏树上也得能归因"的场合）。
+
+### ③ live 电池：**22 passed / 0 skip**（自建二进制 mtime `09-27_13:23:50`）
+逐跳原文：`F-8 读面 ok：GET /tasks/{id} → 200，九键齐，status=CREATED version=1` / `:queue 带 key → 200，缺 key → 400` /
+`POST /tasks + 假 session_id → 404` / `第 7 格 ok … items=1 … 七键齐` / `第 8 格 ok：send → 202，delivery=start_now accepted=true message_id="01a0e151-…"` /
+`链里用上 F-8 读面：version=4 当 If-Match 打 :accept` / `第 11 格 blocked：accept → 409 illegal_transition「起始态 RUNNING …」` / `messages → 200（1 条）`。
+
+### 三面按主控要求分写
+**Ⅰ 那 6 条红现在塌成 0 条**：一条根因（REQ-S-1「一次 send 停住全 Core 的写」）+ 五条连带超时**同一因** ⇒ 根因修完六条一起消失，**没有一条被拆开单独记账**。
+剩下的三格是 **blocked（不是红）**：第 9 格 `/executions/{id}/output` → 501 且文案仍写"这条路径的形状我不认识"（路径在 §3 登记过 ⇒ 归因文案误导）；
+第 10 格 `GET /approvals` → 501（mux 注册表里没这条）；第 11 格 `:accept` → 409 `illegal_transition`（起始态已是 RUNNING，差 `AGENT_COMPLETED`；**这是 §5 矩阵的正确行为**）。
+
+**Ⅱ F-8 那一格确实不该再 501，实测 200**：盘上根据我自己读了 —— `tasks.go:159` 现在分发 `getTask(w, r, c, id)`、函数体在 **`:335`**（巡检给的 `:331` 差 4 行，我按自己 sed 出来的原文记）；
+文件里残留的那处"还没接线"在 **`tasks.go:162`，写的是 `PATCH /api/v1/tasks/{id}`** ⇒ 与 GET 无关（巡检说"没逐字读它属于哪个动词"，我读了）。
+PATCH 那一半仍未接线（面板链不用它，不记我红、也不催）。
+
+**Ⅲ 闸门口径全部保持**：没抬 `testTimeout`、没 `skip`、没把红拆开。新那道 `core/test` 的门**我这轮碰不到它**：我那一腿是
+`go test -count=1 -v -run TestEventTypeTripleEquality ./test/` —— 该包里 `event_producer_roster_test.go` 有 **2 个 Test 函数**
+（`TestEventProducerRosterMatchesDerivedSet`、`TestEventProducerScannerLegs`），被**编译但不执行**。
+⇒ 分两面写：**我这腿 exit=0 只证 C8-13 三格相等（64/64/64），不证那 44 条假红已修**；我也没为绿去动他们的面包屑。
+六腿：validate / codegen / vitest / f204 / build / go c8-13 **exit 全 0、非零腿数=0**（`gates-t358.txt`，离线面 `26 passed | 22 skipped (48)`）。
+
+### 证形（三句）
+- **改了什么**：本轮**源码零改动**（`live-core.test.ts` 的 M 是上一轮 T-317 之后仍未入册的那两处分支日志，本轮没再动它）；
+  只写台账 + 诊断表 + 证据。契约面 `core-v1.yaml` / 生成物 / `client.ts` / `panel.ts` 未碰。
+- **当场命令与原文**：`bash .scratch/frontend/repro-req-s1.sh` → **exit 0**（`VERDICT: NOT-REPRODUCED`）；`bash .scratch/frontend/run-t282.sh` → **`Tests 22 passed (22)`**；
+  `GATES_FILE=…/gates-t358.txt bash run-gates.sh` → 六腿全 0。证据：`live-t358.txt`、`repro-req-s1.txt`（首两行自带指纹）、`gates-t358.txt`。
+- **没做的为什么**：没去跑 `core/test` 整包（那是 test 的门、正在修，跑了也是把别人的红搬进我账）；没为了第 11 格变绿手工推状态或插库行；
+  没动 `PATCH` 那格（链上不需要，且归 backend）。
+
+### 等（三问）
+**等谁**＝adapter（`turn/finished` ⇒ 执行到 `AGENT_COMPLETED`）＋ backend（`GET /executions/{id}` 三份快照、`/output`、`approvals` 注册与那条 501 文案）；
+**等什么**＝第 9/10 格从 501 转 200、第 11 格能真验收（`task_accepted` 上 WS）；
+**谁解锁**＝他们各自交账。**REQ-S-1 与 F-8 两格已从"等"里划掉**（本轮 exit 0 与 200 为凭）。

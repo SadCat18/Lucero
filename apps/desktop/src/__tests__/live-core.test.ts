@@ -405,17 +405,19 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
     }
     expect([200, 202, 404, 409, 503], `send 回了 ${send.status}`).toContain(send.status);
     if (send.status === 200 || send.status === 202) {
-      const s = await send.json() as { delivery?: string; accepted?: boolean };
+      const s = await send.json() as { delivery?: string; accepted?: boolean; message_id?: string | null };
       expect(typeof s.accepted, 'SendResult.accepted 必须是布尔').toBe('boolean');
       expect(typeof s.delivery, 'SendResult.delivery 必须是字符串').toBe('string');
+      // 成功那一支也要留打印：不然"验到了"和"没走到这一支"在计数里长得一样（我自己登记过的老坑，09-27 又差点犯）
+      console.log(`  第 8 格 ok：send → ${send.status}，delivery=${s.delivery} accepted=${s.accepted} message_id=${JSON.stringify(s.message_id ?? null)}`
+        + `（REQ-S-1 修复的判据就是这一支不再 hold 写面）`);
     } else {
       const e = (await send.json()).error;
       expect(e?.code, `send 回了 ${send.status} 而不是契约形状`).toBeTruthy();
-      // 09-25 18:05:30 实测这一支是 **404 session_not_found「这条 Execution 没有可用的 Session」**，
-      // 根因不在 send 腿：`createTaskBody`（api/http/tasks.go）不收 `session_id` ⇒ 静默丢弃，
-      // 而全仓非测试码里 `task_session_links` 只有 1 处 SELECT（internal/session/repository.go:86）、0 处 INSERT
-      // ⇒ execution 的 session_id 永远是空 ⇒ 面板链第 8 格结构上到不了。这是**别人的缺口**，我只把它量准并喊出来。
-      console.log(`  第 8 格 blocked：send → ${send.status} ${e.code}「${e.message}」（task↔session link 无写入者）`);
+      // 09-25 这一支曾是 **404 session_not_found**，根因不在 send 腿：`createTaskBody` 不收 `session_id` +
+      // `task_session_links` 全仓 0 处 INSERT ⇒ execution 的 session_id 恒空。REQ-LK-1（甲）+ T-286 已把它修掉，
+      // 09-27 13:14 实测走的是上面那一支；这条 else 留着是给"link 又断了"这种情况说话的，不是历史装饰。
+      console.log(`  第 8 格 blocked：send → ${send.status} ${e.code}「${e.message}」（task↔session link 断了？）`);
     }
 
     const out = await raw('GET', `/api/v1/executions/${exId}/output`);
@@ -454,8 +456,11 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
     expect([200, 409], `accept 回了 ${acc.status}`).toContain(acc.status);
     if (acc.status === 409) {
       const e = (await acc.json()).error;
-      expect(e.code, 'PREPARING → ACCEPTED 不在 §5 矩阵里，只能是 illegal_transition').toBe('illegal_transition');
+      expect(e.code, '链上没跑到 AGENT_COMPLETED 之前，验收只能被 §5 矩阵挡住').toBe('illegal_transition');
       console.log(`  第 11 格 blocked：accept → 409 ${e.code}「${e.message}」`);
+    } else {
+      const a = await acc.json() as { status?: string; version?: number };
+      console.log(`  第 11 格 ok：accept → ${acc.status}，status=${a.status} version=${a.version}（If-Match 用的是 F-8 读来的版本）`);
     }
   });
 
