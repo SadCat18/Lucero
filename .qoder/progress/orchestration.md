@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-28T21:40:41+08:00   ← 第一百三十八批（**Wave-2 用户宣框勾**）：本行与 `## Completion criteria` Wave-2 行、Current checkpoint 同轮改（`Get-Date` 现量 21:40:41）
+LAST_UPDATED: 2026-09-30T14:42:48+08:00   ← 09-30 14:42:48 更新：主控狱立复核 + 第一五十四批
 
 ## Objective
 
@@ -205,7 +205,7 @@ LAST_UPDATED: 2026-09-28T21:40:41+08:00   ← 第一百三十八批（**Wave-2 �
   （历史：投递通道 09-25 22:19:49 曾被 `failureCircuit` 静默禁用；W2 各格的判据与读数见
   「Wave-2 验收检查」与「Wave-2 复验 · 09-28 第二次」两段，历史不改。）
 - Status: in_progress
-- Last verified action: **Wave-2 复验 + 合验三腿（第二次全量，09-28 15:5x~19:16，我派 `test` 角色代跑、逐条我复核）**：
+- Last verified action: **09-30 主控独立复核 + 第一百四十批**（`date` 本轮 14:42:48，全文见上面「主控复核 · 09-30」段）：用户告知那三天由另一个 agent 推进 ⇒ 我从零重跑一遍并认可 09-28 那次 Wave-2 签字（build/vet `0`、**18 包全 ok**、`OWN` 0 越界、复现器 `NOT-REPRODUCED`、面板 **22/22**、崩溃骨架 **11 PASS / 3 SKIP**、`internal/audit` 我自己跑 **82 PASS / 0 / 0**）；三天工作 33 处**一笔都没提交** ⇒ 已按角色切成八笔（`87e6c16`…`cf5a2a4`）；唯一还欠的实质工程 = **`REQ-TURN-1` 常驻泵三条判据**（`sendpipe.go:139` 仍是回执后同步扫缓冲）⇒ T-391/T-392 出门；audit 触发条件 Ⅰ 成立 ⇒ T-393 开工；`REQ-T37` 裁「甲」并已把锚清成唯一（改完重跑判据 `ok`）。**上一格（留档，原文不改）** Last verified action: **Wave-2 复验 + 合验三腿（第二次全量，09-28 15:5x~19:16，我派 `test` 角色代跑、逐条我复核）**：
   **W2-7 已闭** —— `core/test/crash_test.go` 6 条顶层 SKIP → **0 顶层 + 5 子用例**，定向 `TestCrash|TestIdempotent`
   **9 PASS / 5 子 SKIP / 0 FAIL**，我 15:54:26 亲跑全仓 **18 `ok` / FAIL 0**；
   **W2-9 已闭** —— `audit` 台账第 132 条当天读数：三包 **216 PASS / 0 FAIL / 0 SKIP**（18:14:31→18:14:37），
@@ -1213,6 +1213,47 @@ W2-1~6 这六项是今天第一次由我从同一棵树上一口气跑完的，*
 **Wave-2 当前判（09-28 21:35 现量）**：W2-1~6 ✓（09-27）、**W2-7 ✓、W2-9 ✓（09-28）**、**W2-8 甲格 ✓（第七十八批落、签字前现读复跑）**、
 合验 **3 腿全过**（ownership `OWN_EXIT=0`、22 断言 22 OK、build_stamp `HEAD=cde8d79`+指纹）
 ⇒ **五件齐，闸门的验收条件全部满足；勾框权在用户**（角色不自宣，我只把证据摆齐）。
+
+## 主控复核 · 09-30（用户告知"那三天由另一个 agent 推进"，我从零独立验一遍，然后收尾）
+
+**被验树**：起跑时 `HEAD=cde8d79` + 工作树 **33 处改动全未提交**（三天没有一笔提交）⇒ 我第一件事是**按角色切成八笔入册**，
+不是替它认功劳，是把归属钉住（避免历史上那种"混着提 ⇒ 第三次归属争议"）。
+八笔：`87e6c16` backend / `f17692a` adapter / `25f5bd3` test / `9d4943c` frontend / `6bad4a0` audit / `593c43e` survey / `bd8bdab` db / `cf5a2a4` specs+ledger。
+
+| 我自己跑的复核（09-30 14:31~14:37，同一棵树） | 结果 |
+|---|---|
+| `go build ./...` / `go vet ./...` | `0` / `0` |
+| `go test -count=1 ./...` | **18 包全 `ok`、零 FAIL**（`ALL_RC=0`） |
+| `bash scripts/check_ownership.sh` | **0 项越界**、`OWN_RC=0` |
+| `repro-req-s1.sh`（REQ-S-1 行为反证） | `NOT-REPRODUCED`、`exit=0` |
+| `run-t282.sh`（面板真进程链） | **`Tests 22 passed (22)`**、`vitest exit=0`、进程清场 `0/0`（14:37:24） |
+| `go test -v ./test/`（崩溃骨架） | **11 PASS / 0 FAIL / 3 SKIP**（09-27 是 12 条 SKIP）；剩三条分别挂 `REQ-RC-2` 的 `UNKNOWN` 腿、§10 approvals 读写面、`SweepExpired` 一条 |
+| `go test -v ./internal/audit/`（W2-9 那一栏） | **82 PASS / 0 FAIL / 0 SKIP** ⇒ 五方证据齐了 |
+| 链尾那一格（我 09-27 判"靠手工改库"的那条） | `TestChainStopsBeforeAcceptanceNotAtAccept` **PASS，且格一是 send 之后自然落 `WAITING_ACCEPTANCE`**（手工 `UPDATE` 只留在"历史"注释里）⇒ **我那条 W2-8 不成立的前提已被真修掉**（`internal/task.AdvanceToWaitingAcceptance` + `execution.FinishFromTurn` 同笔调用） |
+
+**结论：Wave-2 那一格（`Task → ACCEPTED`）与五方重跑证据成立，框保持勾住（09-28 21:4x 那次签字我复核认可）。**
+
+**但有一句话还不成立，也是我这次唯一能立刻派出去的实质工程**：契约① 第 25 条④-b 的 **`REQ-TURN-1` 裁「Ⅰ」（常驻连接 + 常驻入站泵）三条判据一条都没落地** ——
+现量：`core/cmd/core/sendpipe.go:139` 仍是 `fin := reapTurnFinished(conn.Inbound(), call.ExecutionID)`，即**回执之后同步扫一次缓冲**；
+契约自己写的"回执后那条收割腿删除、泵常开"没发生（`grep -rln pump core/cmd/core` 只命中 `sendreap.go`）。
+⇒ **"投递语义已验完"这句话的生效点未到**（契约① 同条那句"记账要点更新"就是这么写的）。三封派发见下面 **第一百四十批**。
+
+**两处我这一笔顺手做完的**：**REQ-T37**（`test` 交回的唯一残留：锚句"本名单当前是"可以有第二句安静放行）——
+我把两条历史行的锚字改成"当时是"，**现在全文件锚点唯一（`grep -c` = 1）**，`test` 就能加"命中数必须为 1"那道硬闸；
+改完我自己重跑那条判据 = `ok`（**改契约必重推守门**）。`test` 等的"入册两件"也已随 `25f5bd3` 满足（判据文件 + `check_ownership.sh`）。
+
+**通道现状**：日报 cron 又被 `failureCircuit` 禁用（09-30 13:30 那轮 `session-failed`、1059ms、连 3 败），我已复位（`consecutiveFailures:0`、下次 09-31 09:00）；
+巡检 `enabled:true` 但**间隔被改成 30 分钟**（不是 10 分钟）、13:30 那轮同样 `session-failed`（1 败），下一个 13:52 能不能起仍是未知 —— 七个 worker 会话现在全是 `cold`。
+**push 仍未做**（数字以现跑 `git rev-list --count origin/main..HEAD` 为准），等用户一句话，我不催。
+
+## 待投递 · 第一百四十批（09-30：把 `REQ-TURN-1` 那三条判据派下去 + audit 的触发条件成立了）
+
+| # | 目标 role | 状态 | 指令 |
+|---|---|---|---|
+| T-391 | backend | **待投递** | **Wave-2 我已独立复核通过（18 包 ok、面板真进程 22/22、链尾自然落 `WAITING_ACCEPTANCE`、崩溃项 11 PASS）——你上一轮那三批我做梦都想挑的错没挑出来。** 现在派的是**唯一还欠着的实质工程 `REQ-TURN-1`（裁「Ⅰ」常驻连接 + 常驻入站泵）的三条判据**，你账上④-b 那条自己写着生效点未到。<br>① 现量给你（14:3x 我自己跑）：`core/cmd/core/sendpipe.go:139` 仍是 `fin := reapTurnFinished(conn.Inbound(), call.ExecutionID)` ⇒ **回执后同步扫一次缓冲**，不是常驻泵；`grep -rln pump core/cmd/core` 只命中 `sendreap.go`。② 要做的三件按契约①④-b 原文，逐条对上：**(a) 迟到收尾真落**（回执已返回、连接未关、延迟 `turn/finished` 到达 ⇒ execution 转终态 + 事件）；**(b) 反例**（把连接改回 per-send、回执即 `Close` ⇒ (a) 必须红，这条不做出来说明判据没牙）；**(c) 零外溢**（`SendResult` 四键与 202 语义、§15.2 映射、CO-25 排水点**一字不动** —— 你上轮已经证明"排水不是顺手留下的"，这条照旧）。③ 形状：`sendreap.go` 那套"只收不写 + 三态分辨"整搬进泵，`sendpipe` 里回执后那条收割腿**删除**；`session/stop` 与队列排干两腿的行为一字不许变。④ 连接的生命周期归 **Supervisor 持有**（起、健康探测、死亡重连并降健康），入站泵常开、不随回执关闭。⑤ 边界照旧生效：**不许 sleep/轮询等帧**、**不许 Core 在回执后替 Provider 编终态**、同步路径不造 `UNKNOWN`。⑥ `Supervisor.Run` 那一格生产码零调用点（W2-7 点名的）就在你这条泵上顺带解决 —— `REQ-RC-2` 的 `UNKNOWN` 腿排在它之后，别同批做。 |
+| T-392 | adapter | **待投递** | 配 T-391 的**生产者半**（不与你冲突的部分在你面包里）：`start_now`/`guide` 必须发 `turn/finished`，且**它的常态位置是回执之后**——不许为赶回执把收尾挤到回执之前（那是 CO-54 已否的"即时收尾+改排干点"）。需要注入端点配合的（`debug/hold` 那一档，T-275 豁免范围见契约）现在可以正式用在判据 (a) 上。交账形状同 T-386：线上原始帧字节 + 三态分辨，`internal/process` 与 `cmd/fake-adapter` 之外不碰。 |
+| T-393 | audit | **待投递** | **你的触发条件 Ⅰ 成立了**：Wave-2 已收口（09-28 21:4x 签、我 09-30 独立复核：链尾自然落 `WAITING_ACCEPTANCE`、`Tests 22 passed (22)`、五方证据齐），⇒ **T-372 那一格现在可以开工**（`internal/approval` 的只读列表方法）。你 09-28 那份 REQ-A13 的形状我照单接受：keyset 不 offset、**游标编解码属 transport**、两套游标口径不共用编解码、**`state=PENDING` 必须复用 `Approval.DeadlinePassed`**（否则同一审批在 `/approvals` 待决而在 `/executions/{id}` 回 `NONE` —— 就是 REQ-A8 那一族）。三条判据照 T-372③。**边界重申**：只读、不改边集、不发事件、不写库；端点与 handler 归 `backend`，别替它注路由。 |
+| T-394 | test | **待投递** | 三件事都齐了：**① 你等的"入册两件"已随 `25f5bd3` 入册**（名册判据 + `check_ownership.sh`）；**② REQ-T37 裁「甲」并已经由我这一笔清干净** —— 事件契约里两条历史行的锚字改成"当时是"，现量 `grep -c "本名单当前是"` = **1**（全文件唯一），你可以放心加"命中数必须为 1"那道硬闸了；**我改完自己重跑了 `TestEventProducerRoster…` = `ok`**（09-30 14:4x），守门随契约同推。③ 剩下真正的覆盖缺口只有一个方向：**闭包/回调里回出来的值你仍认不出**（`task_queued`/`task_accepted` 因此还躺在名单里，这你们账上已明写）——**别为了这一格去改别人的码**，它是判据深度、不是产品缺陷；要动先报我。 |
 
 ## 待投递 · 第一百三十五批（09-27 16:5x：**CO-54 裁丙 + 立刻立 `REQ-TURN-1`** —— 注入可以证消费，不许假装生产语义已定）
 

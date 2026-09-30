@@ -280,7 +280,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 发在**降级发生的那一刻**（`internal/adapter` 的能力核定/注册域，Touch `adapter_instances`），
 > **`POST /sessions/{id}:sync` 的 503 出口只回码、不发这条事件**（守卫机械不允许，见契约① 同条引的
 > `TestAdapterDowngradedCannotRideASessionTouch`）。
-> 所以本名单当前是**三条**：`policy_created` / `policy_updated` / `adapter_downgraded`。
+> 所以本名单**当时**是**三条**（此行为留档，已被下面 09-27 的 27 条与 09-28 的 26 条取代；**故意不再使用"当前是"那个锚字**，见 REQ-T37 裁甲）：`policy_created` / `policy_updated` / `adapter_downgraded`。
 
 > **【名单扩容 · 主控 09-27 16:3x 按 `test` 的名册判据登记，原文留档不删】上面那句"三条"已被取代：名单现为 27 条。**
 > 新增的 **24 条**由判据机械导出（不是我手抄）：`go test -count=1 -v -run '^TestEventProducerRosterMatchesDerivedSet$' ./test/`
@@ -297,7 +297,7 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 > 别把"HTTP 200"当成"链尾事件已发生"（判据面：契约① §1.1 那串垂直链 oracle + 账本 T-381/T-382）。
 > **口径提醒**：本名单是"登记了但没人发"的**已知缺陷清单**，不是功能清单；补登记不等于补功能。
 >
-> 所以**本名单当前是 27 条**（09-27 16:3x 起，取代上面那句"三条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` / `task_waiting_acceptance` 。
+> 所以**本名单当时是 27 条**（09-27 16:3x 起，取代上面那句"三条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` / `task_waiting_acceptance` 。
 
 >
 > **【名单摘条 · 随 backend 第七十八批落地（REQ-ACCEPT-1 裁「甲」，09-28 实测登记），上面那句"27 条"已被取代、原文留档不删】**
