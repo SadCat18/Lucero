@@ -15,7 +15,11 @@
   通知 `{jsonrpc:"2.0", method, params}`（无 `id`）。
 - 每个请求带 `request_id`（UUIDv7）与可选 `deadline_at`（Unix ms）。取消用通知 `$/cancel`，
   携带原 `id`；Adapter 必须让对应 Execution 进入 `CANCELLED` 或 `INTERRUPTED`，不得静默吞掉。
-- **不做**：HTTP 服务发现、长连接复用、跨机连接。要远程 Provider 时另开 ADR。
+- **不做**：HTTP 服务发现、跨机连接。要远程 Provider 时另开 ADR。
+- **连接生命周期（内部契约 ④-b 09-28 裁「Ⅰ」；原"长连接复用"不在不做之列）**：
+  **每个 adapter 实例一条常驻连接**，Core 侧由 Supervisor 持有，负责健康探测与死亡重连。
+  **`turn/finished` 在 `session/send` 回执之后到达是常态**，收尾帧不得因回执已返回而被丢弃
+  —— per-send、返回即 `Close` 的形状按本裁废除（`since_seq` 断线补齐、健康降级都预设常驻）。
 
 ## 2. 握手 `adapter/initialize`
 

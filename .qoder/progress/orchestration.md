@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-27T16:59:01+08:00   ← 第一百三十五批：本行与正文、与 `git log -1` 回读同轮改（`date` 现量 16:5x）
+LAST_UPDATED: 2026-09-28T21:40:41+08:00   ← 第一百三十八批（**Wave-2 用户宣框勾**）：本行与 `## Completion criteria` Wave-2 行、Current checkpoint 同轮改（`Get-Date` 现量 21:40:41）
 
 ## Objective
 
@@ -14,11 +14,32 @@ LAST_UPDATED: 2026-09-27T16:59:01+08:00   ← 第一百三十五批：本行与�
 
 - [x] Wave-0：仓库、工具链、基线裁决入口就位；survey 会话在跑
 - [x] Wave-1：契约①（ADR + 事件命名 + aggregate_version + redaction 接口 + Approval Service API）经用户批准
-- [ ] Wave-2：垂直链跑到 `Task ACCEPTED`，db/backend/adapter/audit/test 五方交付均有重跑通过的证据
+- [x] Wave-2：垂直链跑到 `Task ACCEPTED`，db/backend/adapter/audit/test 五方交付均有重跑通过的证据
+  —— **用户 2026-09-28 21:4x 宣框勾（主控落笔 21:40:41）**。证据链一次列全：
+  ① 闸门本体：`TestChainStopsBeforeAcceptanceNotAtAccept` **21:36:15→21:36:16 PASS**（链真到 `ACCEPTED`，第七十八批撤掉手工 `UPDATE`、`task_waiting_acceptance` 有真生产者）；
+  ② 五方重跑：db/backend/adapter/test/frontend（09-27 第一次全量验收时已齐）+ **audit 09-28 18:14:31→18:14:37 三包 216 PASS / 0 FAIL / 0 SKIP**（T-390）；
+  ③ 独立测试面：W2-7 顶层 SKIP **6→0**（09-28 15:54:26 复核）；
+  ④ 合验三腿：`check_ownership.sh` **OWN_EXIT=0 / 0 越界**（21:34:11）、`t47-smoke.sh` **22 断言 22 OK / FAIL 0**（21:32:52，裁「甲」后，反例 FIRED + md5 还原）、`build_stamp.sh` `HEAD=cde8d79` + 指纹 `1a97a7f8d455202f7bc0d89afefa60f6`；
+  ⑤ 静态与全量：`go vet ./...` 0、全仓 **18 `ok` / FAIL 0**（21:34:42）。
+  **被验树 = 在途树**（`build_stamp` 实读 42 处未提交）—— 这句按第 24 条⑤款写在这里，谁引用都别把它读成 HEAD 的绿。
 - [ ] Wave-3：观察面板纯 REST/WS 驱动；kill Core / kill Adapter 崩溃测试通过
 - [ ] 全程：blocked 项零丢失，红线零绕过
 
 ## 日报
+
+### 2026-09-28 21:4x 档（Wave-2 签字档 —— 主控手写，本机 `Get-Date` 21:40:41）
+- **Wave 完成度**：0 ✓ / 1 ✓ / **2 ✓（本档勾）** / 3 ☐ = **3/4**。**Wave-2 由用户 21:4x 宣框勾**，证据链写在
+  `## Completion criteria` Wave-2 那一行的注里（①闸门本体 21:36:15 PASS ②五方重跑 ③W2-7 顶层 SKIP 6→0
+  ④合验三腿 ⑤vet 0 + 全仓 18 `ok`），**被验树是在途树（42 未提交）**，这句不许被读成 HEAD 的绿。
+- **本档做了什么（三批）**：第一百三十六批 = 找回 bash/git（`D:\Java\Git`，git 2.54.0）并**第一次在本机跑完**
+  合验三腿，顺手抓出 W2-7 自己造的 1 项 ownership 真越界（`crash_test.go:1409` 裸查 `approvals`，违契约① §3.2.1 +
+  §4 C1 唯一例外）⇒ 改用 `approval.SQLiteStore.Get`，三判据一字未动；第一百三十七批 = **裁「甲」**：
+  `t47-smoke` 第 22 条由单点快照改 **journal 有序证据**（`debug/hold` 够不着是先查过的事实，不是猜的），
+  反例 FIRED + md5 还原，我独立复跑 22 OK；第一百三十八批 = **签字落笔**。
+- **Wave-3 开局存量（每条有归属）**：`REQ-TURN-1`（先裁，分水岭）、`REQ-RC-1`（恢复扫描器，kill 测试与 5 个子 SKIP 的前置）、
+  T-372（approvals 接线 + 三条 501）、`:accept` Idempotency-Key 强制（等 frontend 先改 yaml）、frontend 3 格 blocked。
+- **NEEDS YOU**：**push 未做**（本地领先 `origin/main`，以现读 `git rev-list --count origin/main..HEAD` 为准），
+  等你一句话；下一批我会先给 Wave-3 的依赖图再派第一批，不一次全撒。
 
 ### 2026-09-25 20:0x 档（日报生成器 · 本机 `date` 20:05:02 —— 本档由用户手工唤起；09-25 17:39 那档 cron 仍 `session-failed`）
 
@@ -174,12 +195,44 @@ LAST_UPDATED: 2026-09-27T16:59:01+08:00   ← 第一百三十五批：本行与�
 
 ## Current checkpoint
 
-- Stage: **Wave-2 进行中，闸门未降；停摆 47 小时后复活**。投递通道这一轮换过一次：巡检 09-25 22:19:49
-  被平台 `failureCircuit` 静默禁用（`consecutiveFailures:3`、`lastError:{"type":"session-failed"}`）⇒
-  第一百零七～一百一十七批共 11 条派发里，**T-345 / T-346 从未送达**，直到本批由主控直投。
-  Wave-2 仍**只剩第 8 格端到端**（`backend` 两笔短事务 + 那条 handler 层判据待落）。
+- Stage: **Wave-2 已签（用户 09-28 21:4x 宣框勾），开 Wave-3**（完成度 **3/4**：0 ✓ / 1 ✓ / 2 ✓ / 3 ☐）。
+  Wave-3 的完成条件只有两句：**观察面板纯 REST/WS 驱动**、**kill Core / kill Adapter 崩溃测试通过**。
+  开局就带着的存量（每条都有归属，不悬空）：**`REQ-TURN-1`**（收尾帧与 send 回执时序，排在 Wave-2 之后、真 adapter 接入前必裁）、
+  **T-372**（`approval.NewService` + `SweepExpired` 接进 cmd/core、approvals 三条 501）、
+  **`REQ-RC-1`** 恢复扫描器（`core/test` 那 5 个子 SKIP 与 kill 测试的前置）、
+  **`:accept` Idempotency-Key 强制**（frontend 先改 yaml、backend 再强制，顺序不能反）、
+  frontend 侧 3 格 blocked（观察面板要的编排入口）、**push 仍挂 NEEDS YOU**。
+  （历史：投递通道 09-25 22:19:49 曾被 `failureCircuit` 静默禁用；W2 各格的判据与读数见
+  「Wave-2 验收检查」与「Wave-2 复验 · 09-28 第二次」两段，历史不改。）
 - Status: in_progress
-- Last verified action: **Wave-2 验收检查（第一次由我从同一棵树全量跑，16:50~16:57）**：
+- Last verified action: **Wave-2 复验 + 合验三腿（第二次全量，09-28 15:5x~19:16，我派 `test` 角色代跑、逐条我复核）**：
+  **W2-7 已闭** —— `core/test/crash_test.go` 6 条顶层 SKIP → **0 顶层 + 5 子用例**，定向 `TestCrash|TestIdempotent`
+  **9 PASS / 5 子 SKIP / 0 FAIL**，我 15:54:26 亲跑全仓 **18 `ok` / FAIL 0**；
+  **W2-9 已闭** —— `audit` 台账第 132 条当天读数：三包 **216 PASS / 0 FAIL / 0 SKIP**（18:14:31→18:14:37），
+  我 18:25:48 亲跑全仓 **18 `ok` / FAIL 0**；**合验三腿**（bash/git 实测在 `D:\Java\Git`，git 2.54.0，本机第一次跑得动）：
+  ① `check_ownership.sh` 19:03:18→19:04:50 先抓到 **1 项真越界** —— `core/test/crash_test.go:1409` 裸查 `approvals` 表，
+  违**契约① §3.2.1 第 1 条 + §4 C1「跨模块读不红的唯一写死例外是 approvals」**，是 W2-7 自己造的；改用现成
+  `approval.SQLiteStore.Get` 后（断言三判据一字未动）**19:10:31→19:11:45 `OWN_EXIT=0` / VIOLATION 0**、selftest 0；
+  ② `.scratch/backend/t47-smoke.sh` **22 断言 = 21 OK / 1 FAIL**（19:11:55、19:12:58 两跑同值，进程残留 0）——
+  红的是 `RESULT_SEND_TWO_PHASE`，期望 `RUNNING_v3`、实得 `st=SUCCEEDED v=4`，**归因 = 判据前提过期**
+  （`cmd/fake-adapter/main.go` mtime **09-27 17:09:44** 起 producer 发收尾帧；脚本最后一次 22/22 是 09-27 16:51:09，在它之前）
+  ⇒ **待裁、不放宽、不改脚本**；③ `build_stamp.sh` 19:15:17→19:15:39 **STAMP_EXIT=0**：
+  `HEAD=cde8d79`、`工作树未提交=42`、指纹 `1a97a7f8d455202f7bc0d89afefa60f6` ⇒ **T-390 欠的 HEAD 短码/指纹补上**。
+  最后一遍 19:31 现量：`gofmt -l` 空、`go vet ./...` 0、全仓 **18 `ok` / FAIL 0**。
+- **第一百三十七批（裁「甲」+ 收口，09-28 21:0x~21:34）**：**我裁「甲」**（改判据、保强度）——
+  落法我先封死一条路再派：`debug/hold` 只在进程内可调（`process/connection_test.go:703`、`fake-adapter/main_test.go:145`），
+  **Core 没有任何 `debug/*` 转发通路**（`cmd/core/sendstall_test.go:9` 注释原文）⇒ 壳层冒烟够不着；
+  `backend` 因此在**自己所有权内**把第 22 条改成 **journal 有序证据**（HTTP 四格 + `msgs` 全留，
+  另断 `execution_started`(seq37,v3) < `task_running`(seq38) < `execution_succeeded`(seq41,v4)、`agg_version` 对齐、
+  `task_running < task_agent_completed`），**只动 `.scratch/backend/t47-smoke.sh` 一处 hunk（41+/5-），其余 21 条断言零改动**。
+  反例 M1（`<`→`>`）**FIRED 咬 1 行**、同趟其余 OK，md5 链 `BD8E05EF → DC157430 → 变异 6CFE289A → 还原 DC157430`。
+  **我 21:32:42→21:32:52 独立复跑**：`RESULT` 行 23 = **22 断言 OK + `RESULT=DONE`、FAIL 0**、EXIT=0、进程残留 0；
+  **21:33:04→21:34:11 ownership `OWN_EXIT=0` / 0 项越界**；**21:34:21→21:34:42 全仓 18 `ok` / FAIL 0 + `go vet` 0**。
+  ⇒ 合验三腿**全过**，W2-7/W2-9/W2-8(甲格) 全过 ⇒ **Wave-2 五件齐，等用户宣框勾。**
+  **签字前的现读最后一发（21:36:15→21:36:16）**：`go test ./api/http/ -count=1 -run TestChain -v` =
+  `--- PASS: TestChainStopsBeforeAcceptanceNotAtAccept (0.05s)` / 包 `ok` / `EXIT=0`。
+  （`backend` 台账第 299 条与四行同轮已改，`test`/`audit` 各自的段在其账上，我不代交账。）
+- 上一轮 verified action（**第一次全量验收 09-27 16:50~16:57，存档不改**）：**Wave-2 验收检查**：
   **结论 = 不通过**，但缺的三样全挂上号了。**过**：编译 `0` / `go vet` `0` / **18 包全 `ok`（`ALL_RC=0`）** /
   所有权门禁 0 越界 / REQ-S-1 复现器 `NOT-REPRODUCED exit=0` / 面板真进程链 **`Tests 22 passed (22)`** 且进程清场 0/0；
   被验树 = `HEAD b4fea08` + **26 处未提交** + 指纹 `cc21b811423f9ec9e86fa85e06b4fd27`（16:51:19）⇒ 这些绿是**在途树**的绿，不是 HEAD 的。
@@ -197,12 +250,13 @@ LAST_UPDATED: 2026-09-27T16:59:01+08:00   ← 第一百三十五批：本行与�
   HEAD 与 `origin/main..HEAD` 的数**每入册一笔就变 ⇒ 以现跑那条命令为准，别抄这里的数**。
   12:07:13 那次现量（`core/` 空、`grep -rl "go/ast" core/test/` = 0）仍然有效，它证明的是
   **T-345/T-346 不是重复派工**，不是"此刻的盘"。
-- Next action: ① 等 `backend`、`test` 交账，判据＝各自台账新段落 + 现读 `numstat`，**全包绿一律分两面写并带
-  "截至 HH:MM 的某棵树"**（两家此刻同时在 `core/` 的不同目录上写，互不吃对方的红、也互不借对方的绿）；
-  REQ-S-1 **两半各一家**（事务半在 `backend`、回收半已入册 `ba03ce2`/`ae26c61`），两半判据齐了才闭；
-  ② 巡检 `nextRunAt` = 12:20:54，**"复活后真跑起来"要看到 09-27 心跳行才算**，现在还没有；
-  ③ `test` 那条 handler 层判据排在 ① 落盘之后（裁乙：先搬连接面）；④ `frontend` 第 8 格端到端等 ①③；
-  ⑤ **push 仍未做**，挂 NEEDS YOU 等用户，我不催。
+- Next action: ① **Wave-3 开工单（第一轮派发，我按依赖排序）**：`REQ-TURN-1` 先裁（它是真 adapter 接入与
+  「投递语义已验完」能不能说的分水岭，裁完才好排 crash 那条线）；`REQ-RC-1` 恢复扫描器起（kill Core/kill Adapter
+  崩溃测试与 `core/test` 那 5 个子 SKIP 的前置）；T-372 approvals 接线（`approval.NewService`+`SweepExpired` 进 cmd/core、
+  三条 501 脱掉）；frontend 侧观察面板解 blocked。**顺序我会先给依赖图再派，不一次全撒。**
+  ② `:accept` Idempotency-Key 强制**仍等 frontend 先改 yaml**（顺序写死，不能反）；
+  ③ `test` 台账（越界自认 + 三腿读数）与 `backend` 第 299 条回读对齐（我的代跑读数只入本账，不替它们交账）；
+  ④ **push 仍未做**（本地领先 `origin/main` 若干，现读那条命令为准），挂 NEEDS YOU 等用户，我不催。
 
 
 
@@ -1127,6 +1181,38 @@ LAST_UPDATED: 2026-09-27T16:59:01+08:00   ← 第一百三十五批：本行与�
 **② `REQ-ACCEPT-1`**（新立，见契约① 第 25 条④-c：`AGENT_COMPLETED → WAITING_ACCEPTANCE` 与 `task_accepted` **今天都没有驱动者**，
 非测试码除 `internal/task` 自己的常量/守卫外零调用）、**③ `audit` 的重跑证据**（T-390 点名）。
 W2-1~6 这六项是今天第一次由我从同一棵树上一口气跑完的，**它们把"实现层"钉住了**；没过的是"链尾语义 + 崩溃注入 + 第五方证据"这三格。
+
+## Wave-2 复验 · 09-28 第二次（合验三腿 + W2-7/W2-9 闭合）
+
+**被验树**：`HEAD=cde8d79` + 42 处未提交（`build_stamp.sh` 19:15:17 实读）⇒ 下面的绿同样是**在途树的绿**。
+**前提突破**：bash/git 本机找到了 —— `D:\Java\Git\bin\bash.exe`、`git.exe`（git 2.54.0.windows.1），此前账上
+「无 msys/bash、`git` 不在 PATH」的三条欠账（`t47-smoke.sh` 22 断言 / `check_ownership.sh` / T-390 的 HEAD+指纹）
+**从 09-28 19:03 起全部可跑**；坏掉的 WSL（`main ext4.vhdx` 缺失）不再当阻塞。
+
+| # | 项 | 命令 / 时刻 | 结果 | 判 |
+|---|---|---|---|---|
+| R-1 | ownership 自检 | `bash scripts/check_ownership.sh --selftest`（19:10:02→19:10:22） | `SELFTEST_EXIT=0` | **通过** |
+| R-2 | ownership 正跑（修前） | 同脚本（19:03:18→19:04:50） | **`OWN_EXIT=1`、1 项越界**：`core/test/crash_test.go:1409` 裸查 `approvals` | **不通过（真红，W2-7 自造）** |
+| R-2' | ownership 正跑（修后） | 同脚本（19:10:31→19:11:45） | **`OWN_EXIT=0` / VIOLATION 0**，baseline `900038d`、HEAD `cde8d79`、扫 190 个 `.go` | **通过** |
+| R-3 | 22 断言冒烟 | `bash .scratch/backend/t47-smoke.sh`（19:11:55、19:12:58 两跑） | **21 OK / 1 FAIL**，红 = `RESULT_SEND_TWO_PHASE`（期望 `RUNNING_v3`、实得 `st=SUCCEEDED v=4`），进程残留 0 | **不通过（1 条，归因=前提过期）** |
+| R-3' | 同上 · 裁甲后 | 同脚本（backend 21:11 两跑 + **我 21:32:42→21:32:52 独立复跑**） | **23 RESULT 行 = 22 断言 OK + `RESULT=DONE`、FAIL 0**、EXIT=0、进程残留 0；第 22 条新值 `OK_202_accepted_started_seq37_v3_then_succeeded_seq41_v4_task_running_seq38_msgs=1`；反例 M1 `<`→`>` **FIRED 咬 1 行**、md5 还原 `DC157430…` | **通过（甲裁：单点快照 → journal 有序证据，更强）** |
+| R-4 | HEAD + 构建指纹 | `bash scripts/build_stamp.sh`（19:15:17→19:15:39） | `STAMP_EXIT=0`、`HEAD=cde8d79`、未提交 42、编译输入 2367、指纹 `1a97a7f8d455202f7bc0d89afefa60f6` | **通过（T-390 欠件闭合）** |
+| W2-7 | 独立测试面（复验） | `go test ./test/ -run 'TestCrash\|TestIdempotent' -v` + 全仓 | **9 PASS / 5 子 SKIP / 0 FAIL**；顶层 SKIP 6→**0**；全仓 **18 `ok` / FAIL 0**（我 15:54:26、19:16 两次亲跑） | **通过（09-27 那格「崩溃注入门没开」已闭）** |
+| W2-9 | 第五方证据（复验） | `audit` 台账第 132 条 + 我 18:25:48 复跑全仓 | 三包 **216 PASS / 0 FAIL / 0 SKIP**（18:14:31→18:14:37）、全仓 18 `ok` | **通过（缺 audit 那份已补）** |
+
+**R-2 那条红是我这一轮自己造、自己门禁抓出来的**，处置留档：契约① §3.2.1 第 1 条「`approvals` 表 SQL 只准在
+`internal/approval`」+ §4 C1「跨模块**读**不红是设计、**唯一写死的例外是 approvals**（裁决数据，不是普通读）」⇒
+连只读 SELECT 也红；修法用包内现成 `SQLiteStore.Get`，三判据（PENDING / `execution_id` 未换 / `expires_at` 非 0）一字未动，
+自查 `grep` 契约口径 15 命中全在 `internal/approval/`。**没有为了让门禁绿去改契约或改 lint。**
+
+**R-3 那条红的归因链（钉死，签字要用）**：脚本 `mtime=09-27 15:09:40` 未动；它最后一次 22/22 是 **09-27 16:51:09**；
+`core/cmd/fake-adapter/main.go` **09-27 17:09:44** 之后 producer 开始发 `turn/finished`（backend 台账第 293/298 条与
+真进程读数 `exec=SUCCEEDED` 均已记过同一件事）⇒ 该断言「send 202 之后 execution 停在 `RUNNING`/v3」的前提过期，
+与 CO-54 下 `T84-6a/7a` 那两格**同一形状**。**不判 backend 回归、也不判 test 误跑** —— 裁的是判据本身（见 Next action ①）。
+
+**Wave-2 当前判（09-28 21:35 现量）**：W2-1~6 ✓（09-27）、**W2-7 ✓、W2-9 ✓（09-28）**、**W2-8 甲格 ✓（第七十八批落、签字前现读复跑）**、
+合验 **3 腿全过**（ownership `OWN_EXIT=0`、22 断言 22 OK、build_stamp `HEAD=cde8d79`+指纹）
+⇒ **五件齐，闸门的验收条件全部满足；勾框权在用户**（角色不自宣，我只把证据摆齐）。
 
 ## 待投递 · 第一百三十五批（09-27 16:5x：**CO-54 裁丙 + 立刻立 `REQ-TURN-1`** —— 注入可以证消费，不许假装生产语义已定）
 

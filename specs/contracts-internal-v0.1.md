@@ -701,6 +701,26 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       `internal/task/projection.go` 那一处，那是 task 的状态机）⇒ **REQ-RC-1**（恢复扫描器要成为 `Recovery` 的入口，
       并按第 20 条 CO-45③ 那个口径数活进程）。**排在第 8 格端到端之后、Wave-3 之前，今天不占闸门前面**；
       在此之前，崩溃注入的测试**不许**为了变绿去改 `advance` 或硬塞 `Recovery`。
+      （**更新**：第 8 格端到端已随 Wave-2 于 09-28 21:4x 签字 ⇒ 本条解封，**T-391 已于 09-28 派 backend 落地**
+      —— `internal/execution/recovery.go:76 ScanRecovery` + `cmd/core/recovery.go:38 runRecovery`、`main.go:255` 接线。）
+      **⇒ 连带裁「分」（09-29 00:0x 主控裁，回 T-391 交回的甲/乙问：改判正身是 `INTERRUPTED` 还是 `UNKNOWN`）**
+      —— **两者不是二选一，是两条边、两个场景**，矩阵里都留，扫描器按场景分叉：
+      - **Core 重启那一支（启动扫描当下的场景，T-391 已接线的那支）⇒ `RUNNING→INTERRUPTED`**：
+        FIRST SPRINT §7 原话是"重启 Core 后正确识别 **interrupted / recoverable** Execution"；事件
+        `execution_interrupted` §6 现成（Audit 必带，`events.go:52 auditRequired` 已含）、Task 投影现成
+        （`projection.go:46 EdgeInterrupted → task INTERRUPTED`）⇒ **今天就能落，撞不到 §6 墙**；
+        `task/projection.go:61` 与 `projection_test.go:46` 那句"INTERRUPTED 只能由恢复扫描写入"**照旧成立**；
+      - **Adapter 崩溃那一支（Core 活着、对端进程死；触发点 = Supervisor 观察到子进程死亡）⇒ `→UNKNOWN`**：
+        协议 §8"崩溃后果…只影响该 Adapter 上的 in-flight Execution，**一律转 `UNKNOWN`**" + 上文
+        "契约②那条…落点是恢复扫描" + §5.5 三条件（Recovery + 非空 Evidence + 非终态）+ 同事务 Audit。
+        **这条的接线依赖 `Supervisor.Run` 那一格**（W2-7 点名生产码零调用点，归属 backend/process）⇒ **排在本轮之后**；
+      - **REQ-RC-2 裁「甲」**：`→UNKNOWN` 的 §6 事件名**定 `execution_unknown`**（与 `execution_interrupted` 同形，
+        payload `from` + `reason`，Audit 必带）。**现在不登 §6** —— C8-12 是双向对拍，先登行必红；
+        登记授权随落地批给出：backend 落 UNKNOWN 路径的同一提交里加常量 + 主控批 §6 行，顺序照 REQ-DB-4；
+      - **Task 侧本轮不动**：`execution_unknown` 不进 §5.3 七条边 ⇒ 投影不产生 Task 事件
+        （`projection.go:6-8` 那句"不在这张表里的一律不产生"照读），task 留在 `RUNNING` —— 这不是欠账是矩阵：
+        §5.1 里 task `RUNNING` 的恢复列只有 `INTERRUPTED`，本就没有 `RUNNING→UNKNOWN` 这条边。
+        task 自己的 `UNKNOWN` 行今天无生产者，与 `task_verifying` 同格（有意 idle，不立项）。
     - **④-b `REQ-TURN-1`（09-27 16:5x 立项，随 CO-54=丙 那道"借来的绿"一起登记，排 Wave-2 之后、真 adapter 接入之前必须裁）**：
       **`turn/finished` 与 send 回执的先后时序在 v0.1 未定义**。今天的形状是"`start_now` 一次调用一条连接、返回即 `Close`"
       （C42 连接复用后置未裁），而 `cmd/fake-adapter` 的收尾在**排水**那一步、不在 send 那一跳内 ⇒
@@ -709,6 +729,32 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       与 §15.2 现有码兼容）；**Ⅲ** 明确"v0.1 只支持同步收尾的 Provider"并把它写成 Provider 准入条件。
       **记账要点**：U13 那一格今天用 `debug/hold` 注入判据（T-386）证的是**Core 会正确落终态并投影**，
       **不证**"生产语义里帧什么时候到已定"——谁把 Wave-2 说成"投递语义已验完"，先拿本条来对。
+      **⇒ 已裁「Ⅰ」（09-28 21:4x 主控裁，Wave-3 开工单第一百三十九批；三条出路里只有它同时答得了
+      "帧什么时候到"与"谁在收"）：每 adapter 实例一条常驻连接 + 常驻入站泵，C42 随裁放开**
+      —— 连接生命周期从 `sendpipe.go:8` 注释那句"一次 send 现起一条连接、连完就关"改为由 **Supervisor 持有**
+      （起、健康探测、死亡即重连并降健康），入站泵常开、不随回执关闭。
+      - **否 Ⅱ（send 改异步回执）：答非所问**。HTTP 面今天已是 202 + `accepted`，改回执形式解决不了
+        "帧来了没人收"——收尾帧只存在于活着的 stdio 管道上，连接被 `Close` 之后什么回执形式都收不到；
+      - **否 Ⅲ（只支持同步收尾的 Provider）：把产品挡在门外**。`start_now` 的 §5 语义就是"立即开始一轮"，
+        收尾晚于回执是四家真 Provider 的常态，写成准入条件等于宣布真接入不可用，且与 §6 规则 1 直接冲突；
+      - **定形**：**回执之后帧迟到是常态**。泵按 `turn_ref`→execution 归因、走现成的第二笔短事务落终态
+        （`sendreap.go` 那套"只收不写 + 三态分辨"整搬进泵，`sendpipe` 里回执后那条收割腿删除）；
+        回执**之前**就到的帧（`session/stop`、队列排干两腿）由同一条泵顺带收，**这两腿的行为一字不许变**；
+      - **协议面连带（保强度，不是放宽）**：adapter-protocol §1「不做：…长连接复用…」按本裁**划掉"长连接复用"一项**
+        （HTTP 服务发现、跨机连接仍不做）—— v0.1 的 per-send 形状本来就是欠账：§6 规则 2 的
+        `since_seq` 断线补齐、§15.1 `ADAPTER_UNRESPONSIVE` 的 Supervisor 健康降级，都预设常驻连接；
+      - **生产者义务（与 T-382 同批，adapter 交）**：`start_now`/`guide` 必须发 `turn/finished`，
+        **它的常态位置是回执之后**；不许为赶回执把收尾挤到回执之前（那是 CO-54 已否的"即时收尾 + 改排干点"）、
+        **不许 Core 在回执后替 Provider 编一个终态出来**（T-361②/T-377④ 照旧生效）；
+      - **崩溃腿交汇**：连接死亡时在飞的 execution 走 `Occasion=Recovery` 的 `UNKNOWN` 边，
+        入口是 **REQ-RC-1 恢复扫描器**（第 25 条④ 那句适用范围照读：同步失败响应不是它的落点）；
+      - **判据（三条全过才算落地）**：(a) **迟到收尾真落**：回执已返回、连接未关、延迟 `turn/finished`
+        到达 ⇒ execution 转终态 + 事件（fake-adapter 注入端点的豁免范围同 T-275；机制由实现方提，
+        **不许为省这一格去弱化"不 sleep/轮询等帧"那条边界**）；(b) **反例**：把连接改回 per-send
+        （回执即 `Close`）⇒ (a) 必须红；(c) **零外溢**：`SendResult` 四键与 202 语义、§15.2 映射、
+        CO-25 排水点，一字不动。
+      - **记账要点更新**：Wave-2 已签（09-28 21:4x），**但"投递语义已验完"这句话的生效点是判据 (a) 通过**——
+        签的是验收框，不是这句；(a) 落地前，引用 Wave-2 的人必须连本条一起引。
     - **④-c `REQ-ACCEPT-1`（09-27 16:5x 立，由主控第一次亲自全量跑 Wave-2 验收检查时量出；与 REQ-TURN-1 并列，同排 Wave-2 之前必须裁）**：
       链尾那两条边**今天都没有驱动者**。现量：非测试码里除 `internal/task` 自己的常量/类型/payload 之外，
       **没有一处把任务推成 `WAITING_ACCEPTANCE`**（`grep -rn "WaitingAcceptance" core --include=*.go` 去掉 `_test.go`
@@ -718,6 +764,13 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **这把"链跑通"偷换成了"末端那一跳跑通"**。要裁的是：**Agent 完成之后，由谁、在什么信号上宣布"待验收"**
       （候选：Core 侧在 `AGENT_COMPLETED` 落定时同笔推 `WAITING_ACCEPTANCE`；或面板/审批侧显式调用；或 §5.3 那条边本就该由 `handoff_*` 承担，而 `handoff_*` 四条今天也全在名单里）。
       **裁死之前，Wave-2 那一格不许勾。**
+      ⇒ **已裁「甲」（09-28 01:2x 代主控裁，随 backend 第七十八批落地）**：由 **Core 侧在任务投影落定
+      `AGENT_COMPLETED` 的同一笔事务里继续推 `WAITING_ACCEPTANCE`** —— 边已在 §5.1 矩阵（`AgentCompleted→WaitingAcceptance`），
+      事件 `task_waiting_acceptance` payload 带 `execution_id`；**不新造 `:verb` 路由**（§3 归主控、且面板显式调用还要多一跳）、
+      **不借 `handoff_*`**（那四条今天同样无生产者，救不了这条）。`task_verifying` 维持无生产者（v0.1 没有验证信号源），
+      事件名单只从 27 里摘掉 `task_waiting_acceptance` 一条（27→26，随该批一起改名单锚句，改名单授权随本裁给出）。
+      判据 = 链测试**不再手工 `UPDATE tasks SET status`**：send 之后自然落 `WAITING_ACCEPTANCE` → `:accept` 200 落
+      `ACCEPTED`；错态 `:accept` 仍 409；终态重复验收仍 409 且事件不增。
     - **⑤ 判据（这一格怎么算证到）**：三条用例 —— (a) 崩在密封前 ⇒ 同 key 重试后 `messages` 仍**恰一行**、
       `executions` 仍**恰两条状态边**、幂等行被密封；"版本是当前库里那一行"**经 `GET /api/v1/tasks/{id}` 回读判**
       （09-27 更正：原写"响应 `version` 等于当前库版本"是引用了一个 `SendResult` 里不存在的键 ⇒ 按上一句改判读面）；

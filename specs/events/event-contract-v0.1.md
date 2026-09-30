@@ -299,6 +299,18 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 >
 > 所以**本名单当前是 27 条**（09-27 16:3x 起，取代上面那句"三条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` / `task_waiting_acceptance` 。
 
+>
+> **【名单摘条 · 随 backend 第七十八批落地（REQ-ACCEPT-1 裁「甲」，09-28 实测登记），上面那句"27 条"已被取代、原文留档不删】**
+> 摘掉的只有 **1 条**：`task_waiting_acceptance` —— 它今天**真有生产者**：Core 在任务投影落定 `AGENT_COMPLETED`
+> 的**同一笔事务**里接着推 `WAITING_ACCEPTANCE`（`core/internal/task/service.go` 的 `AdvanceToWaitingAcceptance`，
+> 发射位的 `Type` 是常量，所以名册判据认得出；闭包里回出来的值认不出，`task_queued`/`task_accepted` 因此还躺在上面那句里）。
+> 实测（`go test -count=1 -run '^TestEventProducerRosterMatchesDerivedSet$' ./test/`）：桶一 37→38、桶二（派生集合）27→26、未决 0 处。
+> **`task_verifying` 维持无生产者**（v0.1 没有验证信号源，裁语点名不许顺手补）；其余 25 条一条没动。
+> 口径不变：名单仍是"登记了但没人发"的已知缺陷清单、补登记不等于补功能 —— 这一条是**先补了功能才摘**，
+> 摘条的授权随契约④-c（`specs/contracts-internal-v0.1.md` 裁「甲」那一段）一并给出。
+>
+> 所以**本名单当前是 26 条**（09-28 起，取代上面那句"27 条"）：`policy_created` / `policy_updated` / `adapter_downgraded` / `adapter_restart_exhausted` / `approval_cancelled` / `core_shutdown` / `execution_approval_requested` / `execution_approval_resolved` / `execution_output_flushed` / `grant_revoked` / `handoff_completed` / `handoff_created` / `handoff_failed` / `handoff_ready` / `model_discovered` / `project_archived` / `quota_observed` / `session_synced` / `task_accepted` / `task_blocked` / `task_paused` / `task_preparing` / `task_queued` / `task_resumed` / `task_state_corrected` / `task_verifying` 。
+
 
 ## 7. 垂直链事件序列（测试 oracle）
 
