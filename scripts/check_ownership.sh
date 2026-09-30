@@ -175,12 +175,26 @@ strip_comments() {
   }'
 }
 
+# strip_then_match <正则>：过 strip_comments，再拿**同一个正则**重匹配一遍。
+# 只 strip 不重匹配是不够的：行尾注释被切掉之后，那一行还带着 `file:line:` 前缀混在结果流里
+# （`const q = "x" // UPDATE approvals …` 就会以"一行没有 SQL 的代码"被判越界）。
+# 接线点集中在这一个函数：各条腿自己 strip 一遍，早晚漏一条（今天就是漏了四条）。
+strip_then_match() { strip_comments | grep -iE "$1" || true; }
+
 # --- check 1: approvals SQL stays in internal/approval ----------------------
 APPROVALS_RE='(from|update|insert[[:space:]]+into|join)[[:space:]]+approvals\b'
+# approvals_hits <根目录>：check_1 的扫描面本体。抽出来只为了 --selftest 能喂合成件验它 ——
+# 判据本体不许抄第二份（抄了就会出现「改了一条、另一条还旧」）。
+# 【T-379① 接线点】这里曾经**没过 strip_comments** ⇒ 解释性注释里写一句 `UPDATE approvals` 就判越界，
+#   逼出「改注释喂门禁」（主控 ③ 明确禁止那条路）。反例在 selftest 的 ap1/ap2 两件上，两侧都断。
+approvals_hits() {
+  scan_go "$APPROVALS_RE" "${1:-core}" | strip_then_match "$APPROVALS_RE"
+}
+
 check_1() {
   hdr "1/9 approvals 表 SQL 只准出现在 internal/approval（契约① §3.1）"
   local hits n
-  hits="$(scan_go "$APPROVALS_RE" core || true)"
+  hits="$(approvals_hits core)"
   n=$([[ -n "$hits" ]] && printf '%s\n' "$hits" | wc -l | tr -d ' ' || echo 0)
   (( n == 0 )) && { info "0 hits — internal/approval 尚无 store.go，此项暂无证据（不是通过，是还没写）"; return; }
   local p
@@ -260,6 +274,14 @@ cross_package_refs() {
     # 不是"表名以变量传入"。判据只看形状：`,`/`{` 之后紧跟引号包住的名字、且**名字后面紧跟冒号**才算键位；
     # `= "tbl"`（定义位）与 `Append("tbl",`（写口首参）后面分别是 `=` 与 `,`/`)`，都进不来这一条。
     VALUE_SHAPES="$VALUE_SHAPES|[{,][[:space:]]*[\"'\`]${tbl}[\"'\`][[:space:]]*:"
+    # F（T-379②）：**响应消息/文案里的表名**，两条形状，都只认位置不认名字：
+    #   F1 表名被反引号/单引号包在**另一个双引号串内部**（"…：`tbl` 的写者不存在"）—— 那是给人读的一句话；
+    #   F2 整字面量等于表名，且它落在 write*() 的**第 4 位参数**（writeError(w, status, code, msg) 的 msg 位）。
+    # 必须排：不排就逼出「改文案喂门禁」（主控 T-379③ 明令禁止的那条路），那比门禁红更坏。
+    # 它是窄的：定义位 `const t = "tbl"`（不是任何调用的实参）与写口首参 `Append("tbl", …)`（第 1 位）都进不来 ——
+    #   两条反向断言写在 --selftest（dyn.go 仍 literal、w2.go 仍 write）。
+    MSG_SHAPES="\"[^\"]*[\`']${tbl}[\`']"
+    MSG_SHAPES="$MSG_SHAPES|write[A-Za-z]*\([^;]*,[^;]*,[^;]*,[[:space:]]*\"${tbl}\""
     hits="$(grep -rniE "\b${tbl}\b" "$root" --include='*.go' 2>/dev/null \
              | grep -vE "$excl" \
              | strip_comments \
@@ -285,6 +307,8 @@ cross_package_refs() {
         # 真 SQL 写语句：关键字后面必须跟空白。写成 UPDATE|INSERT|DELETE 不带边界的话，
         # Go 的 UpdateOnce( / DeleteRow( 会被大小写无关地吞进来——16:2x 那条假红就是这么来的。
         printf 'write|%s|%s|%s\n' "$f" "$tbl" "$want"
+      elif printf '%s' "$line" | grep -qE "$MSG_SHAPES"; then
+        printf 'msg|%s|%s|%s\n' "$f" "$tbl" "$want"
       elif printf '%s' "$line" | grep -qE "$VALUE_SHAPES"; then
         # 形状排除（T-236，主控 08:16：假阳性来自 `messages` 这类"既是表名又是 URL 段/verb 值"的词）。
         # **只判形状，不许要求代码里留标记，也不许要求注释来喂它**。四条各对应一类"这是个值"的语法位：
@@ -323,15 +347,15 @@ cross_package_refs() {
 # 而"0 处"和"这条腿是死的"在同一份输出里长得一模一样（我今晚已经为这个形状栽过两次：
 # `go list` 空清单让指纹永真、`{{$_.Dir}}` 让断言永不命中）。所以必须有"喂得进合成变量件 ⇒ 计数 1"这一腿。
 varpass_sites() {   # varpass_sites <根目录>
-  scan_go '\b(tx|d|db|store|repo)\.(Append|AppendEventOnly|CreateVersionless|TouchTransition|UpdateOnce|Touch|Create)\([a-z_][A-Za-z0-9_]*[[:space:]]*[,)]' "$1" \
-    | grep -v '/platform/db/' | grep -v '_test\.go:' || true
+  local re='\b(tx|d|db|store|repo)\.(Append|AppendEventOnly|CreateVersionless|TouchTransition|UpdateOnce|Touch|Create)\([a-z_][A-Za-z0-9_]*[[:space:]]*[,)]'
+  scan_go "$re" "$1" | strip_then_match "$re" | grep -v '/platform/db/' | grep -v '_test\.go:' || true
 }
 
 check_2() {
   hdr "2/9 跨包表引用（T-24：按表名查，不看函数名写法）"
   local all kind f tbl want
   all="$(cross_package_refs core/)"
-  local n=0 reads=0 fx=0 lits=0 w13=0 tags=0 vals=0 valfiles='' valwhat='' readfiles='' fxf='' litfiles='' litwhat='' tagfiles=''
+  local n=0 reads=0 fx=0 lits=0 w13=0 tags=0 vals=0 msgs=0 valfiles='' valwhat='' msgwhat='' readfiles='' fxf='' litfiles='' litwhat='' tagfiles=''
   while IFS='|' read -r kind f tbl want snippet; do
     [[ -z "$kind" ]] && continue
     case "$kind" in
@@ -341,6 +365,7 @@ check_2() {
       read)    reads=$((reads+1)); readfiles="$readfiles $f" ;;
       tag)     tags=$((tags+1)); tagfiles="$tagfiles $f" ;;
       value)   vals=$((vals+1)); valfiles="$valfiles $f"; valwhat="$valwhat $tbl@$f" ;;
+      msg)     msgs=$((msgs+1)); msgwhat="$msgwhat $tbl@$f" ;;
       w13-allow) w13=$((w13+1)) ;;
     esac
   done <<< "$all"
@@ -353,6 +378,8 @@ check_2() {
   # 被形状排除的那几处**必须报出来**，不能静默消失：静默排除与静默放行区分不开，下一条假红来了没人看得见。
   # 同 W13 那一节的"非表名 $note"计数一个思路（T-236 主控也点了这句）。
   (( vals > 0 )) && info "另有 $vals 处表名字面量落在**值位**（前导 / 的路径段、与 verb/变量比较、case、return/strings 的非首参、map/JSON 键位），按形状不参与表名比对；定义位（const/var = \"表名\"）不在其中：$(printf '%s\n' $valwhat | sort -u | tr '\n' ' ')"
+  # 排除项必须打印（不打印就等于悄悄放宽，T-280① 我自己立的那条）：文案位单独一类、连位置一起报出来。
+  (( msgs > 0 )) && info "另有 $msgs 处表名落在**响应消息/文案位**（F1 引号内嵌 / F2 write*() 的第 4 位参数），不参与表名比对；定义位与写口首参不在其中：$(printf '%s\n' $msgwhat | sort -u | tr '\n' ' ')"
   (( reads > 0 )) && info "另有 $reads 处只读引用（§1.3/§4 允许跨模块读与 JOIN，不判越界）：$(printf '%s\n' $readfiles | sort -u | tr '\n' ' ')"
   (( n == 0 && reads == 0 && fx == 0 )) && info "没有任何包在自己的目录之外提到别人的表名"
   # REQ-T15 后半（主控 10:36 T-273④ 当场裁）**：不判红，但要现读 + 计数 + 打出来。**
@@ -369,7 +396,7 @@ check_2() {
     info "表名来自变量的写调用 0 处（非 platform/db、非测试码；有字面量首参的写调用由 2b/8 那节管）"
   fi
   local ex
-  ex="$(scan_go '\.Exec(Context)?\(' core | grep -v '/platform/db/' | grep -v '_test\.go:' || true)"
+  ex="$(scan_go '\.Exec(Context)?\(' core | strip_then_match '\.Exec(Context)?\(' | grep -v '/platform/db/' | grep -v '_test\.go:' || true)"
   if [[ -n "$ex" ]]; then
     while IFS= read -r line; do
       bad "业务包绕开平台层自行执行写语句（§1）: ${line%%:*}"
@@ -604,15 +631,15 @@ check_6() {
   hdr "6/9 依赖方向（eventjournal 不 import 业务包；platform/db 只允许 eventjournal；audit 不 import platform/db）"
   local hits line p imp
 
-  hits="$(scan_go "import|\"$CORE_IMPORT" core/internal/eventjournal | grep -E "\"$CORE_IMPORT" || true)"
+  hits="$(scan_go "import|\"$CORE_IMPORT" core/internal/eventjournal | strip_then_match "\"$CORE_IMPORT" || true)"
   [[ -n "$hits" ]] && while IFS= read -r line; do bad "eventjournal 引入了内部包: $line"; done <<< "$hits"
   [[ -z "$hits" ]] && info "eventjournal: 0 个内部 import（目录层，合法）"
 
-  hits="$(scan_go "\"$CORE_IMPORT" core/internal/platform | grep -v '/eventjournal"' || true)"
+  hits="$(scan_go "\"$CORE_IMPORT" core/internal/platform | strip_then_match "\"$CORE_IMPORT" | grep -v '/eventjournal"' || true)"
   [[ -n "$hits" ]] && while IFS= read -r line; do bad "platform/db 引入了业务包: $line"; done <<< "$hits"
   [[ -z "$hits" ]] && info "platform/db: 仅 internal/eventjournal（§1.1 第 8 条明确允许）"
 
-  hits="$(scan_go "\"$CORE_IMPORT/platform/db" core/internal/audit | grep -v _test.go || true)"
+  hits="$(scan_go "\"$CORE_IMPORT/platform/db" core/internal/audit | strip_then_match "\"$CORE_IMPORT/platform/db" | grep -v _test.go || true)"
   [[ -n "$hits" ]] && while IFS= read -r line; do bad "internal/audit 不得 import platform/db（§0）: $line"; done <<< "$hits"
   [[ -z "$hits" ]] && info "internal/audit: 未 import platform/db"
   tailor
@@ -829,8 +856,64 @@ check_9() {
   tailor
 }
 
+# --- check 9b: 判据表 ID 列不许重号（T-316④ 裁「加、放本脚本、不新开第五个入口」）----------------
+# 出生现场：`FL-6` 被「另起一行」重复登记过，在 `b250b5e` 里藏了 32 小时（主控 T-296① 自记 + 我的 REQ-T25）；
+# 而 §1.1 第 16 条那把「数落点」的尺原本只覆盖 §6 事件目录与 §15.2 错误码 —— 契约里这些"ID 列必须唯一"的表没人对拍。
+# 三条腿（缺一条我就不写；三条都在 selftest 的 9b 段里各有输出、两两不同）：
+#   ① 每族在**同一文件内**"字面计数 == 去重计数"（跨文件重复按镜像惯例只数不判红）；
+#   ② 合法增行不误伤：ID 可以带字母后缀 —— `T84-7a` 与 `T84-7b` 是两条判据，所以正则必须
+#      `^\| 族-[0-9]+[a-z]*`；少那个 `[a-z]*` 就会把两行截成同一个号（我 19:22 当场这样造过一次假红）；
+#   ③ 合成重号必报（selftest 往 fixture 里插一行重复 ID）。
+# 覆盖面**只宣称「七族 × 行首表格行」**：散文里的同行并列（`F20-1/F20-2/F20-3`）、加粗小标题（`**A18-3`）、
+# 裁定编号（`CO-nn`）都不算登记 ⇒ 这条腿天生看不见它们，是**边界不是缺陷**（INFO 里明写，别读成"全仓 ID 已核")。
+ID_FAMILIES="FL C8 T84 W13 F20 U13 A18"
+
+# id_family_files <族> <目录>：该族的 ID 行出现在哪些文件（**不硬编码"哪族住哪份文件"** —— 那是快照，会腐烂）
+id_family_files() {
+  grep -rlE "^\| $1-[0-9]+[a-z]*" "$2" 2>/dev/null | sort
+}
+
+check_id_unique() {
+  hdr "9b/9 判据表 ID 列去重（七族 × 行首表格行；§1.1 第 16 条那把尺没覆盖到的半边）"
+  # 目录在**函数里**现解，不在文件头解 —— 否则 selftest 想用合成目录喂它就得改全局。
+  local SPECS_DIR="${LUCERO_SPECS_DIR:-specs}"
+  if [[ ! -d "$SPECS_DIR" ]]; then
+    bad "找不到目录 $SPECS_DIR ⇒ 这条腿什么都看不见（不是「没有重号」）"
+    return
+  fi
+  local fam f files n u total=0 fams_ok=0 dupfam="" mirrored="" nfam
+  nfam="$(printf '%s\n' $ID_FAMILIES | grep -c .)"
+  for fam in $ID_FAMILIES; do
+    files="$(id_family_files "$fam" "$SPECS_DIR")"
+    if [[ -z "$files" ]]; then
+      bad "$fam 这张表一个 ID 都没解析出来 ⇒ 表改了形状/挪了文件，**这条腿对它现在什么都看不见**（下界 1 族行）"
+      continue
+    fi
+    fams_ok=$((fams_ok + 1))
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      n="$(grep -hoE "^\| $fam-[0-9]+[a-z]*" "$f" | wc -l | tr -d ' ')"
+      u="$(grep -hoE "^\| $fam-[0-9]+[a-z]*" "$f" | sort -u | wc -l | tr -d ' ')"
+      total=$((total + n))
+      if (( n != u )); then
+        bad "$fam 表在 $f 里重号：字面 $n / 去重 $u ⇒ 重复的 ID = $(grep -hoE "^\| $fam-[0-9]+[a-z]*" "$f" | sort | uniq -d | tr -d '| \n' | tr '\n' ' ')"
+        dupfam="$dupfam $fam"
+      fi
+    done <<< "$files"
+    if [[ -n "$files" ]] && (( $(printf '%s\n' "$files" | grep -c .) > 1 )); then
+      mirrored="$mirrored $fam($(printf '%s\n' "$files" | grep -c .)份)"
+    fi
+  done
+  if [[ -z "$dupfam" ]] && (( fams_ok == nfam )); then
+    info "七族 × 行首表格行 共 $total 条 ID、去重后仍 $total ⇒ 无重号（正则带字母后缀，'T84-7a/7b' 这类不误伤）"
+  fi
+  [[ -n "$mirrored" ]] && info "同一族的 ID 出现在多份文件里（按镜像惯例**只数不判红**，跨文件对拍归落文时做）:$mirrored"
+  info "覆盖面边界：只判「$ID_FAMILIES」七族的行首表格行；散文引用（同行并列 / '**A18-3' 加粗小标题 / 'CO-nn' 裁定编号）不算登记，这条腿看不见它们"
+  tailor
+}
+
 # --- selftest: the scanners must be able to fail ----------------------------
-run_all() { check_1; check_2; check_w13; check_3; check_4; check_5; check_6; check_7; check_8; check_9; }
+run_all() { check_1; check_2; check_w13; check_3; check_4; check_5; check_6; check_7; check_8; check_9; check_id_unique; }
 
 selftest() {
   hdr "SELFTEST（证明上面几条不是永真式）"
@@ -842,19 +925,22 @@ selftest() {
   printf 'package task\n\nconst q = "UPDATE " + tbl + " SET x = ?"\n'                   > "$tmp/internal/task/dyn.go"
   printf 'package task\n\n_, _ = r.db.Exec("whatever", 1)\n'                            > "$tmp/internal/task/exec.go"
   printf 'package task\n\nimport "github.com/SadCat18/lucero/core/internal/eventjournal"\n' > "$tmp/internal/task/imp.go"
+  # T-379① 接线反例：下面 a/c/d 三个计数都是**严格相等**，所以"注释里也写一份"只要被多算一个就会喊红。
+  printf 'package task\n\n// 这一层不要写 UPDATE approvals 那类语句，也不要有 .Exec("whatever", 1) 这种旁门\n' > "$tmp/internal/task/cmt_shape.go"
+  printf 'package task\n\n// 别 import "github.com/SadCat18/lucero/core/internal/eventjournal"（方向是反的）\n' > "$tmp/internal/task/cmt_imp.go"
 
   local a b c d
   # 3 = 两条越界 + 一条在归属包内；大小写与 insert into 变体都要抓到
-  a="$(scan_go "$APPROVALS_RE" "$tmp" | wc -l | tr -d ' ')"
-  (( a == 3 )) || { report "  [SELFTEST FAIL] approvals 扫描命中 $a，期望 3"; fails=$((fails+1)); }
+  a="$(approvals_hits "$tmp" | wc -l | tr -d ' ')"
+  (( a == 3 )) || { report "  [SELFTEST FAIL] approvals 扫描命中 $a，期望 3（多了=注释被算进来，少了=真越界被放走）"; fails=$((fails+1)); }
   # 写表扫描要能抓到 UPDATE executions，并且归属判据正确
   [[ "$(owner_of core/internal/eventjournal/events.go)" == "db" ]] || { report "  [SELFTEST FAIL] 路径归属映射错"; fails=$((fails+1)); }
   # 绕开平台层直接 Exec 必须抓到
-  c="$(scan_go '\.Exec(Context)?\(' "$tmp" | grep -v '_test\.go:' | wc -l | tr -d ' ')"
-  (( c == 1 )) || { report "  [SELFTEST FAIL] Exec 旁门扫描命中 $c，期望 1"; fails=$((fails+1)); }
+  c="$(scan_go '\.Exec(Context)?\(' "$tmp" | strip_then_match '\.Exec(Context)?\(' | grep -v '_test\.go:' | wc -l | tr -d ' ')"
+  (( c == 1 )) || { report "  [SELFTEST FAIL] Exec 旁门扫描命中 $c，期望 1（2=注释里的 .Exec 被算进来，0=真旁门被放走）"; fails=$((fails+1)); }
   # import 方向必须抓到
-  d="$(scan_go "\"$CORE_IMPORT" "$tmp" | wc -l | tr -d ' ')"
-  (( d == 1 )) || { report "  [SELFTEST FAIL] import 方向扫描命中 $d，期望 1"; fails=$((fails+1)); }
+  d="$(scan_go "\"$CORE_IMPORT" "$tmp" | strip_then_match "\"$CORE_IMPORT" | wc -l | tr -d ' ')"
+  (( d == 1 )) || { report "  [SELFTEST FAIL] import 方向扫描命中 $d，期望 1（2=注释里那句 import 被算进来，0=真 import 被放走）"; fails=$((fails+1)); }
   # 已知盲点：拼接出的表名扫不出来。若哪天它能扫出来，说明规则变严了，改期望值。
   if grep -qiE 'UPDATE[[:space:]]+[a-z_][a-z0-9_]*' "$tmp/internal/task/dyn.go"; then
     report "  [SELFTEST FAIL] 拼接盲点已不再成立，请把 check_2 的 INFO 说明删掉并收紧规则"; fails=$((fails+1))
@@ -935,6 +1021,12 @@ const q = `SELECT id FROM quota_accounts`
   # C 类（return 里非首元素）的**边界**：`return` 与字面量之间出现 `(` 就不算值位 ——
   # 否则 `return tx.Append("x", "quota_accounts")` 会被"排除"掉，那是拿排除开的一个新洞。
   printf 'package task\n\nfunc f(m any) ([]string, error) { return nil, tx.Append("x", "quota_accounts", m) }\n' > "$fx2/task/ret2.go"
+  # ---- F（T-379②）两条反例：形状抄自 core/api/http/executions.go 现在那两行 ----
+  #   writeError(w, http.StatusNotImplemented, "not_implemented", "…读通道没装配…", true)
+  # 只是把表名放回**文案位**。不声称那是原文：15:08 现量到的那条 literal 红当时未提交，
+  # 当事人事后改的正是文案，git 上取不到副本（git show c172cb6^ 里该标识符零命中）。
+  printf 'package task\n\nfunc f(w any) { writeError(w, 501, "not_implemented", "读通道没装配：`quota_accounts` 的写者还不存在", true) }\n' > "$fx2/task/msg1.go"
+  printf 'package task\n\nfunc f(w any) { writeError(w, 501, "not_implemented", "quota_accounts", true) }\n' > "$fx2/task/msg2.go"
   # 裸 SQL 读（§1.3 允许跨模块读）：今天落在 read/INFO，**我不擅自升成红**，只把这一格断成"现状是 read"
   # 并写成 REQ-T22 交主控裁（要红就改契约，别让我在脚本里偷偷加严）。
   printf 'package task\n\nconst q = "SELECT id FROM quota_accounts WHERE ok = ?"\n'                         > "$fx2/task/sel.go"
@@ -947,6 +1039,20 @@ const q = `SELECT id FROM quota_accounts`
     { report "  [SELFTEST FAIL] 结构体 tag 里的表名没被单列成 tag —— literal 腿会把序列化名判成写表（今天实测的第二条假阳性）"; fails=$((fails+1)); }
   printf '%s\n' "$out" | grep -qE 'comment\.go' && \
     { report "  [SELFTEST FAIL] 只在注释里出现的表名被当成了代码（strip_comments 没生效 ⇒ 假红与假绿都会来）"; fails=$((fails+1)); }
+  # ---- T-379① 接线自证：approvals 那条腿**两侧都要断**（主控 09-2x 就裁过这个形状）----
+  local adir; adir="$(dirname "$fx2")/approvals_probe"
+  mkdir -p "$adir"
+  # ap1：表名只出现在解释性注释里 —— 门禁不许因此红，否则当事人只能靠删注释让它绿（那是自喂改码）。
+  printf 'package api\n\n// 这一层拿不到写口，所以这里不会 UPDATE approvals 那类语句\nfunc f() {}\n' > "$adir/ap1.go"
+  # ap2：同样的字面量出现在**代码**里（裸 SQL 写）—— 必须照旧红，证明 ap1 的「不红」来自形状而不是把整条腿关了。
+  printf 'package api\n\nconst q = "UPDATE approvals SET state = ?"\n' > "$adir/ap2.go"
+  local a1 a2
+  a1="$(approvals_hits "$(dirname "$adir")" | grep -c "ap1\.go" || true)"
+  a2="$(approvals_hits "$(dirname "$adir")" | grep -c "ap2\.go" || true)"
+  [[ "$a1" == "0" ]] || { report "  [SELFTEST FAIL] 只在注释里出现的 UPDATE approvals 被判成越界（approvals_hits 没过 strip_comments ⇒ 假红，且会逼出删注释自喂）"; fails=$((fails+1)); }
+  [[ "$a2" == "1" ]] || { report "  [SELFTEST FAIL] 代码里真写 SQL 的 UPDATE approvals 没被判成越界（ap1 那条「不红」是把整条腿关了，不是形状排除）"; fails=$((fails+1)); }
+  rm -rf "$adir"
+
   # ---- T-236 的双向对照：四类值位形状必须**不红**，真写口必须**照旧红** --------------------
   # 只验"排除生效"不验"排除不吞真越界"，等于交出一条会把真越界一起放行的假宽松判据（§1.1 第 16 条同族）。
   local vbad vf
@@ -963,6 +1069,19 @@ const q = `SELECT id FROM quota_accounts`
     { report "  [SELFTEST FAIL] 语法不合法的裸 SQL 写（UPDATE quota_accounts: SET）没判成 write —— 判据开始要求'SQL 能跑'，那是一句冒号就绕过的门"; fails=$((fails+1)); }
   # T-280① 的另一半：**同一个词**在键位不红、在 SQL 写位置必须红。只验前一半的排除是"把名字放进豁免表"，
   # 那等于没有判据；成对才说明我吃的是语法位置。
+  # F 的正反两侧：两条文案位必须单列成 msg，且**不许**同时是 literal/write；
+  # 而定义位（dyn.go）与写口首参（w2.go）必须照旧红 —— 否则"文案位排除"就成了万能后门。
+  for mf in msg1 msg2; do
+    printf '%s\n' "$out" | grep -qE "^msg\|.*task/${mf}\.go\|quota_accounts\|" || \
+      { report "  [SELFTEST FAIL] 文案位 ${mf}.go 没被单列成 msg —— 它会掉进 literal 腿判越界，逼当事人改文案喂门禁（T-379②）"; fails=$((fails+1)); }
+    if printf '%s\n' "$out" | grep -qE "^(literal|write)\|.*task/${mf}\.go\|"; then
+      report "  [SELFTEST FAIL] ${mf}.go 仍被判成 literal/write（F 的排除没生效）"; fails=$((fails+1))
+    fi
+  done
+  printf '%s\n' "$out" | grep -qE '^literal\|.*task/dyn\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 定义位 dyn.go 不再是 literal —— 文案位排除把定义位一起放走了"; fails=$((fails+1)); }
+  printf '%s\n' "$out" | grep -qE '^write\|.*task/w2\.go\|quota_accounts\|' || \
+    { report "  [SELFTEST FAIL] 写口首参 w2.go 不再是 write —— 文案位排除成了万能后门"; fails=$((fails+1)); }
   printf '%s\n' "$out" | grep -qE '^write\|.*task/delrow\.go\|quota_accounts\|' || \
     { report "  [SELFTEST FAIL] DELETE FROM quota_accounts 没判成 write（键位排除顺带把 SQL 写位置也放走了）"; fails=$((fails+1)); }
   # C 类的边界要单独断：排除"值位"不许顺手把 `return 调用(…, "表名")` 也放掉。
@@ -1089,6 +1208,30 @@ const q = `SELECT id FROM quota_accounts`
     { report "  [SELFTEST FAIL] platform/db 自己没被排除（它是唯一合法写口，数进去就是天天有噪声）"; fails=$((fails+1)); }
   rm -f "$e_dir/table.md"
   rm -rf "$tmp"
+  # ---- 9b 判据表 ID 去重（T-316④ 的三条腿 + 镜像那半边）：全用合成表，绝不碰仓库里的 specs ----
+  local i_dir="$tmp/iduniq"; mkdir -p "$i_dir"
+  printf '| FL-1 | a |\n| FL-2 | a |\n| C8-1 | a |\n| C8-2 | a |\n| T84-1 | a |\n| W13-1 | a |\n| F20-1 | a |\n| U13-1 | a |\n| A18-1 | a |\n散文里的 FL-1 与 **A18-1 与 CO-1 都不算登记\n' > "$i_dir/tables_a.md"
+  printf '| T84-7a | a |\n| T84-7b | a |\n| F20-2 | a |\n| A18-2 | a |\n' > "$i_dir/tables_b.md"
+  local oi ni
+  # 腿①：合法形状不误伤（带字母后缀的 T84-7a/7b 是两个判据；散文引用不算登记；跨文件镜像只数不判）
+  oi="$(LUCERO_SPECS_DIR="$i_dir" check_id_unique 2>&1)"; ni="$(printf '%s\n' "$oi" | grep -c '\[VIOLATION\]')"
+  (( ni == 0 )) || { report "  [SELFTEST FAIL] 合法表被判成重号（VIOL=$ni，期望 0）：$(printf '%s\n' "$oi" | grep VIOLATION | head -1)"; fails=$((fails+1)); }
+  printf '%s' "$oi" | grep -q '只数不判' || \
+    { report "  [SELFTEST FAIL] FL/F20/A18 各在两文件里、镜像那句却没打印 ⇒ 跨文件那半边是死的"; fails=$((fails+1)); }
+  # 腿②：合成重号必报，且要点名是哪族、哪份文件、字面/去重各几个
+  printf '| FL-1 | 有人把上面那行又贴了一遍 |\n' >> "$i_dir/tables_a.md"
+  oi="$(LUCERO_SPECS_DIR="$i_dir" check_id_unique 2>&1)"; ni="$(printf '%s\n' "$oi" | grep -c '\[VIOLATION\]')"
+  { [[ "$ni" == "1" ]] && printf '%s' "$oi" | grep -q 'FL 表在 .*tables_a.md 里重号' \
+      && printf '%s' "$oi" | grep -q '字面 3 / 去重 2'; } || \
+    { report "  [SELFTEST FAIL] 插了一行重复 ID 没被点名（VIOL=$ni，期望 1）：$(printf '%s\n' "$oi" | grep VIOLATION | head -1)"; fails=$((fails+1)); }
+  # 腿③：表改了形状 / 挪走 ⇒ 一条 ID 都没有 = 这条腿失明，必须七族各喊一声，不许报"无重号"
+  printf '这张表改了形状，行首没有 ID\n' > "$i_dir/tables_a.md"; rm -f "$i_dir/tables_b.md"
+  oi="$(LUCERO_SPECS_DIR="$i_dir" check_id_unique 2>&1)"; ni="$(printf '%s\n' "$oi" | grep -c '一个 ID 都没解析出来')"
+  (( ni == 7 )) || { report "  [SELFTEST FAIL] 七族全空时下界闸只喊了 $ni 族（期望 7）⇒ 它会静默失明"; fails=$((fails+1)); }
+  if printf '%s' "$oi" | grep -q '去重后仍'; then
+    report "  [SELFTEST FAIL] 空表还打印了『无重号』那句 ⇒ 拿空集当证据"; fails=$((fails+1))
+  fi
+
   (( fails == 0 )) && report "  [SELFTEST OK] 扫描器都能对合成越界报警"
   return $(( fails > 0 ? 2 : 0 ))
 }
