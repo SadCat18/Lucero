@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-30T22:30:00+08:00   ← 09-30 第一百五十三批：四处齐了但我裁**不入册**（turnpump.go 同文件混着 backend 未交的 T-414，mtime 22:26:20 距读数 35 秒）+ 入册七条清单
+LAST_UPDATED: 2026-10-01T00:22:50+08:00   ← 09-30 第一百五十四批：用户授权，首次推送完成（5ce4fbe..b9f21e8、远端回读一致、ahead=0；未交草稿 25 件按判断没跟着走）
 
 ## Objective
 
@@ -237,7 +237,7 @@ LAST_UPDATED: 2026-09-30T22:30:00+08:00   ← 09-30 第一百五十三批：四�
   「Wave-2 验收检查」与「Wave-2 复验 · 09-28 第二次」两段，历史不改。）
 - Status: in_progress
 - Last verified action（09-30 20:3x，第一百三十九批～第一百五十批这一整段一次补记；**头部滞后是我自己的错，今天第二次**，正文各批原文都在下面）：**这一段做完的事，按人话排序** —— **(1) 崩溃恢复第一次被真跑通并入库**：`LUCERO_TEST_FAKE_ADAPTER=1` 下 `./cmd/core/` ok 38.502s，四腿逐个 PASS（标未知+降健康 0.94s／不误伤别的在跑行 0.83s／正常关闭≠崩溃 0.93s／死后重连 0.99s）；四处同改（db 目录两行 + backend 常量落点用例 + 我 §6 一行 + frontend yaml 一枚）入在 `2c65177`（20 件 +1840/−29），`git show HEAD:` 三面逐层复核均已入库，`git status --porcelain | wc -l` 从 27 降到 14。**(2) 默认面读数**：`go build ./...` RC=0 @19:29:35；`go test -v ./...` = **18 包 ok / 顶层 640 PASS / 21 SKIP / 0 FAIL** @19:31:53；单包 ./test/ 带 -v = 53 PASS / 6 SKIP / 0 FAIL @19:35:06；名册桶一 43→**44**（多的正是 `execution_unknown`）、桶二 21 = 名单 21、未决 0；`check_ownership.sh` 0 越界、七族 50 条 ID 去重后仍 50；被验树指纹 `6b5f3b01de843723b568f5e1fa3288f2`（构建 19:57:13、HEAD `2c65177`）。**(3) 挖出一枚被 SKIP 遮着的长期红**（`TestTurnRefCrossCheck`／`TestDroppedFrameReachesAuditSeam`，同一条根因 `turn_attribution_test.go:89`「绑定一致时 tracker 没被推到 RUNNING，停在 CLOSED」），我用 `git archive HEAD` 快照复跑证明**不是今天改坏的**（快照上原文一字不差同样红 @19:34:50），已派 T-410。**(4) 我今天认的三处自己的错**：重号 T-391→T-395；把「那封没被吃」判成单腿假红（工人台账是交账记录不是收件记录）；把「SKIP 0」当成读数（非 `-v` 的输出里根本没有 `--- SKIP` 行）—— 三条都进了登记表成新规矩。**(5) 我裁掉的六个待决**：事件名单 26→21；REQ-RC-3 裁「丙」（v0.1 不建 lease 写路径）；`execution_unknown` 的载荷裁「不并进合并行、单开一行 `from`+`reason`」；claimed 通道裁 (i) 新增 `execution_claimed`（拒 (ii)，理由：那条缝要开在审计链的地基上）；健康分档（掉线但进程活 ⇒ DEGRADED、连不上或死 ⇒ UNAVAILABLE、每次降档必须同事务发 `adapter_health_changed`、写口收成 `healthWrite` 单点）；T-404① 那句「非测试调用点 = 0」的措辞更正成「`internal/process` 以外 = 0」。**(6a) 21:0x 补记**：那枚被 SKIP 遮着的长期红已合上（`c8df8a9`，test 改的是**取证姿势**、产品码一行没动；我开旗标复跑两条各 PASS 1.91s／0.86s，并在 `c8df8a9` 的干净快照上跑全量 18 包 ok @20:56:55）。同趟名册判据转红是 **backend 在途 `claim.go:69`** 的中间态、不是回归，我不为它动判据。
-**(6) 现在欠着的**：`execution_claimed` 那批四处同改（backend 在落；我说了「你交账带一句、我才派 frontend」，免得出现第三种中间态红）；T-411 那句会教人写假事实的措辞；§10 表补 `code`／CO-55／§22 `adapter_downgraded` 发射点（**我要读原文才裁，不猜**）；push 仍等用户（20:26 现读 `git rev-list --count origin/main..HEAD` = 80）。
+**(6) 现在欠着的**：`execution_claimed` 那批四处同改（backend 在落；我说了「你交账带一句、我才派 frontend」，免得出现第三种中间态红）；T-411 那句会教人写假事实的措辞；§10 表补 `code`／CO-55／§22 `adapter_downgraded` 发射点（**我要读原文才裁，不猜**）；push：**00:2x 已完成**（`5ce4fbe..b9f21e8`，远端回读一致、`ahead=0`；见第一百五十四批。那句 80 是当时的现读，留着不删）
 **(7) 本格与上一格的关系**：旧那一格我**只在行首加了 `[留档]` 标记，正文一字未动**（含它原来那句字段名）；下面那行 `- [留档]` 开头即是它。
 - [留档] Last verified action（09-30 15:2x，第一百三十九批内两次自我更正 + 第一百四十一批开表；`date` 现读 15:29:48）：**① 我重号**：今天「常驻泵」那封我发成 `T-391`，而该号 09-28/29 已被 `REQ-RC-1` 吃过 ⇒ 改号 `T-395`（入册 `cf7a276`），新规矩「取号必须 grep 全部 worker 台账」进登记表（本文件 :188）。**② 我自己的单腿假红**：把 `T-394` 判成「未消费」只数了 `test.md` 对该号 0 命中，而同一时刻 `list_chat_sessions` 现读 test = `waiting-user`、最后一支 Bash `running`、第五层（闭包／回调回值）已落、反例 **Q1–Q4 全 FIRED、还原一致 = True** ⇒ 改判「已消费、在途未交」（入册 `e951933`），新规矩「判那封信吃到没有要两腿：台账 grep + 会话 runtimeState」。**③ 巡检 15:05 那批「已消费」我逐行回读后三行被推翻**：`T-395` 在途未交、`T-394` 同上、`T-390` 本是第一百三十五批（09-27）的老行被串进「今天五张」。**④ 现读**：`core/` 下 `CGO_ENABLED=0 go build ./...` **BUILD_RC=0 全包 @15:21:59** ⇒ adapter 15:10 报的 `cmd/core` build failed **已被取代**（按「两个数打架＝各带树与时刻并列、旧的标被取代**不删**」办；我账与 adapter 账都留着原读数）；`turnpump.go` 16099B／mtime 15:22:19／未跟踪、`sendreap.go`＋`sendreap_test.go` 状态 D ⇒ **泵的形状对上我裁的 Ⅰ，但 backend 还在写：这轮不打分、不入册、不碰它面包。****⑤ 直投再次被封**（原话「由其他会话委派的任务必须直接执行，不能继续向其他会话转发消息」）⇒ `T-396`（还 backend 改号）与 `T-397`（还 adapter 两条我的账）写成待投行走巡检（入册 `95f7078`）；**巡检本轮 15:22:27 起跑、下一轮 15:52:27**（`qoder_cron list` 现读 `runningAt`／`nextRunAt`）⇒ 这两封最快 15:52 出门。**⑥ NEEDS YOU 加一条**：**test 卡在一个等人工点击的交互上**（`pendingInteractionCount=1`），我这侧没有跨会话批准通道。**⑦ 待我裁的一格**：事件名单 **26 → ?** —— test 第五层现读认出五条（不是我原先说的两条），**名单要加哪几个名字得等它交账带 file:line，我不许自己编值**。
 - 上一格留档（第一百四十批，09-30 14:51:24 当时字段名就叫「Last verified action」，原文不动）: **09-30 治理变更（契约写权放开 + 登记制）→ 第一百四十批**（`date` 14:51:24）：用户裁「允许别的 agent 直接改契约」。落成三件事：**①** 契约③ §7 那行改成“主控 + 经用户指定代跑主控职责的会话”，**worker 不含** —— 门禁按 *主控* 通配把本行仍判给 orchestrator，所以 worker 写 specs 照旧报越界（这是有意的，要放开得另裁一次）；**②** 新立「契约改动登记」表（在编排规则里），规矩是**没登记的改动我不判对错、按未授权回滚**，我自己这一笔是第一个登记项，09-28/09-29 那批事后补登；**③** 按我自己定的第②款当场重推守门：改前改后各跑一次 `check_ownership.sh`，`OWN_RC=0`、`--selftest` `SELFTEST_RC=0`。上一格：09-30 主控独立复核 + 第一百四十批（`date` 本轮 14:42:48，全文见上面「主控复核 · 09-30」段）：用户告知那三天由另一个 agent 推进 ⇒ 我从零重跑一遍并认可 09-28 那次 Wave-2 签字（build/vet `0`、**18 包全 ok**、`OWN` 0 越界、复现器 `NOT-REPRODUCED`、面板 **22/22**、崩溃骨架 **11 PASS / 3 SKIP**、`internal/audit` 我自己跑 **82 PASS / 0 / 0**）；三天工作 33 处**一笔都没提交** ⇒ 已按角色切成八笔（`87e6c16`…`cf5a2a4`）；唯一还欠的实质工程 = **`REQ-TURN-1` 常驻泵三条判据**（`sendpipe.go:139` 仍是回执后同步扫缓冲）⇒ T-395/T-392 出门；audit 触发条件 Ⅰ 成立 ⇒ T-393 开工；`REQ-T37` 裁「甲」并已把锚清成唯一（改完重跑判据 `ok`）。**上一格（留档，原文不改）** Last verified action: **Wave-2 复验 + 合验三腿（第二次全量，09-28 15:5x~19:16，我派 `test` 角色代跑、逐条我复核）**：
@@ -1484,6 +1484,19 @@ test 出题时的现场是"`execution_unknown` 有发射位、但那条分支没
 5. `LUCERO_TEST_FAKE_ADAPTER=1` 跑 `./cmd/core/` 与 `./test/` 两趟（今天刚学到的：那一面有 SKIP 遮着的红）。
 6. 归属 lint `check_ownership.sh` + `--selftest` 两个退出码（21:33:15 那趟是 0 越界，入库前重跑）。
 7. 提交后 `git archive` 导出新 HEAD 快照、在快照上再跑一次全量 ⇒ **"HEAD 绿"永远用不含别人草稿的那棵树说**。
+## 第一百五十四批 · 10-01 00:2x（用户授权，**首次推送完成**）
+
+**用户原话**：「推 GitHub 备份」——这是**那一次**的授权，**不构成常设许可**（红线「push 必须先问」继续有效，下次仍要先问）。
+
+**推了什么 / 没推什么（都是现读，不是推测）**：
+- 范围 = `5ce4fbe..b9f21e8`，**85 个提交**，全部是已入册的内容；`git push origin main` 回显 `PUSH_RC=0 @00:20:06`。
+- **独立回读**（我不拿工具回显当完成）：`git ls-remote origin refs/heads/main` = **`b9f21e87760ac40daa4f1463d4b6de669e27cac9`**，与本地 `git rev-parse HEAD` **逐字相同**；`git rev-list --count origin/main..HEAD` = **0**；`git status -sb` = `## main...origin/main`（不再有 ahead）。
+- **没被推走的**：本地 `git status --porcelain` 仍有 **25 件**（其中 `M core/` 9 件 + 未跟踪的 `claim.go` 那一族）⇒ 那正是 backend 未交账的 T-414 半批与四处同改的待入册件，**按 22:3x 那笔决定留在本地、没跟着走**——这一次推送没有把我的等待判断变成"顺手把草稿也发出去"。
+- **推前扫过敏感内容**（两道）：① 文件名维度 `git diff --name-only` 里无 `.env/credential/secret/token/key/.pem/.png` 类命中；② 内容维度按 `(api_?key|secret|token|password)["'=: ]…{16,}` 扫全 diff = **1 处命中**，我读了上下文：`core/test/crash_test.go:675 crashSecret = "sk-abcdefghijklmnop0123456789"`，用途是**假夹具**——同文件注释与 `crashShape = sk-[A-Za-z0-9_-]{16,}`、`crashMarker = "[REDACTED]"` 一起构成"标题里贴密钥必须被打码"的脱敏断言（`:1563/:1593/:1609` 三处 `bytes.Contains` 就是在断它**不该**出现）。不是真凭据，所以推。
+- 文件构成：96 个 `.go` / 15 个 `.md` / 4 个 `.ts` / 3 个 `.sh` / 1 个 `.yaml`。
+
+**这一笔的意义**：GitHub 上第一次拿到"崩溃四腿在真子进程下实测通过 + 三处同改已登记 + 名册判据第五层"的那棵树（代码面与 `c8df8a9` 逐字相同，而 `c8df8a9` 是我用 `git archive` 干净快照跑过 18 包 ok 的那一棵）。**台账类提交也在里面**——里面有我今天认的三处错和一条被 SKIP 遮住的长期红，都在库里可查，不是只在聊天里说过。
+
 ## 待投递 · 第一百五十二批（09-30 21:3x：直投被封，走巡检）
 
 | # | 目标 role | 状态 | 指令 |
@@ -2459,6 +2472,7 @@ bbf829e ledger: 第九十九批 —— 更正我 T-271 那句"ResolveInstance �
   `ls /d/DevTools/go/bin /d/DevTools/node-v24.19.0-win-x64`，确认解压结果后再建 `survey` 会话
 
 ## ⚠ NEEDS YOU
+- **（10-01 00:2x 结案）push**：用户这句「推 GitHub 备份」到了，`5ce4fbe..b9f21e8`（85 个提交）已推，远端回读 `b9f21e87760ac40daa4f1463d4b6de669e27cac9` 与本地 HEAD 逐字相同、`ahead=0`；推前两道敏感内容扫描只有 1 处命中、读上下文确认是脱敏假夹具（`crash_test.go:675`）。**这是那一次的授权，红线「push 必须先问」继续有效**；本地未交的 25 件（含 backend 的 T-414 半批）按 22:3x 判断留在树内没跟着走。
 - **作废（巡检 09-30 15:57 快照）**：上一条"`test` = `waiting-user`"**已自解**——同一批快照里 `test` 现为 `running`（rev84→**rev151**），`pendingInteractionCount` 归 **0**；`needs_attention` 本轮实测=**0**。⇒ **不必再点那个确认框**（主控 15:5x 给用户那份大白话汇报里第"四.1"条正是这一票，请告用户可省）。上一条原文不删，按"历史不静默改"留痕。
 - **（09-30 15:3x 结案）熔断 (A)/(B)**：用户追认 **(A)**、`everyMs` **保持 30 分钟**。正文落点在本文件「一次完整的无人值守停摆」那段（现读 `grep -n '可行方案只有两个' .qoder/progress/orchestration.md`），**以后日报不必再抄这一条**；我这边把它从「等你选」改成「已按 A 跑、代价是下次开口才知道」。
 - **⚠ 09-30 15:25 快照：`test` = `waiting-user`（`pendingInteractionCount:1`，rev84）**——`wait_chat_sessions` 那一次返回 `outcome=needs_attention`，唯一就是它。**它要问什么我不知道**：按规矩我不拿 transcript 当证据，而 `test.md` 的 `LAST_UPDATED` 停在 **09-28 19:20:15**（今天它明明在跑 rev34→84，头部没跟着刷）⇒ 那一句没落进它自己的账。**要的决定**：用户或主控打开 `test` 会话答那一条 pending。旁证：主控在下一行（本表另一条 15:2x 记录）已用 `list_chat_sessions` 独立看到同一状态并写了判断，**所以这一条不是新情报、是补一份巡检侧读数**；我不替它回答、不重发 T-394。巡检侧限制照旧：我没有 `qoder_cron` 也没有权限替 worker 答 pending。
