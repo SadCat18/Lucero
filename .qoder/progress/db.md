@@ -3,8 +3,8 @@ TASK_ID: db-platform
 STATUS: complete
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-24T11:00+08:00
-UNCOMMITTED: core/internal/platform/db/versionless_test.go（T-243 的 +3 行注释，10:11:49 实测 HEAD 内 0 命中）——归属 db；`events.go` 那两行已入册（38cafa8 10:03:46）
+LAST_UPDATED: 2026-09-25T18:18+08:00
+UNCOMMITTED: 无 —— 本角色三路径全部在库（`events.go`=`38cafa8` 09-24 10:03:46、`versionless_test.go`=`2c56023` 09-25 17:47:36、`touch.go` 随 09-23 那批）；`git diff HEAD` 对我范围 0 行（18:11:58 实读）
 
 ## Objective
 
@@ -33,25 +33,37 @@ UNCOMMITTED: core/internal/platform/db/versionless_test.go（T-243 的 +3 行注
 
 ## Current checkpoint
 
-- Stage: **T-219 / T-233+T-243 / T-252 / T-266 / T-276 五批都已落账**（T-276 只刷头部、零代码）——无版本聚合三入口在盘、
+- Stage: **六批都已落账**：T-219 / T-233+T-243 / T-252 / T-266 / T-276（只刷头部）+ **09-25 18:12 这一轮
+  ＝执行 Next action 的基线复测**（零代码、零判据改动；REQ-DB-2 那条落地判据我自己复跑到 PASS）——
+  无版本聚合三入口在盘、
   `AppendEventOnly` 已收紧成只给 `table == noTable`、REQ-DB-4 的 `execution_starting` 常量 + `Registered()` 集合
-  已入册（`38cafa8` 10:03:46）；本轮零代码改动（只有账本与一次守门复跑）。头部五行按 T-276 于 **10:54:23 刷新**
-- Status: complete（本角色账上无待办；唯一悬着的一格在"等"那行，不是我能动）
-- Last verified action: **最后一次重跑 = 10:02:43**（当场 `date` 实读；本行于 10:54:23 刷新）——
-  `./internal/eventjournal/...` **5 条全 PASS**、原文 `contract §6 and the catalogue agree on 64 event types`
-  （这一跑是为了 09:4x 新落的事件契约 §6 表头规矩，见"契约改口径要重推守门"）、
-  `./internal/platform/...` `ok 2.831s`；守门之外的三格是 09:26:42→09:26:47 读的：
-  `C8-13 三格相等 §6=64/yaml=64/常量=64` PASS、`C8-12 目录 64/常量 64` PASS、我两包同批 ok。
-  此后我只做只读核对（10:11:49 入册状态、10:54:23 头部刷新），**没有再跑判据，也不拿旧读数冒充新读数**
-- 等（三问，按 T-276②）：**等谁**＝主控；**等什么**＝把 `core/internal/platform/db/versionless_test.go`
-  那 **+3 行注释**入册（10:11:49 实测：HEAD 内 `grep -c fixture` = 0、工作区 = 1、`git status` = ` M`、
-  该文件最后提交仍是 `1ad0c37` 07:10:24，早于我 07:52:15 的编辑）；**谁解锁**＝主控（红线① 我无 git 写权限，
-  只报不办、也不催）。**这格不改变任何判据结果**（HEAD 那版测试自身是绿的），只是"树里有一格 HEAD 里没有"的形状
-- 范围自证：基线现取 **`a3b2910`（10:04:11）**；`git diff HEAD -- core/internal/platform/db core/internal/eventjournal core/migrations`
-  = **仅 `versionless_test.go +3`**；`events.go`（T-252 的 +4/−1）已在 HEAD 里 = `ExecutionStarting` 命中 **2**；
-  `touch.go` / `core/migrations/` 对 HEAD 零差异；**工作树未跟踪件本角色 0 件**
-- Next action: **跑 scoped 门禁复测基线**（`cd core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`）
-  ——本角色账上**只有这一件**，且它是复测不是待办；其余三格都已闭或不在我手里（见上面"等（三问）"）。
+  已入册（`38cafa8` 09-24 10:03:46，今日仍是该文件最后一次提交）；`versionless_test.go` 那 +3 行注释
+  也已随 `2c56023`（09-25 17:47:36）入册 ⇒ **我三路径全在库、工作树干净**
+- Status: complete（本角色账上无待办，**也不等任何人**——上一轮那格"等主控入册"18:11:58 已确认成立并关闭）
+- Last verified action: **最后一次重跑 = 09-25 18:12:10→18:15:32（Next action 那条基线复测，当场 `date` 实读；
+  本行于 18:15:48 刷新）** ——
+  scoped 门禁 `-v`：**49 `--- PASS`、0 FAIL、0 SKIP（顶层 49 / 嵌套 0）**，`ok platform/db 2.599s` +
+  `ok eventjournal 0.484s`、原文 `contract §6 and the catalogue agree on 64 event types`；
+  `gofmt -l` 空、`go vet` 两包 exit 0、`go build ./...` exit 0；`go test ./internal/...` → **13 包 ok、FAIL 0**；
+  信息性 `go test ./...` → **18 包 ok、FAIL 0、no test files 0**；
+  **契约① 第 17 条那条落地判据我自己复跑并 PASS**：
+  `LUCERO_REQ_DB2=1 CGO_ENABLED=0 go test -count=1 -v -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
+  → `--- PASS (0.13s)`，同一用例**不带 flag 时是 `--- SKIP`**（18:14 两跑对照 ⇒ 门是 env 控制的，
+  我没有带 flag 跑全仓，只跑契约点名的那一条）；`check_ownership.sh` exit 0"0 项越界"。
+  （上一轮 10:02:43 那次读数已被本轮取代；本轮之前我只做只读核对。）
+- 等（三问，按 T-276②）：**已成立 ⇒ 本格关闭，留原文不删** ——
+  ~~等谁＝主控；等什么＝把 `core/internal/platform/db/versionless_test.go` 那 +3 行注释入册；谁解锁＝主控~~
+  18:11:58 我自己复量：`git log -1 -- …/versionless_test.go` = **`2c56023`（09-25 17:47:36）**、
+  `git show HEAD:…versionless_test.go | grep -c fixture` = **1**（我 10:11:49 量的是 HEAD 内 0 / 工作区 1，
+  两条读数都真，差在 09-25 那批入册），`git diff HEAD -- 我三路径` = **0 行** ⇒ 三路径全在库、工作树干净。
+  **本角色现在不等任何人。**
+- 范围自证：基线现取 **`7f8599f`（09-25 17:49:12，父 = `2c56023`）**；
+  `git diff HEAD -- core/internal/platform/db core/internal/eventjournal core/migrations` = **0 行**（三路径全在库）；
+  我三个文件的 mtime 仍停在各自最后一次编辑（`touch.go` 09-24 07:10:37、`versionless_test.go` 07:52:15、
+  `events.go` 09:05:35）⇒ **今天没有任何人在我范围内改过码**；未跟踪件本角色 0 件
+- Next action: **无本角色待办、也不等任何人**；下一次开工的唯一动作＝等主控派新活，接手时先复跑那两条基线
+  （scoped 门禁 + `LUCERO_REQ_DB2=1 … -run TestLifecycleRowLandsTheFiveColumns ./cmd/core/`）确认没被别人改动带歪。
+  本轮（09-25 18:12）就是这条复测，已完成、读数在 `Last verified action`。
   - 已作废/已成立的历史层（T-276③：头部只留活动项，历史按"留档"读，勿再当待办）：
     ① ~~把 T-233 与 adapter 那两处更正按改后口径转告 adapter~~（T-243 08:20 销账：巡检 07:50 已覆盖同一格，
       且"分开两种错形"本是 **adapter 07:46 先纠出来的**——它按 `landedStatus` 落码在先，
@@ -66,10 +78,31 @@ UNCOMMITTED: core/internal/platform/db/versionless_test.go（T-243 的 +3 行注
     ② 我那句"拿观察态当 guard……第二次还撞 `event_id` 的 UNIQUE"把两种错形合成了一种——
     固定用观察态 ⇒ 每次干净 0 行 + 一句喊、永远走不到记事件；只有"guard 跟着状态前进"才会撞 `event_id`
     的 UNIQUE（adapter 用 m3 复现过）。⇒ 本角色代码零改动，改的是我这两次转述。
-- Verification: `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
+- Verification: 两条，都在 09-25 18:12 跑过——
+  ① `cd /d/Project/Lucero/core && CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test ./internal/platform/... ./internal/eventjournal/... -count=1`
+  ② 契约① 第 17 条的落地判据（只在带 flag 时**单跑那一条**，不带 flag 全仓）：
+  `cd /d/Project/Lucero/core && LUCERO_REQ_DB2=1 CGO_ENABLED=0 D:/DevTools/go/bin/go.exe test -count=1 -v -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/`
 
 ## Completed
 
+- **09-25 18:12 基线复测轮（执行 Next action，零代码零判据改动）**：
+  - **读数全部当场取**（`date` 18:11:58 / 18:12:10→18:15:32 / 18:17:00）：scoped 门禁 `-v` **49 PASS／0 FAIL／0 SKIP**
+    （`ok platform/db 2.599s`、`ok eventjournal 0.484s`、`agree on 64 event types`）、`gofmt -l` 空、
+    `go vet` 两包 exit 0、`go build ./...` exit 0、`./internal/...` **13 包 ok**、`./...` **18 包 ok／0 FAIL**、
+    `check_ownership.sh` exit 0"0 项越界"。
+  - **REQ-DB-2 那条落地判据我自己复跑到 PASS**（不转抄主控的读数）：
+    `LUCERO_REQ_DB2=1 … -run 'TestLifecycleRowLandsTheFiveColumns' ./cmd/core/` → `--- PASS (0.13s)`；
+    **同一条不带 flag 是 `--- SKIP`**（18:14 两跑对照），所以我带 flag 也只跑契约点名的那**一条**、
+    没有带 flag 跑全仓（那条纪律仍按 ① 第 17 条末段执行）。⇒ 三入口这条链在契约意义上已闭。
+  - **"等主控入册"那一格已成立并关闭**（三路径 diff HEAD = 0 行、`2c56023` 09-25 17:47:36 收了那 +3 行注释）；
+    头部五行（`Stage`/`Status`/`Last verified action`/`Next action`/`Verification`）与 `UNCOMMITTED` 同轮刷完，
+    `Verification` 那行从一条命令扩成两条（把我本轮实际用来复测的落地判据也写进去，下次接手照跑）。
+  - **一次"别人脚本的红"我按在途处理、没上报成缺陷**：18:13:5x 第一次跑 `check_ownership.sh` 打了
+    `scripts/check_ownership.sh: line 1127: 结论: command not found`（exit 仍是 0、结论照打）；
+    我没有据此判 test 的脚本坏，先做两件事：**读 `hdr()` 定义**（`:52` 是 `printf`，不构成那个错）＋
+    **同一条命令复跑**（18:15:32 → `grep -c "command not found"` = **0**、exit 0），
+    再对照该文件 mtime = **18:13:34**（我第一次跑前 20 秒）⇒ 判为 **bash 边读边执行撞上 test 正在改脚本**，
+    不是脚本缺陷。**不进任何人的待办，只留这条读数**；若它们下次仍复现再由它们自己判。
 - **T-276（头部五行 = 机器读的索引）已按新规矩执行，零代码改动**（10:54:23 收件 → 10:55:12 刷新完）：
   - **巡检量到的那两格确实是旧的，我核对后自己承认**：`Stage` 停在 T-219（其后还有 T-233/243、T-252、T-266 三批），
     `Last verified action` 写的是 **07:18:31→07:18:40**，而我最后一次真跑是 **10:02:43**（为 09:4x 新落的
