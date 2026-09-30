@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-30T15:29:48+08:00   ← 09-30 第一百四十一批 + 头部五行同轮刷（第一百三十九批内两次自我更正一并写进 Last verified action）
+LAST_UPDATED: 2026-09-30T15:46:13+08:00   ← 09-30 第一百四十二批：熔断格结案（用户追认 A）+ 巡检调度列换成实测 everyMs=1800000 + NEEDS YOU 加结案标
 
 ## Objective
 
@@ -26,6 +26,19 @@ LAST_UPDATED: 2026-09-30T15:29:48+08:00   ← 09-30 第一百四十一批 + 头�
 - [ ] 全程：blocked 项零丢失，红线零绕过
 
 ## 日报
+
+### 2026-09-30 15:2x 档（日报生成器 · 本机 `date` 15:31:45 —— 09-29/09-30 两档无日报：cron 09-30 13:30 那轮 `session-failed` ×3 又被熔断，主控 14:5x 已复位）
+
+- **Wave 完成度**：0 ✓ / 1 ✓ / **2 ✓** / 3 ☐ = **3/4**。Wave-2 由用户 09-28 21:4x 宣框勾，**主控 09-30 从零独立复核后认可那次签字**（同一棵树 14:31~14:37：build/vet `0`、**18 包全 `ok`**、`check_ownership.sh` 0 越界、`repro-req-s1.sh` `NOT-REPRODUCED`、面板 **`Tests 22 passed (22)`**、崩溃骨架 **11 PASS / 3 SKIP**、`internal/audit` **82 PASS / 0 / 0**、链尾**自然**落 `WAITING_ACCEPTANCE`）—— **被验树 = 在途树**（起跑 33 处未提交，已按角色切成八笔 `87e6c16`…`cf5a2a4`）。
+- **backend**：台账末次 = 09-29 00:31 第 300 条（`REQ-RC-1` 恢复扫描器：新建 `internal/execution/recovery.go` + `cmd/core/recovery.go`，6 条判据用例、两发反例 FIRED、全仓 18 `ok`、`OWN_EXIT=0`）。**`REQ-TURN-1` 那根泵（T-395）在途未交账 ⇒ 本档记「未验证」**：只有主控 15:2x 的只读读数（`go build ./...` `BUILD_RC=0` @15:21:59、`turnpump.go` 16099B 未跟踪、`sendreap.go` 已 D）。
+- **adapter**：15:15:18→15:15:29 A 面 **130 PASS / 2 SKIP / 0 FAIL、三包全 `ok`**、k1..k8 全 FIRED ⇒ T-392「收尾帧搬到 send 回执之后」已交账；同本账 15:07:53→15:08:10 B 面 `ALL_RC=1`（15 包 ok + 2 包 build failed + `core/test` 1 红），它自己明写不把 B 面写成全绿。**CO-56 那一刀 15:28 已转 backend：两半不同批入册就是红的。**
+- **audit**：09-30 15:03:03 逐包单独取数 **audit 82 / permission 54 / approval 96、FAIL 0 / SKIP 0**、指纹 `66b83f78…`（HEAD=`264d562`），并自限"那句 18/18 只到我三个包 + 那棵树为止"；T-393⇒T-372 只读列表方法已交付、新报 `REQ-A14`。**它从 09-22 起冻八天后今天开工**（09-28 18:14 那次三包 216 PASS 已被本轮取代，原文留档）。
+- **test**：台账 header 09-28 19:20（W2-7 三份读数）而 checkpoint 的 `Last verified action` 那行仍写 09-27 16:43 ⇒ **头部滞后一天多**；09-30 的"第五层认出 5 条 / 四枚反例 Q1–Q4 全 FIRED"只出现在主控账上、**它自己没交账 ⇒ 未验证**。另：`needs_attention=1` —— 它 `waiting-user`、`pendingInteractionCount:1`，最后一支 Bash 仍 `running`，**等用户点一下**。
+- **db / frontend / survey**：三本台账 24h 内都没有新读数 ⇒ **未验证** —— db 停在 09-25 18:18（`STATUS: complete`，巡检 15:28 那行记"已关闭"）；frontend 停在 09-27 13:25:00（复现器 exit 0 / live **22 passed (22)** / 六腿 exit 全 0，且自己限定"这三个读数长在 backend 在途码上"）；survey 停在 09-19 header，B5② 探测 09-27 已交回（带 key `404` / 不带 `401`、`netstat` 监听 39→39、`apiKey` 全程未落盘）。
+- **过去 24h 关闭**（各带命令）：Wave-2 独立复核认可；33 处未提交按角色切成八笔入册；`REQ-T37` 裁「甲」且锚字清成唯一（`grep -c "本名单当前是"` = 1，改完重跑判据 `ok`）；治理变更落地（用户裁"允许别的 agent 直接改契约"⇒ 契约③ §7 归属行改写 + 新立「契约改动登记」表，改前改后各推一次守门 `OWN_RC=0` / `SELFTEST_RC=0`）；adapter T-392 生产者半交账；audit T-372 交付；第六次无人值守停摆（09-27 16:58→09-30 15:03，2 天 22 小时 5 分）已复位。
+- **未关闭**：① `REQ-TURN-1` 三条判据（泵未交账 + 合验要两半同批）；② `REQ-RC-2`（改判正身 `INTERRUPTED` vs `UNKNOWN` 二选一，等主控一句）、`REQ-RC-3`（三态判定今天无信号源）；③ 事件名单 26 条 vs 第五层认出 5 条 ⇒ 主控裁定项，未裁；④ `REQ-A14`；⑤ Wave-3 存量：面板 3 格 blocked、`:accept` 的 Idempotency-Key 强制（顺序 frontend 先改 yaml、backend 再强制）；⑥ 本文件 `## Blockers` 段仍停在 Wave-0 那批 B1~B9 未刷新（B5② 其实 09-27 已闭）⇒ 实况以本档与心跳为准。
+- **NEEDS YOU 未处理 4 条**：**test 那一票（今天新，`waiting-user`）**、熔断 (A)/(B)、再推一次 push 的点头（`origin/main` 实测 = `5ce4fbe`，本地领先 **70** 个，`git rev-list --count origin/main..HEAD` 15:28:46 实取）、worker 代码由主控按检查点代提交的默认是否继续（"未反对即继续"仍生效）。**待投递 2 条**（T-396→backend 改号、T-397→adapter，第一百四十一批 15:27:12 落笔，主控直投被封故走巡检）——与巡检 15:23:06 那次"待投递=0"并列不删，各带时刻；宽口径 `grep -c "待投递\*\*"` 会是 3，第 3 处是心跳行正文不是状态格。
+- **最近提交**：`95f7078` `e951933` `cf7a276` `264d562` `ade8085` `cf5a2a4`（`git log --oneline -6` 15:28:46 实取；本档起草期间这本账仍在被并发写 —— mtime 实测 15:29:48 ⇒ 哈希与行号只作当轮锚点）。
 
 ### 2026-09-28 21:4x 档（Wave-2 签字档 —— 主控手写，本机 `Get-Date` 21:40:41）
 - **Wave 完成度**：0 ✓ / 1 ✓ / **2 ✓（本档勾）** / 3 ☐ = **3/4**。**Wave-2 由用户 21:4x 宣框勾**，证据链写在
@@ -1775,7 +1788,7 @@ adapter 报 `core/internal/adapter/handshake.go` 被外部回退过，要我查"
 
 | 任务 | jobId | 调度 | 权限 | 输出模式 |
 |---|---|---|---|---|
-| Lucero 编排巡检 | `37f0ac17-fc0d-41bb-854f-f74b8145ba9a` | every 10 min | Auto（非 Full Access） | merged |
+| Lucero 编排巡检 | `37f0ac17-fc0d-41bb-854f-f74b8145ba9a` | **every 30 min**（`everyMs=1800000`；09-30 15:3x 用户裁「保持 30 分钟」。**注意：cron 的 prompt 正文仍写「每 10 分钟唤起一次」——那句作废，以本列为准**：`qoder_cron update` 是整段替换 prompt，为改五个字重敲四千行指令不值，故只在这里定口径） | Auto（非 Full Access） | merged |
 | Lucero 编排日报 | `88b4e710-e23f-40d7-af87-a488c29bce93` | `0 9 * * *` Asia/Shanghai | Auto | merged |
 
 两者执行目录均为 `D:\Project\Lucero`，只允许写本文件，禁止 `create_chat_session`、禁止 git 写、禁止跑 build/test、
@@ -1810,6 +1823,9 @@ T-73/74/75 由主控直发投出（用户主动回合，通道可用；三家 `o
 的写法都不会执行。可行方案只有两个：**(A)** 把巡检失败告警交给一个不会被同一熔断拖走的外部通道（例如你偶尔
 说一句"检查编排"）；**(B)** 把这两条 cron 的 `everyMs` 提高容错、或把熔断阈值调高。
 **我倾向 (A)：不需要新机制，代价是"你下次开口才知道"。**
+
+**⇒ 结案（09-30 15:3x 用户追认 (A)，本格以后不再进 NEEDS YOU）**。三条理由我照原样留档：**① (B) 的两半拿不到**：连失 3 次自动 disable 的阈值在平台侧，`qoder_cron` 的字段里没有 failure/threshold 可调；「把 `everyMs` 调大」只会让停摆更晚被发现——而实际现读已经是 `1800000`（30 分钟），**账上没有任何一行记过这次改动**（09-22 22:37 那行还写「仍是 600000、没被平台偷偷改成 1200000」）⇒ 归属标**未证**，我不替平台也不替任何会话认罪。**② (A) 其实早就在跑**：巡检心跳那行（本文件 :1914）自己记着「主控已自行恢复并按 (A) 处理」，而上面那两条主控义务（:1816-1818，每次被唤起第一动作 `qoder_cron list` 核四个字段并与本表调度列比对）就是 (A) 的机械化版本，09-30 这轮我照做了、也正是这次量到 `everyMs` 与调度列不符的——**判据本身Works，只是它报的是我自己的账没跟上**。**③ (A) 的代价已付过六次**（18／30／25／31／47／**70** 小时，全部零告警）。换 B 不会更好，因为**能发现「编排死了」的那两个角色本身就是会被同一熔断拖死的**——这是结构性盲区，不是偶发；要一条真正死不了的告警通道就得引外部系统（邮件／webhook 之类），**那要另开授权，我不自己伸手**。
+
 
 
 
@@ -2155,6 +2171,7 @@ bbf829e ledger: 第九十九批 —— 更正我 T-271 那句"ResolveInstance �
   `ls /d/DevTools/go/bin /d/DevTools/node-v24.19.0-win-x64`，确认解压结果后再建 `survey` 会话
 
 ## ⚠ NEEDS YOU
+- **（09-30 15:3x 结案）熔断 (A)/(B)**：用户追认 **(A)**、`everyMs` **保持 30 分钟**。正文落点在本文件「一次完整的无人值守停摆」那段（现读 `grep -n '可行方案只有两个' .qoder/progress/orchestration.md`），**以后日报不必再抄这一条**；我这边把它从「等你选」改成「已按 A 跑、代价是下次开口才知道」。
 - **⚠ 09-30 15:25 快照：`test` = `waiting-user`（`pendingInteractionCount:1`，rev84）**——`wait_chat_sessions` 那一次返回 `outcome=needs_attention`，唯一就是它。**它要问什么我不知道**：按规矩我不拿 transcript 当证据，而 `test.md` 的 `LAST_UPDATED` 停在 **09-28 19:20:15**（今天它明明在跑 rev34→84，头部没跟着刷）⇒ 那一句没落进它自己的账。**要的决定**：用户或主控打开 `test` 会话答那一条 pending。旁证：主控在下一行（本表另一条 15:2x 记录）已用 `list_chat_sessions` 独立看到同一状态并写了判断，**所以这一条不是新情报、是补一份巡检侧读数**；我不替它回答、不重发 T-394。巡检侧限制照旧：我没有 `qoder_cron` 也没有权限替 worker 答 pending。
 - **09-30 15:2x · test 那一格等人点一下**：`list_chat_sessions` 现读 test = `runtimeState=waiting-user`、`pendingInteractionCount=1`，它最后一支 Bash 状态是 `running` ⇒ **它是一个权限/交互弹窗在等用户，不是在想问题**。我这侧没有跨会话批准的通道（`send_message_to_chat_session` 只能排队一条消息、解不开弹窗），**要用户自己去 test 那个会话点掉**。它这轮的产出已经很好（第五层 + 四枚反例），只差交账那一步。
 - **⚠ 第六次无人值守停摆（巡检本轮 09-30 15:03 复活时实测）**：我上一条心跳是 **09-27 16:58**，本轮 `date` = 09-30 15:03 ⇒ 间隔 **2 天 22 小时 5 分（=252347 秒，`date -d` 求差）**，累计六次 18+30+25+31+47+**70** 小时，**全部零告警**。原因与历次同族：`failureCircuit`/`session-failed`；主控 09-30 记的实况是"日报 cron 又被禁用（13:30 那轮 session-failed、1059ms、连 3 败，我已复位）；巡检 `enabled:true` 但**间隔被改成 30 分钟**、13:30 那轮同样 `session-failed`"。⇒ **要用户决定两票**：① **熔断改 (A) 还是 (B)**（这两票挂了六次停摆都没动）；② **push**（笔数以现跑 `git rev-list --count origin/main..HEAD` 为准，主控 15:0x 报的是 66 笔，我没复跑）。我这侧的限制照旧：**`qoder_cron` 工具不在我的会话工具表里 ⇒ 我无法自禁、也无法把间隔改回 10 分钟**。
