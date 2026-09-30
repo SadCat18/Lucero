@@ -36,10 +36,15 @@ const (
 	DeliveryQueue    = "queue"
 )
 
-// TaskProjector 是 §5.3 投影的最小面，由 *task.Service.ApplyExecutionEvent 直接满足。
+// TaskProjector 是 task 写路径在 send/收尾这一侧的最小面，由 *task.Service 直接满足。
+// 两格而不是一格：`ApplyExecutionEvent` 是 §5.3 的投影，`AdvanceToWaitingAcceptance` 是契约④-c
+// 裁的那半格（AGENT_COMPLETED→WAITING_ACCEPTANCE，由 FinishFromTurn 同笔接着推）。
+// 分开是因为两者的输入面不同（投影吃 execution 边沿 + handoffReady/approved；推进只吃 execution_id），
+// 合成一个方法就得让 §5.3 的签名背上它用不到的参数。
 type TaskProjector interface {
 	ApplyExecutionEvent(ctx context.Context, tx *db.Tx, taskID, edge string,
 		handoffReady, approved bool, cmd task.Command) (task.Result, error)
+	AdvanceToWaitingAcceptance(ctx context.Context, tx *db.Tx, taskID string, cmd task.Command) (task.Result, error)
 }
 
 // MessageRecorder 是 session 落消息的最小面，由 *session.Service.RecordMessage 直接满足。
@@ -63,6 +68,10 @@ type TurnCall struct {
 type TurnReceipt struct {
 	Accepted bool
 	Reason   string // 只进 sendpipe logf；yaml SendResult 没有 reason 出口，不发明
+
+	// Finish 是甲（T-370①）那一腿在 `Close` 之前从 `Inbound()` 里收到的收尾帧。
+	// 它不进 `SendResult`：那是 yaml 的四键对外形状，收尾码是 Core 内部的推进依据，不是响应字段。
+	Finish TurnFinish
 }
 
 // TurnCaller 是 execution → 连接面的 consumer-side 接口，由 cmd/core 的 *sendPipe 满足。
@@ -252,27 +261,30 @@ func (s *Service) Reserve(ctx context.Context, tx *db.Tx, id string, cmd SendCom
 // 不密封 ⇒ 同一 `Idempotency-Key` 的下一次请求读到的仍是"未密封 + 第一笔身份"⇒ 续跑。
 //
 // `res.NeedsTurn=false`（queue）时不发帧，直接回第一笔折算出的结果。
-func (s *Service) Deliver(ctx context.Context, res SendReservation) (SendResult, error) {
+func (s *Service) Deliver(ctx context.Context, res SendReservation) (SendResult, TurnFinish, error) {
 	if !res.NeedsTurn {
-		return res.Result(), nil
+		return res.Result(), TurnFinish{}, nil
 	}
 	// 这里的 nil 检查与 Reserve 里那一处**不是重复**：Reserve 挡的是"首攻时就没装配"，
 	// 这一处挡的是"凭证是上一趟写的、这一趟进程重新起来后连接面没接上"（续跑路径）。
 	if s.turn == nil {
-		return SendResult{}, ErrTurnNotWired
+		return SendResult{}, TurnFinish{}, ErrTurnNotWired
 	}
 	rec, err := s.turn.CallSendTurn(ctx, TurnCall{
 		ExecutionID: res.ExecutionID, SessionID: res.SessionID, Text: res.Text,
 		Delivery: res.Delivery, IdempotencyKey: res.IdempotencyKey,
 	})
 	if err != nil {
-		return SendResult{}, err
+		// 投递本身没成 ⇒ 这一趟不密封、不写终态（丙）。带回来的 Finish 是零值，调用方不该拿它去写库。
+		return SendResult{}, TurnFinish{}, err
 	}
 	// accepted=false 仍算跑通：delivery 保持请求态 —— 改写成 queue 才是 §5 禁的静默降级。
 	// reason 只进 sendpipe 的 logf，yaml `SendResult` 没有这个出口，不发明。
 	out := res.Result()
 	out.Accepted = rec.Accepted
-	return out, nil
+	// 收尾证据原样交回：落不落终态、落成哪个终态，是 handler 在**第二笔短事务**里问 (a) 的事，
+	// 不在这里、更不在连接面里写库（REQ-S-1 的不变量）。
+	return out, rec.Finish, nil
 }
 
 // validateSend 在碰库之前拦住：text 必须非空、delivery ∈ 三枚举、四个事件/消息 id 必须在场。

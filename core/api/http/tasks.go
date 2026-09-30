@@ -345,15 +345,30 @@ func getTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	writeJSON(w, http.StatusOK, viewOf(t))
 }
 
-// taskAction 是 :queue / :pause / :resume 共用的外壳：解析 If-Match → 一个事务里跑那一步 → 统一映射错误码。
-// 三个动作只在"跑哪一步、命令里多带什么"上不同；把错误码映射写三份迟早会漂，所以只写一份。
+// idemSpec 是 taskAction 那一发可选的幂等钥匙：nil = 这个动作不走幂等（今天除 :accept 外的四个动作）。
+// 三个字段与 `claimIdempotency` 的入参一一对应，别在这里猜第四个 —— claim 自己会拿 key 去撞唯一约束。
+type idemSpec struct {
+	key       string
+	operation string
+	hash      string
+}
+
+// taskAction 是 :queue / :pause / :resume / :cancel / :accept 共用的外壳：解析 If-Match →
+// （可选）幂等认领 → 一个事务里跑那一步 → 统一映射错误码。
+// 动作只在"跑哪一步、命令里多带什么、要不要走幂等"上不同；把错误码映射写五份迟早会漂，所以只写一份。
 // handler 层零业务判断（契约③ §7）：状态与合法性全在 task.Service 里判。
-func taskAction(w http.ResponseWriter, r *http.Request, c Config, id string, base task.Command,
-	run func(context.Context, *db.Tx, task.Command) (task.Result, error)) {
+//
+// 幂等那一半是第七十八批给 `:accept` 加的：yaml `:445` 的 acceptTask 把 Idempotency-Key 声明成
+// required（`:739~743`），但五个 task 动词在实现里**一个都没强制** ⇒ 这里的口径是
+// **带了就按 claim/seal 走、没带按原样放行**，不擅自把没带的打成 403（那是主控要裁的另一件事，
+// 见台账第七十八批；打了 403 会把现存所有不带 key 的 `:accept`/`:cancel` 用例全掀掉）。
+func taskAction(w http.ResponseWriter, r *http.Request, c Config, id string, idem *idemSpec,
+	base task.Command, run func(context.Context, *db.Tx, task.Command) (task.Result, error)) {
 
 	var (
 		wantVersion int64
 		res         task.Result
+		sealed      string
 	)
 	if v := r.Header.Get("If-Match"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -371,13 +386,47 @@ func taskAction(w http.ResponseWriter, r *http.Request, c Config, id string, bas
 	cmd.WantVersion = wantVersion
 
 	err := c.Store.Write(r.Context(), func(tx *db.Tx) error {
+		if idem != nil {
+			// 认领与副作用同一笔事务：主键冲突 = 这把 key 已经有人干过，整笔回滚，动作一次都不重复执行。
+			s, err := claimIdempotency(r.Context(), tx, idem.key, cmd.PrincipalID, idem.operation, idem.hash)
+			if err != nil {
+				return err
+			}
+			if s != "" {
+				sealed = s // 已封存 → 原样回首次响应，不碰任何聚合
+				return nil
+			}
+		}
 		var err error
 		res, err = run(r.Context(), tx, cmd)
-		return err
+		if err != nil {
+			return err
+		}
+		if idem != nil {
+			sealed, err = sealIdempotency(r.Context(), tx, idem.key, map[string]any{
+				"id": id, "status": string(res.To), "version": res.Version,
+			})
+			return err
+		}
+		return nil
 	})
 	switch {
 	case err == nil:
+		if sealed != "" {
+			// 首次与重放共用这一条出口：sealIdempotency 回读的是库里那一份（C18 裁定 ②），
+			// 所以两次逐字节相等，且 wire 与存储按构造一致。
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(sealed))
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": string(res.To), "version": res.Version})
+	case errors.Is(err, errReplay):
+		writeError(w, http.StatusConflict, "idempotency_replay",
+			"同一 Idempotency-Key 的首次请求还没完成，暂时没有可回放的响应", true)
+	case errors.Is(err, errKeyMismatch):
+		writeError(w, http.StatusConflict, "idempotency_mismatch",
+			"同一 Idempotency-Key 带了不同的请求身份（键含 request_hash）", false)
 	case errors.Is(err, task.ErrVersionConflict):
 		writeError(w, http.StatusConflict, "version_conflict", err.Error(), true)
 	case errors.Is(err, task.ErrIllegalTransition):
@@ -429,7 +478,7 @@ func queueTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 		return
 	}
 	executionID := newUUIDv7()
-	taskAction(w, r, c, id, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+	taskAction(w, r, c, id, nil, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
 		// ① CREATED→QUEUED：cmd 带着调用方的 If-Match（WantVersion），在这一步生效。
 		if _, err := c.Tasks.Queue(ctx, tx, id, cmd); err != nil {
 			return task.Result{}, err
@@ -520,7 +569,7 @@ func pauseTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	if !ok {
 		return
 	}
-	taskAction(w, r, c, id, task.Command{Reason: reason},
+	taskAction(w, r, c, id, nil, task.Command{Reason: reason},
 		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
 			return c.Tasks.Pause(ctx, tx, id, cmd)
 		})
@@ -531,7 +580,7 @@ func cancelTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	if !ok {
 		return
 	}
-	taskAction(w, r, c, id, task.Command{Reason: reason},
+	taskAction(w, r, c, id, nil, task.Command{Reason: reason},
 		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
 			return c.Tasks.Cancel(ctx, tx, id, cmd)
 		})
@@ -539,8 +588,19 @@ func cancelTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 
 // acceptTask 没有请求体：验收人是 `X-Lucero-Principal` 那个写主体，不是 body 里自报的字段
 // （契约③ §1.4）。§5.4 之外它也是第一个"动作的语义全在起始态+主体"上、不需要任何参数的面。
+//
+// 幂等（第七十八批）：yaml `:445` 把 `Idempotency-Key` 列进 acceptTask 的 parameters 且 `:739~743`
+// 标了 required，但五个 task 动词在实现里一个都没强制 —— 这里按**带了就走 claim/seal、没带按现状放行**
+// 落地（要 403 强制是主控的裁，不在本批擅自改口径）。request_hash 取**路径**而不是 body：
+// `:accept` 没有请求体，hashOf(body) 会是恒定值 ⇒ 同一把 key 换一条任务会被判成重放、回别人的 200；
+// 路径里含 `{id}` 与动词，正是这次写的那份身份（与 createTask/send 拿 body 当身份同一个道理：
+// 身份 = 这次请求独有的那部分）。
 func acceptTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
-	taskAction(w, r, c, id, task.Command{},
+	var idem *idemSpec
+	if key := r.Header.Get("Idempotency-Key"); key != "" {
+		idem = &idemSpec{key: key, operation: "task_accepted", hash: hashOf([]byte(r.URL.Path))}
+	}
+	taskAction(w, r, c, id, idem, task.Command{},
 		func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
 			return c.Tasks.Accept(ctx, tx, id, cmd)
 		})
@@ -565,7 +625,7 @@ func resumeTask(w http.ResponseWriter, r *http.Request, c Config, id string) {
 		return
 	}
 	to := task.State(body.To)
-	taskAction(w, r, c, id, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
+	taskAction(w, r, c, id, nil, task.Command{}, func(ctx context.Context, tx *db.Tx, cmd task.Command) (task.Result, error) {
 		return c.Tasks.Resume(ctx, tx, id, to, cmd)
 	})
 }

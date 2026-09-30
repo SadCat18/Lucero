@@ -138,8 +138,10 @@ type Config struct {
 	// （它是面板链第 2/3/4 格共用的那把锁：Core 侧今天没有第二条路能建出 sessions 行）。
 	SessionDiscover SessionDiscoverer
 
-	// 注入时才挂 GET /api/v1/executions?task_id=（T-229 的读面那一格：Wave-2 要看 execution 真建出来了）。
-	Executions ExecutionLister
+	// 注入时才挂 GET /api/v1/executions?task_id=（T-229 的读面那一格：Wave-2 要看 execution 真建出来了）
+	// 与 GET /api/v1/executions/{id}（yaml `getExecution` :496，第七十九批脱的 501）。
+	// 两条读面共用这一个 *Repository 注入：要么整面在、要么整面不在，没有中间态。
+	Executions ExecutionReader
 
 	// ExecutionSend + Store 都在时才挂 POST /api/v1/executions/{id}/send（yaml :544；写侧要事务通道）。
 	// 缺任一个则该路径落 catch-all 的 501（C28②：能力没接线不给半套面）。

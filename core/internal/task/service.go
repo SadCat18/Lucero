@@ -391,6 +391,59 @@ func (s *Service) Accept(ctx context.Context, tx *db.Tx, id string, cmd Command)
 // 万一以后矩阵放宽，这里不会让"从 RUNNING 直接验收"悄悄变成合法。
 var onlyWaitingAcceptance = map[State]bool{WaitingAcceptance: true}
 
+// onlyAgentCompleted 钉住"待验收"这一步的起始态。矩阵给 AGENT_COMPLETED 四条出边
+// （VERIFYING/WAITING_ACCEPTANCE/RUNNING/CANCELLED），其中只有 WAITING_ACCEPTANCE 这条今天有驱动方
+// （契约④-c 裁「甲」），所以白名单在这里钉死，别让别的入路（比如 Recovery）顺手走这一格。
+var onlyAgentCompleted = map[State]bool{AgentCompleted: true}
+
+// AdvanceToWaitingAcceptance 是契约④-c（REQ-ACCEPT-1 裁「甲」）补上的那半格驱动方：
+// `AGENT_COMPLETED → WAITING_ACCEPTANCE`。调用方是 execution 的 `FinishFromTurn` ——
+// 在任务投影落定 `AGENT_COMPLETED` 的**同一笔事务**里紧接着调（§7 垂直链
+// `execution_succeeded → task_agent_completed → task_waiting_acceptance → task_accepted`）。
+//
+// 四步与 `advance` 逐条同形（读行 → If-Match → 起始态白名单 → §5.1 裁决 → Touch，任何一步不过就一行都不写），
+// 唯独**不走它的 `eventOf` 闭包**：事件名册判据（`specs/events/event-contract-v0.1.md` 那句
+// 「本名单当前是…」）靠 EventDraft 的 `Type` 能不能被静态回解来分「有/无生产者」，
+// 闭包里回出来的值回解不到（`task_queued` / `task_accepted` 因此至今躺在名单上）——
+// 而这一格的存在意义之一就是把 `task_waiting_acceptance` 从那份名单里摘掉（27→26，改名单的授权随裁给出）。
+// 所以 `Type` 写成常量；`Payload()` 仍走注册表；`auditRequired` 里没有这条事件 ⇒ 同事务不写 audit_entries。
+func (s *Service) AdvanceToWaitingAcceptance(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
+	if cmd.EventID == "" {
+		return Result{}, fmt.Errorf("%w: 缺 task_waiting_acceptance 的 event_id（调用方铸 UUIDv7）", ErrInvalidTask)
+	}
+	if cmd.ExecutionID == "" {
+		return Result{}, fmt.Errorf("%w: task_waiting_acceptance 缺 execution_id（§6 这条事件的语义核心）", ErrInvalidTask)
+	}
+	cur, err := NewRepository(tx).Get(ctx, id)
+	if err != nil {
+		return Result{}, err
+	}
+	res := Result{From: cur.Status, To: cur.Status, Version: cur.Version}
+	if err := guardIfMatch(cur, cmd); err != nil {
+		return res, err
+	}
+	if !onlyAgentCompleted[cur.Status] {
+		return res, fmt.Errorf("task: 起始态 %s 不在本动作允许的集合里（目标 %s）: %w", cur.Status, WaitingAcceptance, ErrIllegalTransition)
+	}
+	if err := Check(cur.Status, WaitingAcceptance, Normal, Evidence{}); err != nil {
+		return res, fmt.Errorf("task: %s→%s 不在 §5.1 矩阵里: %w", cur.Status, WaitingAcceptance, err)
+	}
+	m, err := Payload(WaitingAcceptancePayload{ExecutionID: cmd.ExecutionID})
+	if err != nil {
+		return res, fmt.Errorf("task: %s payload: %w", EventWaitingAcceptance, err)
+	}
+	v, err := tx.Touch(db.AggTask, id, "status = ?, updated_at = ?",
+		[]any{string(WaitingAcceptance), time.Now().UnixMilli()},
+		db.EventDraft{EventID: cmd.EventID, Type: EventWaitingAcceptance, Aggregate: db.AggTask, AggregateID: id,
+			CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID,
+			PrincipalID: cmd.PrincipalID, Payload: m})
+	if err != nil {
+		return res, fmt.Errorf("task: touch %s: %w", id, err)
+	}
+	res.To, res.Advanced, res.Version = WaitingAcceptance, true, v
+	return res, nil
+}
+
 func setDefault(p *string, v string) {
 	if *p == "" {
 		*p = v

@@ -263,17 +263,30 @@ func TestSendMethodAndWiringGates(t *testing.T) {
 		codeOf(t, body) != "method_not_allowed" {
 		t.Errorf("GET send 该 405，实际 %d %s", code, body)
 	}
-	// GET item（yaml 声明但没实现）→ 501。
-	if code, body := call(t, srv, http.MethodGet, "/api/v1/executions/ex-m", "", "", ""); code != http.StatusNotImplemented ||
-		codeOf(t, body) != "not_implemented" {
-		t.Errorf("GET {id} 该 501 not_implemented，实际 %d %s", code, body)
+	// GET item（yaml :496 `getExecution`）——**这一格的期望本批改了**：第七十九批之前它是
+	// 501 not_implemented（注释原文「yaml 声明但没实现」），读面接上之后这条 harness 注入了
+	// `Executions` ⇒ 必须 200 并读回夹具里那一行。谁再把它写回 501，就是把读面撤了。
+	if code, body := call(t, srv, http.MethodGet, "/api/v1/executions/ex-m", "local-user", "", ""); code != http.StatusOK {
+		t.Errorf("GET {id} 该 200（读面已接），实际 %d %s", code, body)
+	} else {
+		m := mustParseMap(t, body)
+		if m["id"] != "ex-m" || m["status"] != "RUNNING" {
+			t.Errorf("该读回夹具里那条 ex-m RUNNING，实际 id=%v status=%v", m["id"], m["status"])
+		}
+		if v, ok := m["model_snapshot"].(map[string]any); !ok || len(v) != 0 {
+			t.Errorf("model_snapshot 该是库里的空对象 {}，实际 %#v", m["model_snapshot"])
+		}
 	}
 
-	// 没接线：ExecutionSend=nil ⇒ 前缀路径不认领 ⇒ catch-all 501。
+	// 没接线：ExecutionSend=nil ⇒ **前缀路由第七十九批起仍认领**（读面在场就登记），
+	// 由 send 分支自己答 501 —— 判据因此从「catch-all 兜底」改成「写面那句话」：文案里
+	// 不许再出现兜底那句"Core 没登记"（这条路由 §3 登记过）。
 	bare, _ := newSendHarness(t, sendSeed{execID: "ex-b", status: "RUNNING", sessionID: "sess-s", seedSession: true}, false)
 	if code, body := call(t, bare, http.MethodPost, "/api/v1/executions/ex-b/send", "local-user", "k-b", sendBodyOK); code != http.StatusNotImplemented ||
 		codeOf(t, body) != "not_implemented" {
 		t.Errorf("没接线该 501，实际 %d %s", code, body)
+	} else if strings.Contains(body, "Core 没登记") {
+		t.Errorf("写面缺装配与「路径没登记」是两件事，文案不许混：%s", body)
 	}
 }
 

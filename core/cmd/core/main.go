@@ -2,8 +2,9 @@
 //
 // 启动顺序照内部契约 §2.3：Config → 单实例锁 → Vault → SQLite → Migration → Event Journal
 // → Recovery → Adapter Supervisor → Scheduler → HTTP/WS → Health → Ready。
-// 本轮只把已经存在的环节接上：Config / 锁 / SQLite / Migration / Event Journal（写库即写事件）
-// / HTTP / Health / Ready；Vault、Recovery、Adapter Supervisor、Scheduler 四个组件还没人交付，
+// 本轮把已经存在的环节接上：Config / 锁 / SQLite / Migration / Event Journal（写库即写事件）
+// / Recovery（T-391 起：恢复扫描入口 + CO-45③ 活进程计数，见 recovery.go —— 它只喊不中断）
+// / HTTP / Health / Ready；Vault、Adapter Supervisor、Scheduler 三个组件还没人交付，
 // 所以这里不摆 nil 占位（见 progress 的 Remaining），前端要的两项是 /health 与 /ws-ticket。
 package main
 
@@ -194,6 +195,15 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	// send 腿两格：task 投影（§5.3）与 session 落消息（message_recorded）。execution→task、
 	// execution→session 依赖无环；反向注入在这里完成，NewService() 签名不变。
 	core.executions.EnableSend(core.tasks, core.sessionSvc)
+	// REQ-RC-1（T-391）：恢复扫描的四件外部输入在这里注入 —— 进程事实的 SQL 只住在 recovery.go，
+	// execution 侧一个字都不碰 process_instances（§0：业务包之间禁止跨包 SQL，依赖靠注入不靠 import）。
+	// Audit 同理：链/脱敏/归因那套住在 cmd/core（C14：业务包不 import audit），域侧只管喊"这条要审计"。
+	core.executions.EnableRecovery(execution.RecoveryDeps{
+		Facts:       processFactsOf(d.Read),
+		NewEventID:  func() (string, error) { return adapter.NewRequestID().String(), nil },
+		PrincipalID: "system",
+		Audit:       recoveryAudit(nowMillis),
+	})
 
 	// T-181① / T-198：probe、discover、send 三条腿一起装配（同一份 `launcher`、同一套"这个 key 怎么起"）。
 	// 一个 `-adapter` 都没给 ⇒ 三个都是 nil ⇒ transport 那三格维持 501
@@ -242,6 +252,9 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 		core.close()
 		return nil, fmt.Errorf("写 core_ready 事件: %w", err)
 	}
+	// §2.3 的 Recovery 槽位（REQ-RC-1 / T-391）：排在 Event Journal 之后。它不返回 error 也不该返回 ——
+	// 恢复扫描失败只喊（CO-44②），不许把 Core 的启动打死在这一格上。
+	core.runRecovery(ctx)
 	return core, nil
 }
 

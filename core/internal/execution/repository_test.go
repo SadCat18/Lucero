@@ -75,6 +75,15 @@ func TestGetKeepsNullsAndUnknown(t *testing.T) {
 	if got.PredecessorExecutionID != "ex-1" || got.AttemptNo != 2 || got.TriggerType != execution.TriggerManualSwitch {
 		t.Errorf("前驱链/触发类型读错: %+v", got)
 	}
+	// 第八十批扩的九列：NOT NULL 的两把时刻与 heartbeat_at 读真值，可空且没写者的是零值（= NULL）。
+	if got.CreatedAt != 2 || got.UpdatedAt != 2 || got.HeartbeatAt != 2 {
+		t.Errorf("created_at/updated_at/heartbeat_at 该是库里那三列的 2/2/2，实际 %d/%d/%d",
+			got.CreatedAt, got.UpdatedAt, got.HeartbeatAt)
+	}
+	if got.ModelID != "" || got.ResultCode != "" || got.ErrorCode != "" || got.ErrorMessage != "" ||
+		got.StartedAt != 0 || got.FinishedAt != 0 {
+		t.Errorf("没写者的列该读成域的零值（出口折回 null），实际 %+v", got)
+	}
 	if _, err := execution.NewRepository(d.Read).Get(context.Background(), "nope"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("缺行应透传 sql.ErrNoRows，实际 %v", err)
 	}

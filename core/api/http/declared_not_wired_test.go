@@ -133,10 +133,10 @@ func TestApprovalsFileNeverTouchesTheTable(t *testing.T) {
 // TestExecutionOutputRouteSaysNotWiredNotUnknownShape 钉 ② 的前半：
 // `GET /executions/{id}/output` 是 §3 登记过的路径（yaml `:505`），不能再听它说"形状我不认识"。
 func TestExecutionOutputRouteSaysNotWiredNotUnknownShape(t *testing.T) {
-	// 用 send 那套完整装配：`registerExecutionRoutes` 的**前缀**那条 pattern 的闸是
-	// `c.ExecutionSend == nil || c.Store == nil ⇒ 整条不注册`（executions.go:75~77），而
-	// `newExecutionHarness` 只装列表面、`newSendHarness(..., wired=false)` 也不注入 ExecutionSend
-	// （send_test.go:98~112 那个 if）⇒ 两种都是我第一次踩的那个红法：五处断言全落回兜底那句"这条路径 Core 没登记"。
+	// 路由认领（`registerExecutionRoutes` 的前缀那条）第七十九批起是「读面或写面**任一在场就登记**」，
+	// 不再是旧闸 `c.ExecutionSend == nil || c.Store == nil ⇒ 整条不注册`（executions.go 那段注释留着旧口径的来历）。
+	// 所以这一格现在**不依赖写面**：`newExecutionHarness(..., wired=false)`（只装 Store）也认领前缀，
+	// 五处断言不会再落回兜底那句「这条路径 Core 没登记」—— 那是对 §3 登记过的路径说假话（T-370②）。
 	// 这一格要的是路由形状、不读那一行，所以 id 用 ex-out、只保证夹具里那行存在。
 	srv, _ := newSendHarness(t, sendSeed{
 		execID: "ex-out", status: "RUNNING", sessionID: "sess-out", seedSession: true,

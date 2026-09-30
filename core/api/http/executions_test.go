@@ -15,8 +15,9 @@ import (
 	"github.com/SadCat18/lucero/core/internal/task"
 )
 
-// newExecutionHarness 走真库真表：这条口最有价值的证据就是"域里没有的字段不许被编出来"，
-// 那必须跑真读路径才算数（与 inbox 那格同一个口径）。
+// newExecutionHarness 走真库真表：这条口最有价值的证据就是「出口的值是不是库里那一行的」——
+// 有值的出值、没写者的出 null、schema 没声明的不发明，三样都必须跑真读路径才算数
+// （与 inbox 那格同一个口径）。
 func newExecutionHarness(t *testing.T, wired bool) (*httptest.Server, *db.DB) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "lucero.db"))
@@ -153,8 +154,14 @@ func TestListExecutionsByTask(t *testing.T) {
 	if s, ok := second["session_id"].(string); !ok || s != "sess-q" {
 		t.Errorf("ex-2 的 session_id 该是夹具里那个 sess-q，实际 %v", second["session_id"])
 	}
-	if _, ok := first["model_id"]; ok {
-		t.Errorf("**域里没有 model_id，transport 也不许去另开一条 SELECT 补字段**（§7.2 那条），实际键在：%v", first)
+	// model_id：第八十批起域里有了这一列（yaml `Execution` 有它）⇒ **有值出值、没值出 null**，
+	// 折算成 "" 或凭空编一个都红。上一批那条「域里没有 model_id 不许出现」的反例按 Next ① 的
+	// 「九键名单随之收窄」删掉，边界改由 executions_get_test 的 23 键键集断言钉住。
+	if got, want := first["model_id"], "m1"; got != want {
+		t.Errorf("ex-1 的 model_id 该是库里那行的 %#v，实际 %#v", want, got)
+	}
+	if got := second["model_id"]; got != nil {
+		t.Errorf("ex-2 的 model_id 库里是 NULL，出口该 null，实际 %#v", got)
 	}
 	if v, ok := first["version"].(float64); !ok || v == 0 {
 		t.Errorf("version 该是真版本号（If-Match 的比较基准），实际 %v", first["version"])

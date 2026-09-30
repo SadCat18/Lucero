@@ -13,6 +13,9 @@ package main
 //   - **错误归一成 *adapter.Error**：transport 的 switch 只收哨兵与 adapter.Error
 //     （契约③ §7）。Connect/Initialize/LostError/ctx deadline 等非 adapter 错误
 //     一律包成 ADAPTER_UNRESPONSIVE ⇒ 503 —— 那正是"这个 Adapter 病了"的处置。
+//   - **收尾帧在 `Close` 之前收**（甲，T-370① 裁）：v0.1 一次调用一条连接，返回就关 ⇒
+//     不在这里排空 `Inbound()`，那一帧就随连接一起没了。排空是 `sendreap.go` 那一块，
+//     非阻塞、只按帧内容认（详见那个文件的注释）。
 
 import (
 	"context"
@@ -130,7 +133,12 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 		// accepted=false 的 reason 只有 logf 这一个出口（yaml SendResult 没有 reason 键）。
 		p.logf("send %s: adapter 拒了 delivery=%s: %s", call.ExecutionID, call.Delivery, res.Reason)
 	}
-	return execution.TurnReceipt{Accepted: res.Accepted, Reason: res.Reason}, nil
+	// 甲（T-370①）：拿到回执了 ⇒ 这条连接还活着，趁 `Close`（deferred，在本函数返回之后）把缓冲里的
+	// `turn/finished` 收上来。**这里只收不写**：写终态是 handler 在第二笔短事务里问 (a) 的事。
+	// 收帧 + 三种状态的分辨都住在 `sendreap.go`（边界三：这块能整搬）；这里只留一行调用与一次交接。
+	fin := reapTurnFinished(conn.Inbound(), call.ExecutionID)
+	noteTurnFinish(p.logf, call.ExecutionID, fin)
+	return execution.TurnReceipt{Accepted: res.Accepted, Reason: res.Reason, Finish: fin}, nil
 }
 
 // unresponsive 把一切非 adapter 错误归一成 ADAPTER_UNRESPONSIVE ⇒ 503。

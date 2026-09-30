@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SadCat18/lucero/core/internal/platform/db"
@@ -33,6 +34,18 @@ type Command struct {
 	ResultCode          string
 	ErrorCode           string
 
+	// TaskEventID 只被 `FinishFromTurn` 用：execution 的 §6 事件走 `EventID`，task 的第一条投影边
+	// 是**另一条聚合上的另一个事件**，所以第二个身份得单独给。
+	// 别的推进不用它 —— 它们的 task 投影由 send 腿那套 `SendCommand.TaskEventID` 带。
+	TaskEventID string
+
+	// TaskWaitingAcceptanceEventID 同样只被 `FinishFromTurn` 用，是第三条身份：契约④-c 之后，
+	// 收尾那一笔在 task 上是**两条**事件（task_agent_completed + task_waiting_acceptance，
+	// §7 垂直链相邻两步）。`event_id` 是 event_journal 的 UNIQUE 列，两条不许共用一个 id，
+	// 而域不自己生成身份（§3 UUIDv7 由调用方铸）⇒ 第三个 id 也得由 handler 一起铸。
+	// 投影没落到 AGENT_COMPLETED 时（failed/cancelled/被拒）这一格用不上，多铸一个不写库、没有副作用。
+	TaskWaitingAcceptanceEventID string
+
 	WantVersion int64 // <=0 = 不设 If-Match（Core 内部驱动）
 }
 
@@ -49,6 +62,9 @@ type Service struct {
 	projector TaskProjector
 	recorder  MessageRecorder
 	turn      TurnCaller
+	// recovery 是恢复扫描的四件外部输入（recovery.go）：进程事实 / 事件 id / 改判主体 / 同事务 audit。
+	// 与上面三格同一条规矩 —— 没接线就明确失败，不静默跳过。
+	recovery RecoveryDeps
 }
 
 func NewService() *Service { return &Service{} }
@@ -185,8 +201,11 @@ func (s *Service) advance(ctx context.Context, tx *db.Tx, id string, to State, c
 	if err != nil {
 		return res, err
 	}
-	v, err := tx.Touch(db.AggExecution, id, "status = ?, updated_at = ?",
-		[]any{string(to), time.Now().UnixMilli()},
+	// 第八十一批（甲档）：status/updated_at 之外**同一笔**要补的列由 columnWrites 给 ——
+	// 与 status 同一笔 Touch、同一个 now，不新增事件、不改 §6 payload、不动迁移。
+	now := time.Now().UnixMilli()
+	setSQL, setArgs := columnWrites(cur, to, cmd, now)
+	v, err := tx.Touch(db.AggExecution, id, setSQL, setArgs,
 		db.EventDraft{EventID: cmd.EventID, Type: evType, Aggregate: db.AggExecution, AggregateID: id,
 			CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID,
 			PrincipalID: cmd.PrincipalID, Payload: payload})
@@ -195,6 +214,48 @@ func (s *Service) advance(ctx context.Context, tx *db.Tx, id string, to State, c
 	}
 	res.To, res.Advanced, res.Version = to, true, v
 	return res, nil
+}
+
+// columnWrites 给 `advance` 那一笔 Touch 拼 SET：`status`/`updated_at` 打底，
+// 后面按**语义真的发生了**才追加列（甲档，第八十一批；缺口清单与归属见 progress 第 298 条）。
+// 时机只有两个，都在已有的这一笔里，不另开事务、不另发事件：
+//
+//   - started_at：`execution_started`（to == RUNNING）那一落，且**只写首刻** ——
+//     PAUSED/WAITING_INPUT→RUNNING 是续跑，再写一次就把「什么时候开始的」改写了；
+//     起步前（CREATED/STARTING）与没跑起来就收尾的行保持 NULL，那是真值。
+//   - finished_at + result_code + error_code：终态那一落（`Terminal(to)`，与 §5.2 那三个
+//     没有出边的状态一致）。result_code/error_code 与 §6 `ResultPayload` 取**同一个源**
+//     （cmd.ResultCode / cmd.ErrorCode）⇒ 事件 payload 与列两处同事实、必然同值；
+//     空串不进 SET（本包约定空串 = NULL，库里本来就是 NULL，不写一个假的空值）。
+//
+// 没写的三列各有各的理由，**不许顺手补**：
+//   - error_message：全仓没有这个信号 —— §6 `ResultPayload` 没有这个键（service.go 的 Command
+//     与 payload 键一一对应）、`turn/finished` 帧（adapter-protocol-v0.1.md:279）只有
+//     turn_ref/result_code/usage/provider_raw，transport 层的中文文案不属于领域列 ⇒ 留 NULL。
+//   - heartbeat_at：乙档已裁不动（v0.1 无心跳信号源）。
+//   - provider_execution_id：乙档已裁不动（CO-8 故意不写列，send.go:66）。
+//
+// INTERRUPTED 今天**没有落点**：`advance` 恒以 `Occasion=Normal` 裁决，recovery-only 的那条边
+// 会被 `Check` 拒，所以这里到不了它。恢复扫描那条路在 recovery.go（REQ-RC-1）：它推的是 UNKNOWN
+// 那条边，且今天恒停在 §6 没有对应事件（REQ-RC-2，明确失败不自己造）⇒ INTERRUPTED 的落点仍然没有。
+// 而按 §5.2 它还能回 RUNNING（不是终态）⇒ 将来真有了落点，也得先裁一句 INTERRUPTED 算不算终态，
+// 别在这一格替它决定。
+func columnWrites(cur Execution, to State, cmd Command, now int64) (string, []any) {
+	set := []string{"status = ?", "updated_at = ?"}
+	args := []any{string(to), now}
+	if to == Running && cur.StartedAt == 0 {
+		set, args = append(set, "started_at = ?"), append(args, now)
+	}
+	if Terminal(to) {
+		set, args = append(set, "finished_at = ?"), append(args, now)
+		if cmd.ResultCode != "" {
+			set, args = append(set, "result_code = ?"), append(args, cmd.ResultCode)
+		}
+		if cmd.ErrorCode != "" {
+			set, args = append(set, "error_code = ?"), append(args, cmd.ErrorCode)
+		}
+	}
+	return strings.Join(set, ", "), args
 }
 
 // eventPayload 按 §6 那一行的键装配 payload；键名与目录逐字一致，缺字段宁可为空串也不自己造名字。
