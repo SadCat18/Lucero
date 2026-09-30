@@ -82,17 +82,17 @@ func TestTurnRefCrossCheck(t *testing.T) {
 			t.Fatalf("session/send: %v", err)
 		}
 		ref := reply.ID
-		// 取证两帧是通知，异步到达：等到 RUNNING 为止，等不到才算失败（不 sleep 猜时间）。
-		if !waitUntil(3*time.Second, func() bool {
-			return conn.Turn("exec-t846-a").State() == adapter.TurnRunning
-		}) {
-			t.Fatalf("绑定一致时 tracker 没被推到 RUNNING，停在 %q —— §4.2 的两帧取证在这条路上没走通",
-				conn.Turn("exec-t846-a").State())
+		// 取证两帧是通知，异步到达。T-410：这里**不等 RUNNING 那个瞬态**，等的是它留下的持久痕迹
+		// （turn_id 非空 / CLOSED 只可能从 RUNNING 落），所以既看得走
+		//（T-392① 之后整条 run 常在回执之前就走完），又仍然能在 dispatched 缺位时喊。
+		if ok, why := waitEvidence(conn, "exec-t846-a", 3*time.Second); !ok {
+			t.Fatalf("绑定一致时 §4.2 的两帧取证没走通：%s", why)
 		}
 		if got := conn.SinceSeq(ref); got == 0 {
 			t.Errorf("per-ref 游标还是 0（turn_ref=%q）⇒ 那两帧其实一帧都没被收下，上一条的 RUNNING 来路不明", ref)
 		} else {
-			t.Logf("T84-6a：turn_ref=%q 的游标推到 %d，State=RUNNING", ref, got)
+			t.Logf("T84-6a：turn_ref=%q 的游标推到 %d，tracker=%q 且 turn_id=%q（经过过 RUNNING）",
+				ref, got, conn.Turn("exec-t846-a").State(), conn.Turn("exec-t846-a").TurnID())
 		}
 	})
 
@@ -140,6 +140,39 @@ func TestTurnRefCrossCheck(t *testing.T) {
 	})
 }
 
+// evidenceApplied 判的是**持久痕迹**，不是 RUNNING 这个瞬态。两条痕迹都只可能由 turn/dispatched 留下
+// （`internal/adapter/stream.go`）：`TurnID` 只在 Dispatch 成功那一步被写入（:322），而 `CLOSED` 只可能从
+// `RUNNING` 落（:336）—— CLAIMED／空状态收到 turn/finished 会得 `UNKNOWN` + 错误（:339）。
+// 为什么要换掉「等 State()==RUNNING」：T-392① 之后 FakeAdapter 把六帧在回执返回前就发完、Core 的读循环
+// 也在那之前把它们全应用完了（T-410 现场取证：CallTurn 一返回 tracker 已是 CLOSED、seq 到 6、MissingSeq=0），
+// 于是 RUNNING 成为一个 poll 不到的瞬态 —— 拿它当前提，断的是一个观察不到的东西，不是产品没走通。
+func evidenceApplied(tr *adapter.TurnTracker) (bool, string) {
+	if tr.TurnID() != "" {
+		return true, "" // dispatched 被应用过 ⇒ 这一发至少经过 RUNNING
+	}
+	return false, fmt.Sprintf("tracker 停在 %q 且 turn_id 一直是空 ⇒ turn/dispatched 没落地（结果位=%q）",
+		tr.State(), tr.Result())
+}
+
+// waitEvidence 在读回执之后把证据等到有结论：要么痕迹出现，要么 tracker 落到 UNKNOWN／预算耗尽。
+func waitEvidence(conn *process.Connection, execID string, budget time.Duration) (bool, string) {
+	deadline := time.Now().Add(budget)
+	for {
+		tr := conn.Turn(execID)
+		ok, why := evidenceApplied(tr)
+		if ok {
+			return true, ""
+		}
+		if tr.State() == adapter.TurnUnknown {
+			return false, why + "：而且已落 UNKNOWN（CO-8 把这一判当成无证据）"
+		}
+		if time.Now().After(deadline) {
+			return false, why + "（等了 " + budget.String() + "）"
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // waitUntil 轮询到条件成立或超时。通知帧异步，所以"等一会儿再猜"既慢又不稳，必须轮询到有结论。
 func waitUntil(budget time.Duration, ok func() bool) bool {
 	deadline := time.Now().Add(budget)
@@ -152,6 +185,92 @@ func waitUntil(budget time.Duration, ok func() bool) bool {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// TestEvidencePrimitiveHasTeeth 是 T84-6 前提腿那把尺自己的反例（T-410③）。
+// 双向都断：既要能放行「证据真的走完了」，也要能拦住「dispatched 缺位」——
+// 只断正例的尺会退化成恒真，只断反例会退化成恒假。
+func TestEvidencePrimitiveHasTeeth(t *testing.T) {
+	cases := []struct {
+		name   string
+		steps  func(*adapter.TurnTracker) error
+		wantOK bool
+	}{
+		{
+			name: "走完两帧（回执之前就已经 closed 的那种形状）",
+			steps: func(tr *adapter.TurnTracker) error {
+				if err := tr.Claim(true, "exec-a", "prov-a"); err != nil {
+					return err
+				}
+				if err := tr.Dispatch("turn-a", "exec-a", "prov-a"); err != nil {
+					return err
+				}
+				return tr.Finish("SUCCEEDED") // CLOSED，但 turn_id 已经留下
+			},
+			wantOK: true,
+		},
+		{
+			name: "dispatched 缺位：只有 claimed 就 finished",
+			steps: func(tr *adapter.TurnTracker) error {
+				if err := tr.Claim(true, "exec-b", "prov-b"); err != nil {
+					return err
+				}
+				_ = tr.Finish("SUCCEEDED") // CO-8 应当把它判成无证据（UNKNOWN），不是 CLOSED
+				return nil
+			},
+			wantOK: false,
+		},
+		{
+			name:   "只有 claimed，还没轮到 finished",
+			steps:  func(tr *adapter.TurnTracker) error { return tr.Claim(true, "exec-c", "prov-c") },
+			wantOK: false,
+		},
+		{
+			name:   "claimed 但 accepted=false：连 CLAIMED 都不该有",
+			steps:  func(tr *adapter.TurnTracker) error { return tr.Claim(false, "exec-d", "prov-d") },
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var tr adapter.TurnTracker
+			if err := tc.steps(&tr); err != nil {
+				t.Fatalf("夹具这一步本身报错（我没打算判它，先让它可见）: %v", err)
+			}
+			ok, why := evidenceApplied(&tr)
+			if ok != tc.wantOK {
+				t.Errorf("evidenceApplied=%v，期望 %v（State=%q turn_id=%q）：%s",
+					ok, tc.wantOK, tr.State(), tr.TurnID(), why)
+			}
+			if !ok && why == "" {
+				t.Errorf("拦下来却没说为什么 —— 红话必须能指到差在哪一帧")
+			}
+			t.Logf("%s ⇒ ok=%v State=%q turn_id=%q：%s", tc.name, ok, tr.State(), tr.TurnID(), why)
+		})
+	}
+}
+
+// TestEvidenceGateOnRealWire 是真子进程那一面的反例（T-410③ 要的「能绕过就红」）：
+// 开 FakeAdapter 现成的矛盾 id 门（T-275 留的注入缝），让那两帧点名一个与票号绑定相反的
+// execution_id ⇒ Core 的处置是丢弃，证据根本不该被算成走通。**一行产品码都没改**，只翻了个环境变量。
+func TestEvidenceGateOnRealWire(t *testing.T) {
+	t.Setenv("LUCERO_FAKE_ADAPTER_BAD_EXECUTION_ID", "1")
+	rec := &dropRecorder{}
+	_, conn, ctx := startSupervisedFakeOpt(t, rec)
+	if _, err := conn.CallTurn(ctx, "exec-t410-neg", "session/send",
+		sendParams("exec-t410-lie", "ik-t410-neg", "start_now")); err != nil {
+		t.Fatalf("session/send: %v", err)
+	}
+	ok, why := waitEvidence(conn, "exec-t410-neg", 2*time.Second)
+	if ok {
+		t.Errorf("矛盾 id 那一发已被门丢弃，evidenceApplied 却说证据走通了 ⇒ 这把尺可以绕过")
+	}
+	drops, _ := rec.snapshot()
+	if len(drops) == 0 {
+		t.Errorf("丢弃了帧却没到接缝（%s）—— 静默丢弃正是 §4.2 禁止的那种", why)
+	}
+	t.Logf("反例成立：证据未落地（%s），接缝收到 %d 条丢弃记录", why, len(drops))
 }
 
 // dropRecorder 是 T84-7 的观察面：一个只记账的 process.Recorder 实现。
@@ -205,10 +324,9 @@ func TestDroppedFrameReachesAuditSeam(t *testing.T) {
 			sendParams("exec-t847-ok", "ik-t847-ok", "start_now")); err != nil {
 			t.Fatalf("session/send（一致那一发）: %v", err)
 		}
-		if !waitUntil(3*time.Second, func() bool {
-			return conn.Turn("exec-t847-ok").State() == adapter.TurnRunning
-		}) {
-			t.Fatalf("前提没成立：一致那一发都没推到 RUNNING，正例反例都无从谈起")
+		if ok, why := waitEvidence(conn, "exec-t847-ok", 3*time.Second); !ok {
+			// T-410：这条是正例反例共同的前提，所以它必须既能走通、又能在证据被丢时喊出来（见 T84-6c 反例）。
+			t.Fatalf("前提没成立：一致那一发的证据没落进 tracker：%s", why)
 		}
 		if drops, _ := rec.snapshot(); len(drops) != 0 {
 			t.Errorf("收下的一发留下了 %d 条丢弃记录（%v）—— 接缝上多记一行，审计面就多一行假事实", len(drops), drops)

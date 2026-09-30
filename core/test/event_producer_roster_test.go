@@ -788,6 +788,84 @@ func derivedHas(s []string, x string) bool {
 	return i < len(s) && s[i] == x
 }
 
+// TestProducerRosterComparisonLegs 是 T-411② 要的**常驻反例腿**：它造的是「派生集合里有、名单没登记」
+// 这个真漏登记场景本身，断的是 splitRoster 的**集合行为**，不判任何一句红话的字面 ——
+// 所以主控把 :1022 那句措辞改成什么样，本条腿都必须无感（T-411③：不许只验打印文本）。
+// 四档缺一不可：只断正例会退化成恒真，只断反例会退化成恒假，第三档「登记对了」是"该放行必须放行"那一腿。
+func TestProducerRosterComparisonLegs(t *testing.T) {
+	cases := []struct {
+		name        string
+		catalog     []string
+		covered     map[string]bool
+		roster      []string
+		wantDerived []string
+		wantMissing []string
+		wantExtra   []string // 精确到名字；ghost 那一档另有一截说明，用前缀判
+		extraByPref bool
+	}{
+		{
+			name:        "真漏登记：词表里有、没人覆盖、名单也没登记",
+			catalog:     []string{"evt_covered", "evt_nobody"},
+			covered:     map[string]bool{"evt_covered": true},
+			roster:      []string{},
+			wantDerived: []string{"evt_nobody"},
+			wantMissing: nil,
+			wantExtra:   []string{"evt_nobody"},
+		},
+		{
+			name:        "登记对了：确实没人发、名单里就写着它 ⇒ 两头都不许喊",
+			catalog:     []string{"evt_covered", "evt_nobody"},
+			covered:     map[string]bool{"evt_covered": true},
+			roster:      []string{"evt_nobody"},
+			wantDerived: []string{"evt_nobody"},
+			wantMissing: nil,
+			wantExtra:   nil,
+		},
+		{
+			name:        "登记反了：名单说它没人发、扫描却找到覆盖位 ⇒ missing 必须点名",
+			catalog:     []string{"evt_x"},
+			covered:     map[string]bool{"evt_x": true},
+			roster:      []string{"evt_x"},
+			wantDerived: []string{},
+			wantMissing: []string{"evt_x"},
+			wantExtra:   nil,
+		},
+		{
+			name:        "名单里混进一个词表外的名字 ⇒ 漏登记与越界两头都得喊（只判名字，不判说明文字）",
+			catalog:     []string{"evt_x"},
+			covered:     map[string]bool{},
+			roster:      []string{"evt_x", "evt_ghost"},
+			wantDerived: []string{"evt_x"},
+			wantMissing: []string{"evt_ghost"},
+			wantExtra:   []string{"evt_ghost"},
+			extraByPref: true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			derived, missing, extra := splitRoster(tc.catalog, tc.covered, tc.roster)
+			if got, want := strings.Join(derived, ","), strings.Join(tc.wantDerived, ","); got != want {
+				t.Errorf("派生集合=%q，期望 %q", got, want)
+			}
+			if got, want := strings.Join(missing, ","), strings.Join(tc.wantMissing, ","); got != want {
+				t.Errorf("missing=%q，期望 %q —— 名单登记了无生产者却被扫到覆盖位，这一半没抓住", got, want)
+			}
+			if !tc.extraByPref {
+				if got, want := strings.Join(extra, ","), strings.Join(tc.wantExtra, ","); got != want {
+					t.Errorf("extra=%q，期望 %q —— 真漏登记这一半没抓住，:1022 那句红话就永远不会响", got, want)
+				}
+			} else {
+				if len(extra) != 1 || !strings.HasPrefix(extra[0], tc.wantExtra[0]) {
+					t.Errorf("extra=%v，期望恰好 1 条且指向 %s", extra, tc.wantExtra[0])
+				}
+			}
+			t.Logf("catalog=%v covered=%v roster=%v ⇒ 派生=%v missing=%v extra=%v",
+				tc.catalog, tc.covered, tc.roster, derived, missing, extra)
+		})
+	}
+}
+
 // coverKinds 报出覆盖到某个名字的那些位点的 kind 集合：长度 1 且是 param ⇒ "仅靠第四层才认到"。
 func coverKinds(sites []draftTypeSite, v string) map[string]bool {
 	m := map[string]bool{}
@@ -1019,7 +1097,7 @@ func TestEventProducerRosterMatchesDerivedSet(t *testing.T) {
 	}
 	for _, e := range extra {
 		// FAIL 必须点名"我查过哪些位点、它们为什么覆盖不到这个名字"，否则等于把看不见写成没有。
-		t.Errorf("派生集合里有 %s 而名单没登记 ⇒ 无生产者名单少了它。本轮未决位点：%s", e, pendingList(sc.pending))
+		t.Errorf("派生集合里有 %s 而名单没登记 ⇒ 两条出路任选一条，别选错：(a) 这名字已在 §6 登记、码里却还没人发 —— 那要补的是常量与发射位（那是半成品），把它登记成无生产者就是往契约里写假事实；(b) 确认确实没人发 —— 才把它加进事件契约里那句现状名单。本轮未决位点：%s", e, pendingList(sc.pending))
 	}
 }
 
