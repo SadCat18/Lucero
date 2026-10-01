@@ -668,6 +668,12 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       **今天撞的实例**：我 14:51:58 写"Ⅱ 的门开了"，**9 分钟后就反了** —— `backend` 收了 T-370 回到 `core/`，
       15:00 现量 5 件；而 `test` 已按 Ⅱ-b 绕开，所以我那句**既没促成什么、也差点误导一轮**。
       ⇒ 不带树与时刻的状态句存活期只有几分钟，**不如不写**。
+    - **⑩ 交付前必跑清单是两面的，不许只交默认面（10-01 00:5x 补，由 `test` 的建议采纳并加码）**：
+      **面 1 默认**：`go build ./...` + `gofmt -l` + `go test -count=1 -v ./...`（全仓）；
+      **面 2 真子进程**：`LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -timeout 1200s ./cmd/core/ ./test/`。
+      两面都要报**顶层 `--- PASS` / `--- SKIP` / `--- FAIL` 三个计数**，且**只能从带 `-v` 的那一趟数**（第 24 条⑤款那条盲区的延伸：非 `-v` 的输出里根本没有 `--- SKIP` 行，数出来 0 是「看不见」不是「没有」）。
+      **两条理由都是这三天量出来的，不是预防性的**：① `TestTurnRefCrossCheck` / `TestDroppedFrameReachesAuditSeam` 在默认面是 SKIP、旗标面才是红，藏了不止一天（10-01 00:40:50 快照复验时现身）；② 同一份代码整包跑出现过 **3 趟 1 红**（`TestPumpReconnectsAfterTheAdapterDies`，孤立 `-count=5` 却 5/5 绿）⇒ **一条 `-count=1` 的绿不构成「交付证据」**，负载敏感的格必须写清复现率（`-count=N` + N 次读数）。
+      配套禁令：**不许为了过旗标面关旗标、加 sleep、或把用例改成只跑孤立**——那是把红藏回看不见的地方。
 
 25. **REQ-S-1 两段式的幂等语义与"投递结果未知"那一支（09-25 22:0x 裁，回 `backend` 第 276 / 281 条；它把草稿备好了、等裁不动码）**。
     - **① 语义定稿（把第 23 条那句"失败整笔回滚"改掉）**：`send` 是**一次可安全重放的尝试，答案来自第一次完成的尝试**。
@@ -787,6 +793,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
         CO-25 排水点，一字不动。
       - **记账要点更新**：Wave-2 已签（09-28 21:4x），**但"投递语义已验完"这句话的生效点是判据 (a) 通过**——
         签的是验收框，不是这句；(a) 落地前，引用 Wave-2 的人必须连本条一起引。
+      - **状态更新（10-01 00:5x）**：判据 **(a)(b)(c) 三条均已落地并实测** ⇒ 常驻连接 + 常驻入站泵在 `2c65177` 起进版本库，期限与排空那一半在 `48c2547` 补齐（`pumpCallDeadline = 10 * time.Second` 由 `TestPumpCallDeadlineMatchesItsFamily` 钉住，`TestPumpKeepsDrainingWhileTheWriterIsBusy` 证「写面被占住时泵仍排空入站帧」）。**所以「投递语义已验完」这句从今天起可以引用，但仍须连本条一起引**——它验的是 Core 侧的收/落/喊，**不含**任何真 Provider（四家探过、未接一家），也**不含**那条 1/3 负载敏感的重连用例（台账第一百五十五批⑤、T-416 待定性）。
     - **④-c `REQ-ACCEPT-1`（09-27 16:5x 立，由主控第一次亲自全量跑 Wave-2 验收检查时量出；与 REQ-TURN-1 并列，同排 Wave-2 之前必须裁）**：
       链尾那两条边**今天都没有驱动者**。现量：非测试码里除 `internal/task` 自己的常量/类型/payload 之外，
       **没有一处把任务推成 `WAITING_ACCEPTANCE`**（`grep -rn "WaitingAcceptance" core --include=*.go` 去掉 `_test.go`
