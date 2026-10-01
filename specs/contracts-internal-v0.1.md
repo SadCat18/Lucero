@@ -1001,7 +1001,8 @@ type Service interface {
 | `permission.Engine.CheckTemporaryGrant` | `permission.go:269` | **0**（排除本包后 `grep` 无输出） |
 | `approval.Service.Request` | `internal/approval/approval.go:241` | **0** |
 | `approval.Service.Resolve` | `approval.go:279` | **1**（10-01 15:2x 现读：`core/api/http/approval_resolve.go:117`，backend T-426 ① 交的那条 `:resolve` 路由；**本行原写 0，那是 14:3x 那棵树的读数，留着不删**） |
-| `execution.ApprovalStates.BlockingState` | `internal/execution/approval.go:8`（类型位；方法在 `:9`） | **0**，且**没有装配位**：现读 `grep -rn "ApprovalStates" --include=*.go core/` 只命中定义它自己的那两行（`:5` 注释、`:8` 类型），`cmd/core/main.go` 零引用 |
+| `execution.ApprovalStates.BlockingState` | `internal/execution/approval.go:8` | **0**，且**没有装配位**：现读 `grep -rn ApprovalStates --include=*.go core/` 只命中定义它自己的那两行（`:5` 注释、`:8` 类型），`cmd/core/main.go` 零引用。注：类型位在 `:8`、方法位在 `:9`（**这句以前塞在第二格里，那两个反引号让判据解不出唯一文件 —— 现在移到这一格来写**） |
+| — **本列的格式规矩（10-01 15:5x，backend 报回、我 15:55 现读原文核对成立）** — | 「定义位」那一格**只准放一个反引号对**（``包/文件.go:行``），因为 `core/test/wiring_surface_test.go:68` 只做 `Trim(cells[2], "`")` 再去定位：**两个反引号对 ⇒ 判据 `t.Fatalf`「定位不到唯一文件」，那一格即使被装配完也不会转绿**。补充说明请写到第三格（判据只读前两座）。**这条不是挑剔排版：是我把合同写成数据源之后必然要付的口径 —— 数据源就得按数据源的样子写** | |
 | — **更正** — | 本行原写 `ApprovalGate` | **那个名字是我编的**：我从没读过 `:5`/`:8`，是照概念造的词（同族旧错：09-27 的 `harvestTurnFinished`）。盘上真名 **`ApprovalStates`**（现读附在上一条命令里）。结论一字未变——**两种写法都是 0 个非测试调用者**，改的只是名字 |
 
 
@@ -1022,6 +1023,45 @@ type Service interface {
   两条离开的大件；与 `execution_output_flushed` 那次同一个规矩：**先补了功能才摘**。
 - `permission`/`approval` 两个包**不新增写口**（归 `audit`，它这次交的是发现不是改动，正确）。
 - 本表现由 `test` 角色加机械判据盯住（**T-431**）：不许再出现"接口声明了、没人构造、没人调、也没人红"。
+
+
+7. **v0.1 的"谁能批准"只有一个答案，而且它不是权限模型**（10-01 15:5x 裁，回 audit 那句"今天没有任何权限判定"）：
+   能落决议的调用 = **过了 `handler.go:235` 那道门的那个已认证主体**（唯一可接受的字面量 `local-user`）。
+   明写成人话：**v0.1 是本地单用户，所以"谁能批"今天不由策略决定、由"能不能连上这台 Core"决定**。
+   三条连带要求一起成立，别把这句读成"权限已经做完了"：
+   ① `permission.Engine.Decide` 判的是**这个动作要不要人来批**，不是**这个人有没有资格批**——两件事永远不许混进同一个函数；
+   ② 真做多用户时，资格判定必须新增在 `permission`（它的包），而 **`By` 仍然只取过门的 header**（规则 5 不因扩容而放宽）；
+   ③ 面板不许自己藏"只有我能批"这类逻辑（§7：transport 是业务 Service 的薄投影，不得含业务判断）。
+8. **"重复决议"有两种，必须给出两个不同答案**（10-01 15:5x 裁，回 audit 那句"`resolved_by` 从哪来/重复怎么回"）：
+   - **同一份意图再发一次 ⇒ 幂等成功**：走 backend 已经接好的那条腿（`approval_resolve.go:104`–`:109` 的 idempotency 认领，
+     冲突时 409 `idempotency_replay`；`Service.Resolve` 对已决行返回 `nil`，`:291`–`:292`）。这一支**照旧成立，不用改**。
+   - **同一个 `id` 第二次给的是不同的决议**（第一次 `APPROVED`、第二次 `REJECTED`，或反过来）⇒ **必须 409，且不许静默成功**。
+     今天它是 `nil` ⇒ 被翻成 200，也就是**"你以为改判了，其实什么都没发生"**。
+     修法不许由 transport 猜：`internal/approval` 必须**给出一个有名字的答案**（哨兵错误或"已有决议"返回值均可），
+     handler 才按 `writeResolveError`（`approval_resolve.go:187`–`:191`）那句自己的规矩翻成 409——
+     **它明写了"不拿文案当合同，该回 409 的那几支要有名字"**，这条要求由它的注释产生，不是我发明的。
+     ⇒ 派发 **T-438**（`internal/approval` 归 audit），backend 的 409 分支等那个名字，不等别人。
+
+**§3.0-d 落 `approval.Draft` 时那三个键的口径（10-01 15:5x 裁，回 backend 第 ④(a) 问）**
+backend 的原话是"不给口径就提 REQ、不跨包定语义"，它说得对，所以这里给死：
+
+- **`Type`：v0.1 固定填 `"PERMISSION"`。** 依据是盘上读数，不是我的偏好：`approvals.approval_type` 是
+  `TEXT NOT NULL` **且没有 CHECK**（`core/migrations/000001_core_schema.sql:407`）⇒ 词表既不在库里也不在契约里，
+  而 v0.1 只有**一个**来源会造审批行（执行前的权限判定要求人来批）。**第二个来源出现那天再谈词表与迁移**（改列 CHECK 是重建表，归 db、`000001` 冻结）。
+- **`RiskLevel`：必须从 `permission` 那份内置分类拿，transport 与 backend 都不许自己抄一份。**
+  那份清单是 `highRiskActions`（`internal/permission/permission.go:131`）加 classifier（`:143`–`:145`，命中即 `RequireApproval` + `ReasonDefaultHighRisk`），
+  今天**都是未导出的** ⇒ 需要 audit 开一个导出入口（并入 **T-438**）。
+  **为什么不许 backend 抄一份**：同一张词表存两处 = 我 09-2x 裁过的那枚反面（"两包各存一份词表值 ⇒ 由观察方导出单一来源"）；
+  而且 §3.1 那句"风险等级来自固定的内置分类，不来自策略表"里的**"内置"只有一个归属**，抄一份就有第二种"内置"。
+  拿不到入口之前，`Draft.RiskLevel` **宁可留空**——`Service.Request` 会把空串写成 `"UNKNOWN"`（`approval.go:261`–`:263`，
+  它自己的注释是"never claim a risk level we were not told"），而 `approvals.risk_level` 的 CHECK 五值里**含 `UNKNOWN`**（`000001` :408–`:410`）⇒
+  留空是**诚实**，编值是**造假**。
+- **`ExpiresAt`：必填，不许 0。** `approvals.expires_at` 是 nullable（`000001` :418），而 `SweepExpired` 靠它把 `PENDING` 翻成 `EXPIRED`
+  并发 `approval_expired`（`store_sqlite.go:341`）⇒ 一个空的期限就是**一条永远不会过期、永远堵着那条执行的锁**。
+  同族我先例是 `temporary_grants.expires_at`（nullable、0 被读成"永不过期"），那次我裁"写口必须自带窗口检查"（`grantWindow`，`approval.go:345`）。
+  **尺寸由我定**：v0.1 取 **15 分钟**（`900000` ms）。这是**裁定不是发现**——盘上今天没有任何既有期限值可引（`MaxGrantDuration = 8h` 只管临时授权，`approval.go:51`），
+  所以它归用户改：用户若要别的值，改这一行即可，`T-438`/`T-439` 都不动结构。
+
 
 
 ### 3.1 无规则命中时的默认（REQ-A4⑤ 裁定，17:55）
