@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-10-01T18:00:37+08:00   <- 10-01 第一百七十一批：REQ-APR-1 裁「改目录那两格」(approval->execution)、REQ-APR-3 新增 A->C 帧 approval/request (派 T-441/T-442)、REQ-APR-2 随之有归宿；backend 那份 REQ 包 17:40:09 已落账、我的「读不到」过期；gofmt 那一处我代 audit 做仅格式化 (734931f, 现 gofmt -l = 0)；它那十一件仍不拆
+LAST_UPDATED: 2026-10-01T18:30:57+08:00   <- 10-01 第一百七十二批：裁「permission.RiskLevel 登进 3.0-c 那张表」=> 判据现读 6 行、新行以「零调用点」正常红、HEAD 有主红由 4 格变 5 格；另发更正件 T-443，不让 backend 拿巡检那句转述当我的裁定。⚠ 上一批那次入册时我提交了头部滞后的一版（python 断言先失败、后面的分号链仍把 add/commit 跑完了）——本行就是补上那一刻，读数：172批=1、172待投=1、CR=0
 ⚠ 本行第一次落笔时那个提交号**被我自己吃掉了**：我把 `3ff8271` 用反引号包在 **bash 双引号的 python -c 字符串**里 ⇒ bash 把反引号当命令替换执行（真报错原文就是 `line 11: 3ff8271: command not found`、写进文件就成了空）。**同一条坑我今天踩的是第二次、形式不同**：上次是 `&&` 后接 `grep -c` 命中 0 截断链，这次是双引号里的反引号被执行。**规矩收紧：命令行里凡要写反引号，一律单引号包整段、或改叫 `git show --oneline -1` 现取；写完之后必须把那一行整行读回来**（本行就是这么发现少了一串哈希的）。
 
 ## Objective
