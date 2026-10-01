@@ -140,11 +140,17 @@ func TestWriteMethodsMatchContractSection(t *testing.T) {
 var methodConst = regexp.MustCompile(`(?m)^	Method\w+\s+=\s+"([a-z]+/[a-z]+)"`)
 
 // notificationRow matches a contract table row whose first cell is a notification name.
-var notificationRow = regexp.MustCompile("(?m)^\\|\\s*`(stream/[a-z]+|turn/[a-z]+)`")
+var notificationRow = regexp.MustCompile("(?m)^\\|\\s*`(stream/[a-z]+|turn/[a-z]+|approval/[a-z]+)`")
+
+// methodRowAtoC reads §4's method table, whose direction cell says who sends the frame. Since
+// 10-01 a notification can be declared there (`approval/request`, §4:91, "**A→C**") rather than
+// in §6's output table, so a parser that only reads §6 calls a contracted frame an invented one.
+// Only concrete names match: `stream/*` names a family, not a method.
+var methodRowAtoC = regexp.MustCompile("(?m)^\\|\\s*`([a-z]+/[a-z]+)`\\s*\\|\\s*\\*\\*A→C\\*\\*")
 
 // TestStreamNotificationsMatchContractTables is the same interlock as the §4 one, on the
-// other side of the boundary: §6's four output rows plus §4.2's two evidence rows against
-// this package's six constants, both ways. It exists because a seventh notification can
+// other side of the boundary: every notification row in §6 and §4.2 and every A→C row in §4
+// against this package's Method* constants, both ways. It exists because a new notification can
 // only arrive with a ticket story attached - CO-40 withdrew session/push precisely
 // because an unsolicited A->C notice has no Core-issued turn_ref to echo - so code that
 // grows a notification before the contract does is not a small drift, it is a reopened
@@ -172,6 +178,19 @@ func TestStreamNotificationsMatchContractTables(t *testing.T) {
 	if len(fromContract) <= before {
 		t.Fatalf("§4.2 contributed no rows after %d from §6: its table moved, do not judge green", before)
 	}
+	// The third source: §4's method table, which is where 10-01 put the A→C notification row.
+	before = len(fromContract)
+	s4 := section(body, "## 4. 方法表", "### 4.1")
+	if s4 == "" {
+		t.Fatalf("§4's method table anchor moved; this parser reads three tables and must not judge green on two")
+	}
+	for _, m := range methodRowAtoC.FindAllStringSubmatch(s4, -1) {
+		fromContract[m[1]] = true
+	}
+	if len(fromContract) <= before {
+		t.Fatalf("§4 contributed no A→C notification after %d rows from §6+§4.2: the direction column moved "+
+			"or the row lost its **A→C** marker - do not judge green", before)
+	}
 
 	// "My side" is read out of stream.go rather than copied here: a hand-written list of
 	// the constants is exactly the second source of truth this test exists to catch, and
@@ -195,7 +214,7 @@ func TestStreamNotificationsMatchContractTables(t *testing.T) {
 				"decoding it would fail and inventing a ticket story for it is CO-40's dead knot", name)
 		}
 		if !CarriesTurnRef(name) {
-			t.Errorf("%s is a contract notification yet CarriesTurnRef says it owes no turn_ref (§4.2 裁定 ①: 六条全部带)", name)
+			t.Errorf("%s is a contract notification yet CarriesTurnRef says it owes no turn_ref (§4.2 裁定 ① puts a turn_ref on every notification; §6 规则 5 still reads 六条 in its body with a counting note under it, so the family is what binds, not that number)", name)
 		}
 	}
 	for name := range mine {

@@ -168,7 +168,10 @@ func newStore(now int64) *store {
 			"rsn-2": {},
 		},
 		approvals: []*approvalRow{
-			{ApprovalID: "apr-1", RemoteSessionID: "rsn-1", Action: "write_file",
+			// One vocabulary for the action column: §4's approval/request row says the string must be
+			// one the built-in §3.1 classifier knows, and a fixture named write_file is not - it would
+			// read as UNKNOWN and fail closed for a reason nobody chose. Same fact, same string as riskyTools.
+			{ApprovalID: "apr-1", RemoteSessionID: "rsn-1", Action: "filesystem.write",
 				Resource:  "D:/Project/Lucero/specs/contracts-internal-v0.1.md",
 				RiskLevel: "HIGH", State: "PENDING",
 				Payload:     json.RawMessage(`{"path":"specs/contracts-internal-v0.1.md","bytes":2048}`),

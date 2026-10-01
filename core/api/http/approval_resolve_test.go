@@ -291,6 +291,88 @@ func TestResolveRejectsShapesWithoutTouchingTheDecision(t *testing.T) {
 	}
 }
 
+// TestApprovalViewHandsBackTheGrantIDTheDomainGave 是 T-440 那一格：面板点了「批准并临时允许」之后，
+// 出口必须看得见它刚开的那扇门（`grant_id`）。**边界①**：值只从域层已经交出来的那份决议记录里读
+// （`internal/approval/approval.go:398` 把它写进 `resolution_json`），本层一行 SQL 都不写、不碰 `temporary_grants`。
+// **边界③**：键名逐字取盘上现读（`grant_id`），openapi 那一半归 frontend 续答，我不碰 `specs/**`。
+// 三格一起判：有 → 出那个值；没有 → 出 null（**不是省略、也不是猜**）；两条口同值（列表与详情不许各说一套）。
+func TestApprovalViewHandsBackTheGrantIDTheDomainGave(t *testing.T) {
+	withGrant := stubApproval("ap-g1", "APPROVED")
+	withGrant.ResolutionJSON = `{"schema":1,"state":"APPROVED","resolved_by":"local-user","grant_id":"grant-77","grant":{"scope_type":"PROJECT","expires_at":999}}`
+	noGrant := stubApproval("ap-g2", "REJECTED")
+	noGrant.ResolutionJSON = `{"schema":1,"state":"REJECTED","resolved_by":"local-user"}`
+
+	t.Run("开了临时授权就出那个 id", func(t *testing.T) {
+		stub := &decisionStub{row: withGrant}
+		rec := callApproval(t, decisionServer(stub, nil), http.MethodGet, "/api/v1/approvals/ap-g1", "", "", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("该 200，实际 %d %s", rec.Code, rec.Body.String())
+		}
+		var one map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &one); err != nil {
+			t.Fatal(err)
+		}
+		if one["grant_id"] != "grant-77" {
+			t.Errorf("`grant_id` 该是域层交出来的那一个，实际 %#v（null=没映射上，别的值=编的）", one["grant_id"])
+		}
+		// 那份记录本身不许被搬空：`resolution` 里还在（面板由此看得见期限那半：grant.expires_at）。
+		res, _ := one["resolution"].(map[string]any)
+		if res == nil || res["grant"] == nil {
+			t.Errorf("`resolution` 里那份 grant 对象不许被吞掉（时限只有它带着），实际 %#v", one["resolution"])
+		}
+	})
+	t.Run("没开授权就出 null：不省略、也不猜", func(t *testing.T) {
+		stub := &decisionStub{row: noGrant}
+		rec := callApproval(t, decisionServer(stub, nil), http.MethodGet, "/api/v1/approvals/ap-g2", "", "", "")
+		one := map[string]any{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &one); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := one["grant_id"]
+		if !ok {
+			t.Fatalf("`grant_id` 这个键必须在（省略是第二种表示，REQ-F-19 同一条理由），实际 %s", rec.Body.String())
+		}
+		if v != nil {
+			t.Errorf("没开临时授权却给出了值 %#v ⇒ 那是编的", v)
+		}
+	})
+	t.Run("列表与详情同值", func(t *testing.T) {
+		lst := &approvalStub{items: []approval.Approval{withGrant, noGrant}}
+		lrec := callApproval(t, approvalsServer(lst), http.MethodGet, "/api/v1/approvals", "", "", "")
+		var page struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(lrec.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 2 {
+			t.Fatalf("两条都该出，实际 %d", len(page.Items))
+		}
+		if page.Items[0]["grant_id"] != "grant-77" || page.Items[1]["grant_id"] != nil {
+			t.Errorf("列表那两条该是 grant-77 / null，实际 %#v / %#v", page.Items[0]["grant_id"], page.Items[1]["grant_id"])
+		}
+	})
+}
+
+// TestResolveConflictIsFourOhFourNoMore 判 §3 规则 8 的第二支：同一个 id 第二次给**不同**的决议
+// ⇒ 409（audit 在 T-438 交了名字 `ErrConflictingResolution`，我这才敢翻；之前它落 500 是诚实的"没名分不猜"）。
+// 反向那一支（同一份意图重发 ⇒ 幂等成功）由 `...ByteIdentical...` 那格钉着，两支不许并成一个码。
+func TestResolveConflictIsFourOhNineNotFiveHundred(t *testing.T) {
+	stub := &decisionStub{row: stubApproval("ap-c1", "APPROVED"), resolveErr: approval.ErrConflictingResolution}
+	rec := callApproval(t, decisionServer(stub, nil), http.MethodPost,
+		"/api/v1/approvals/ap-c1:resolve", `{"state":"REJECTED"}`, "local-user", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("不同决议撞已决的单子该 409，实际 %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"illegal_transition"`) {
+		t.Errorf("码名必须是 §15.2 已登记的那一个（yaml `ErrorCode` 是闭集，里面没有泛用 conflict），实际 %s", body)
+	}
+	if stub.getCalls != 0 {
+		t.Errorf("被拒的决议不许还去回读一份假的现状，实际回读了 %d 次", stub.getCalls)
+	}
+}
+
 // TestResolveIdempotencyIsByteIdenticalAndRunsOnce 是那把键的本体：
 // 同键同体重放 ⇒ 逐字节等于首击且**只转发一次**；同键换体 ⇒ 409 且不再转发。
 // 为什么这条真需要一座库：重放的那一份响应要来自库里封存的那串（C18 那条"回读的是库里那一份"），

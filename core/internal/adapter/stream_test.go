@@ -162,6 +162,7 @@ func TestStreamRoundTrip(t *testing.T) {
 		{Method: MethodTurnClaimed, SequenceNo: 4, TurnRef: "t-1", Accepted: true, ExecutionID: "e1", ProviderExecutionID: "pe1", QueuePosition: i64(2)},
 		{Method: MethodTurnDispatch, SequenceNo: 5, TurnRef: "t-1", TurnID: "t1", ExecutionID: "e1", ProviderExecutionID: "pe1"},
 		{Method: MethodTurnFinished, SequenceNo: 6, TurnRef: "t-1", ResultCode: "OK"},
+		{Method: MethodApprovalRequest, SequenceNo: 7, TurnRef: "t-1", Action: "filesystem.write", Resource: "notes/todo.md", RiskHint: "HIGH", ProviderExecutionID: "pe1"},
 	}
 	var buf strings.Builder
 	w := NewWriter(&buf)
@@ -201,6 +202,18 @@ func TestStreamRoundTrip(t *testing.T) {
 				t.Errorf("item sequence_no = %s, want 2", fields["sequence_no"])
 			}
 		}
+		if i == 6 {
+			// approval/request's payload is the reason the frame exists, so it is the part a
+			// round trip can silently lose: omitempty on four fields means a dropped assignment
+			// reads as "the Adapter sent no resource", not as a broken encoder. The action
+			// string here is a fixture - the claim that it must be one the permission
+			// classifier registers is pinned where that package is importable, in
+			// cmd/fake-adapter's TestApprovalRequestActionsAreClassifierVocabulary.
+			if got.Action != want.Action || got.Resource != want.Resource ||
+				got.RiskHint != want.RiskHint || got.ProviderExecutionID != want.ProviderExecutionID {
+				t.Errorf("approval/request payload came back as %+v, want %+v", got, want)
+			}
+		}
 	}
 }
 
@@ -217,6 +230,7 @@ func TestNewStreamRefusesUnattributedFrame(t *testing.T) {
 		{Method: MethodTurnClaimed, SequenceNo: 4, Accepted: true, ExecutionID: "e1", ProviderExecutionID: "pe1"},
 		{Method: MethodTurnDispatch, SequenceNo: 5, TurnID: "t1", ExecutionID: "e1"},
 		{Method: MethodTurnFinished, SequenceNo: 6, ResultCode: "OK"},
+		{Method: MethodApprovalRequest, SequenceNo: 7, Action: "filesystem.write", Resource: "notes/todo.md"},
 	}
 	for _, want := range legal {
 		if CarriesTurnRef(want.Method) {
@@ -542,14 +556,23 @@ func TestDecodeStreamEvidence(t *testing.T) {
 		// never "never ran" - so the frame stays legal.
 		{"dispatch without provider handle", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"turn_id":"t1","execution_id":"e1"}`, ""},
 		{"dispatch without turn_id", MethodTurnDispatch, `{"turn_ref":"t-1","sequence_no":2,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_id"},
-		// §4.2 裁定 ①收成一条无例外: the ticket is mandatory on all six, so the pair is
-		// now the frame that carries *both* identities. execution_id stopped being a
+		// §4.2 裁定 ①收成一条无例外: the ticket is mandatory on every notification, so the
+		// pair is now the frame that carries *both* identities. execution_id stopped being a
 		// second way to attribute a frame, which is why these two rows reversed.
 		{"claimed without turn_ref", MethodTurnClaimed, `{"sequence_no":1,"accepted":true,"execution_id":"e1","provider_execution_id":"pe1"}`, "turn_ref"},
 		{"dispatch without turn_ref", MethodTurnDispatch, `{"sequence_no":2,"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, "turn_ref"},
-		// A-7 决议 ①：CO-8 漏了 sequence_no，§6 规则 2 没漏 —— 六条全都要有。
+		// A-7 决议 ①：CO-8 漏了 sequence_no，§6 规则 2 没漏 —— 每一条通知都要有。
 		{"claimed without sequence_no", MethodTurnClaimed, `{"turn_ref":"t-1","accepted":true,"execution_id":"e1","provider_execution_id":"pe1"}`, "CO-6"},
 		{"dispatch without sequence_no", MethodTurnDispatch, `{"turn_id":"t1","execution_id":"e1","provider_execution_id":"pe1"}`, "CO-6"},
+		// approval/request (§6's seventh, 10-01 裁 REQ-APR-3): the frame is the only way a
+		// production path gets a real high-risk action to permission.Engine.Decide, so the
+		// two fields that make it readable are checked at the door - an action-less request
+		// would fail closed into "needs approval" while naming nothing, and a ticket-less
+		// one could not be attributed to the turn that is waiting.
+		{"approval/request nominal", MethodApprovalRequest, `{"turn_ref":"t-1","sequence_no":3,"action":"filesystem.write","resource":"notes/todo.md","risk_hint":"HIGH","provider_execution_id":"pe1"}`, ""},
+		{"approval/request without action", MethodApprovalRequest, `{"turn_ref":"t-1","sequence_no":3,"resource":"notes/todo.md","risk_hint":"HIGH"}`, "action"},
+		{"approval/request without turn_ref", MethodApprovalRequest, `{"sequence_no":3,"action":"filesystem.write"}`, "turn_ref"},
+		{"approval/request without sequence_no", MethodApprovalRequest, `{"turn_ref":"t-1","action":"filesystem.write"}`, "CO-6"},
 	}
 	for _, c := range cases {
 		f := notifyFrame(t, c.method, c.params)

@@ -832,10 +832,10 @@ func TestFakeAdapterLocateIsTheHonestStub(t *testing.T) {
 	}
 }
 
-// TestFakeAdapterEmitsEveryNotificationType is §10 ① read literally after A-8: all six
-// Adapter->Core notifications must actually appear in one real process run, and each
+// TestFakeAdapterEmitsEveryNotificationType is §10 ① read literally after A-8: every
+// Adapter->Core notification must actually appear in one real process run, and each
 // one where its own path owes it. The split matters: session/stop also emits a
-// stream/state, so a single "did we see all six" check would pass even if the normal
+// stream/state, so a single "did we see them all" check would pass even if the normal
 // turn path never sent one. Collecting from the wire rather than from this file's
 // expectations is what keeps the guard honest.
 func TestFakeAdapterEmitsEveryNotificationType(t *testing.T) {
@@ -868,5 +868,18 @@ func TestFakeAdapterEmitsEveryNotificationType(t *testing.T) {
 	note()
 	if !seen[adapter.MethodTurnFinished] {
 		t.Errorf("turn/finished never reached the wire; §6 规则 1 keeps it the one mandatory signal")
+	}
+
+	// The seventh member (§4's approval/request, 10-01 裁) joins the family through its own
+	// path, not a debug endpoint: a prompt that asks for a high-risk tool. Listed here rather
+	// than only in approval_request_test.go because this test is the one that asks "did every
+	// notification the contract names ever leave this process" - a family check that quietly
+	// stayed at six after the seventh landed would be the exact blind spot §10 ① exists for.
+	call(t, p, "n3", methodSessionSend, adapter.SendParams{
+		RemoteSessionID: "rsn-1", Text: "run tool exec", Delivery: adapter.DeliveryStartNow,
+		ExecutionID: "exec-n3", IdempotencyKey: "kn3"})
+	note()
+	if !seen[adapter.MethodApprovalRequest] {
+		t.Errorf("approval/request never reached the wire: §4 names it as an Adapter->Core notification this double must be able to emit")
 	}
 }

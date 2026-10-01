@@ -124,8 +124,13 @@ func splitApprovalItem(path string) (id, verb string, ok bool) {
 // 可空列走指针（域里 ""/0 = 库里 NULL ⇒ 出口必须是 null 而不是 ""），两份 *_json 列走 `jsonMap`
 // （空 ⇒ `{}`、坏了 ⇒ 500，与 executions 那三格同一条规矩）。
 //
-// `grant_id` 恒为 null —— **这不是偷懒**：grant 住在另一张表（temporary_grants），
-// approval 的只读分页没把它交出来。编一个值出来比 null 坏得多，所以这里出 null 并在判据里钉住"它不许被猜"。
+// `grant_id`（T-440）不再恒 null：它是域层**已经交给我**的那份决议记录里的一个键 ——
+// `internal/approval/approval.go:398` 的 `GrantID string json:"grant_id"` 就写进 `resolution_json` 那一列，
+// 所以这里只做只读映射，一行 SQL 都不写、不去碰 `temporary_grants`（那是 audit 的表，边界①）。
+// 取不到（没开授权、或那份记录里没有这个键）就出 null —— **null 是"没开这扇门"，不是"我猜不到"**；
+// 编一个值出来才是坏（这条与上一版同一个理由，只是上一版把结论下错了：它说"读法没交出来"，实际交了）。
+// 为什么要露这一格：面板点了"批准并临时允许"之后必须看得见自己刚开了一扇**有时限**的门
+// （契约① §3 规则 3 的反向半：不能只改 UI 状态，也得让 UI 看得见它）。
 type approvalView struct {
 	ID                string          `json:"id"`
 	TaskID            *string         `json:"task_id"`
@@ -161,7 +166,7 @@ func approvalViewOf(a approval.Approval) (approvalView, error) {
 		SessionID: optStr(a.SessionID), AdapterInstanceID: optStr(a.AdapterInstanceID),
 		ApprovalType: a.Type, Action: a.Action, Resource: optStr(a.Resource),
 		RiskLevel: a.RiskLevel, State: a.State,
-		Request: req, Resolution: res, GrantID: nil,
+		Request: req, Resolution: res, GrantID: resolutionGrantID(a.ResolutionJSON),
 		RequestedAt: a.RequestedAt, ExpiresAt: nullable(a.ExpiresAt),
 		ResolvedAt: nullable(a.ResolvedAt), ResolvedBy: optStr(a.ResolvedBy),
 		Version: a.Version,
@@ -197,6 +202,25 @@ func getApproval(w http.ResponseWriter, r *http.Request, c Config, id string) {
 	default:
 		serverError(w, r, err)
 	}
+}
+
+// resolutionGrantID 只读地把决议记录里的 `grant_id` 取出来（T-440 边界①：来源只有域层交出来的那一列）。
+// 空串/没有这个键/那份 JSON 读不动 ⇒ 一律 null，**不猜**：`Service.Request` 那句"never claim a risk level
+// we were not told"是同一个规矩的另一种写法，没被告知就是没有。
+func resolutionGrantID(resolutionJSON string) *string {
+	if strings.TrimSpace(resolutionJSON) == "" {
+		return nil
+	}
+	var rec struct {
+		GrantID string `json:"grant_id"`
+	}
+	if err := json.Unmarshal([]byte(resolutionJSON), &rec); err != nil {
+		return nil
+	}
+	if rec.GrantID == "" {
+		return nil
+	}
+	return &rec.GrantID
 }
 
 // listApprovals 是 `GET /api/v1/approvals`（yaml listApprovals：state + Cursor + Limit）。

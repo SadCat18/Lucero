@@ -4,19 +4,33 @@ import (
 	"encoding/json"
 )
 
-// 事件类型 = §6 目录中触发者为 execution 的行。execution_approval_requested /
-// execution_approval_resolved 的触发者是 approval（audit 角色），不在本包定义。
+// 事件类型 = §6 目录中触发者为 execution 的行。
+//
+// `execution_approval_requested` / `execution_approval_resolved` **今天在本包定义，昨天不在**：
+// 目录那两行原写 `aggregate_type = approval`，而同一份 §6 的边表（`event-contract-v0.1.md:131`/`:132`）
+// 把这两条边挂在 execution 的状态机上 —— 按 REQ-B-1「`aggregate_type` 决定谁能发它」，
+// 只要目录写 approval，`Touch(db.AggExecution, …)` 就永远发不出它（平台层那句
+// `aggregate_type %q but touching %q`，`internal/platform/db/touch.go:571`）。
+// 主控 10-01 裁的就是这一格（REQ-APR-1「改目录不改边表」，`git show 734931f` 现读那两行已改成 **execution**），
+// 所以名字落在我包里。**边仍然是执行的状态边**：审批对象自己的 `approval_requested` / `approval_resolved`
+// 仍归 `internal/approval`（audit）发，两族各有其位，不许谁替谁发。
 const (
 	EventCreated       = "execution_created"
 	EventStarted       = "execution_started"
 	EventOutputFlushed = "execution_output_flushed"
-	EventPaused        = "execution_paused"
-	EventResumed       = "execution_resumed"
-	EventStarting      = "execution_starting" // REQ-DB-4（09-24）：CREATED→STARTING 由它表达，§6 那行 payload 只有 `from`
-	EventSucceeded     = "execution_succeeded"
-	EventFailed        = "execution_failed"
-	EventCancelled     = "execution_cancelled"
-	EventInterrupted   = "execution_interrupted"
+	// EventApprovalRequested 是 `RUNNING → WAITING_APPROVAL` 那一格的事件（§6 边表 :131）。
+	EventApprovalRequested = "execution_approval_requested"
+	// EventApprovalResolved 是 `WAITING_APPROVAL → RUNNING` 那一格的事件（§6 边表 :132，"批准"）。
+	// 它**不与 `EventResumed` 互换**：`execution_resumed` 说的是"暂停/等输入/被打断之后续跑"，
+	// 载荷只有一个 `from`；把审批放行写成 resumed，就等于说"这一格没有过一次人工决定"。
+	EventApprovalResolved = "execution_approval_resolved"
+	EventPaused           = "execution_paused"
+	EventResumed          = "execution_resumed"
+	EventStarting         = "execution_starting" // REQ-DB-4（09-24）：CREATED→STARTING 由它表达，§6 那行 payload 只有 `from`
+	EventSucceeded        = "execution_succeeded"
+	EventFailed           = "execution_failed"
+	EventCancelled        = "execution_cancelled"
+	EventInterrupted      = "execution_interrupted"
 	// EventUnknown 是「Adapter 崩溃那一支」（Core 活着、对端进程死）的事件名，出处不是我：
 	// 契约① 第 25 条 ④-a 那句「REQ-RC-2 裁「甲」：`→UNKNOWN` 的 §6 事件名**定 `execution_unknown`**」
 	// （`specs/contracts-internal-v0.1.md:717`，T-401 ① 把这三段原文重新指给我，之前我说"没落契约正文"是错的）。
@@ -38,13 +52,18 @@ const (
 )
 
 // EventOf 返回该迁移对应的事件类型；"" 表示该迁移不由本包发事件
-// （WAITING_APPROVAL→RUNNING 由 approval 包发 execution_approval_resolved；
-// RUNNING→WAITING_INPUT 在 §6 目录里根本没有事件）。
+// （WAITING_INPUT / TRANSFERRING 在 §6 目录里根本没有事件）。
 // 事件存在与否与"是否驱动 Task"是两件事：§5.3 之外的事件一律不驱动 Task。
+//
+// 两张审批边（RUNNING ⇄ WAITING_APPROVAL）从 REQ-APR-1 那一次裁定起归本包发 ——
+// 在此之前它们是 ""，而"无事件的状态边落不了库"是平台规矩（`advance` 当场翻
+// ErrNoEventForTransition），所以那两条边当时**在写面上根本走不通**，不是"有别家替我发"。
 func EventOf(from, to State) string {
 	switch to {
 	case Starting:
 		return EventStarting
+	case WaitingApproval:
+		return EventApprovalRequested
 	case Succeeded:
 		return EventSucceeded
 	case Failed:
@@ -64,6 +83,8 @@ func EventOf(from, to State) string {
 		switch from {
 		case Starting:
 			return EventStarted
+		case WaitingApproval:
+			return EventApprovalResolved
 		case Paused, WaitingInput, Interrupted:
 			return EventResumed
 		}
@@ -71,14 +92,24 @@ func EventOf(from, to State) string {
 	return ""
 }
 
-// auditRequired = §6 目录的 Audit 列 ✓：这三个事件必须同事务带一条 audit_entries。
+// auditRequired = §6 目录的 Audit 列 ✓：这些事件必须同事务带一条 audit_entries。
 // `EventUnknown` 在列里是契约① :717 那句「Audit 必带」的落点（与 `execution_interrupted` 同待遇）；
 // §6 那一行由主控在同批补，**这一张表先于表**是本批的形状，不是越界登记 —— 登记（写 §6）与
 // 消费（这里要不要审计）是两件事，后者归执行落地的那一方，前者归 specs。
 //
 // `EventClaimed` **不在**这张表里，而且不许补进去：:741 那行的 Audit 列是 `–`（一条把手的观察不是
 // 一次需要证据的裁决）。它要是被补进来，claim.go 那一笔就会去要一条没人给的 audit 行、当场写不下去。
-var auditRequired = map[string]bool{EventFailed: true, EventInterrupted: true, EventUnknown: true}
+//
+// 两张审批边进来是跟着 §6 那两列的 ✓ 走的（`event-contract-v0.1.md:216`/`:217` 现读都是 ✓，
+// 不是我自己给的待遇：一次人工决定正是这一列要留证据的那种事）。**但要说清这张表今天谁在读**：
+// 只有 `recovery.go` 那两条腿按它决定要不要审计（`RequiresAudit`，:179/:273），
+// 通用的 `advance` 路径**不看它** —— 所以 `EventFailed`/`EventInterrupted` 在生产里也没带过审计行。
+// 这张表加这两格是为了让"要不要审计"这个事实只有一个出处；**真正去带那条审计记录，是接 ② 那一腿的活**
+// （`cmd/core` 装配，与 `recoveryAudit` 同形），不是把名字塞进这张表就算做完。
+var auditRequired = map[string]bool{
+	EventFailed: true, EventInterrupted: true, EventUnknown: true,
+	EventApprovalRequested: true, EventApprovalResolved: true,
+}
 
 func RequiresAudit(eventType string) bool { return auditRequired[eventType] }
 
@@ -165,4 +196,35 @@ type UnknownPayload struct {
 // 与 `columnWrites` 给 result_code 的约定同形（两处同事实、必然同值）。
 type ClaimedPayload struct {
 	ProviderExecutionID string `json:"provider_execution_id"`
+}
+
+// ApprovalRequestedPayload 是 §6 那一行 `execution_approval_requested` 的四键
+// （`event-contract-v0.1.md:216` 现读：`approval_id` `action` `resource` `risk_level`）。
+// 这一行带的是"这次等待卡在哪个审批上"—— 没有 `approval_id` 的事件等于说"在执行、在等，
+// 但没人知道等谁批"，那正是 §3 规则 1 要防的形态，所以 `advance` 那一腿对它是**拒写**而不是补空串。
+//
+// `risk_level` 与 `approvals.risk_level` 是**同一个事实的两处出口**，必须同值（与 `columnWrites`
+// 给 result_code 立的约定同形）。取法不是从 `Draft` 回读：`approval.Service.Request` 会把空的
+// RiskLevel 归一成 `"UNKNOWN"`（`internal/approval/approval.go:261`–`:263`），
+// 所以权威是**它返回的那一行**的字段，不是调用方塞进去的那个串。
+//
+// `resource` 可空是真的可空（`approvals.resource` nullable），所以它没有配一份"必填"的校验；
+// 四个键恒在场（不走 omitempty），与 ResultPayload 那条"空串表示没有、与键不存在是两回事"同规矩。
+type ApprovalRequestedPayload struct {
+	ApprovalID string `json:"approval_id"`
+	Action     string `json:"action"`
+	Resource   string `json:"resource"`
+	RiskLevel  string `json:"risk_level"`
+}
+
+// ApprovalResolvedPayload 是 §6 那一行 `execution_approval_resolved` 的四键
+// （`:217` 现读：`approval_id` `state` `grant_id` `resolved_by`）。
+// `grant_id` 可空是真的可空：批了但没开有时限的门时库里就是 NULL（同一件事在 transport 出口是
+// `approvalView.GrantID` 的 null，两边都不许编值）。`state`/`resolved_by` 少了这条边就说不清
+// "是谁的哪一个决定把它放开的"，所以那两个与 `approval_id` 一起构成这一腿的最低必填。
+type ApprovalResolvedPayload struct {
+	ApprovalID string `json:"approval_id"`
+	State      string `json:"state"`
+	GrantID    string `json:"grant_id"`
+	ResolvedBy string `json:"resolved_by"`
 }

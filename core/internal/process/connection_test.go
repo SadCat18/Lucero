@@ -689,6 +689,119 @@ func TestInboundNeverCarriesTheTicket(t *testing.T) {
 	}
 }
 
+// TestConnectionForwardsApprovalRequestWithoutClosingTheTurn is §4's seventh Adapter->Core
+// notification seen from the pump, and it pins the two halves of the row's 边界 sentence
+// separately:
+//   - the frame gets through, attributed by its ticket like every other one, with its
+//     payload intact - "请求进得来" is the whole reason the method exists, and a pump that
+//     dropped it would leave permission.Engine.Decide with nothing to decide about;
+//   - it closes nothing (§6 规则 1 keeps turn/finished the only closer). A pump that read
+//     the gate as terminal would write a result for a turn that is merely waiting, which is
+//     the "看起来一切正常" failure in the other direction.
+//
+// The replay is here because the dedup key has to cover the new member too: four frames in,
+// three distinct ones out.
+func TestConnectionForwardsApprovalRequestWithoutClosingTheTurn(t *testing.T) {
+	c, p := pipeConnection(t)
+	go p.answerOne(t, handshakeResult())
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	ticket := openTurn(t, c, p, "e1")
+	for _, s := range []*adapter.StreamFrame{
+		{Method: adapter.MethodTurnClaimed, SequenceNo: 1, TurnRef: ticket,
+			Accepted: true, ExecutionID: "e1", ProviderExecutionID: "p1"},
+		{Method: adapter.MethodTurnDispatch, SequenceNo: 2, TurnRef: ticket,
+			TurnID: "t1", ExecutionID: "e1", ProviderExecutionID: "p1"},
+		{Method: adapter.MethodApprovalRequest, SequenceNo: 3, TurnRef: ticket,
+			Action: "filesystem.write", Resource: "notes/todo.md", RiskHint: "HIGH", ProviderExecutionID: "p1"},
+		{Method: adapter.MethodApprovalRequest, SequenceNo: 3, TurnRef: ticket,
+			Action: "filesystem.write"}, // replay of (ticket, 3)
+	} {
+		if err := p.send(s); err != nil {
+			t.Fatalf("peer send %s: %v", s.Method, err)
+		}
+	}
+
+	var got []*adapter.StreamFrame
+	deadline := time.After(2 * time.Second)
+	for len(got) < 3 {
+		select {
+		case ev := <-c.Inbound():
+			if ev.Err != nil {
+				t.Fatalf("inbound error: %v", ev.Err)
+			}
+			if ev.Frame == nil {
+				t.Fatalf("%s came through as a drop", ev.ExecutionID)
+			}
+			if ev.ExecutionID != "e1" {
+				t.Errorf("%s: ExecutionID = %q, want the ticket resolved to e1", ev.Frame.Method, ev.ExecutionID)
+			}
+			if ev.Frame.TurnRef != "" {
+				t.Errorf("%s: TurnRef = %q, want it stopped at this boundary (§6 规则 5 决议 ②)", ev.Frame.Method, ev.Frame.TurnRef)
+			}
+			got = append(got, ev.Frame)
+		case <-deadline:
+			t.Fatalf("only forwarded %d of the 3 distinct frames: the gate never reached the consumer", len(got))
+		}
+	}
+	if want := []string{adapter.MethodTurnClaimed, adapter.MethodTurnDispatch,
+		adapter.MethodApprovalRequest}; strings.Join(frameMethods(got), ",") != strings.Join(want, ",") {
+		t.Errorf("forwarded %v, want %v (and the replay of (ticket,3) dropped)", frameMethods(got), want)
+	}
+	req := got[2]
+	if req.Action != "filesystem.write" || req.Resource != "notes/todo.md" ||
+		req.RiskHint != "HIGH" || req.ProviderExecutionID != "p1" {
+		t.Errorf("approval/request payload arrived as %+v, want the action, resource, hint and provider handle the Adapter sent", req)
+	}
+	// §6 规则 5's key covers the seventh member too, and it is asserted as a measured absence:
+	// the loop above stops at three forwards, so counting alone would also pass beside a pump
+	// that forwarded all four.
+	select {
+	case ev := <-c.Inbound():
+		t.Errorf("a second approval/request reached the consumer (%+v): (turn_ref, sequence_no) is this frame's idempotency key too", ev.Frame)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if tr := c.Turn("e1"); tr.State() != adapter.TurnRunning || tr.Result() != "" {
+		t.Errorf("turn after the gate = %s/%q, want RUNNING with no result: §6 规则 1 makes turn/finished the only closer",
+			tr.State(), tr.Result())
+	}
+
+	// The same turn does close later, and only when turn/finished says so - otherwise the
+	// assertion above would be satisfiable by a pump that ignores every notification.
+	if err := p.send(&adapter.StreamFrame{Method: adapter.MethodTurnFinished,
+		SequenceNo: 4, TurnRef: ticket, ResultCode: "SUCCEEDED"}); err != nil {
+		t.Fatalf("peer send turn/finished: %v", err)
+	}
+	closed := false
+	closing := time.After(2 * time.Second)
+	for !closed {
+		select {
+		case ev := <-c.Inbound():
+			if ev.Err != nil {
+				t.Fatalf("turn/finished reported %v", ev.Err)
+			}
+			if ev.Frame != nil && ev.Frame.Method == adapter.MethodTurnFinished {
+				closed = true
+			}
+		case <-closing:
+			t.Fatal("turn/finished never arrived, so the tracker's close cannot be attributed to it")
+		}
+	}
+	if tr := c.Turn("e1"); tr.State() != adapter.TurnClosed || tr.Result() != "SUCCEEDED" {
+		t.Errorf("turn after turn/finished = %s/%q, want CLOSED/SUCCEEDED", tr.State(), tr.Result())
+	}
+	drain(c)
+}
+
+func frameMethods(frames []*adapter.StreamFrame) []string {
+	out := make([]string, len(frames))
+	for i, f := range frames {
+		out[i] = f.Method
+	}
+	return out
+}
+
 // TestConnectionChainClosesBeforeItOpens is §6.3's chain seen from the only place that
 // is allowed to know which Execution a frame belongs to: the pump's consumer view. The
 // guide lands on the running turn, session/stop closes it, and exec-2's claim must

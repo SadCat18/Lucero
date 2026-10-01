@@ -184,14 +184,22 @@ func sealDecision(ctx context.Context, store TaskStore, key string, view any) (s
 	return sealed, nil
 }
 
-// writeResolveError 只翻译**有名字的**答案：`ErrNotFound` 是 404，其余一律 500。
-// 为什么不把 audit 那些 `fmt.Errorf` 折成 400/409：它们没有哨兵，按文案猜码就是拿字符串当合同
-// （改一个字就换一种码，而那种红没人看得见）。§3/§4 由主控按 audit 那三行落完之后，
-// 该回 409 的那几支会有名字，这里再一处一码。
+// writeResolveError 只翻译**有名字的**答案：`ErrNotFound` 是 404，
+// `ErrConflictingResolution` 是 409（契约① §3 规则 8 那半：同一个 id 第二次给**不同的**决议必须 409，
+// 不许静默成功 —— 这个哨兵是 audit 在 T-438 交的名字，不是我照文案猜的；它没落地之前这一支一直落 500）。
+// 其余一律 500：**没名分的错误不猜码**（今天 `internal/approval` 还有几条 `fmt.Errorf` 的拒绝没有哨兵，
+// 按文案折码就是拿字符串当合同，改一个字换一种码而没人看得见）。
+//
+// 为什么 409 用 `illegal_transition` 这个码名：yaml `ErrorCode` 是**闭集 29 条**（`:797~803`），
+// 里面没有泛用的 `conflict`，而 `illegal_transition`（409，§15.2 已登记）说的正是"这个聚合不接受这一次转换" ——
+// 一张已决的审批再要一个不同的决议，就是那条转换。另注册在同一码上的 `version_conflict` 是 If-Match 的事，不混用。
 func writeResolveError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, approval.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "没有这条 Approval", false)
+	case errors.Is(err, approval.ErrConflictingResolution):
+		writeError(w, http.StatusConflict, "illegal_transition",
+			"这条审批已经有了一份不同的决议 ⇒ 不覆盖（要改判走新的审批单）", false)
 	default:
 		serverError(w, r, err)
 	}

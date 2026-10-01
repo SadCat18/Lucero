@@ -236,7 +236,11 @@ func TestPumpReconnectsAfterTheAdapterDies(t *testing.T) {
 		Delivery: "start_now", IdempotencyKey: "k-dead-2",
 	})
 	if err != nil {
-		t.Fatalf("重连之后那一发该被接住：%v", err)
+		// 负载敏感的那一枚红（T-416）把这一句当成了唯一线索，而线索全在观察者的喊话里：
+		// "观察到对端进程终止"/"连接退役" 各带 `#代` —— 红的时候到底是不是第一代观察者去关了第二代，
+		// 只看这两串计数与代次就能判。这里只**补现场**，一条断言都没动（判性质用，不放宽判据）。
+		t.Fatalf("重连之后那一发该被接住：%v｜观察者的话：退役 %d 句、终止观察 %d 句、连接起来 %d 句；全记录：%v",
+			err, tap.count("连接退役"), tap.count("观察到对端进程终止"), tap.count("常驻连接已起"), tap.lines)
 	}
 	if !rec.Accepted {
 		t.Errorf("重连后该 accepted=true，实际 %+v", rec)

@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SadCat18/lucero/core/internal/adapter"
@@ -89,6 +90,12 @@ type turn struct {
 	executionID string
 	turnID      string
 	providerID  string
+	// awaiting is set when this run stopped at §4's approval gate: the Provider asked Core
+	// whether a human must approve an action and has not done the action. A turn parked like
+	// that has not ended, so nothing here may send its closing frame - §6 规则 1 leaves
+	// turn/finished as the only one, and §6's new `approval/request` row says in as many words
+	// that the round stops at the gate rather than reporting a result.
+	awaiting bool
 }
 
 // injection is an armed debug/fail: the error code and how many calls are left
@@ -497,10 +504,73 @@ func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
 			return nil, err
 		}
 	}
+	// §4's approval gate: a prompt that asks this double to run one of its risky tools stops
+	// here and asks Core first (T-441 ② - the frame has to be sent by a real path, not by an
+	// injection endpoint). Everything else falls through to the default close below.
+	if err := f.approvalGate(t, p.Text); err != nil {
+		return nil, err
+	}
 	// §6 第 6 条③ says this run must close, and T-392 ① says where: after the receipt this
 	// send is about to write, not here. `settle` owns that frame; startTurn opening a turn
 	// is not the same act as ending one.
 	return t, nil
+}
+
+// riskyTools is this double's tool table: the tool a prompt can ask for, the §3.1 action
+// string it maps onto, and the resource it would touch. The action column is the part the
+// contract constrains - §4's `approval/request` row says the string must be one the built-in
+// classifier knows (`filesystem.write`/`command.exec`/…), and an unrecognised one fails
+// closed into "needs approval" for a reason nobody asked for, which would let a test pass by
+// accident. TestRiskyToolActionsAreClassified checks every row here against
+// `permission.RiskLevel` rather than trusting this comment.
+var riskyTools = []struct{ tool, action, resource string }{
+	{"write", "filesystem.write", "notes/todo.md"},
+	{"exec", "command.exec", "pwsh -Command Remove-Item ./build"},
+}
+
+// approvalGate sends §4's A->C `approval/request` for a prompt that asks for a risky tool, and
+// parks the turn while the answer is outstanding.
+//
+// What it deliberately does not do: run the action, invent a decision, or close the turn. The
+// request frame is a notification (no id, no reply frame - the answer comes back over
+// C->A `approval/respond`), so a Provider that kept going would be the exact behaviour
+// §4's hard order forbids, and a `turn/finished` here would tell Core the action finished.
+func (f *fake) approvalGate(t *turn, text string) error {
+	const prefix = "run tool "
+	if !strings.HasPrefix(text, prefix) {
+		return nil
+	}
+	name := strings.TrimSpace(text[len(prefix):])
+	for _, rt := range riskyTools {
+		if rt.tool != name {
+			continue
+		}
+		row := &approvalRow{ApprovalID: "apr-" + t.ref, RemoteSessionID: t.sessionID,
+			Action: rt.action, Resource: rt.resource, RiskLevel: "HIGH", State: "PENDING",
+			Payload:     json.RawMessage(`{"tool":"` + rt.tool + `","asked_by_turn":"` + t.ref + `"}`),
+			RequestedAt: nowMillis()}
+		f.db.approvals = append(f.db.approvals, row)
+		t.awaiting = true
+		// The tool call is reported before the request so a reader can see which item the
+		// gate is about; stream/item's shape is §6's own, and its state says why nothing ran.
+		if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodStreamItem,
+			Item: json.RawMessage(`{"kind":"tool_call","name":"fake.` + rt.tool +
+				`","state":"AWAITING_APPROVAL","action":"` + rt.action + `"}`)}); err != nil {
+			return err
+		}
+		if err := f.notice(t, &adapter.StreamFrame{Method: adapter.MethodApprovalRequest,
+			Action: rt.action, Resource: rt.resource, RiskHint: "HIGH",
+			ProviderExecutionID: t.providerID}); err != nil {
+			return err
+		}
+		fmt.Fprintf(f.logs, "approval/request sent for action %q on resource %q (approval %s); turn %s waits at the gate\n",
+			rt.action, rt.resource, row.ApprovalID, t.ref)
+		return nil
+	}
+	// An unknown tool is this double's own refusal, not a gate: silently treating a typo as
+	// "no risk" would make the trigger path look longer than it is.
+	return f.notice(t, &adapter.StreamFrame{Method: adapter.MethodStreamDelta,
+		Channel: adapter.ChannelStatus, Text: "no tool named " + name + " in this build"})
 }
 
 // settle closes the turn a send opened, one step after that send's receipt went out.
@@ -516,7 +586,7 @@ func (f *fake) startTurn(ref string, p adapter.SendParams) (*turn, error) {
 // where the frame and CO-25's drain go out instead. That makes two independent witnesses
 // of the same position rather than one shape that always closes at the reply.
 func (f *fake) settle(t *turn) error {
-	if f.hold {
+	if f.hold || t.awaiting {
 		return nil
 	}
 	return f.finish(t, resultSucceeded)
@@ -614,8 +684,8 @@ func (f *fake) finish(t *turn, code string) error {
 func (f *fake) notice(t *turn, s *adapter.StreamFrame) error {
 	f.seq++
 	s.SequenceNo = f.seq
-	// §4.2 裁定 ① makes the ticket mandatory on all six notifications, so this is one
-	// rule with no exception branch: the predicate is the same one Core decodes with,
+	// §4.2 裁定 ① makes the ticket mandatory on every Adapter->Core notification, so this is
+	// one rule with no exception branch: the predicate is the same one Core decodes with,
 	// which is what keeps a producer bug from hiding behind a permissive consumer.
 	if adapter.CarriesTurnRef(s.Method) {
 		s.TurnRef = t.ref

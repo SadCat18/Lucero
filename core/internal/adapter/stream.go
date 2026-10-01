@@ -15,12 +15,17 @@ import (
 func CarriesTurnRef(method string) bool {
 	switch method {
 	case MethodStreamDelta, MethodStreamItem, MethodStreamState,
-		MethodTurnFinished, MethodTurnClaimed, MethodTurnDispatch:
+		MethodTurnFinished, MethodTurnClaimed, MethodTurnDispatch, MethodApprovalRequest:
 		return true
 	}
 	return false
 }
 
+// CarriesTurnRef grew a seventh member on 10-01 (approval/request). Contract §6 规则 5
+// still says 全部六条 in its body - the ruling added a counting note under it rather than
+// rewriting the sentence - so nothing in here may code against a number. Add a notification
+// to §6 and this switch is where it joins the family.
+//
 // Stream notification methods (contract §6). Only MethodTurnFinished is
 // mandatory: §6 规则 1 exists because Phase 0 measured Qoder's 真流式 as UNSUPPORTED,
 // so the protocol must tolerate a Provider that only speaks in turns.
@@ -31,6 +36,12 @@ const (
 	MethodTurnClaimed  = "turn/claimed"
 	MethodTurnDispatch = "turn/dispatched"
 	MethodTurnFinished = "turn/finished"
+	// MethodApprovalRequest is §6's seventh Adapter->Core notification (10-01 裁, REQ-APR-3):
+	// the Provider is about to do something high-risk and asks Core whether a human must approve
+	// it. It is a notification, not a request - there is no reply frame and no id to match, so
+	// the answer comes back over the C->A approval/respond path, and it never ends the turn:
+	// §6 规则 1 still makes turn/finished the only closing signal.
+	MethodApprovalRequest = "approval/request"
 )
 
 // stream/delta channels (§6).
@@ -53,8 +64,8 @@ type StreamFrame struct {
 	// TurnRef is Core's own correlation string - the JSON-RPC id of the request that
 	// started the turn - echoed back verbatim. The Adapter neither generates nor
 	// interprets it, and no Core-side identity travels outward in a frame (§6 规则 5).
-	// §4.2 裁定 ① makes it mandatory on all six notifications, including the evidence
-	// pair, so there is exactly one way to attribute a frame.
+	// §4.2 裁定 ① makes it mandatory on every Adapter->Core notification, including the
+	// evidence pair, so there is exactly one way to attribute a frame.
 	TurnRef string `json:"turn_ref"`
 
 	Channel         string          `json:"channel,omitempty"`
@@ -67,6 +78,13 @@ type StreamFrame struct {
 	// The CO-8 evidence pair. turn/claimed says the Adapter took the job,
 	// turn/dispatched says a turn actually started; without the second one Core may
 	// not show "running".
+	// The approval/request payload (§6): what action, on what resource, with what hint.
+	// Action is mandatory on that frame and appears on no other; provider_execution_id reuses
+	// the CO-8 field above rather than inventing a second name for the same thing.
+	Action   string `json:"action,omitempty"`
+	Resource string `json:"resource,omitempty"`
+	RiskHint string `json:"risk_hint,omitempty"`
+
 	Accepted            bool   `json:"accepted,omitempty"`
 	QueuePosition       *int64 `json:"queue_position,omitempty"`
 	TurnID              string `json:"turn_id,omitempty"`
@@ -119,7 +137,7 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 	// accident the rule exists to prevent.
 	if s.TurnRef == "" && CarriesTurnRef(f.Method) {
 		return nil, &Error{Code: ErrInvalidParams,
-			Message: fmt.Sprintf("%s has no turn_ref (§4.2 裁定 ① makes it mandatory on all six notifications)", f.Method)}
+			Message: fmt.Sprintf("%s has no turn_ref (§4.2 裁定 ① makes it mandatory on every Adapter→Core notification)", f.Method)}
 	}
 	switch f.Method {
 	case MethodStreamDelta:
@@ -174,6 +192,13 @@ func DecodeStream(f *Frame) (*StreamFrame, error) {
 	case MethodTurnFinished:
 		if s.ResultCode == "" {
 			return nil, &Error{Code: ErrInvalidParams, Message: "turn/finished has no result_code"}
+		}
+	case MethodApprovalRequest:
+		// The one thing this frame cannot be without is a name for the动作: Core's permission
+		// engine classifies by string, and an empty action would fail closed into "needs approval"
+		// for a request that asks nothing - a gate that cannot be traced back to a Provider.
+		if s.Action == "" {
+			return nil, &Error{Code: ErrInvalidParams, Message: "approval/request has no action (contract §6)"}
 		}
 	default:
 		return nil, &Error{Code: ErrMethodNotFound, Message: f.Method + " is not a stream notification"}

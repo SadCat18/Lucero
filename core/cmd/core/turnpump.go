@@ -89,6 +89,36 @@ func (h *turnHub) callCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(h.ctx, pumpCallDeadline)
 }
 
+// 输出批次的两个界（T-424）。为什么要有界而不是"攒到收尾再一次性写"：
+// `getExecutionOutput` 的用途是**补拉流式内容**，只在收尾那一刻落盘的面板等于看不见进行中的输出；
+// 反过来"每帧一笔事务"又太碎（一次回答动辄几十块 delta，写面只有那一条串行连接）。
+// 于是取两个界：块数与字符数先到者算一批结束；再加上两个天然边界 —— **换 channel**（§6 那行的载荷只有一个
+// `channel` 键，混道就谎报）与**任何非 delta 帧**（说明这一批的内容到此为止）。
+// 数字不是从空里挑的：一块 delta 通常几十字符，32 块 ≈ 一次回答的一小段；4096 字符与 `max_page_bytes`
+// 那族"一页别太大"的口径同量级。真正的判据是"批次必须能在收尾之前落盘若干次"，见 `turnpump_output_test.go`。
+const (
+	outputBatchFrames = 32
+	outputBatchChars  = 4096
+)
+
+// pendingOutput 是一条执行还没落盘的那一批 delta（按到达顺序）。
+// `owner` 是 T-429 那一条裁定要的东西（契约① 第 25 条④-b「攒批归属」，10-01 主控裁「要，批次必须有主人」）：
+// 攒下这批的那条连接（`key#代次`）。它存在的理由不是整齐，是**一批内容会被谁落盘决定了它落不落成**：
+// 老代泵退场时把新代攒的批次一起踢出去，撞上契约② §6 规则 8（终态之后迟到的输出只喊不写）
+// ⇒ 那段内容**永久不在库里**。所以退场只带走自己那一条连接攒的。
+type pendingOutput struct {
+	owner   string
+	channel string
+	texts   []string
+	chars   int
+}
+
+// linkOf 是"哪一条连接"的身份证：adapter key + 代次。两台适配器与同一台的两代连接都能被区分 ——
+// 判据 (i) 要的就是前者（一台泵退场不许动另一台的批次），T-416 那格要的是后者。
+func linkOf(key string, gen uint) string {
+	return fmt.Sprintf("%s#%d", key, gen)
+}
+
 // turnHub 持有"每个 adapter key 一条常驻连接 + 一条常驻入站泵"这件事。
 // 它住在 cmd/core：连接面与装配面都在这层（`internal/process` 是 adapter 的包，一个字都不改）。
 type turnHub struct {
@@ -108,6 +138,10 @@ type turnHub struct {
 
 	mu    sync.Mutex
 	links map[string]*residentLink
+	// outMu/pending 是上面那批"攒着还没落盘的输出"。锁只护 map：**写库在锁外**
+	// （攥着 map 去排队等那条串行连接，会把别的执行的批次一起堵住）。
+	outMu   sync.Mutex
+	pending map[string]*pendingOutput
 
 	// flights 是"这台连接上还没收到收尾的执行"，键是 execution_id。它的存在理由只有一个：
 	// 崩溃那一支要一份**可归属的在飞名单**（协议 §8：崩溃只影响该 Adapter 上的 in-flight Execution）。
@@ -165,7 +199,8 @@ func newTurnHub(ctx context.Context, launch *launcher, store auditedStore, svc *
 		logf = func(format string, args ...any) {}
 	}
 	return &turnHub{launch: launch, store: store, svc: svc, health: health, facts: facts,
-		logf: logf, ctx: ctx, links: map[string]*residentLink{}, flights: map[string]flight{}}
+		logf: logf, ctx: ctx, links: map[string]*residentLink{}, flights: map[string]flight{},
+		pending: map[string]*pendingOutput{}}
 }
 
 // watch 登记一次在飞：send 腿在把 `session/send` 写出去**之前**调它。
@@ -283,6 +318,9 @@ func (h *turnHub) link(key string) *residentLink {
 // 它**不**在任何一次 send 之内启动或停止：连接活多久它活多久。
 func (h *turnHub) pump(key string, conn *process.Connection, gen uint, stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
+	// 退出前把还攒着的批次落盘（三种退出都算：hub ctx 到期、被请退、通道关）。
+	// 不这么做就是"已经到达的内容被静默丢掉"——与 §5.4 那句"静默 = 丢任务的早期形态"同一条理由。
+	defer h.flushAllPending(key, gen)
 	in := conn.Inbound()
 	for {
 		select {
@@ -506,6 +544,117 @@ func finishOf(msg process.Inbound) (observedFinish, bool) {
 	return observedFinish{executionID: msg.ExecutionID, resultCode: msg.Frame.ResultCode}, true
 }
 
+// noteOutput 攒一块 delta，并在换 channel / 攒够块数或字符数时把**上一批**踢去落盘。
+// 空 text 直接跳过（不占事务、也不喊）：一块空内容既不该占一个 sequence_no，也不算一次批次结束。
+func (h *turnHub) noteOutput(key string, gen uint, executionID, channel, text string) {
+	if text == "" {
+		return
+	}
+	h.outMu.Lock()
+	self := linkOf(key, gen)
+	var full *pendingOutput
+	p := h.pending[executionID]
+	// 换 channel、攒够界、**或换了一条连接**都算一次批次边界。第三条是 T-429 新加的：两代连接的内容混进
+	// 同一批，"这一批由谁落盘"就说不清了 —— 老代退场时会把新代那半批一起带走。阈值一个没动（(iii) 零外溢）。
+	if p == nil {
+		p = &pendingOutput{owner: self, channel: channel}
+		h.pending[executionID] = p
+	} else if p.channel != channel || p.owner != self ||
+		len(p.texts) >= outputBatchFrames || p.chars+len(text) >= outputBatchChars {
+		full = p
+		p = &pendingOutput{owner: self, channel: channel}
+		h.pending[executionID] = p
+	}
+	p.texts = append(p.texts, text)
+	p.chars += len([]rune(text))
+	h.outMu.Unlock()
+
+	if full != nil {
+		h.flushBatch(key, gen, executionID, full.channel, full.texts, "批次到界或换 channel")
+	}
+}
+
+// flushPending 把这一条执行攒着的那一批落盘（没有就什么都不做、也不喊）。
+func (h *turnHub) flushPending(key string, gen uint, executionID string) {
+	h.outMu.Lock()
+	p := h.pending[executionID]
+	delete(h.pending, executionID)
+	h.outMu.Unlock()
+	if p != nil {
+		h.flushBatch(key, gen, executionID, p.channel, p.texts, "帧边界")
+	}
+}
+
+// flushAllPending 在泵退出时把**自己这一条连接**攒着的批次落盘（T-429：批次要有主人）。
+// 原来它扫的是整张 map（不带 key 也不带代次）⇒ 一台泵退场会把别的适配器、别的代次攒的批次一起踢出去，
+// 而那些批次往往正撞上契约② §6 规则 8（终态之后迟到的输出只喊不写）⇒ **那段内容永久不在库里**。
+// 危害不是"提前落盘不整齐"，是"内容没了"，所以这一格必须有主人。
+// 跳过别人的那些不静默：报一句还剩几格不属于我 —— 没有这一声，"该由还活着的那条来落"与"没人管了"
+// 在日志里长得一模一样（第 22 条那一族：静默的等待与静默的丢失不可分）。
+func (h *turnHub) flushAllPending(key string, gen uint) {
+	self := linkOf(key, gen)
+	h.outMu.Lock()
+	var mine []string
+	foreign := 0
+	for id, p := range h.pending {
+		if p.owner == self {
+			mine = append(mine, id)
+		} else {
+			foreign++
+		}
+	}
+	h.outMu.Unlock()
+	if foreign > 0 {
+		h.logf("turn 泵 %s 退场: 批次表里还有 %d 格不属于本条连接 ⇒ 由它们自己的连接负责落盘（本次只带走 %d 格）",
+			self, foreign, len(mine))
+	}
+	for _, id := range mine {
+		h.flushPending(key, gen, id)
+	}
+}
+
+// flushBatch 是一笔短事务：批次内容 + 恰一条 `execution_output_flushed`（§6 :215，Audit –）。
+// 三种结局都出声、都不静默：落成 ⇒ 报出行数与号段（面板补拉的就是这个号段）；
+// 落不成 ⇒ 明说"这些内容不在库里"（不假装已落，也不折成"这一轮失败了"）。
+func (h *turnHub) flushBatch(key string, gen uint, executionID, channel string, texts []string, why string) {
+	if len(texts) == 0 {
+		return
+	}
+	if h.svc == nil {
+		h.logf("turn 泵 %s #%d: execution=%s 有 %d 块输出但没接落库面（svc 未装配）⇒ 这一批不落库",
+			key, gen, executionID, len(texts))
+		return
+	}
+	callCtx, cancel := h.callCtx()
+	defer cancel()
+	var res execution.FlushResult
+	err := h.store.Write(callCtx, func(tx *db.Tx) error {
+		r, e := h.svc.FlushOutput(callCtx, tx, executionID,
+			execution.OutputBatch{Channel: channel, Texts: texts}, h.outputCommand())
+		res = r
+		return e
+	})
+	if err != nil {
+		h.logf("turn 泵 %s #%d: execution=%s 的输出批次没落成（%d 块，channel=%s）⇒ 这些内容不在库里: %v",
+			key, gen, executionID, len(texts), channel, err)
+		return
+	}
+	h.logf("turn 泵 %s #%d: execution=%s 输出批次已落：%d 行 #%d..#%d（channel=%s、%d 字，%s）",
+		key, gen, executionID, res.Rows, res.FirstSeq, res.LastSeq, channel, res.CharCount, why)
+}
+
+// outputCommand 给一次批次铸身份：一条事件 ⇒ 一个 id（`event_journal.event_id` 是 UNIQUE 列）。
+// 主体仍是 `system` —— 输出内容是对端自己推来的，不属于哪个用户的请求（与 turnPumpPrincipal 同一条理由）。
+func (h *turnHub) outputCommand() execution.Command {
+	correlation := adapter.NewRequestID().String()
+	return execution.Command{
+		EventID:       adapter.NewRequestID().String(),
+		PrincipalID:   turnPumpPrincipal,
+		CorrelationID: correlation,
+		CausationID:   correlation,
+	}
+}
+
 // recordClaim 是 `executions.provider_execution_id` 那一列在全仓唯一的**发射位**（REQ-RC-3 裁 (i)，
 // 契约① :741；(ii)「db 开一道无事件的列写口子」被明拒）。三条硬时机里，语义那两条在域那一侧
 // （`claim.go`：SET 里没有 `status`、异值不许覆盖），这里守的是**时机与出声**：
@@ -556,6 +705,16 @@ func (h *turnHub) recordClaim(key string, gen uint, executionID, providerID stri
 //
 // 三种都不 sleep、都不轮询、都不替 Provider 编状态。
 func (h *turnHub) handle(key string, gen uint, msg process.Inbound) {
+	// 输出批次（T-424）：delta 攒着，**任何别的帧都是一个边界**（说明这一批的内容到此为止）。
+	// 顺序要紧：`turn/finished` 也算"别的帧" ⇒ 批次落在终态那一笔**之前**，
+	// 面板按 `after_seq` 补拉时不会看见"终态有了、末尾几块还没有"。
+	if msg.Err == nil && msg.Frame != nil && msg.ExecutionID != "" {
+		if msg.Frame.Method == adapter.MethodStreamDelta {
+			h.noteOutput(key, gen, msg.ExecutionID, msg.Frame.Channel, msg.Frame.Text)
+			return
+		}
+		h.flushPending(key, gen, msg.ExecutionID)
+	}
 	// `turn/claimed` 是 Provider 把手进来的那一帧（契约② §6 规则 3：时机就在这里，早不早都不算）。
 	// 两条腿各走各的：内存那份给崩溃时用，库里那份是 `executions.provider_execution_id` 的唯一写者。
 	// **`turn/dispatched` 一律不进这一段**（REQ-RC-3 裁 (i) 的三条硬时机之一），判据在 `turnpump_claim_test.go`。
@@ -601,12 +760,21 @@ func (h *turnHub) handle(key string, gen uint, msg process.Inbound) {
 // command 铸泵这一笔要的三个事件身份。三个都得单独铸：`event_journal.event_id` 是 UNIQUE 列，
 // 而这一笔在两个聚合上是**三条**事件（execution 终态 + task 投影 + 链尾那条 task_waiting_acceptance），
 // 域不自己生成身份（§3 的 UUIDv7 由调用方铸）。
+// command 铸泵这一笔收尾要的身份：**正常路径三枚**（execution 终态 + task 投影 + 链尾那条
+// task_waiting_acceptance —— `event_journal.event_id` 是 UNIQUE 列、三条事件不许共用一个 id），
+// 加上 **§5.4 被拒那一支的三枚**（Notification 行 id、它那条 notification_created 的事件 id、Audit 的
+// audit_id）。六个都一次铸齐，不在分支里现补：被拒与否要到库里读出 Task 当前态才知道，
+// 而"等真要用了再铸"会把 §5.4 那一支留成空 id —— 空 id 不是"少写一条记录"，是**整笔终态写入连坐回滚**
+// （T-417 判出来的正是这一格）。域不自己生成身份（§3 UUIDv7 由调用方铸），重试复用同一批是 §8 的幂等要求。
 func (h *turnHub) command() execution.Command {
 	correlation := adapter.NewRequestID().String()
 	return execution.Command{
 		EventID:                      adapter.NewRequestID().String(),
 		TaskEventID:                  adapter.NewRequestID().String(),
 		TaskWaitingAcceptanceEventID: adapter.NewRequestID().String(),
+		RejNotificationID:            adapter.NewRequestID().String(),
+		RejEventID:                   adapter.NewRequestID().String(),
+		RejAuditID:                   adapter.NewRequestID().String(),
 		PrincipalID:                  turnPumpPrincipal,
 		CorrelationID:                correlation,
 		CausationID:                  correlation,
@@ -614,7 +782,7 @@ func (h *turnHub) command() execution.Command {
 }
 
 // claimCommand 给 `recordClaim` 那一笔：它只发**一条**事件（execution 上的 `execution_claimed`），
-// 所以只要一个身份，不像收尾那一笔要三个（三条事件）。主体仍是 `system`：把手是对端自己报的，
+// 所以只要一个身份（收尾那一笔要六枚：三条正常事件 + §5.4 被拒那一支的三枚）。主体仍是 `system`：把手是对端自己报的，
 // 不是某个用户请求出来的（与 `turnPumpPrincipal` 同一条理由）。
 func (h *turnHub) claimCommand(providerID string) execution.Command {
 	correlation := adapter.NewRequestID().String()

@@ -34,6 +34,14 @@ type Command struct {
 	ResultCode          string
 	ErrorCode           string
 
+	// ApprovalRequested 与 ApprovalResolved 是两张审批状态边各自的 §6 四键载荷（events.go）。
+	// 为什么是"两条边两个结构体"而不是把八个键摊平成 Command 的字段：两条边的键集不一样
+	// （resource/risk_level 对 state/grant_id），摊平之后"哪一格属于哪条边"就成了一件只能靠读注释
+	// 才知道的事，而这两条边恰好是"谁批准的、开的哪扇门"最容易事后被读错的那两条。
+	// 只有那两条边会读它们；别的推进留着零值既不写库也不报错（与 ResultCode 对非终态推进同规矩）。
+	ApprovalRequested ApprovalRequestedPayload
+	ApprovalResolved  ApprovalResolvedPayload
+
 	// TaskEventID 只被 `FinishFromTurn` 用：execution 的 §6 事件走 `EventID`，task 的第一条投影边
 	// 是**另一条聚合上的另一个事件**，所以第二个身份得单独给。
 	// 别的推进不用它 —— 它们的 task 投影由 send 腿那套 `SendCommand.TaskEventID` 带。
@@ -45,6 +53,17 @@ type Command struct {
 	// 而域不自己生成身份（§3 UUIDv7 由调用方铸）⇒ 第三个 id 也得由 handler 一起铸。
 	// 投影没落到 AGENT_COMPLETED 时（failed/cancelled/被拒）这一格用不上，多铸一个不写库、没有副作用。
 	TaskWaitingAcceptanceEventID string
+
+	// §5.4 那两条记录的三枚预生成 id，只被 `FinishFromTurn` 用（send 腿的同名三格在 `SendCommand` 里）。
+	// 为什么必须**在这里**给而不是让 reporter 自己铸：投影被拒时 `task.Service` 要在**同一笔事务**里
+	// 写 Notification + Audit，而域不生成身份（§3 的 UUIDv7 由调用方铸）—— 更要紧的是 §8 的幂等：
+	// 同一帧重放或续跑必须复用同一批 id，否则第二次会再发一条通知（那正是"重复归因"的形态）。
+	// 空着传不是"跳过"，是**必然失败**：`notification.Service` 在 Draft 校验那一关就拒（原文
+	// `notification: invalid draft: 缺 id（必须由调用方预生成 UUIDv7，重试复用）`，R-a 那枚变异量到的就是它），
+	// 于是整笔终态写入连 execution 的终态一起回滚（T-417 判出来的就是这一格）。
+	RejNotificationID string
+	RejEventID        string
+	RejAuditID        string
 
 	WantVersion int64 // <=0 = 不设 If-Match（Core 内部驱动）
 }
@@ -280,6 +299,26 @@ func eventPayload(from, to State, cmd Command) (map[string]any, error) {
 		// 分歧已写在 UnknownPayload 的注释里并报主控）。reason 是这一支的**唯一证据来源**：
 		// §5.5 三条件里"非空 Evidence"与 payload 里那个键必须同值，不许一个说真话一个留空。
 		v = UnknownPayload{From: from, Reason: cmd.Reason}
+	case EventApprovalRequested:
+		// 这一条**不许带一个说不出在等谁的 payload**：这一格的全部意义就是"这次执行停在了一张具体的
+		// 审批上"，`approval_id` 空 ⇒ 事件仍在、库里却没有任何一行 approval 与它对应，那比不写更坏
+		// （面板会显示"等审批"而没人能批）。`action` 同理：§3 规则 1 要的是"哪个动作被挡"。
+		// 少一个就整笔不写，翻 ErrIllegalTransition（"这一条转换今天不成立"），不新造错误名。
+		p := cmd.ApprovalRequested
+		if p.ApprovalID == "" || p.Action == "" {
+			return nil, fmt.Errorf("execution: %s→%s 的 %s 说不出在等哪张审批（approval_id=%q action=%q）: %w",
+				from, to, EventApprovalRequested, p.ApprovalID, p.Action, ErrIllegalTransition)
+		}
+		v = p
+	case EventApprovalResolved:
+		// 同一个理由：放行那一格必须点名"是谁的哪一个决定"（resolved_by）与"决定是什么"（state）。
+		// grant_id 与 resource 一样允许空 —— 批了但没开有时限的门，库里就是 NULL。
+		p := cmd.ApprovalResolved
+		if p.ApprovalID == "" || p.State == "" || p.ResolvedBy == "" {
+			return nil, fmt.Errorf("execution: %s→%s 的 %s 说不出是谁放行的（approval_id=%q state=%q resolved_by=%q）: %w",
+				from, to, EventApprovalResolved, p.ApprovalID, p.State, p.ResolvedBy, ErrIllegalTransition)
+		}
+		v = p
 	case EventSucceeded, EventFailed, EventCancelled, EventInterrupted:
 		v = ResultPayload{ResultCode: cmd.ResultCode, ErrorCode: cmd.ErrorCode, Usage: map[string]any{}}
 	default:

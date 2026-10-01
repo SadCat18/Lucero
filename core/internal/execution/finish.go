@@ -57,7 +57,12 @@ func MappedTurnResultCode(resultCode string) bool {
 //  3. 正常落终态 ⇒ 走 `advance`（`Occasion=Normal`，与 `Recovery` 无关：这是同步腿收到的真帧）。
 //
 // 投影被拒（Task 不在 §5.3 要求的那个态）⇒ 整笔回滚并上抛 `ErrIllegalTransition`，
-// 这一趟**连终态那一行都不写**（泵因此只喊、不改库）；§5.4 那两条记录此刻没有 reporter（与 send 腿同一形状的取舍），要就裁。
+// 这一趟**连终态那一行都不写**（泵因此只喊、不改库）。
+// §5.4 那两条记录（Notification `projection_rejected` + Audit）在**被拒那一支**由 `task.Service` 经注入的
+// reporter 写出，三枚 id 从 `Command` 转发过来（T-417；send 腿早就是同一形状）。
+// 注意"被拒"与"写不出去"是两件事：reporter 没注入 ⇒ `task.Service` 硬报错 ⇒ 整笔回滚（§5.4 第 3 条不许静默吞）；
+// 注入了而 id 空 ⇒ `notification.Service` 的入参校验先拒（不是撞主键 —— 那一层还没落到表）⇒ 同样整笔回滚。
+// 两种都表现为"收尾没落成"，所以 id 必须由调用方铸齐；这一句的原文在 `.scratch/backend/t417-ra.py` 那三发里。
 // 幂等密封不归这里：那是 handler 第二笔自己的 guard（REQ-TURN-1「Ⅰ」之后两笔不再是同一笔）。
 func (s *Service) FinishFromTurn(ctx context.Context, tx *db.Tx, id, resultCode string,
 	cmd Command) (res Result, alreadyFinished bool, err error) {
@@ -96,6 +101,9 @@ func (s *Service) FinishFromTurn(ctx context.Context, tx *db.Tx, id, resultCode 
 	}
 	pres, err := s.projector.ApplyExecutionEvent(ctx, tx, cur.TaskID, edge, false, false, task.Command{
 		EventID: cmd.TaskEventID, ExecutionID: id, ResultCode: resultCode,
+		// §5.4（T-417 正式开单那一格）：被拒时那两条记录要的三枚 id。转发而不是在这里铸 ——
+		// 域不生成身份（§3），而重试/续跑要复用同一批（§8），所以只有调用方拿得住它们。
+		Notification: cmd.RejNotificationID, RejEvent: cmd.RejEventID, RejAudit: cmd.RejAuditID,
 		PrincipalID: cmd.PrincipalID, CorrelationID: cmd.CorrelationID, CausationID: cmd.CausationID,
 	})
 	if err != nil {

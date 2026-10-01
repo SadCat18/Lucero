@@ -6,9 +6,16 @@ import (
 	"testing"
 )
 
-// §6 目录里触发者为 execution 的 9 行，独立手抄第二份。与包内常量双向对账：
+// §6 目录里由本包发出、且这张表覆盖的 11 行，独立手抄第二份。与包内常量双向对账：
 // 少了 = 事件没实现；多了 = §9.1 的 P0（未登记事件入库）。
-// execution_approval_requested / _resolved 的触发者是 approval，不在此列。
+// 覆盖面边界先说明白，别让下一个人把这张表当成 §6 的全量镜像：`execution_starting`、
+// `execution_unknown`、`execution_claimed` 三行**不在这张表里**（它们各自的落点另有判据 ——
+// REQ-DB-4、T-401、T-408），所以本表判的是"表里这 11 行与包内常量对得上"，不是"本包只有 11 个事件"。
+//
+// `execution_approval_requested` / `_resolved` **昨天不在这一列**：那两行原写 `aggregate_type = approval`
+// （本文件 09-2x 那版还为此写明「触发者是 approval，不在此列」），而 §6 边表把它们挂在 execution 的
+// 状态机上 —— REQ-APR-1（10-01 裁「改目录那一格」，`git show 734931f` 现读那两行的聚合已是 **execution**）
+// 之后它们归本包。**改的是那两行的归属，不是这张表的抄法**：这两行仍是照 §6 手抄，不与包内常量互引。
 var catalog6 = []struct {
 	eventType string
 	audit     bool
@@ -21,6 +28,10 @@ var catalog6 = []struct {
 		StartedPayload{ProviderExecutionID: "p", ModelSnapshotSHA256: "sha"}},
 	{EventOutputFlushed, false, []string{"batch_first_seq", "batch_last_seq", "char_count", "channel"},
 		OutputFlushedPayload{BatchFirstSeq: 1, BatchLastSeq: 2, CharCount: 3, Channel: "stdout"}},
+	{EventApprovalRequested, true, []string{"approval_id", "action", "resource", "risk_level"},
+		ApprovalRequestedPayload{ApprovalID: "ap-1", Action: "filesystem.write", Resource: "src/a.txt", RiskLevel: "HIGH"}},
+	{EventApprovalResolved, true, []string{"approval_id", "state", "grant_id", "resolved_by"},
+		ApprovalResolvedPayload{ApprovalID: "ap-1", State: "APPROVED", GrantID: "grant-1", ResolvedBy: "local-user"}},
 	{EventPaused, false, []string{"reason"}, PausedPayload{Reason: "用户暂停"}},
 	{EventResumed, false, []string{"from"}, ResumedPayload{From: Paused}},
 	{EventSucceeded, false, []string{"result_code", "error_code", "usage"},
@@ -34,11 +45,12 @@ var catalog6 = []struct {
 }
 
 func TestEventCatalogMatchesContract6(t *testing.T) {
-	if len(catalog6) != 9 {
-		t.Fatalf("§6 的 execution 行应有 9 条，实际 %d", len(catalog6))
+	if len(catalog6) != 11 {
+		t.Fatalf("§6 的 execution 行应有 11 条，实际 %d", len(catalog6))
 	}
-	mine := []string{EventCreated, EventStarted, EventOutputFlushed, EventPaused, EventResumed,
-		EventSucceeded, EventFailed, EventCancelled, EventInterrupted}
+	mine := []string{EventCreated, EventStarted, EventOutputFlushed,
+		EventApprovalRequested, EventApprovalResolved,
+		EventPaused, EventResumed, EventSucceeded, EventFailed, EventCancelled, EventInterrupted}
 	if len(mine) != len(catalog6) {
 		t.Fatalf("包内声明 %d 个事件类型，目录 %d 行", len(mine), len(catalog6))
 	}
@@ -103,7 +115,16 @@ func TestEventOfMatchesCatalog(t *testing.T) {
 		{Interrupted, Running, EventResumed},
 		{Running, WaitingInput, ""}, // §6 目录里没有 waiting_input 事件
 		{Running, Transferring, ""},
-		{WaitingApproval, Running, ""}, // 推进事件由 approval 包发，不是本包
+		// 这两格昨天报的是 ""（原文注释：「推进事件由 approval 包发，不是本包」）。那句在旧目录里
+		// 是对的、按 REQ-APR-1 裁完之后是错的：聚合归了 execution，事件就得由本包发，
+		// 而"无事件的状态边落不了库"⇒ 那两条边当时**在写面上根本走不通**。
+		{Running, WaitingApproval, EventApprovalRequested},
+		{WaitingApproval, Running, EventApprovalResolved},
+		// 放行不是续跑：`execution_resumed` 的载荷只有一个 `from`，用它记一次人工决定，
+		// 就等于宣称"这一格没有过审批"。所以 {WaitingApproval,Running} 必须与 {Paused,Running} 分家
+		// （A-b 变异量的就是这一刀）。等审批期间离开的那两条边仍走老名字：
+		{WaitingApproval, Failed, EventFailed},
+		{WaitingApproval, Paused, EventPaused},
 	}
 	for _, c := range cases {
 		if got := EventOf(c.from, c.to); got != c.want {

@@ -550,9 +550,9 @@ func (c *Connection) notify(f *adapter.Frame) {
 		c.deliver(Inbound{Err: why})
 		return
 	}
-	// Every frame that gets this far carries a ticket (§4.2 裁定 ① made it mandatory on
-	// all six), so the dedup key is the ticket itself - no second keying scheme for the
-	// evidence pair to fall back on.
+	// Every frame that gets this far carries a ticket (§4.2 裁定 ① makes it mandatory on every
+	// Adapter->Core notification), so the dedup key is the ticket itself - no second keying
+	// scheme for the evidence pair to fall back on.
 	ref := s.TurnRef
 	// §6 规则 5's idempotency key is (turn_ref, sequence_no), so that pair and not the
 	// connection's watermark decides whether a frame repeats one. Gating on the
@@ -606,8 +606,8 @@ func (c *Connection) boundTo(turnRef string) string {
 
 // attributeLocked resolves a frame to Core's own Execution id. There is exactly one
 // route: the ticket, looked up in the turn_ref -> execution_id binding CallTurn wrote
-// when the request went out (§6 规则 5, and §4.2 裁定 ① extended it to all six
-// notifications). An execution_id the Adapter brings on the evidence pair is a
+// when the request went out (§6 规则 5, and §4.2 裁定 ① extends it to every Adapter->Core
+// notification). An execution_id the Adapter brings on the evidence pair is a
 // cross-checkable redundancy, never a second truth source, so nothing in here writes
 // to the map - a frame that contradicts the binding is dropped instead of believed.
 // The second result is why the frame must be dropped rather than forwarded.
