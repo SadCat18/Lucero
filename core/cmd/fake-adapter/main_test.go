@@ -262,9 +262,10 @@ func TestFakeAdapterRefusesBeforeHandshake(t *testing.T) {
 	if reply.Error != nil {
 		t.Fatalf("initialize: %s", reply.Error)
 	}
-	// §1: stdout carried frames only, so the startup line has to be on stderr.
-	if !strings.Contains(p.stderr.String(), "fake-adapter up") {
-		t.Errorf("startup diagnostic missing from stderr: %q", p.stderr)
+	// §1: stdout carried frames only, so the startup line has to be on stderr - and it is read
+	// after the child is reaped, because a live read of that buffer races os/exec's copier.
+	if !strings.Contains(p.stop(t), "fake-adapter up") {
+		t.Error("startup diagnostic missing from stderr")
 	}
 }
 

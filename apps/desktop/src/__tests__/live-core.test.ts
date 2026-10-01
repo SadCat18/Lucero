@@ -432,13 +432,37 @@ describe.skipIf(!live)('真 Core 联调 · 只读面与 C28② 口径（T-189）
       const o = await out.json() as { items: unknown[]; next_cursor: string };
       expect(Array.isArray(o.items), 'output 200 必须是分页形状').toBe(true);
       expect(typeof o.next_cursor).toBe('string');
+      // 这一支 13:26 之前一行都不打 ⇒ "它接通了"与"它给了个不像样的 200"在我计数里长得一样（现在它真 200 了，更不能哑）。
+      // OutputChunk 行内 required 四键（yaml:1198）：sequence_no / channel / content / created_at
+      for (const [i, raw] of o.items.entries()) {
+        const row = raw as Record<string, unknown>;
+        for (const k of ['sequence_no', 'channel', 'content', 'created_at']) {
+          expect(row[k], `output 第 ${i} 行缺 required 键 ${k}（yaml:1198）`).toBeDefined();
+        }
+      }
+      console.log(`  第 9 格 ok：GET /executions/{id}/output → 200，items=${o.items.length} 条、`
+        + `next_cursor="${o.next_cursor}"、每行四键齐（sequence_no/channel/content/created_at）`);
     }
 
     const approvals = await raw('GET', '/api/v1/approvals?state=PENDING');
     expect([200, 501], `approvals 列表回了 ${approvals.status}`).toContain(approvals.status);
     const apErr = approvals.status === 501 ? (await approvals.json()).error : null;
-    if (apErr) expect(apErr.code, 'approvals 未接线只能是 not_implemented').toBe('not_implemented');
-    console.log(`  第 10 格 ${approvals.status === 501 ? 'blocked' : 'ok'}：GET /approvals → ${approvals.status}${apErr ? ` ${apErr.code}` : ''}`);
+    if (apErr) {
+      expect(apErr.code, 'approvals 未接线只能是 not_implemented').toBe('not_implemented');
+      console.log(`  第 10 格 blocked：GET /approvals → 501 ${apErr.code}`);
+    } else {
+      // 200 那一支原本只打一行状态 ⇒ "它接通了"与"它给了个不像样的 200"在我计数里长得一样。补形状：
+      // ApprovalList = CursorPage + required[items]（yaml:1429-1435），行内 required 六键（yaml:1206-1208）
+      const page = await approvals.json() as { items?: { id: string }[]; next_cursor?: unknown };
+      expect(Array.isArray(page.items), `approvals 200 但 items 不是数组：${JSON.stringify(page).slice(0, 120)}`).toBe(true);
+      expect(typeof page.next_cursor, 'REQ-F-19：没有下一页只有空串一种写法').toBe('string');
+      for (const a of page.items ?? []) {
+        for (const k of ['id', 'approval_type', 'action', 'state', 'risk_level', 'requested_at']) {
+          expect(k in a, `Approval 缺 yaml required 的键 ${k}：${JSON.stringify(a)}`).toBe(true);
+        }
+      }
+      console.log(`  第 10 格 ok：GET /approvals → 200，items=${page.items?.length} 条（0 条是合法结果）、next_cursor="${page.next_cursor}"`);
+    }
 
     // F-8 那条读的**形状**由上面那条独立用例负责（九键齐）；这里只管一件事实：**拿它当 If-Match**（契约③ :124）。
     // 形状断言不在这里重做一遍，免得两处判据各自漂。

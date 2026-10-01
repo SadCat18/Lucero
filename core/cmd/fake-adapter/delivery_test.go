@@ -322,12 +322,14 @@ func TestFakeAdapterHangWaitsForCancel(t *testing.T) {
 	if err := json.Unmarshal(reply.Result, &ack); err != nil || !ack.Cancelled {
 		t.Errorf("cancel acknowledgement = %s, want the cancelled flag set", reply.Result)
 	}
-	if !strings.Contains(p.stderr.String(), "hanging on h1") {
-		t.Errorf("the hang was not reported on stderr: %q", p.stderr)
-	}
 	// The session has to keep serving afterwards.
 	if r := call(t, p, "h2", adapter.MethodHealth, struct{}{}); r.Error != nil {
 		t.Errorf("adapter/health after the cancel: %s, want the process still serving", r.Error)
+	}
+	// Same reason as above, and the same order: the live-process read of stderr is a race with
+	// the copier, so this claim is made after the child is reaped.
+	if !strings.Contains(p.stop(t), "hanging on h1") {
+		t.Error("the hang was not reported on stderr")
 	}
 }
 
@@ -505,8 +507,12 @@ func TestFakeAdapterTurnFinishThreeStatesOnTheWire(t *testing.T) {
 	if err := json.Unmarshal(release.Result, &res); err != nil || res.Closed {
 		t.Errorf("the second release = %s (err %v), want closed:false", release.Result, err)
 	}
-	if !strings.Contains(p.stderr.String(), `with code "INTERRUPTED", but nothing is open`) {
-		t.Errorf("the dropped code was never reported: %q", p.stderr)
+	// The log goes through stop(): os/exec copies a child's stderr in its own goroutine, so
+	// reading that buffer while the process is alive can lose exactly the line being asserted
+	// (`badexec_test.go:28` says this, and `-count=3` caught this test ignoring it - the plain
+	// read was red once in three runs, never red at `-count=1`).
+	if !strings.Contains(p.stop(t), `with code "INTERRUPTED", but nothing is open`) {
+		t.Error(`the dropped code was never reported ("with code …, but nothing is open" absent)`)
 	}
 }
 
