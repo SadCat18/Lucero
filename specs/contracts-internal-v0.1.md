@@ -1002,6 +1002,7 @@ type Service interface {
 | `approval.Service.Request` | `internal/approval/approval.go:241` | **0** |
 | `approval.Service.Resolve` | `approval.go:279` | **1**（10-01 15:2x 现读：`core/api/http/approval_resolve.go:117`，backend T-426 ① 交的那条 `:resolve` 路由；**本行原写 0，那是 14:3x 那棵树的读数，留着不删**） |
 | `execution.ApprovalStates.BlockingState` | `internal/execution/approval.go:8` | **0**，且**没有装配位**：现读 `grep -rn ApprovalStates --include=*.go core/` 只命中定义它自己的那两行（`:5` 注释、`:8` 类型），`cmd/core/main.go` 零引用。注：类型位在 `:8`、方法位在 `:9`（**这句以前塞在第二格里，那两个反引号让判据解不出唯一文件 —— 现在移到这一格来写**） |
+| `permission.RiskLevel` | `internal/permission/permission.go:167` | **0**（跨包口径：现读「全仓 `RiskLevel(` 的非测试命中」= 2 处，两处都在 `permission` 自己包里——`:167` 是定义、`:185` 是那条内置分类器自己在用；**排除本包 ⇒ 0**）。**10-01 18:2x 我裁「登进本表」**，起因是巡检替我把一句我没答的话答了：backend 问的是「要不要让 `RiskLevel` 也进这张表，登了我才造调用点」，而我 T-442 ② 只写了「从那个入口拿值、别抄词表」——**「拿值」与「有人拿值」是两件事**，不登行就没有任何机械东西逼这一格闭合，那句裁定会变成一句没有牙的话。**登行之后的口径**：`T-442` 落地 ⇒ 这一格转绿；**谁都不许为了让它绿而改这张表**（判据读表，表读盘）。 |
 | — **本列的格式规矩（10-01 15:5x，backend 报回、我 15:55 现读原文核对成立）** — | 「定义位」那一格**只准放一个反引号对**（``包/文件.go:行``），因为 `core/test/wiring_surface_test.go:68` 只做 `Trim(cells[2], "`")` 再去定位：**两个反引号对 ⇒ 判据 `t.Fatalf`「定位不到唯一文件」，那一格即使被装配完也不会转绿**。补充说明请写到第三格（判据只读前两座）。**这条不是挑剔排版：是我把合同写成数据源之后必然要付的口径 —— 数据源就得按数据源的样子写** | |
 | — **更正** — | 本行原写 `ApprovalGate` | **那个名字是我编的**：我从没读过 `:5`/`:8`，是照概念造的词（同族旧错：09-27 的 `harvestTurnFinished`）。盘上真名 **`ApprovalStates`**（现读附在上一条命令里）。结论一字未变——**两种写法都是 0 个非测试调用者**，改的只是名字 |
 
