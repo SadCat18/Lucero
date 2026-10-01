@@ -562,17 +562,41 @@ func (s *Supervisor) Start(ctx context.Context) (*Child, error) {
 // Stop asks the live child to shut down and marks the transitional status. §14's
 // ruling is that the DB row must not stay RUNNING across this window, so the caller
 // writes STOPPING through the injected write function before calling Stop.
+//
+// Its return value answers exactly one question - "is this child's exit status now
+// collected?" - which is why a failed Kill is not automatically a failed Stop; see the
+// body. Callers that used to filter the OS answer themselves (`ChildAlreadyGone`, in
+// Connection.Close and twice in cmd/core) keep working: they are now a second line
+// rather than the only one.
 func (s *Supervisor) Stop(c *Child, timeout time.Duration) error {
 	if c == nil || c.cmd == nil || c.cmd.Process == nil {
 		return nil
 	}
 	// Kill rather than Signal: Windows has no SIGTERM, and a graceful stop is the
 	// caller's job (send $/cancel, close stdin) before it gets here.
-	if err := c.cmd.Process.Kill(); err != nil {
-		return fmt.Errorf("kill: %w", err)
-	}
+	//
+	// A failed Kill does not end the stop attempt (T-436, and it is 契约① §1.1 第 19 条
+	// carried to its conclusion). A child that exited on its own while we held it leaves the
+	// handle open, and Windows then answers TerminateProcess with `Access is denied` rather
+	// than with os.ErrProcessDone - measured once in fifteen runs of cmd/core's lifecycle
+	// column test, which is why this is fixed here instead of at that call site. Reporting
+	// that as a failure makes a normal shutdown look like a stuck one, and neither
+	// ChildAlreadyGone (it asks the OS whether the pid is still ours, and an exited-but-open
+	// handle answers "yes") nor Reaped() (nobody drained `done` yet) can catch it.
+	//
+	// So the answer Stop reports is the one its caller actually needs: **the child's status was
+	// collected**. That is also what keeps this from being an `err == nil` swallow - the
+	// bounded Wait below still has to succeed, and a child that is genuinely still running
+	// still produces an error, with the Kill failure attached because that is the half the
+	// caller can act on.
+	killErr := c.cmd.Process.Kill()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, err := c.Wait(ctx)
-	return err
+	if _, err := c.Wait(ctx); err != nil {
+		if killErr != nil {
+			return fmt.Errorf("kill: %w", killErr)
+		}
+		return err
+	}
+	return nil
 }

@@ -339,3 +339,72 @@ func TestChildAlreadyGoneAnswersBothQuestions(t *testing.T) {
 		t.Error("this process is alive: a Kill that failed here is a real failure and must not be swallowed")
 	}
 }
+
+// TestStopIsQuietWhenTheChildAlreadyExited is T-436's positive leg, and it is the shape that
+// bit cmd/core's lifecycle column test once in fifteen runs: the child died on its own while
+// we held it, so TerminateProcess answers an OS error (Windows: `Access is denied`) instead
+// of os.ErrProcessDone, and Stop reported that as a failed shutdown.
+//
+// The determinism is deliberate and sleep-free: draining the child's stderr to EOF returns
+// exactly when the process is gone, and nobody has drained `done` at that point, so
+// Reaped() is still false - which is the whole reason neither Reaped() nor ChildAlreadyGone
+// could catch it (an exited-but-unreleased handle still answers "this pid is ours").
+//
+// The second half of the claim is asserted too: Stop must have *collected* the status, not
+// just hushed the error. That is what separates the fix from an `err == nil` swallow, and
+// mutation s2 (return nil without waiting) dies on it.
+func TestStopIsQuietWhenTheChildAlreadyExited(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("crash")}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	child, err := sup.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, child.Stderr); err != nil {
+		t.Fatalf("drain the crashing child's stderr: %v", err)
+	}
+	if child.Reaped() {
+		t.Fatal("someone already collected this child's status: the shape under test needs the exit unreaped")
+	}
+
+	if err := sup.Stop(child, 2*time.Second); err != nil {
+		t.Errorf("Stop on a child that already exited = %v, want nil: the shutdown is over once the status is in hand (T-436)", err)
+	}
+	if !child.Reaped() {
+		t.Error("Stop reported success without collecting the child's exit status - an orphan with a §14 row nobody can settle")
+	}
+	if code, err := child.Wait(ctx); err != nil || code == 0 {
+		t.Errorf("exit status after Stop = (%d, %v), want the crash code and no error", code, err)
+	}
+}
+
+// TestStopStillReportsAChildItCouldNotStop is the other side of the same rule: a live child
+// whose Kill failed and whose status never arrived is a real failure, and the Kill error is
+// the half the caller can act on. Without this case the T-436 fix could be "return nil
+// always" and nobody would notice.
+func TestStopStillReportsAChildItCouldNotStop(t *testing.T) {
+	sup := &Supervisor{Kind: KindAdapter, Restart: RestartNever, Launch: helperLauncher("sleep")}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	child, err := sup.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		// Reap for real before leaving, or the 30s sleeper outlives the test.
+		if err := sup.Stop(child, 3*time.Second); err != nil {
+			t.Errorf("cleanup Stop: %v", err)
+		}
+		child.CloseStreams()
+	}()
+
+	// Zero timeout: the bounded wait cannot collect anything, so the failure must be reported.
+	// The child is alive here, which is the whole point - the error is not "the pid was gone".
+	if err := sup.Stop(child, 0); err == nil {
+		t.Error("Stop returned nil on a live child whose status was never collected")
+	}
+	if child.Reaped() {
+		t.Error("a zero-timeout Stop must not claim the status was collected")
+	}
+}
