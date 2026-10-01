@@ -3,7 +3,8 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-10-01T17:28:57+08:00   ← 10-01 第一百七十批：按家清掉两家入册（adapter 三件 + frontend 三件，；新格 2/2 真跑、全量 28 passed／27 skipped）；backend 那八件仍与 §5.4 绑死不动；它那三份 REQ 清单实测仍未落账（backend.md 头部 15:34:09）
+LAST_UPDATED: 2026-10-01T17:28:57+08:00   ← 10-01 第一百七十批：按家清掉两家入册（adapter 三件 + frontend 三件，提交 `3ff8271`；新格 2/2 真跑、全量 28 passed／27 skipped）；backend 那八件仍与 §5.4 绑死不动；它那三份 REQ 清单实测仍未落账（backend.md 头部 15:34:09）
+⚠ 本行第一次落笔时那个提交号**被我自己吃掉了**：我把 `3ff8271` 用反引号包在 **bash 双引号的 python -c 字符串**里 ⇒ bash 把反引号当命令替换执行（真报错原文就是 `line 11: 3ff8271: command not found`、写进文件就成了空）。**同一条坑我今天踩的是第二次、形式不同**：上次是 `&&` 后接 `grep -c` 命中 0 截断链，这次是双引号里的反引号被执行。**规矩收紧：命令行里凡要写反引号，一律单引号包整段、或改叫 `git show --oneline -1` 现取；写完之后必须把那一行整行读回来**（本行就是这么发现少了一串哈希的）。
 
 ## Objective
 
