@@ -62,13 +62,23 @@ func claimVersion(t *testing.T, d *db.DB, id string) int64 {
 	return v
 }
 
-func claimAuditRows(t *testing.T, d *db.DB) int {
-	t.Helper()
-	var n int
-	if err := d.Read.QueryRow(`SELECT count(*) FROM audit_entries`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
+// auditSpy 数"这一笔叫了几次审计"（T-421 ②：换掉原来那句 `SELECT count(*) FROM audit_entries`）。
+type auditSpy struct{ calls int }
+
+// svcWithAuditSpy 把域**唯一**那一扇审计门（`RecoveryDeps.Audit` —— §6 里 Audit 列 ✓ 的事件走它）
+// 接上一枚绊线并带出来。为什么绊线而不是数表：数表 = 业务包测试直查别人的那张表（正是这一次要换掉的形状），
+// 而 import `internal/audit` 借它的读嘴会撞 C14（业务包的测试不 import 规则包；`recovery.go:41` 明写着这条，
+// 起因是 audit 在途的一个 `undefined: sync` 把本包带红过一次）。
+// ⇒ 本包能看见的最强形状是"这一笔没有任何一条通往审计的调用"；"库里真零行"那一半挪到 `cmd/core`
+//
+//	（装配层 import audit 是它的本职，见 turnpump_claim_test.go 的链尾读数）。
+func svcWithAuditSpy(spy *auditSpy) *execution.Service {
+	s := execution.NewService()
+	s.EnableRecovery(execution.RecoveryDeps{Audit: func(context.Context, *db.Tx, execution.AuditRecord) error {
+		spy.calls++
+		return nil
+	}})
+	return s
 }
 
 // claimedWall 认那道**平台事件目录**的闸（与 `catalogueWall` 同一道墙、不同的名字）：
@@ -100,7 +110,8 @@ func TestRecordClaimWritesTheHandleWithoutTouchingStatus(t *testing.T) {
 	seedSystemPrincipal(t, d)
 	initRedactionForWrite(t)
 	claimSeedRow(t, d, "ex-claim", "STARTING", "")
-	svc := execution.NewService()
+	spy := &auditSpy{}
+	svc := svcWithAuditSpy(spy)
 	ctx := context.Background()
 
 	changed, err := claimOnce(ctx, d, svc, "ex-claim", claimCmd("ev-claim-1", "prov-42"))
@@ -146,8 +157,8 @@ func TestRecordClaimWritesTheHandleWithoutTouchingStatus(t *testing.T) {
 	if n := journalCount(t, d, "task-1"); n != 0 {
 		t.Errorf("claimed 不进 §5.3 的边集 ⇒ task 一侧零事件，实际 %d 条", n)
 	}
-	if n := claimAuditRows(t, d); n != 0 {
-		t.Errorf("§6 那一行的 Audit 列是 `–` ⇒ 不许有 audit_entries，实际 %d 行", n)
+	if spy.calls != 0 {
+		t.Errorf("§6 那一行的 Audit 列是 `–` ⇒ 这一笔不该叫审计，实际叫了 %d 次", spy.calls)
 	}
 }
 
@@ -212,7 +223,8 @@ func TestRecordClaimRefusesWithoutWritingAnything(t *testing.T) {
 			if tc.status != "" {
 				claimSeedRow(t, d, tc.id, tc.status, tc.have)
 			}
-			svc := execution.NewService()
+			spy := &auditSpy{}
+			svc := svcWithAuditSpy(spy)
 			ctx := context.Background()
 
 			changed, err := claimOnce(ctx, d, svc, tc.id,
@@ -239,8 +251,8 @@ func TestRecordClaimRefusesWithoutWritingAnything(t *testing.T) {
 					t.Errorf("被拒的一格零事件，实际 %d 条", n)
 				}
 			}
-			if n := claimAuditRows(t, d); n != 0 {
-				t.Errorf("被拒的一格不许记 audit：%d 行", n)
+			if spy.calls != 0 {
+				t.Errorf("被拒的一格不许记审计：叫了 %d 次", spy.calls)
 			}
 		})
 	}
