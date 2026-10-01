@@ -671,7 +671,7 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
     - **⑩ 交付前必跑清单是两面的，不许只交默认面（10-01 00:5x 补，由 `test` 的建议采纳并加码）**：
       **面 1 默认**：`go build ./...` + `gofmt -l` + `go test -count=1 -v ./...`（全仓）；
       **面 2 真子进程**：`LUCERO_TEST_FAKE_ADAPTER=1 go test -count=1 -timeout 1200s ./cmd/core/ ./test/`。
-      **⑩ 款作用域（10-01 14:0x 收紧，来自 `frontend` 的实测反驳、我复现同值）**：`LUCERO_TEST_FAKE_ADAPTER` 在**非测试码里 0 个读取点**（含该名的 13 个文件全是 `_test.go`）⇒ 这一面**只存在于带旗标门用例的那两个包**（`./cmd/core/`、`./test/`），**不是产品的一条运行开关**；产码路径的等价姿势是**现场 `go build` 出 fake-adapter，再用 `-adapter fake=<路径>` 起 Core**（`frontend` 走的就是这条，它比我原句更准）。**其他包不许被要求「造一面旗标」**——`adapter` 那句「旗标面对我是空集，按事实报不造一面」是对的，我照收。
+      **⑩ 款作用域（10-01 14:0x 收紧，来自 `frontend` 的实测反驳、我复现同值）**：`LUCERO_TEST_FAKE_ADAPTER` 在**非测试码里 0 个读取点**（含该名的 .go 文件共 **7** 个、全部是 `_test.go`；我 14:0x 自己 `grep -rln ... | wc -l` 数过，**原稿写的 13 是抄来的、已更正**）⇒ 这一面**只存在于带旗标门用例的那两个包**（`./cmd/core/`、`./test/`），**不是产品的一条运行开关**；产码路径的等价姿势是**现场 `go build` 出 fake-adapter，再用 `-adapter fake=<路径>` 起 Core**（`frontend` 走的就是这条，它比我原句更准）。**其他包不许被要求「造一面旗标」**——`adapter` 那句「旗标面对我是空集，按事实报不造一面」是对的，我照收。
       两面都要报**顶层 `--- PASS` / `--- SKIP` / `--- FAIL` 三个计数**，且**只能从带 `-v` 的那一趟数**（第 24 条⑤款那条盲区的延伸：非 `-v` 的输出里根本没有 `--- SKIP` 行，数出来 0 是「看不见」不是「没有」）。
       **两条理由都是这三天量出来的，不是预防性的**：① `TestTurnRefCrossCheck` / `TestDroppedFrameReachesAuditSeam` 在默认面是 SKIP、旗标面才是红，藏了不止一天（10-01 00:40:50 快照复验时现身）；② 同一份代码整包跑出现过 **3 趟 1 红**（`TestPumpReconnectsAfterTheAdapterDies`，孤立 `-count=5` 却 5/5 绿）⇒ **一条 `-count=1` 的绿不构成「交付证据」**，负载敏感的格必须写清复现率（`-count=N` + N 次读数）。
       配套禁令：**不许为了过旗标面关旗标、加 sleep、或把用例改成只跑孤立**——那是把红藏回看不见的地方。
