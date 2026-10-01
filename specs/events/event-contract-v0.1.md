@@ -213,8 +213,8 @@ Execution 的非边沿变化（`RUNNING → WAITING_INPUT → RUNNING`）**不�
 | `execution_created` | execution | `task_id` `adapter_instance_id` `model_id` `attempt_no` `trigger_type` | – |
 | `execution_started` | execution | `provider_execution_id` `model_snapshot_sha256` | – |
 | `execution_output_flushed` | execution | `batch_first_seq` `batch_last_seq` `char_count` `channel` | – |
-| `execution_approval_requested` | approval | `approval_id` `action` `resource` `risk_level` | ✓ |
-| `execution_approval_resolved` | approval | `approval_id` `state` `grant_id` `resolved_by` | ✓ |
+| `execution_approval_requested` | **execution**（10-01 17:5x 裁，REQ-APR-1；**本行原写 `approval`**，那与 §6 边表 `:131` 把这条边挂在 execution 状态机上直接矛盾——按契约① REQ-B-1「`aggregate_type` 决定谁能发它」，execution 的 `Touch` 永远发不出 approval 聚合的事件 ⇒ **要么改边表、要么改目录。我裁改目录这一格**：状态边的载体，聚合就是状态所属的那个聚合。载荷四键一字未动，它带的正是"这次等待卡在哪个审批上"） | `approval_id` `action` `resource` `risk_level` | ✓ |
+| `execution_approval_resolved` | **execution**（同上一条裁定；`approval_resolved` 那条**仍归 approval 聚合**、由 `internal/approval` 自己发，两族各有其位、不重复：**审批对象自己的事件** vs **执行的状态边**） | `approval_id` `state` `grant_id` `resolved_by` | ✓ |
 | `execution_cancelled` / `_failed` / `_succeeded` / `_interrupted` | execution | `result_code` `error_code` `usage` | ✓(failed/interrupted) |
 | `execution_unknown` | execution | `from` `reason` | ✓ |
 | `execution_claimed` | execution | `provider_execution_id` | – |

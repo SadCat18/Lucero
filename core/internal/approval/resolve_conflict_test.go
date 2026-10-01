@@ -134,7 +134,7 @@ func TestResolveChecksTheBodyBeforeTheRow(t *testing.T) {
 	// state that does not exist, nor with no resolver at all.
 	for name, res := range map[string]Resolution{
 		"非法 state": {State: "MAYBE", By: "x"},
-		"缺决议人":   {State: REJECTED},
+		"缺决议人":     {State: REJECTED},
 	} {
 		err := service(f, itNow+1).Resolve(ctx, a.ID, res)
 		if err == nil {
