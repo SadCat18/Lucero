@@ -2,7 +2,9 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -380,4 +382,121 @@ func TestListPageRowsAreFullyPopulated(t *testing.T) {
 			t.Errorf("row %d request_json unreadable: %v", i, err)
 		}
 	}
+}
+
+// The by-id read (T-427) has exactly three possible answers, and each one has to
+// be distinguishable from the other two without parsing strings: found, not found,
+// and "you never told me which one". The last leg counts store calls, because a
+// missing id must not go looking — otherwise "no such approval" would be the
+// answer transport got, and it is the wrong answer to that question.
+func TestGetByIDThreeAnswers(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("没有 id ⇒ 报错，且一次读都不发生", func(t *testing.T) {
+		f := newStore()
+		got, err := NewService(f, func() int64 { return itNow }).GetByID(ctx, "")
+		if err == nil {
+			t.Fatal("accepted an empty id")
+		}
+		if !strings.Contains(err.Error(), "no approval id given") {
+			t.Errorf("err = %v, want requireID's own message", err)
+		}
+		if errors.Is(err, ErrNotFound) {
+			t.Errorf("an absent id was reported as %q, which is a different answer", ErrNotFound)
+		}
+		if got != (Approval{}) {
+			t.Errorf("returned %+v with an error, want the zero value", got)
+		}
+		if f.getRuns != 0 {
+			t.Errorf("%d store reads for a call that named no id", f.getRuns)
+		}
+		// Control: the same fake, with an id, must reach the store — otherwise the
+		// zero above is just a fake that never reads anything.
+		f2 := newStore(Approval{ID: "ap-x", State: PENDING})
+		if _, err := NewService(f2, func() int64 { return itNow }).GetByID(ctx, "ap-x"); err != nil {
+			t.Fatal(err)
+		}
+		if f2.getRuns != 1 {
+			t.Errorf("%d store reads for a real id, want 1", f2.getRuns)
+		}
+	})
+
+	// The other two legs run against a real database: not-found wrapping and the
+	// column round trip (NULL→"" and request_json) only exist there.
+	d := openMigrated(t)
+	seed(t, d)
+	clock := func() int64 { return itNow }
+	svc := NewService(NewSQLiteStore(d, clock), clock)
+	created, err := svc.Request(ctx, draft())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("命中 ⇒ 每一列都等于写入的那一行（JSON 列按内容比）", func(t *testing.T) {
+		got, err := svc.GetByID(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+		// Column by column, so a drift names itself instead of hiding in a struct diff.
+		for _, tc := range []struct {
+			what       string
+			got, wrote any
+		}{
+			{"ID", got.ID, created.ID}, {"TaskID", got.TaskID, created.TaskID},
+			{"ExecutionID", got.ExecutionID, created.ExecutionID}, {"SessionID", got.SessionID, created.SessionID},
+			{"AdapterInstanceID", got.AdapterInstanceID, created.AdapterInstanceID},
+			{"Type", got.Type, created.Type}, {"RiskLevel", got.RiskLevel, created.RiskLevel},
+			{"Action", got.Action, created.Action}, {"Resource", got.Resource, created.Resource},
+			{"State", got.State, created.State}, {"RequestedAt", got.RequestedAt, created.RequestedAt},
+			{"ExpiresAt", got.ExpiresAt, created.ExpiresAt}, {"ResolvedAt", got.ResolvedAt, created.ResolvedAt},
+			{"ResolvedBy", got.ResolvedBy, created.ResolvedBy}, {"Version", got.Version, created.Version},
+		} {
+			if tc.got != tc.wrote {
+				t.Errorf("%s = %v, written was %v", tc.what, tc.got, tc.wrote)
+			}
+		}
+		// request_json is compared as content on purpose, and the reason is worth
+		// the sentence: the enforcement point re-encodes JSON columns with sorted
+		// keys, so the bytes that land are not the bytes Request built. Asserting
+		// byte equality would be a test that only the redactor's key order can
+		// change — and audit's canonicalJSON already owns that invariant.
+		var wrote, read requestPayload
+		if err := json.Unmarshal([]byte(created.RequestJSON), &wrote); err != nil {
+			t.Fatalf("what Request built is not JSON: %v", err)
+		}
+		if err := json.Unmarshal([]byte(got.RequestJSON), &read); err != nil {
+			t.Fatalf("stored request_json is not JSON: %v", err)
+		}
+		if !reflect.DeepEqual(read, wrote) {
+			t.Errorf("request_json content changed: %+v, wrote %+v", read, wrote)
+		}
+		if p, err := got.RequesterPrincipal(); err != nil || p != "local-user" {
+			t.Errorf("principal = %q (%v), want local-user — request_json did not survive the read", p, err)
+		}
+	})
+
+	t.Run("未知 id ⇒ ErrNotFound 且是零值", func(t *testing.T) {
+		got, err := svc.GetByID(ctx, "ap-does-not-exist")
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+		if got != (Approval{}) {
+			t.Errorf("returned a half-filled %+v next to a not-found error", got)
+		}
+	})
+
+	// The whole point of putting this next to the listing: one approval, one answer.
+	t.Run("与列表闸门同口径", func(t *testing.T) {
+		got, err := svc.GetByID(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if block, err := svc.BlockingState(ctx, itExec); err != nil || block != got.State {
+			t.Errorf("BlockingState = %q (%v), by-id says %q", block, err, got.State)
+		}
+		list, _, err := svc.ListPage(ctx, ListFilter{State: strPtr(PENDING)})
+		if err != nil || len(list) != 1 || list[0].ID != got.ID {
+			t.Errorf("listing = %v (%v), want the same row by-id returns", listedIDs(list), err)
+		}
+	})
 }

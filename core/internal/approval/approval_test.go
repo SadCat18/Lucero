@@ -30,6 +30,7 @@ type fakeStore struct {
 	expireRuns  []int64
 	revokeRuns  []int64
 	listRuns    int // how many times ListPage reached the store
+	getRuns     int // how many times Get reached the store (the no-id leg asserts 0)
 	listErr     error
 	expireErr   error
 	revokeErr   error
@@ -56,6 +57,7 @@ func (f *fakeStore) Insert(_ context.Context, a Approval) error {
 }
 
 func (f *fakeStore) Get(_ context.Context, id string) (Approval, error) {
+	f.getRuns++
 	row, ok := f.rows[id]
 	if !ok {
 		return Approval{}, ErrNotFound

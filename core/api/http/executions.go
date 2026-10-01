@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/SadCat18/lucero/core/internal/execution"
@@ -26,6 +27,10 @@ import (
 type ExecutionReader interface {
 	Get(ctx context.Context, id string) (execution.Execution, error)
 	ListByTask(ctx context.Context, taskID string) ([]execution.Execution, error)
+	// ListOutput 是 `GET /executions/{id}/output` 的读法（T-424）。它并进同一个注入而不是另开一个字段：
+	// 三条读面都是同一个 `*execution.Repository`、同一条读池；分开注入只会多出一次"接了半套"的中间态
+	// （与 tasks 的 TaskGet 那一格相反 —— 那里是列表早就在、单条今天才接，合并会把"没接"与"缺方法"混成同一个错）。
+	ListOutput(ctx context.Context, executionID string, afterSeq int64, limit int) ([]execution.OutputChunk, bool, error)
 }
 
 // executionView 的必填七字段来自 yaml 的 Execution.required；其余按域里有什么出什么 ——
@@ -189,15 +194,20 @@ func registerExecutionRoutes(mux *http.ServeMux, c Config) {
 			// T-370② 那一格：`GET /executions/{id}/output` 是 §3 登记过的路径（yaml :505 `listExecutionOutput`），
 			// 以前它连 `splitExecutionItem` 都过不去，于是拿到一句"这条路径的形状我不认识"——那是假话，
 			// 和 sessions.go 里 `messages` 那格同族（修法也照它：方法不对才 405，声明过但没装配是 501）。
-			// 为什么今天只能 501：这张表的**写者还不存在** —— delta 级输出由入站帧落
-			// `execution_output_chunks`，而那条消费者正是 T-370① 裁的那一格；先修文案不为它铺路。
+			// T-424 之后这里不再是"没有写者"的那句 501：写者就是那条常驻入站泵（收到 stream/delta 攒批、
+			// 落 execution_output_chunks + 恰一条输出事件）。下面那句"读面没注入 ⇒ 501"仍然保留 ——
+			// 测试与没接读面的进程确实可能没有它，那时候不许拿空页冒充"没有输出"。
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 					"/api/v1/executions/{id}/output 只声明 GET（增量游标 after_seq）", false)
 				return
 			}
-			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"GET /api/v1/executions/{id}/output 在契约③ §3 登记过，但读通道没装配：这一次执行的流式批次今天还没有写者（写它的是连接面入站帧那个消费者，见 T-370①），不拿空页冒充", true)
+			if c.Executions == nil {
+				writeError(w, http.StatusNotImplemented, "not_implemented",
+					"GET /api/v1/executions/{id}/output 还没装配读通道（读面 Executions 没注入）", true)
+				return
+			}
+			listExecutionOutput(w, r, c, id)
 		default:
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"没听过的 execution 子路径一律 501，不猜它该走哪条腿", true)
@@ -486,6 +496,67 @@ func getExecution(w http.ResponseWriter, r *http.Request, c Config, id string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+// outputChunkView 是 yaml `OutputChunk`（core-v1.yaml:1196~1204）那六键的出口：一个不多一个不少，
+// 面板生成的类型按这张表来。内容原样出（本包不解读、不裁剪 —— delta 的语义属于 Provider）。
+type outputChunkView struct {
+	ID          int64  `json:"id"`
+	ExecutionID string `json:"execution_id"`
+	SequenceNo  int64  `json:"sequence_no"`
+	Channel     string `json:"channel"`
+	Content     string `json:"content"`
+	CreatedAt   int64  `json:"created_at"`
+}
+
+// listExecutionOutput 是 `GET /executions/{id}/output`（yaml getExecutionOutput：after_seq + Limit）。
+//
+// 两件事按同族先例办：① 先确认这条 Execution 在不在 —— 404 与"有这条、但一批输出都还没有"是两种真话，
+// 后者是 200 + 空 items（写者已经在 T-424 落上，所以空页从此是诚实答案，不是冒充）；
+// ② `next_cursor` 只有空串与十进制序号两种取值，"没有下一页"的合法表示只有空串（REQ-F-19），
+// 它喂回 `after_seq` 就是下一页的起点 —— 这一列的游标本就是 sequence_no，不另编一套编码。
+func listExecutionOutput(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	if _, err := c.Executions.Get(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, db.ErrAggregateNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "没有这条 Execution", false)
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	q := r.URL.Query()
+	afterSeq := int64(0)
+	if v := q.Get("after_seq"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "validation_failed", "after_seq 必须是非负整数", false)
+			return
+		}
+		afterSeq = n
+	}
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 200 {
+			writeError(w, http.StatusBadRequest, "validation_failed", "limit 必须是 1~200", false)
+			return
+		}
+		limit = n
+	}
+	items, hasMore, err := c.Executions.ListOutput(r.Context(), id, afterSeq, limit)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	views := make([]outputChunkView, 0, len(items))
+	for _, ch := range items {
+		views = append(views, outputChunkView(ch))
+	}
+	next := ""
+	if hasMore && len(items) > 0 {
+		next = strconv.FormatInt(items[len(items)-1].SequenceNo, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": views, "next_cursor": next})
 }
 
 // 编译期就钉住"读面由 *Repository 满足"：签名漂了这里先红，而不是等运行时的类型断言。

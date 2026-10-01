@@ -1000,12 +1000,19 @@ type Service interface {
 | `permission.Engine.Decide` | `internal/permission/permission.go:195` | **0** |
 | `permission.Engine.CheckTemporaryGrant` | `permission.go:269` | **0**（排除本包后 `grep` 无输出） |
 | `approval.Service.Request` | `internal/approval/approval.go:241` | **0** |
-| `approval.Service.Resolve` | `approval.go:279` | **0**（`grep -rn "\.Resolve(" --include=*.go core/` 排除 `_test.go` 后无输出） |
+| `approval.Service.Resolve` | `approval.go:279` | **1**（10-01 15:2x 现读：`core/api/http/approval_resolve.go:117`，backend T-426 ① 交的那条 `:resolve` 路由；**本行原写 0，那是 14:3x 那棵树的读数，留着不删**） |
 | `execution.ApprovalStates.BlockingState` | `internal/execution/approval.go:8`（类型位；方法在 `:9`） | **0**，且**没有装配位**：现读 `grep -rn "ApprovalStates" --include=*.go core/` 只命中定义它自己的那两行（`:5` 注释、`:8` 类型），`cmd/core/main.go` 零引用 |
 | — **更正** — | 本行原写 `ApprovalGate` | **那个名字是我编的**：我从没读过 `:5`/`:8`，是照概念造的词（同族旧错：09-27 的 `harvestTurnFinished`）。盘上真名 **`ApprovalStates`**（现读附在上一条命令里）。结论一字未变——**两种写法都是 0 个非测试调用者**，改的只是名字 |
 
 
-判定：这不是"安全没做"，是**审批链整条没接线** —— 域层、存储层、事件、审计都建好了并且有测试，缺的是
+**机械判据已上线（10-01 15:2x，test 交 T-431）**：上面那五格的「非测试调用点」从今天起不再靠我手数 ——
+`core/test/wiring_surface_test.go` 的 `TestWiringSurfaceHasCallSites` **只以本节那张表为输入**（读不到表或解析出零行就 `t.Fatalf` 停，
+所以它不会变成永真式），并把**「符号在盘上不存在」与「存在但零调用点」两种红分开报**。
+⇒ **表是它的数据源、不是它的快照**（我 09-2x 立的那条「validator 不许内嵌契约」在这里的反向应用：宁可让判据读契约，也不在测试文件里再抄一份清单）。
+**以后谁改了调用点，就改这张表；判据自己跟着变。** 本笔入册时它在 HEAD 上报 **4 枚红**（`Decide`／`CheckTemporaryGrant`／`Service.Request`／`ApprovalStates.BlockingState`），
+**每一枚都有归属（全在 T-430 那四格里）**，另 **1 枚已绿**（`Service.Resolve`）⇒ **这 4 枚红是为 T-430 立的闸门，不许为了"全绿"摘判据、也不许把表改成"已知为零"来喂它**。
+
+判定：这不是"安全没做"，是**审批链整条没接线**（**这句在 14:3x 那棵树上是全真；15:2x 起 `Service.Resolve` 已有生产调用者，其余四条仍是 0 —— 上面那格留着两个读数，不静默替换**） —— 域层、存储层、事件、审计都建好了并且有测试，缺的是
 「谁在什么动作上问一次 `Decide`」和「面板按了批准之后走哪条 HTTP 口子」。所以：
 - **路由面**（`POST /api/v1/approvals/{id}:resolve` + `By` 从 header 填）**已经在途**：backend 10-01 14:0x 起的
   `core/api/http/approval_resolve.go`（`:56 by := r.Header.Get("X-Lucero-Principal")`、`:121 By: by`）——

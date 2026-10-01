@@ -130,33 +130,37 @@ func TestApprovalsFileNeverTouchesTheTable(t *testing.T) {
 	}
 }
 
-// TestExecutionOutputRouteSaysNotWiredNotUnknownShape 钉 ② 的前半：
-// `GET /executions/{id}/output` 是 §3 登记过的路径（yaml `:505`），不能再听它说"形状我不认识"。
-func TestExecutionOutputRouteSaysNotWiredNotUnknownShape(t *testing.T) {
-	// 路由认领（`registerExecutionRoutes` 的前缀那条）第七十九批起是「读面或写面**任一在场就登记**」，
-	// 不再是旧闸 `c.ExecutionSend == nil || c.Store == nil ⇒ 整条不注册`（executions.go 那段注释留着旧口径的来历）。
-	// 所以这一格现在**不依赖写面**：`newExecutionHarness(..., wired=false)`（只装 Store）也认领前缀，
-	// 五处断言不会再落回兜底那句「这条路径 Core 没登记」—— 那是对 §3 登记过的路径说假话（T-370②）。
-	// 这一格要的是路由形状、不读那一行，所以 id 用 ex-out、只保证夹具里那行存在。
+// TestExecutionOutputRouteIsWiredAndStillNamesUnknownShapes 是 T-370② 那一格的**换代**：
+// 原来它钉的是"这一条路径登记过、但 Core 没装配 ⇒ 501，且不许说成形状不认识"。
+// T-424 把两半都装上了（写者 = 那条常驻入站泵，读者 = `Executions.ListOutput`），于是那句 501 成了假话——
+// 判据必须跟着改口径，而不是把测试改松：**这里的 501 只剩一种真相**（读面整个没注入），
+// 它由 `execution_output_test.go` 的 `TestExecutionOutputSays404AndNotTheThreeLies` 那一格钉住。
+// 本用例留下三样仍然成立的东西：① 对 §3 登记过的路径永远不说"形状我不认识"；② 动词不对是 405；
+// ③ 真没声明过的形状必须**继续**说"不认识"，否则这一格只是把假话换了个位置。
+func TestExecutionOutputRouteIsWiredAndStillNamesUnknownShapes(t *testing.T) {
+	// 路由认领（`registerExecutionRoutes` 的前缀那条）第七十九批起是「读面或写面任一在场就登记」，
+	// 所以这一格不依赖写面：`newSendHarness(..., wired=false)`（只装 Store）也认领前缀。
+	// 这里要的是路由形状，所以夹具里那行必须存在（ex-out），另拿一个不存在的 id 打 404 那一格。
 	srv, _ := newSendHarness(t, sendSeed{
 		execID: "ex-out", status: "RUNNING", sessionID: "sess-out", seedSession: true,
 	}, true)
 
-	code, body := call(t, srv, http.MethodGet, "/api/v1/executions/ex-1/output", "", "", "")
-	if code != http.StatusNotImplemented {
-		t.Fatalf("GET /output 该 501（登记过、没装配），实际 %d %s", code, body)
+	// ① 有这条执行 ⇒ 200 + 空页（写者已在，所以"这批还没有内容"从此是一句真话）。
+	code, body := call(t, srv, http.MethodGet, "/api/v1/executions/ex-out/output", "", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /output 已装配两半 ⇒ 该 200，实际 %d %s", code, body)
 	}
-	e := parseErr(t, body)
-	if e.Error.Code != "not_implemented" || !e.Error.Retryable {
-		t.Errorf("该是 retryable 的 not_implemented，实际 %+v", e.Error)
+	if !strings.Contains(body, `"items":[]`) || !strings.Contains(body, `"next_cursor":""`) {
+		t.Errorf("一条输出批次还没有 ⇒ 空页 + 空游标（形状由 `execution_output_test.go` 逐键断），实际 %s", body)
 	}
-	if strings.Contains(e.Error.Message, "形状我不认识") {
-		t.Errorf("对一条 §3 声明过的路径说\"形状我不认识\"是假话（T-370② 点名的就是这句），实际 %q", e.Error.Message)
+	if strings.Contains(body, "形状我不认识") {
+		t.Errorf("对一条 §3 声明过的路径说\"形状我不认识\"是假话（T-370② 点名的就是这句），实际 %q", body)
 	}
-	for _, want := range []string{"§3 登记过", "读通道没装配", "流式批次", "T-370"} {
-		if !strings.Contains(e.Error.Message, want) {
-			t.Errorf("文案里该有 %q（要说清缺的是写者不是路由），实际 %q", want, e.Error.Message)
-		}
+
+	// ② 没这条执行 ⇒ 404，不是 501（那会说成"没装配"）、也不是 200 空页（那会说成"这条真的没内容"）。
+	code404, body404 := call(t, srv, http.MethodGet, "/api/v1/executions/ex-ghost/output", "", "", "")
+	if code404 != http.StatusNotFound || !strings.Contains(body404, "没有这条 Execution") {
+		t.Errorf("没有这条执行该 404 并说清，实际 %d %s", code404, body404)
 	}
 
 	codePOST, bodyPOST := call(t, srv, http.MethodPost, "/api/v1/executions/ex-1/output", "local-user", "", `{"text":"x"}`)
@@ -164,7 +168,7 @@ func TestExecutionOutputRouteSaysNotWiredNotUnknownShape(t *testing.T) {
 		t.Errorf("POST /output 该 405 并说清只声明 GET，实际 %d %s", codePOST, bodyPOST)
 	}
 
-	// 反面对照：真没声明过的子路径必须**仍然**说"形状不认识"，否则这一格是把假话换了个位置。
+	// 反面对照：真没声明过的子路径必须**仍然**说"形状不认识"。
 	code2, body2 := call(t, srv, http.MethodGet, "/api/v1/executions/ex-1/steps", "", "", "")
 	if code2 != http.StatusNotImplemented || !strings.Contains(body2, "形状我不认识") {
 		t.Errorf("未声明的形状该继续落 !ok 那一支，实际 %d %s", code2, body2)

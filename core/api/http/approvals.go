@@ -14,11 +14,17 @@ package httpapi
 //   - `GET /api/v1/approvals` —— **注入了读法就真读**：状态过滤 / keyset 游标 / limit 都在读法那一侧有唯一说法；
 //     没注入 ⇒ 501 `not_implemented` + retryable，理由写"本进程没把 approval 的读面接进来"，
 //     绝不回"空的一页"（空页是"今天确实没有审批"，与"这一层没接"是两件事，混起来会把归因带跑）。
-//   - `GET /api/v1/approvals/{id}` —— 仍然 501，但理由换成了**真话的新版本**：那一侧的读法今天只有分页与
-//     按 execution 两种，**没有 by-id 的那一个**（`Service` 面上没有 Get）。要接它得先在 `internal/approval`
-//     加一个方法 —— 那是 audit 的面包，我不越过去自己造一个第二份读法。
-//   - `POST /api/v1/approvals/{id}:resolve` —— 仍然 501：决议是**写**那张表（还带 temporary grant），
-//     归属在 approval/audit，且 `approvals` 表对 backend 是绝对禁区。
+//   - `GET /api/v1/approvals/{id}` 与 `POST /api/v1/approvals/{id}:resolve` —— 这两条从第九十三批起
+//     接的是**同一对能力**（`ApprovalDecider`：`Service.GetByID` 回读 + `Service.Resolve` 裁决）。
+//     为什么是一对而不是两个开关：yaml `resolveApproval:609~611` 的 200 体就是 `Approval` 那条 schema ⇒
+//     一次成功的决议**必须**能把那份审批回读出来；只有写没有读的那半接不上，就不会假装接了一半。
+//     audit 那两格都在 10-01 交出（by-id 是 T-427，`Resolve` 一直在），所以缺的确实只剩 transport ⇒
+//     没注入这一对时仍回 501（理由改写成"这一对没接进来"，不再是"那一侧没有读法"——那是过期真话）。
+//
+// 决议这一腿的红线：**本层一行都不判"该不该批"**（yaml `:603` 明写"面板只发决议，裁决权在 Core 的
+// Permission/Approval Engine"），也不含任何 SQL/读写口符号 —— 谁能批、重复决议给什么码、`resolved_by`
+// 从哪来，三件全在 `internal/approval` 那侧（T-426 ①：主控要 audit 用三行交出它实际校验了什么，
+// 契约 §3/§4 由主控落；在那之前我这一层不补任何一条策略，只转发与翻译它已经给出的答案）。
 //
 // 动词的形状照旧两分：§3 声明过的动词 ⇒ 501，没声明的动词 ⇒ 405（501 说"没装配"、405 说"方法不对"，
 // 与 sessions/notifications 同口径）。
@@ -40,6 +46,19 @@ import (
 // 多塞一个方法进去就会逼 cmd/core 造一个只为凑签名的转发类型。
 type ApprovalLister interface {
 	ListPage(ctx context.Context, f approval.ListFilter) ([]approval.Approval, approval.ListPosition, error)
+}
+
+// ApprovalDecider 是 `{id}` 与 `{id}:resolve` 那两条口共用的一对能力：回读 + 裁决。
+// 两个方法都由 `*approval.Service` 一家满足（by-id 是 audit 10-01 T-427 交的 `GetByID`，
+// 裁决是它一直有的 `Resolve`），**这里只列 transport 用得上的那两条签名**，
+// 一张口都不开给"顺手把表交出去"的那种设计：本文件里出现不了任何读写口符号与 SQL
+// （`TestApprovalsFileNeverTouchesTheTable` 按字面钉着它，看字面不看意图 —— 连解释性注释都不能写那一串）。
+//
+// 为什么 `Resolve` 不在这里收进 `ApprovalLister`：那会把"能列"与"能判"并成一个开关，
+// 于是只接读法的进程会假装它也接了写面 —— 三格各留各的 501 真话才是要守的形状。
+type ApprovalDecider interface {
+	GetByID(ctx context.Context, id string) (approval.Approval, error)
+	Resolve(ctx context.Context, id string, res approval.Resolution) error
 }
 
 const notWiredOwner = "approval 的读法在 internal/approval（T-372 的只读分页），本进程没把它接进来"
@@ -68,17 +87,14 @@ func registerApprovalRoutes(mux *http.ServeMux, c Config) {
 					"/api/v1/approvals/{id}:resolve 只声明 POST", false)
 				return
 			}
-			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"POST /api/v1/approvals/"+id+":resolve 在契约③ §3 登记过（resolveApproval），但那是写那张表的一腿，"+notWiredOwner, true)
+			resolveApproval(w, r, c, id)
 		case verb == "":
 			if r.Method != http.MethodGet {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 					"/api/v1/approvals/{id} 只声明 GET", false)
 				return
 			}
-			writeError(w, http.StatusNotImplemented, "not_implemented",
-				"GET /api/v1/approvals/{id} 在契约③ §3 登记过（getApproval，F-8 批准 · LAG-1 回写那条），但那一侧今天没有 by-id 的读法"+
-					"（T-372 落的是只读分页与按 execution 两种）⇒ 加方法是 approval 的活，我不在这一层自己造第二份读法", true)
+			getApproval(w, r, c, id)
 		default:
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"没听过的 approval 子动词一律 501，不猜它该走哪条腿", true)
@@ -150,6 +166,37 @@ func approvalViewOf(a approval.Approval) (approvalView, error) {
 		ResolvedAt: nullable(a.ResolvedAt), ResolvedBy: optStr(a.ResolvedBy),
 		Version: a.Version,
 	}, nil
+}
+
+// getApproval 是 `GET /api/v1/approvals/{id}`（yaml getApproval:583~593，F-8 批准 · LAG-1 回写那条）。
+// 读法只有一个入口：`Service.GetByID` —— 它内部 `requireID` 先于取行（audit 那句"你没点名任何审批"
+// 不能回成"没有这条审批"，因为那是两种不同的真话）。
+// 为什么这里不判 `sql.ErrNoRows`：那一层的 not-found 有自己的哨兵 `approval.ErrNotFound`，
+// 而本文件连 `database/sql` 都不许出现（红线按字面钉，见 `TestApprovalsFileNeverTouchesTheTable`）——
+// 拿别人的哨兵当参数、而不是自己再拼一份"读不出来就算 404"，才是这一格该有的形状。
+func getApproval(w http.ResponseWriter, r *http.Request, c Config, id string) {
+	if c.ApprovalDecision == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented",
+			"GET /api/v1/approvals/"+id+" 在契约③ §3 登记过（getApproval），但"+notWiredDecision+
+				"；by-id 那一半是 audit 10-01 T-427 交的 `Service.GetByID`", true)
+		return
+	}
+	got, err := c.ApprovalDecision.GetByID(r.Context(), id)
+	switch {
+	case err == nil:
+		// 视图与列表那一条**共用同一个函数**：同一行从两条口出去必须逐键同形
+		// （sessions / tasks / executions 三家同这条规矩，漂移过一次就再也并不回来了）。
+		v, verr := approvalViewOf(got)
+		if verr != nil {
+			serverError(w, r, verr)
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case errors.Is(err, approval.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "没有这条 Approval", false)
+	default:
+		serverError(w, r, err)
+	}
 }
 
 // listApprovals 是 `GET /api/v1/approvals`（yaml listApprovals：state + Cursor + Limit）。

@@ -277,6 +277,12 @@ func (s *Service) Request(ctx context.Context, d Draft) (Approval, error) {
 // no-op that leaves the first answer standing: no second event, no second audit
 // row, no second grant.
 func (s *Service) Resolve(ctx context.Context, id string, res Resolution) error {
+	// Checked before the store so "you named no approval" cannot come back as
+	// "there is no such approval" — the two answers send transport to different
+	// codes, and reading a row is not what decided that.
+	if err := requireID(id); err != nil {
+		return err
+	}
 	current, err := s.store.Get(ctx, id)
 	if err != nil {
 		return err
@@ -439,6 +445,28 @@ func (s *Service) BlockingState(ctx context.Context, executionID string) (string
 	default:
 		return StateNone, nil
 	}
+}
+
+// requireID is the one guard for "the caller named no approval". It is separate
+// from ErrNotFound on purpose: "you did not tell me which one" and "there is no
+// such approval" are different answers to give a client, and transport has to be
+// able to tell them apart without parsing error strings.
+func requireID(id string) error {
+	if id == "" {
+		return errors.New("approval: no approval id given")
+	}
+	return nil
+}
+
+// GetByID is the single-approval read behind GET /api/v1/approvals/{id}. It reads
+// the row as stored and decides nothing new: whether a PENDING row is still
+// waiting is Approval.Live/DeadlinePassed's answer, so this cannot disagree with
+// BlockingState or with the listing (the REQ-A8 disease again).
+func (s *Service) GetByID(ctx context.Context, id string) (Approval, error) {
+	if err := requireID(id); err != nil {
+		return Approval{}, err
+	}
+	return s.store.Get(ctx, id)
 }
 
 // ListPage answers "which approvals are there" — the read side of the same

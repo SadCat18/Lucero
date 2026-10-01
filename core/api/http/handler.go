@@ -148,6 +148,13 @@ type Config struct {
 	// 没注入时这条口维持 501「没装配」，**不回空的一页**：空页说的是"今天确实没有审批"。
 	Approvals ApprovalLister
 
+	// ApprovalDecision 是 `{id}`（回读）与 `{id}:resolve`（裁决）那两条口共用的**一对**能力
+	// （T-426 ①：handler 接线归 backend，而两半的实现都在 `internal/approval` —— by-id 是 audit
+	// 10-01 T-427 交的 `Service.GetByID`，裁决是它一直有的 `Service.Resolve`）。
+	// 为什么是一对不是一个：yaml `resolveApproval` 的 200 体就是 `Approval` 那条 schema ⇒ 一次成功的
+	// 决议必须能把那份审批读回来；只接写不接读的那半接不上，宁缺不半。没注入 ⇒ 两条口各自 501。
+	ApprovalDecision ApprovalDecider
+
 	// ExecutionSend + Store 都在时才挂 POST /api/v1/executions/{id}/send（yaml :544；写侧要事务通道）。
 	// 缺任一个则该路径落 catch-all 的 501（C28②：能力没接线不给半套面）。
 	ExecutionSend ExecutionSender

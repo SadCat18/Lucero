@@ -338,6 +338,16 @@ func (c *Core) approvalsField() httpapi.ApprovalLister {
 	return c.approvalSvc
 }
 
+// approvalDecisionField 是 `{id}` 与 `{id}:resolve` 那一对的注入位（T-426 ①）。
+// typed-nil 那一条坑第三次照同一件事办（`adaptersField`/`discoverField`/`approvalsField`）：
+// `(*approval.Service)(nil)` 装进接口不等于 nil 接口，所以这里显式转换，不写 `c.approvalSvc` 一把梭。
+func (c *Core) approvalDecisionField() httpapi.ApprovalDecider {
+	if c.approvalSvc == nil {
+		return nil
+	}
+	return c.approvalSvc
+}
+
 // handler 把两个 transport 面拼起来：/ws/v1/events 走一次性短票（REQ-F-2，不接受 Authorization 头），
 // 其余 /api/v1 走 Bearer。两条共用同一个回环来源判定，CORS 规则不出现第二套。
 func (c *Core) handler() http.Handler {
@@ -369,6 +379,9 @@ func (c *Core) handler() http.Handler {
 		// `*approval.Service` 装进接口会得到一个"非 nil 但一调就 panic"的值，501 那一格就白留了
 		// —— 与上面 adaptersField 同一把尺、同一个坑。
 		Approvals: c.approvalsField(),
+		// `{id}` 与 `{id}:resolve` 那一对（T-426 ①）。同一个 `*approval.Service`，但走的是**另一份显式转换**：
+		// 少写这一行，两条口就各自老实 501 —— 那是一句真话，比拿列表那个面对象冒充"能决议"好。
+		ApprovalDecision: c.approvalDecisionField(),
 		// `:read` 是这条竖线第一次真改 notifications 的一行状态（C31 已 GO）：写要事务通道，所以配 Store。
 		NotifRead: notifSvc,
 		// `:handle` 的边集是 09-25 契约① §1.1 第 21 条裁的（`UNREAD`/`READ`/`PENDING → HANDLED`、

@@ -136,7 +136,7 @@ func TestApprovalRejectionDoesNotAdvance(t *testing.T) {
 // 断言口径按 T-21 更正过一遍：**不是**"event_journal 零新增"——被拒时 Notification 自身
 // 就是一行 Durable Event（aggregate_type=notification），按旧措辞写会把正确实现判成失败。
 func TestProjectionRejectedJournalAndAudit(t *testing.T) {
-	t.Skip("blocked: 需要 backend 提供写库的 task Service（§5.4 的 Notification+Audit 落点尚无 owner）；" +
+	t.Skip("blocked: 需要 backend 提供写库的 task Service（§5.4 的写者 10-01 已裁给 backend = T-417，此句此前写「尚无 owner」已过时；仍 blocked 是因为它还没交）；" +
 		"接线完成后本用例按 §5.4 + T-21 断言四条：" +
 		"① event_journal 里 aggregate_type=task 零新增版本、且零 task_* 事件；" +
 		"② tasks.status 与 tasks.version 与投影前逐字节相同（Task 停在原态）；" +
