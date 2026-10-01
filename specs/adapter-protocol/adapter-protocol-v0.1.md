@@ -321,6 +321,26 @@ Adapter→Core 通知：
    - **③ `start_now` / `guide` 这一路必须发 `turn/finished`**（规则 1 已把它定为唯一的强制收尾信号）。
      今天唯一生产者 `cmd/fake-adapter` 只在"取消"与"队列排空"两路发帧，字面用的是 `"OK"` / `"INTERRUPTED"` ⇒
      这是**实现缺口，不是协议留白**：`"OK"` 收进表里等于把"没裁过的东西"当成功，所以禁；改的是发帧方。
+7. **`channel` 的"适配器可发集合"与"Core 可落集合"是两张表，交集才是落点**（10-01 14:3x 裁，回 backend 第 (a) 问）：
+   适配器侧四个值（`core/internal/adapter/stream.go:38`–`:41` = `ASSISTANT` / `THOUGHT` / `TOOL` / `STATUS`），
+   `execution_output_chunks.channel` 的 CHECK 五个值（`000001` 迁移 :351 = `ASSISTANT` / `STDOUT` / `STDERR` / `TOOL` / `STATUS`）
+   ⇒ **`THOUGHT` 在 v0.1 没有落点**。处置已裁且已落码：**不折算成 `ASSISTANT`、不硬塞、不改 CHECK、明确失败且一行不写**
+   （`core/internal/execution/output.go:26`–`:34`，用例 `output_test.go:175` 与 `cmd/core/turnpump_output_test.go:164`；
+   同一轮的收尾照常落 —— 拒绝的是这一块内容，不是这一轮）。三条边界：
+   - **上面表格那一行不改**：`channel ∈ ASSISTANT/THOUGHT/TOOL/STATUS` 说的是**适配器能发什么**，那是 Provider 侧的真实能力，
+     不能因为我们不落库就把人家的词表裁小。本规则补的是"发了会怎样"。
+   - **不静默**：被拒的批次必须喊出"这些内容不在库里"（泵 `flushBatch` 三种结局都出声），面板/日志不许把它读成"已落"。
+   - **噪声有界**：攒批按 channel 分段（`noteOutput` 换 channel 即踢上一批），所以一路思考只会撞出**一次**拒绝，不是每个 delta 一次。
+   - **要落 `THOUGHT` 的唯一正当路子**：新开一笔迁移放宽那张表的 CHECK（SQLite 的 CHECK 不能 `ALTER`，是**重建表**），
+     归 `db`、`000001` 冻结不破 ⇒ 这是 Wave-4+ 的决定，不在 v0.1 范围内，且必须由用户点头后才开工。
+8. **终态之后到达的 `stream/delta` 是协议违例：Core 拒绝、不写、不重试**（10-01 14:3x 裁，回 backend 第 (c) 问）：
+   已定局的行不接受迟到的输出（`core/internal/execution/output.go:88`，与 `RecordClaim` 同一条理由 `claim.go:57`）。
+   原因不是"麻烦"，是**会把假话写进事件序列**：迟到内容一旦落库，就等于声称"这批达在结束之前"。
+   两条配套必须一起成立：
+   - 泵把批次落在终态那一笔**之前**（`turnpump.go` 帧边界顺序 :679–:680），所以面板按 `after_seq` 补拉时
+     不会看见"终态有了、末尾几块还没有"——这是**顺序保证**，不是靠拒绝兜住的。
+   - 拒绝那一支只喊不写 ⇒ 对适配器**不回错误帧**（JSON-RPC 通知没有回执可错），处置记在 Core 日志与面板的空缺上：
+     那一块内容永久不在库里，这是可观察的事实，不是需要修复的状态。
 
 ## 7. 额度契约（UNKNOWN 与 0 是两回事）
 

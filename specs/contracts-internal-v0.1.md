@@ -795,6 +795,12 @@ func (db *DB) Write(ctx context.Context, fn func(tx *Tx) error) error  // BEGIN 
       - **记账要点更新**：Wave-2 已签（09-28 21:4x），**但"投递语义已验完"这句话的生效点是判据 (a) 通过**——
         签的是验收框，不是这句；(a) 落地前，引用 Wave-2 的人必须连本条一起引。
       - **状态更新（10-01 00:5x）**：判据 **(a)(b)(c) 三条均已落地并实测** ⇒ 常驻连接 + 常驻入站泵在 `2c65177` 起进版本库，期限与排空那一半在 `48c2547` 补齐（`pumpCallDeadline = 10 * time.Second` 由 `TestPumpCallDeadlineMatchesItsFamily` 钉住，`TestPumpKeepsDrainingWhileTheWriterIsBusy` 证「写面被占住时泵仍排空入站帧」）。**所以「投递语义已验完」这句从今天起可以引用，但仍须连本条一起引**——它验的是 Core 侧的收/落/喊，**不含**任何真 Provider（四家探过、未接一家），也**不含**那条 1/3 负载敏感的重连用例（台账第一百五十五批⑤、T-416 待定性）。
+      - **攒批归属（10-01 14:3x 裁，回 backend 第 (d) 问，派发 T-429）**：`turnHub.pending` 是**一张按 `execution_id` 分格、不分「代」也不分「台」的全局表**（`turnpump.go:133`，写入口 `noteOutput` :544，退场扫全表 `flushAllPending` :574–:583 —— 它 `for id := range h.pending` **不带 key 条件**）。所以我的现读比 backend 提的问题**更宽一格**：不止「两台同适配器两代连接重叠时老泵提前带走新泵批次」，而是**任何一台泵退场都会带走全仓所有在攒的批次，跨适配器 key 也一样**（单适配器测试世界里这条看不见 ⇒ 判据必须自带两台，见下）。
+        **裁定：要，批次必须有主人，退场只带走自己那一条连接攒的**。理由不是整齐，是它能把内容**送进一个必然失败的落库**：新代已经把那一轮收尾落定了，老泵退场时把新代还在攒的批次踢出去，`FlushOutput` 按契约② §6 规则 8 对终态后的迟到内容**只喊不写** ⇒ 那段内容永久不在库里，而面板只看得到「批次已踢、日志喊过」。
+        形状由实现方定（`pendingOutput` 记主人 / 表按 `key#gen` 分格都行），三条边界一起算落地：
+        **(i)** 退场只清自己的 ⇒ 反例要有牙：**两台适配器并发攒批 + 其中一台泵退场 ⇒ 另一台的批次一行不动、随后仍照常落**；
+        **(ii)** 自己的内容不许因为「只清自己的」而永久滞留（每一代的退场路径都能清掉自己那一格，无泄漏）；
+        **(iii)** 零外溢：`outputBatchFrames` / `outputBatchChars` 两个阈值、`execution_output_flushed` 载荷四键与契约② §6 规则 3 的攒批语义一字不动 —— 本裁只改「谁替它落盘」，不改「什么时候落盘」。
     - **④-c `REQ-ACCEPT-1`（09-27 16:5x 立，由主控第一次亲自全量跑 Wave-2 验收检查时量出；与 REQ-TURN-1 并列，同排 Wave-2 之前必须裁）**：
       链尾那两条边**今天都没有驱动者**。现量：非测试码里除 `internal/task` 自己的常量/类型/payload 之外，
       **没有一处把任务推成 `WAITING_ACCEPTANCE`**（`grep -rn "WaitingAcceptance" core --include=*.go` 去掉 `_test.go`
@@ -970,6 +976,44 @@ type Service interface {
    **不能只改 UI 状态**。回收靠 `SweepExpired`，不靠前端记得关掉。
 4. Approval 与 Execution 的绑定靠 `execution_id` 精确匹配；无 `execution_id` 的审批不得被
    任何 Execution 视为"已批准"（防"Approval 应用于错误 Execution"）。
+5. **`Resolution.By` 取自已过门的认证主体，永不取请求体**（10-01 14:3x 裁，落 audit 第 (2) 项那条硬发现）：
+   v0.1 的"认证"只有一道门 —— `core/api/http/handler.go:235` 要求所有写操作带 `X-Lucero-Principal: local-user`，
+   所以**已认证 principal 的唯一来源就是那个过门 header**。`By` 一旦从请求体取，调用方就能自报"是谁批准的"，
+   而它是三样东西的身份：`approvals.resolved_by` 列（`store_sqlite.go:220`）、`approval_resolved` 事件的
+   `PrincipalID`（:225）、审计链条目的行为人（:240）⇒ 伪造它等于同时伪造这三样。
+   `validateResolution` 现在只查非空（`approval.go:362`），那一格**不收紧到域层**（域层拿不到 header，
+   硬要它区分就会去猜），改法是 transport 只准这样填 + 判据盯住：见 §3.0-c。
+   连带禁令：`approvals.go:130` 那个 `resolved_by` **请求体字段是死路** —— 要么删掉，要么显式拒绝，
+   不许"读了但不用"（那会留一条"传了似乎就生效"的错觉）。
+6. **一条审批记录里有两个身份，各有其位，不许互换**（同批裁）：
+   **决议人** = `Resolution.By`（上面那条）；**受益人/被批准的主体** = `request_json.principal_id`
+   （`approval.go:317` 的 `grantFor` 取的就是它，这是**对的**，不是"两套身份系统并存"的缺陷 ——
+   临时授权是给"要执行那个动作的主体"开的，给批准人自己开一张条等于批准即自授）。
+   `temporary_grants.principal_id` 必须来自 `RequesterPrincipal()`，**不许**改成 `res.By`；
+   `request_json` 里没有 `principal_id` 时 `RequesterPrincipal()` 明确报错（`approval.go:183`–`:186`），这条不许放宽。
+
+**§3.0-c 接线现状（10-01 14:3x 现读，不是我推断的措辞，是五个 `grep` 的读数）**
+上面六条规则今天**没有任何一条被生产码走到过**。逐个点名（口径：非测试文件、并排除定义它自己的那个包）：
+
+| 东西 | 定义位 | 非测试调用点 |
+|---|---|---|
+| `permission.Engine.Decide` | `internal/permission/permission.go:195` | **0** |
+| `permission.Engine.CheckTemporaryGrant` | `permission.go:269` | **0**（排除本包后 `grep` 无输出） |
+| `approval.Service.Request` | `internal/approval/approval.go:241` | **0** |
+| `approval.Service.Resolve` | `approval.go:279` | **0**（`grep -rn "\.Resolve(" --include=*.go core/` 排除 `_test.go` 后无输出） |
+| `execution.ApprovalGate.BlockingState` | `internal/execution/approval.go:9` | **0**，且**没有装配位**：`cmd/core/main.go` 从没注入过这个接口 |
+
+判定：这不是"安全没做"，是**审批链整条没接线** —— 域层、存储层、事件、审计都建好了并且有测试，缺的是
+「谁在什么动作上问一次 `Decide`」和「面板按了批准之后走哪条 HTTP 口子」。所以：
+- **路由面**（`POST /api/v1/approvals/{id}:resolve` + `By` 从 header 填）**已经在途**：backend 10-01 14:0x 起的
+  `core/api/http/approval_resolve.go`（`:56 by := r.Header.Get("X-Lucero-Principal")`、`:121 By: by`）——
+  本条规则 5 是**据它落的**，不是给它下的命令；它已交账前我不判它对错，只把口径钉住。
+- **发起面**（执行前问一次 `Decide`、高风险动作先落审批行、`ApprovalGate` 那个死接口要么装配要么删掉）
+  归 `backend`，**派发 T-430** —— 它才是让名单里 `execution_approval_requested` / `execution_approval_resolved`
+  两条离开的大件；与 `execution_output_flushed` 那次同一个规矩：**先补了功能才摘**。
+- `permission`/`approval` 两个包**不新增写口**（归 `audit`，它这次交的是发现不是改动，正确）。
+- 本表现由 `test` 角色加机械判据盯住（**T-431**）：不许再出现"接口声明了、没人构造、没人调、也没人红"。
+
 
 ### 3.1 无规则命中时的默认（REQ-A4⑤ 裁定，17:55）
 
