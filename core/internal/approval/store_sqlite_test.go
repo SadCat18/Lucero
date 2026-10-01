@@ -199,9 +199,11 @@ func TestStoreWritesAggregateEventsAndChain(t *testing.T) {
 	if err := svc.Resolve(ctx, a.ID, res); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	// The second click, in whatever direction, must be inert.
-	if err := svc.Resolve(ctx, a.ID, Resolution{State: REJECTED, By: "local-user"}); err != nil {
-		t.Fatalf("second Resolve: %v", err)
+	// A second click in a different direction stays inert on the row — and since
+	// T-438 ② it is also named, because "inert" and "ignored your new answer" used to
+	// be the same `nil` from transport's side.
+	if err := svc.Resolve(ctx, a.ID, Resolution{State: REJECTED, By: "local-user"}); !errors.Is(err, ErrConflictingResolution) {
+		t.Fatalf("second Resolve: err = %v, want ErrConflictingResolution", err)
 	}
 
 	after, err := st.Get(ctx, a.ID)

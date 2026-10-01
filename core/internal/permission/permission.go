@@ -138,19 +138,58 @@ var (
 	}
 )
 
-// defaultFor is the chain's last rung.
-func defaultFor(action string) (Effect, Reason) {
+// The three levels the built-in classifier can answer. They are spelled with
+// approvals.risk_level's own vocabulary (000001_core_schema.sql:408 enumerates
+// LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN) so a caller can put the answer straight into
+// approval.Draft.RiskLevel without translating it — that copy step is exactly
+// where a second, drifting word list would be born (contract ① §3.0-d).
+const (
+	RiskHigh    = "HIGH"
+	RiskMedium  = "MEDIUM"
+	RiskUnknown = "UNKNOWN"
+)
+
+// RiskLevel is the ONLY exported door onto §3.1's built-in classifier, and it is
+// what transport and backend must fill Draft.RiskLevel from (T-438 ①).
+//
+// The second answer is the one that keeps the first honest: registered=false means
+// the classifier has never heard of this action, which is not the same fact as
+// "this action is risky" — it is "nobody registered it", and §3.1 fails it closed
+// into approval. A caller that only reads the level cannot tell those apart, and a
+// hand-written "UNKNOWN" would look identical to a real answer, so the flag is
+// part of the contract of this function rather than a nicety.
+//
+// RiskMedium covers lowMediumActions, which is ONE list that §3.1 itself names
+// "低/中". The built-in classifier does not distinguish LOW from MEDIUM today, and
+// this function will not invent that split: MEDIUM is the conservative one of the
+// two legal values, so an unsplit bucket cannot be labelled as safer than the
+// contract says it is. Splitting it is a new policy fact, not a refactor (REQ-A16).
+func RiskLevel(action string) (level string, registered bool) {
 	for _, p := range highRiskActions {
 		if matchPattern(p, action) {
-			return RequireApproval, ReasonDefaultHighRisk
+			return RiskHigh, true
 		}
 	}
 	for _, p := range lowMediumActions {
 		if matchPattern(p, action) {
-			return Allow, ReasonDefaultAllow
+			return RiskMedium, true
 		}
 	}
-	return RequireApproval, ReasonDefaultUnknown
+	return RiskUnknown, false
+}
+
+// defaultFor is the chain's last rung. It reads RiskLevel rather than walking the
+// lists a second time: two passes over one rule set is how the gate and the label
+// start disagreeing (the REQ-A8 disease, same shape as approvals' state check).
+func defaultFor(action string) (Effect, Reason) {
+	switch level, _ := RiskLevel(action); level {
+	case RiskHigh:
+		return RequireApproval, ReasonDefaultHighRisk
+	case RiskMedium:
+		return Allow, ReasonDefaultAllow
+	default:
+		return RequireApproval, ReasonDefaultUnknown
+	}
 }
 
 // Engine evaluates the chain frozen in handoff §7.2 / ADR-011:

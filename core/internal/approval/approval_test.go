@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -85,6 +86,14 @@ func (f *fakeStore) MarkResolved(_ context.Context, current Approval, res Resolu
 		return false, nil
 	}
 	row.State, row.ResolvedAt, row.ResolvedBy = res.State, at, res.By
+	// The fake records the decision the same way the real store does, because
+	// sameDecision reads this column back: hand-writing a different shape here would
+	// make "is this a replay?" answer against bytes production never writes.
+	encoded, err := json.Marshal(newResolutionRecord(res, grant))
+	if err != nil {
+		return false, err
+	}
+	row.ResolutionJSON = string(encoded)
 	f.resolutions = append(f.resolutions, resolveCall{current.ID, res.State, grant, true})
 	return true, nil
 }
@@ -246,9 +255,14 @@ func TestResolveIsIdempotent(t *testing.T) {
 	if got := f.events(); len(got) != 1 {
 		t.Errorf("%d events, want exactly 1: %v", len(got), got)
 	}
-	// A later, different decision must not overwrite the first one.
-	if err := s.Resolve(ctx, a.ID, Resolution{State: REJECTED, By: "local-user"}); err != nil {
-		t.Fatalf("Resolve after decision: %v", err)
+	// A later, different decision must not overwrite the first one — and since T-438 ②
+	// it must not come back as plain success either. The row is inert AND named.
+	err = s.Resolve(ctx, a.ID, Resolution{State: REJECTED, By: "local-user"})
+	if !errors.Is(err, ErrConflictingResolution) {
+		t.Fatalf("flipped decision: err = %v, want ErrConflictingResolution", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("a conflict must not look like a missing row: %v", err)
 	}
 	if f.rows[a.ID].State != APPROVED {
 		t.Errorf("state became %s; the first decision must stand", f.rows[a.ID].State)
@@ -258,26 +272,61 @@ func TestResolveIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestResolveLosesTheRaceWithoutDuplicates pins both halves of "the row was already
+// decided": whoever asks for the same thing succeeds and writes nothing, whoever asks
+// for something else comes back named. Before T-438 ② those were the same `nil`, and
+// the difference is exactly what a panel cannot see after the fact.
+//
+// The winner's row is produced by going through Resolve rather than by hand-setting
+// state, because sameDecision reads resolution_json back: a fixture that only moved
+// the state column would be testing the replay answer against a shape production
+// cannot write. That is how the first version of this rule went red for the wrong
+// reason, and it is why this fixture is faithful.
 func TestResolveLosesTheRaceWithoutDuplicates(t *testing.T) {
-	a, _ := service(newStore(), tNow).Request(context.Background(), pendingDraft())
+	ctx := context.Background()
+	a, err := service(newStore(), tNow).Request(ctx, pendingDraft())
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := newStore(a)
-	f.rows[a.ID].State = APPROVED // a concurrent request already decided it
-	f.rows[a.ID].ResolvedAt = tNow
+	winner := Resolution{
+		State: APPROVED, By: "other-user",
+		Temporary: &GrantRequest{ScopeType: permission.ScopeTask, ScopeID: "t-1", Duration: hourInMs},
+	}
+	if err := service(f, tNow).Resolve(ctx, a.ID, winner); err != nil {
+		t.Fatalf("the winning Resolve: %v", err)
+	}
+	writes, events := len(f.resolutions), len(f.events())
+	if writes != 1 || events != 1 {
+		t.Fatalf("the winner left %d writes / %d events, want 1 and 1", writes, events)
+	}
 
 	s := service(f, tNow+1)
-	err := s.Resolve(context.Background(), a.ID, Resolution{
-		State: APPROVED, By: "local-user", Temporary: &GrantRequest{ScopeType: permission.ScopeTask, ScopeID: "t-1", Duration: hourInMs},
-	})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+	// Same content, arriving later: success, still one write behind it.
+	if err := s.Resolve(ctx, a.ID, winner); err != nil {
+		t.Errorf("same-content loser: err = %v, want nil (a replay must stay a replay)", err)
 	}
-	if len(f.events()) != 0 {
-		t.Errorf("the losing caller wrote events: %v", f.events())
+	// Same state, different privilege: named. The recorded window is what this row
+	// actually issued, so asking for 2h against a recorded 1h grant is not a replay.
+	if err := s.Resolve(ctx, a.ID, Resolution{
+		State: APPROVED, By: "local-user",
+		Temporary: &GrantRequest{ScopeType: permission.ScopeTask, ScopeID: "t-1", Duration: 2 * hourInMs},
+	}); !errors.Is(err, ErrConflictingResolution) {
+		t.Errorf("changed-window loser: err = %v, want ErrConflictingResolution", err)
 	}
+	// Neither arrival wrote to the row or the journal.
+	if len(f.resolutions) != writes || len(f.events()) != events {
+		t.Errorf("the losers produced %d writes / %d events, want %d / %d",
+			len(f.resolutions), len(f.events()), writes, events)
+	}
+	won := 0
 	for _, r := range f.resolutions {
 		if r.casOK {
-			t.Error("the losing caller won the CAS")
+			won++
 		}
+	}
+	if won != 1 {
+		t.Errorf("%d callers won the CAS, want exactly the one winner", won)
 	}
 }
 

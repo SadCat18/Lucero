@@ -204,12 +204,15 @@ func (s *SQLiteStore) MarkResolved(ctx context.Context, current Approval, res Re
 			return err
 		}
 		if fresh.Resolved() {
+			// The Service's pre-read gives the cheap answer; this is the race-free one.
+			// Two resolvers can both read PENDING, and the loser must not walk away
+			// with `nil` when what it sent disagrees with what the winner wrote.
+			if !sameDecision(fresh, res) {
+				return conflictingResolution(fresh, res)
+			}
 			return nil
 		}
-		resolutionJSON, err := json.Marshal(map[string]any{
-			"schema": 1, "state": res.State, "resolved_by": res.By, "note": res.Note,
-			"grant_id": grant.ID,
-		})
+		resolutionJSON, err := json.Marshal(newResolutionRecord(res, grant))
 		if err != nil {
 			return fmt.Errorf("approval: encode resolution_json: %w", err)
 		}

@@ -46,6 +46,18 @@ const StateNone = "NONE"
 // ErrNotFound is what Store.Get returns for an unknown approval id.
 var ErrNotFound = errors.New("approval: not found")
 
+// ErrConflictingResolution names the one answer that used to be silent: the row is
+// already decided, and what arrived now is a DIFFERENT decision. Without a name
+// transport could only read `nil` and report 200 — "you thought you re-decided it,
+// nothing happened" (contract ① §3 rule 8, T-438 ②). A replay of the same content
+// still returns nil, so this error is the difference between the two, not a new
+// status for idempotence.
+//
+// It is a sentinel on purpose: handler code must be able to branch on errors.Is
+// rather than on message text, which is the same reason backend's
+// writeResolveError folds unnamed errors to 500 today.
+var ErrConflictingResolution = errors.New("approval: a different decision is already recorded")
+
 // MaxGrantDuration caps a temporary grant. 8h covers a working session while
 // keeping a mis-clicked "always allow" from outliving the task that needed it.
 const MaxGrantDuration = int64(8 * 60 * 60 * 1000)
@@ -273,9 +285,18 @@ func (s *Service) Request(ctx context.Context, d Draft) (Approval, error) {
 	return a, nil
 }
 
-// Resolve records the decision. Calling it again on a decided approval is a
-// no-op that leaves the first answer standing: no second event, no second audit
-// row, no second grant.
+// Resolve records the decision.
+//
+// A second call on a decided approval is only a no-op when it asks for the SAME
+// thing: same state and the same grant the row already issued. Anything else comes
+// back as ErrConflictingResolution, because "nothing happened" and "you changed
+// your mind, and it was ignored" must not look identical from outside — that one
+// was the whole point of naming it (contract ① §3 rule 8).
+//
+// Order matters and is not an optimisation: the body is validated before the row is
+// read, so a malformed decision is refused whether the approval is pending or
+// already terminal. Answering a typo with the row's own terminal state would turn
+// a caller error into a silent success.
 func (s *Service) Resolve(ctx context.Context, id string, res Resolution) error {
 	// Checked before the store so "you named no approval" cannot come back as
 	// "there is no such approval" — the two answers send transport to different
@@ -283,15 +304,18 @@ func (s *Service) Resolve(ctx context.Context, id string, res Resolution) error 
 	if err := requireID(id); err != nil {
 		return err
 	}
+	if err := validateResolution(res); err != nil {
+		return err
+	}
 	current, err := s.store.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	if current.Resolved() {
-		return nil
-	}
-	if err := validateResolution(res); err != nil {
-		return err
+		if sameDecision(current, res) {
+			return nil
+		}
+		return conflictingResolution(current, res)
 	}
 	grant, err := s.grantFor(current, res)
 	if err != nil {
@@ -350,6 +374,101 @@ func grantWindow(startsAt, expiresAt int64) error {
 		return fmt.Errorf("approval: grant window %dms exceeds the %dms cap", expiresAt-startsAt, MaxGrantDuration)
 	}
 	return nil
+}
+
+// grantRecord is the part of a recorded decision that says what privilege it
+// issued. It is read back out of approvals.resolution_json rather than re-derived,
+// because temporary_grants carries no column pointing at the approval that created
+// it (000001_core_schema.sql:430) — the approval's own record is the only link there
+// is, so the link has to be written down at the moment the grant is minted.
+type grantRecord struct {
+	ScopeType string `json:"scope_type"`
+	ScopeID   string `json:"scope_id"`
+	Duration  int64  `json:"duration_ms"`
+}
+
+// resolutionRecord is this package's read shape for approvals.resolution_json.
+// MarkResolved marshals exactly this struct, so the writer and the comparison below
+// cannot end up holding two different shapes of one column.
+type resolutionRecord struct {
+	Schema     int          `json:"schema"`
+	State      string       `json:"state"`
+	ResolvedBy string       `json:"resolved_by"`
+	Note       string       `json:"note"`
+	GrantID    string       `json:"grant_id"`
+	Grant      *grantRecord `json:"grant,omitempty"`
+}
+
+// recordedDecision parses the row's own account of its decision. ok=false means the
+// column is not readable JSON, and that is answered "this row cannot prove it
+// issued what you are asking" — the conflict side, never the replay side.
+func recordedDecision(a Approval) (resolutionRecord, bool) {
+	if a.ResolutionJSON == "" {
+		return resolutionRecord{}, false
+	}
+	var rec resolutionRecord
+	if err := json.Unmarshal([]byte(a.ResolutionJSON), &rec); err != nil {
+		return resolutionRecord{}, false
+	}
+	return rec, true
+}
+
+// sameDecision is the single statement of "this second call asks for what the row
+// already records". Content means the decision and the privilege: the state, and the
+// grant's scope and window. By/Note/CorrelationID/CausationID are deliberately not
+// part of it — who clicked, what they typed, and which command carried the click do
+// not change what was decided, so a re-send under a fresh correlation id is still the
+// same decision, and the event journal keeps both clicks.
+//
+// The case this exists for: asking REJECTED against a row that records APPROVED, or
+// asking for an 8h window when the row granted 15 minutes. Both used to answer `nil`,
+// which transport reads as success.
+func sameDecision(stored Approval, res Resolution) bool {
+	if stored.State != res.State {
+		return false
+	}
+	rec, readable := recordedDecision(stored)
+	if res.Temporary == nil {
+		// No privilege asked for: a replay only when the row can prove it issued none
+		// either.
+		return readable && rec.GrantID == ""
+	}
+	if !readable || rec.Grant == nil {
+		return false
+	}
+	return rec.Grant.ScopeType == string(res.Temporary.ScopeType) &&
+		rec.Grant.ScopeID == res.Temporary.ScopeID &&
+		rec.Grant.Duration == res.Temporary.Duration
+}
+
+// conflictingResolution names "the row already records a different decision". The
+// message carries both states because a human reads it in the log; transport must
+// branch on errors.Is(err, ErrConflictingResolution) and not on this text.
+func conflictingResolution(stored Approval, res Resolution) error {
+	return fmt.Errorf("approval: %s already records %s, this asks for %s: %w",
+		stored.ID, stored.State, res.State, ErrConflictingResolution)
+}
+
+// newResolutionRecord is what a decided row's resolution_json says. Both the real
+// store and the test fake build the column through this one function: sameDecision
+// reads that column back, so a fake that wrote a different shape would be testing
+// the replay answer against bytes production never produces. (That is exactly how
+// the first version of this rule went red for the right reason and the wrong cause.)
+func newResolutionRecord(res Resolution, grant permission.Grant) resolutionRecord {
+	rec := resolutionRecord{
+		Schema: 1, State: res.State, ResolvedBy: res.By, Note: res.Note,
+		GrantID: grant.ID,
+	}
+	// The window is recorded next to the grant id because it is the only way this
+	// row can later prove *which* privilege it issued — and without that, a replay
+	// and a changed request would be indistinguishable.
+	if grant.ID != "" {
+		rec.Grant = &grantRecord{
+			ScopeType: string(grant.ScopeType), ScopeID: grant.ScopeID,
+			Duration: grant.ExpiresAt - grant.StartsAt,
+		}
+	}
+	return rec
 }
 
 func validateResolution(res Resolution) error {
