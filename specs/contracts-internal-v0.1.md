@@ -1001,14 +1001,16 @@ type Service interface {
 | `permission.Engine.CheckTemporaryGrant` | `permission.go:269` | **0**（排除本包后 `grep` 无输出） |
 | `approval.Service.Request` | `internal/approval/approval.go:241` | **0** |
 | `approval.Service.Resolve` | `approval.go:279` | **0**（`grep -rn "\.Resolve(" --include=*.go core/` 排除 `_test.go` 后无输出） |
-| `execution.ApprovalGate.BlockingState` | `internal/execution/approval.go:9` | **0**，且**没有装配位**：`cmd/core/main.go` 从没注入过这个接口 |
+| `execution.ApprovalStates.BlockingState` | `internal/execution/approval.go:8`（类型位；方法在 `:9`） | **0**，且**没有装配位**：现读 `grep -rn "ApprovalStates" --include=*.go core/` 只命中定义它自己的那两行（`:5` 注释、`:8` 类型），`cmd/core/main.go` 零引用 |
+| — **更正** — | 本行原写 `ApprovalGate` | **那个名字是我编的**：我从没读过 `:5`/`:8`，是照概念造的词（同族旧错：09-27 的 `harvestTurnFinished`）。盘上真名 **`ApprovalStates`**（现读附在上一条命令里）。结论一字未变——**两种写法都是 0 个非测试调用者**，改的只是名字 |
+
 
 判定：这不是"安全没做"，是**审批链整条没接线** —— 域层、存储层、事件、审计都建好了并且有测试，缺的是
 「谁在什么动作上问一次 `Decide`」和「面板按了批准之后走哪条 HTTP 口子」。所以：
 - **路由面**（`POST /api/v1/approvals/{id}:resolve` + `By` 从 header 填）**已经在途**：backend 10-01 14:0x 起的
   `core/api/http/approval_resolve.go`（`:56 by := r.Header.Get("X-Lucero-Principal")`、`:121 By: by`）——
   本条规则 5 是**据它落的**，不是给它下的命令；它已交账前我不判它对错，只把口径钉住。
-- **发起面**（执行前问一次 `Decide`、高风险动作先落审批行、`ApprovalGate` 那个死接口要么装配要么删掉）
+- **发起面**（执行前问一次 `Decide`、高风险动作先落审批行、`ApprovalStates` 那个死接口要么装配要么删掉）
   归 `backend`，**派发 T-430** —— 它才是让名单里 `execution_approval_requested` / `execution_approval_resolved`
   两条离开的大件；与 `execution_output_flushed` 那次同一个规矩：**先补了功能才摘**。
 - `permission`/`approval` 两个包**不新增写口**（归 `audit`，它这次交的是发现不是改动，正确）。
