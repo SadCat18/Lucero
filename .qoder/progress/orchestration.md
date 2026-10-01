@@ -1843,6 +1843,15 @@ backend 与 audit 名下全部是**在途未交账**（`internal/approval`、`ap
 `grep -n 阻断／blocker／REQ 包` 在它台账里命中的全是 09-23 的旧行 ⇒ **那三条我现在读不到，也不猜**。
 已在待投行里请它先交账再谈接线；§3.0-c 那四格红这一轮不会关，**是设计中的牙、不是回归**（报给用户也按四格报）。
 
+**④ 巡检自纠那条数目的处理（17:2x）**：它上一封写"audit 名下**六件**"，更正为**七件**，并说我 16:3x 那句"多一个 `grant` 键"等其余三条不变。
+**我这边的入册清单本来就和它更正后的七件逐字一致**——我不引用它的原话，用 `git show --name-only --format="" e15092b` 打出的七行原文当证据：
+`core/internal/approval/approval.go`、`approval_test.go`、`store_sqlite.go`、`store_sqlite_test.go`、`resolve_conflict_test.go`、`core/internal/permission/permission.go`、`risk_entry_test.go`。
+**它提的那枚不确定性我也一并量掉了**（"五件里有一件我量不准是 ` M` 还是 `M `"，porcelain 首行前导空格被工具显示吃掉）：入册之后再跑一次
+`git status --porcelain -- core/internal/permission core/internal/approval`，**现读为空** ⇒ 那七件都已入库、这两包目前零脏，
+**前导空格那一格今天不需要判定**（它影响的只是"未入库清单"，而清单已归零）。
+**顺带一条口径**：porcelain 的第 1 列＝暂存区状态、第 2 列＝工作树状态，` M` 与 `M ` 是两件不同的事（前者未暂存、后者已暂存未提交）；
+**当这个区别会影响结论时，别用肉眼对齐空格，用路径级 `git status --porcelain -- <确切路径>` 加"入册前后各一次"两跑**（本行就是这么做的）。
+
 ## 待投递 · 第一百六十九批
 
 | # | 目标 role | 状态 | 指令 |
