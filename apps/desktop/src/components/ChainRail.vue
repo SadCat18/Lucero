@@ -1,11 +1,21 @@
 <script setup lang="ts">
-import { CHAIN, chain, runChain, stepState } from '../stores/panel';
+import { CHAIN, chain, data, runChain, stepState, writability } from '../stores/panel';
+
+/** 只读档 / 档位未知的说法（T-449 ①）：读得到就拦，读不到就明说读不到 —— 两种都不许"先可点再报错" */
+const levels = () => Object.keys(data.caps).map((id) => [id, writability(id)] as const);
+const blocked = () => levels().some(([, w]) => w === 'read_only' || w === 'unsupported');
+const unknownOnes = () => levels().filter(([, w]) => w === 'unknown').length + Object.keys(data.capsError).length;
 </script>
 
 <template>
   <section class="card">
-    <h2>垂直链（事件契约 §7）<button :disabled="chain.running" @click="runChain()">
-        {{ chain.running ? '执行中…' : '驱动整条链' }}</button></h2>
+    <h2>垂直链（事件契约 §7）<button :disabled="chain.running || blocked()" @click="runChain()">
+        {{ chain.running ? '执行中…' : blocked() ? '该 Adapter 为只读 —— 不发写请求' : '驱动整条链' }}</button></h2>
+    <p v-if="blocked()" class="warn">已读到能力档位：这一家不接写链（§16.7 第 1、2 点）⇒ 控件不出现成可点。</p>
+    <p v-else-if="unknownOnes()" class="warn">
+      档位读不到（{{ unknownOnes() }} 个实例，{{ Object.values(data.capsError)[0] ?? '未列原因' }}）——
+      这里**不声称可写**，点了若被拒会在下面按真实出局显示，不折算成成功。
+    </p>
     <ol class="rail">
       <li v-for="(s, i) in CHAIN" :key="s.key" :class="stepState(s, i)">
         <span class="idx">{{ i + 1 }}</span>{{ s.label }}

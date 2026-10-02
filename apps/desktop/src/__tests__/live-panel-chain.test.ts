@@ -14,7 +14,7 @@
 import { describe, expect, beforeAll, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createCoreClient } from '@lucero/api-client/client';
-import { CHAIN, chain, connectEvents, data, detail, link, openDetail, refresh, runChain, stepDone } from '../stores/panel';
+import { CHAIN, chain, connectEvents, data, detail, link, openDetail, refresh, runChain, stepDone, writability } from '../stores/panel';
 import type { DetailKind } from '../stores/panel';
 
 const origin = process.env.LUCERO_PANEL_ORIGIN ?? '';
@@ -259,6 +259,36 @@ describe.skipIf(!live)('面板 store 真后台：runChain() 连真 Core + 真 WS
     console.log(`  F-18：面板共发 ${sent.length} 发（含 ws-ticket ${ticket} 发），自带 Authorization 的 = 0；`
       + `链路状态=${link.state}（口令值不在本文件、不在产物、只在反代进程环境）`);
   });
+
+  it('能力档位（T-449 ①）：refresh() 之后要么读到档位、要么明写读不到；面板结论与直连读数同源', async () => {
+    // 实例 id 只从**链上真实发过的那一发**取（`POST /adapters/{id}/sessions:discover` 的 URL）——
+    // 不能拿 `GET /adapters` 的清单取：那一条在 HEAD 里是 501 未接线，拿它当必有行就是我自己的前提错（20:0x 那趟红的是这个）。
+    const disc = chain.calls.find((c) => c.method.includes('/sessions:discover'));
+    const m = disc ? disc.method.match(/\/adapters\/([^/]+)\/sessions:discover/) : null;
+    if (!m) { console.log('  档位格：链上没有 discover 那一发 ⇒ 无实例可问档位，这一格没跑，不算绿'); return; }
+    const id = m[1];
+
+    let srv: string[] | null = null;
+    let srvErr = '';
+    try {
+      srv = (await direct.adapterCapabilities(id)).items.map((c) => `${c.capability_name}=${c.support_level}`);
+    } catch (err) {
+      const e = err as { status?: number; code?: string };
+      expect(e.code, '档位读不到时只能是 not_implemented（已登记未装配），别种错法默默放过').toBe('not_implemented');
+      srvErr = `${e.status} ${e.code}`;
+    }
+    await refresh();
+    if (!srv) {
+      expect(data.caps[id], '服务端 501，面板却攒出了档位 = 掺假').toBeUndefined();
+      expect(writability(id), '档位读不到时不许猜成可写或只读').toBe('unknown');
+      console.log(`  档位格：直连 ${srvErr} ⇒ 面板 caps 里没有这一格、writability=unknown（不谎称可写，也不谎称只读）`
+        + `｜面板实际发过的那一发也在同一状态：${disc!.method.replace(id, '{id}')} → 见 chain.calls`);
+      return;
+    }
+    const panel = (data.caps[id] ?? []).map((c) => `${c.capability_name}=${c.support_level}`).sort();
+    expect(panel, '面板里的档位与直连读数不同源').toStrictEqual([...srv].sort());
+    console.log(`  档位格同源通过：${srv.length} 条、writability=${writability(id)}｜${panel.slice(0, 6).join(' ,')}`);
+  }, 60_000);
 
   it('store 自身不掺假：seen 与时间线是同一批真帧（不多不少），点亮格只看事件', () => {
     const fromFrames: Set<string> = new Set(data.events.map((e) => e.event_type));

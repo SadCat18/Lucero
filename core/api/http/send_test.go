@@ -533,6 +533,11 @@ func TestSendTurnAdapterErrorMaps(t *testing.T) {
 			http.StatusNotImplemented, "not_implemented"},
 		{"unresponsive", &adapter.Error{Code: adapter.ErrAdapterUnresponsive, Message: "dead"},
 			http.StatusServiceUnavailable, "adapter_unresponsive"},
+		// 只读档被派发写（§16.7 第 1、2 条）：码与状态都取 §15.2 已登记那一行（405 / write_entry_none）。
+		// 它既不是 503（那会说成"适配器病了"），更不许是 202（那会说成"已受理"）。
+		{"write_entry_none（只读档拒写）", &adapter.Error{Code: adapter.ErrWriteEntryNone,
+			Message: "session/send: adapter opencode declares write_entry=false"},
+			http.StatusMethodNotAllowed, "write_entry_none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			turn := &stubTurn{err: tc.err}
@@ -543,6 +548,33 @@ func TestSendTurnAdapterErrorMaps(t *testing.T) {
 				"local-user", "k-e", `{"text":"hi","delivery":"start_now"}`)
 			if code != tc.want || codeOf(t, body) != tc.code {
 				t.Errorf("%s 该 %d %s，实际 %d %s", tc.name, tc.want, tc.code, code, body)
+			}
+		})
+	}
+}
+
+// TestReadOnlyRefusalIsNeverAccepted 钉 §16.7 第 2 条那两句"严禁"：只读档被派发写的时候
+// **不许拿到 202、不许拿到 accepted=true**，两种 delivery（start_now / guide）都落同一个已登记的 405 出口。
+// 为什么单开一条而不只靠上面那张表：那张表判的是"码与状态"，这一格判的是**受理语义**——
+// 同一件事被写成 202 + `accepted:false` 也能过上面那格，而 §5/§16.7 要的是"根本没受理"。
+func TestReadOnlyRefusalIsNeverAccepted(t *testing.T) {
+	for _, delivery := range []string{"start_now", "guide"} {
+		t.Run(delivery, func(t *testing.T) {
+			turn := &stubTurn{err: &adapter.Error{Code: adapter.ErrWriteEntryNone,
+				Message: "session/send: adapter opencode declares write_entry=false"}}
+			srv, _ := newSendHarness(t, sendSeed{
+				execID: "ex-ro", status: "RUNNING", sessionID: "sess-ro", seedSession: true, turn: turn,
+			}, true)
+			code, body := call(t, srv, http.MethodPost, "/api/v1/executions/ex-ro/send",
+				"local-user", "k-ro-"+delivery, `{"text":"写一笔","delivery":"`+delivery+`"}`)
+			if code == http.StatusAccepted || code/100 == 2 {
+				t.Errorf("只读档的写派发拿到了 %d ⇒ §16.7 第 2 条严禁 202/200；回执：%s", code, body)
+			}
+			if code != http.StatusMethodNotAllowed {
+				t.Errorf("%d 不是 405（§15.2 给 `write_entry_none` 的那一行）：%s", code, body)
+			}
+			if strings.Contains(body, `"accepted":true`) {
+				t.Errorf("被拒的一格不许在回执里自称受理：%s", body)
 			}
 		})
 	}

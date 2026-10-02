@@ -797,7 +797,22 @@ export interface components {
         AdapterHealth: "UNKNOWN" | "STARTING" | "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "STOPPED";
         /** @enum {string} */
         CapabilityHealth: "UNKNOWN" | "HEALTHY" | "DEGRADED" | "UNAVAILABLE";
-        /** @enum {string} */
+        /**
+         * @description 八档 = 架构文档「能力等级」那一节，与 Core 侧常量逐字相同（`core/internal/adapter/handshake.go` 的
+         *     `LevelNative … LevelUnsupported`，注释原文「The eight frozen support levels」）。
+         *     **`READ_ONLY` 的语义进契约，不留成前端局部判据**（契约② §16.7 第 1、2 点）：声明这一档的一家
+         *     只实现读面（`session/list`、`message/read`、额度读），**不实现也不接** `session/create`、
+         *     `turn/start`／`start_now`、`guide`、`session/stop`、`approval/request`、`approval/respond`。
+         *     由此得两条对观察面板的硬约束：
+         *     ① 面板**不许**把只读档渲染成可点再报错 —— 没有发送框、没有停止、没有批准可点；要么整块不出现，
+         *        要么显式标「该 Adapter 为只读」（把一个能力边界演成一次失败，等于伪造缺陷）；
+         *     ② 派发到只读档的写请求必须回**已登记的能力不可用**出局，**严禁** 200/202 或"已受理"（§16.7 第 2 点）。
+         *     这一档不等于 `UNSUPPORTED`：前者是"能读、不许写"，后者是"这项根本没实现"，面板与 Core 都不许合并两者。
+         *     待裁的口径缺口（**我不在投影里造码**）：② 那句"已登记的能力不可用"在 §15.2 左列现在**没有对应 REST 码**
+         *     （`ErrorCode` 闭集里搜不到 capability 相关项，契约② 只有 JSON-RPC 侧的 `ErrCapabilityUnavailable`），
+         *     所以只读档被派发写请求时到底回哪个 code，需要主控先在 §15.2 立一条，我这边才能落形状。
+         * @enum {string}
+         */
         SupportLevel: "NATIVE" | "COMPATIBLE" | "CLI" | "LOCAL_DATA" | "UI_AUTOMATION" | "READ_ONLY" | "EXPERIMENTAL" | "UNSUPPORTED";
         /** @enum {string} */
         ModelAvailability: "AVAILABLE" | "UNAVAILABLE" | "DEGRADED" | "UNKNOWN";

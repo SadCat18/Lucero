@@ -27,3 +27,16 @@ export function statusText(v: string | null | undefined): string {
 export function when(ts: number | null | undefined): string {
   return typeof ts === 'number' && Number.isFinite(ts) ? new Date(ts).toLocaleTimeString() : UNKNOWN;
 }
+
+/**
+ * 额度三档的分类（T-449 ②）—— **只分类，不写文案**，文案留给视图，这样三档的差异不会在某处被折叠成一个数字：
+ * - `value`：有数且置信度够（`>0` 高置信是典型），正常显示数字
+ * - `zero`：**值是 0 且置信不足**（`confidence !== 'HIGH'`）—— 这一档既不能读成"用完"也不能读成"免费"
+ * - `absent`：读不到（null / NaN / `confidence: UNKNOWN`）—— 不产出任何数字
+ */
+export function quotaTier(v: number | null | undefined, confidence: string | null | undefined):
+  'value' | 'zero' | 'absent' {
+  if (!(typeof v === 'number' && Number.isFinite(v)) || confidence === 'UNKNOWN') return 'absent';
+  if (v === 0 && confidence !== 'HIGH') return 'zero';
+  return 'value';
+}

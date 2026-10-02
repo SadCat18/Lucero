@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { data, openDetail, resolveApproval } from '../stores/panel';
+import { data, openDetail, resolveApproval, writeBlocked } from '../stores/panel';
 import { statusText, when } from '@lucero/api-client/unknown';
 
 async function decide(id: string, state: 'APPROVED' | 'REJECTED') {
+  if (writeBlocked()) return;      // 只读档不出现可点再报错的通路（T-449 ①）
   await resolveApproval(id, state);
 }
 </script>
@@ -22,8 +23,11 @@ async function decide(id: string, state: 'APPROVED' | 'REJECTED') {
           <td>{{ when(a.expires_at) }}</td>
           <td class="row-actions">
             <button @click="openDetail('approval', a.id)">详情</button>
-            <button @click="decide(a.id, 'APPROVED')">批准</button>
-            <button @click="decide(a.id, 'REJECTED')">拒绝</button>
+            <span v-if="writeBlocked()" class="dim">该 Adapter 为只读 —— 不发决议</span>
+            <template v-else>
+              <button @click="decide(a.id, 'APPROVED')">批准</button>
+              <button @click="decide(a.id, 'REJECTED')">拒绝</button>
+            </template>
           </td>
         </tr>
       </tbody>

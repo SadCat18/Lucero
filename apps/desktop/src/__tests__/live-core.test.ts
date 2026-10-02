@@ -664,4 +664,25 @@ describe.skipIf(!live)('真 Core 联调 · §4 第一格（POST /projects，T-14
     s.close();
     console.log(`  切片成立：seq=${ev!.seq} ${ev!.event_type} → 第一格 ok，面板无一处自造状态`);
   }, 20_000);
+
+  it('T-449 ① 的前提：实例清单与能力档位这两个面现在到底通不通（501 是合法答案，405/404 不是）', async () => {
+    // 为什么钉这一条：面板要"只读档不看起来可写"，判据只能从 `GET /adapters/{id}/capabilities` 读；
+    // 我 20:0x 那趟把 `GET /adapters` 当成必有行的来源，结果它 501 ⇒ 红的是我的前提，不是后端。
+    const ask = async (label: string, run: () => Promise<unknown>) => {
+      try {
+        const r = await run();
+        const items = (r as { items?: unknown[] }).items;
+        console.log(`  ${label} → 200，items=${Array.isArray(items) ? items.length : '非清单形状'}`);
+        return 'ok' as const;
+      } catch (err) {
+        const e = err as { status?: number; code?: string };
+        expect([200, 501], `${label} 回了 ${e.status} ${e.code}：只能是 200 或 501 not_implemented`).toContain(e.status);
+        expect(e.code, `${label} 的 501 必须是 not_implemented`).toBe('not_implemented');
+        console.log(`  ${label} → ${e.status} ${e.code}（已登记未装配 ⇒ 面板只能显示"档位读不到"，不许猜可写也不许猜只读）`);
+        return 'unwired' as const;
+      }
+    };
+    await ask('GET /api/v1/adapters?limit=20', () => core().listAdapters({ limit: 20 }));
+    await ask('GET /api/v1/adapters/{id}/capabilities', () => core().adapterCapabilities('probe-only-instance'));
+  }, 30_000);
 });

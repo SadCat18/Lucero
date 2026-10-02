@@ -70,8 +70,39 @@ export const data = reactive({
   notifications: [] as Schemas['Notification'][],
   quota: null as Schemas['QuotaResponse'] | null,
   output: [] as Schemas['OutputChunk'][],
+  /** 逐能力档位（T-449 ①）：key = adapter_instance_id；读不到那一格进 capsError，不当"可写"也不当"只读" */
+  caps: {} as Record<string, Schemas['AdapterCapability'][]>,
+  capsError: {} as Record<string, string>,
   seen: new Set<string>(),
 });
+
+/**
+ * 只读档判定（契约② §16.7 第 1、2 点 + 契约③ SupportLevel 描述）：**从读来的档位推，不写前端局部规则**。
+ * 写链的入口能力取 `session.send`（§16.7 列的 `turn/start`／`start_now`／`guide` 在声明里就是这一条的投递模式），
+ * 加上 `approval.respond`（批准/拒绝那一对外只读档也不接）。
+ * 四档答案互相独立、不许合并：writable / read_only / unsupported / unknown（没读到档位）。
+ */
+/** §16.7 第 1 点列的那五个写入口，在声明里的能力名（没声明的不算数，也不算"不支持"） */
+const WRITE_CAPS = ['session.create', 'session.send', 'session.stop', 'approval.request', 'approval.respond'];
+
+export function writability(instanceId: string): 'writable' | 'read_only' | 'unsupported' | 'unknown' {
+  const rows = data.caps[instanceId];
+  if (!rows) return 'unknown';
+  const declared = WRITE_CAPS
+    .map((n) => rows.find((c) => c.capability_name === n))
+    .filter((c): c is Schemas['AdapterCapability'] => !!c);
+  if (!declared.length) return 'unknown';
+  if (declared.some((c) => c.support_level === 'READ_ONLY')) return 'read_only';
+  if (declared.every((c) => c.support_level === 'UNSUPPORTED')) return 'unsupported';
+  return 'writable';
+}
+
+/** 面板级结论：只有在**读到档位且确认没有可写实例**时才拦写控件（unknown 不拦，但会显式标"档位未知"） */
+export function writeBlocked(): boolean {
+  const ids = Object.keys(data.caps);
+  if (!ids.length) return false;
+  return ids.every((id) => writability(id) !== 'writable') && ids.some((id) => writability(id) !== 'unknown');
+}
 
 export const chain = reactive({
   running: false,
@@ -171,6 +202,17 @@ export async function refresh() {
   if (approvals.status === 'fulfilled') data.approvals = approvals.value.items;
   if (notifications.status === 'fulfilled') data.notifications = notifications.value.items;
   if (quota.status === 'fulfilled') data.quota = quota.value;
+  // 逐实例拉能力档位（T-449 ①）：读不到就进 capsError ⇒ writability() 答 unknown，**不许当成"可写"放行控件**
+  const ids = (adapters.status === 'fulfilled' ? adapters.value.items : []).map((a) => a.id);
+  const capResults = await Promise.allSettled(ids.map((id) => core.adapterCapabilities(id)));
+  const nextCaps: Record<string, Schemas['AdapterCapability'][]> = {};
+  const nextCapsErr: Record<string, string> = {};
+  capResults.forEach((r, i) => {
+    if (r.status === 'fulfilled') nextCaps[ids[i]] = r.value.items;
+    else nextCapsErr[ids[i]] = describeFailure(r.reason);
+  });
+  data.caps = nextCaps;
+  data.capsError = nextCapsErr;
   return { health, adapters, tasks, sessions, approvals, notifications, quota };
 }
 

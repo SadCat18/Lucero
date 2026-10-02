@@ -234,6 +234,13 @@ func probeErrorOf(err error) (status int, code string, retryable bool, mapped bo
 		return http.StatusServiceUnavailable, "protocol_not_initialized", true, true
 	case "capability_unavailable":
 		return http.StatusServiceUnavailable, "capability_unavailable", true, true
+	case "write_entry_none": // §15.2 表（`adapter-protocol-v0.1.md:547`）：405 + 同名码。
+		// 只读档（§16.7：`write_entry=false`）被派发写时 `Handshake.Call` 报这个码，
+		// `Connection.CallTurn` 在**出帧之前**就拦（`internal/process/connection.go:203`），
+		// `sendpipe.unresponsive` 对 `*adapter.Error` 原样上抛（:160–`:163`）⇒ 到这里的仍是它自己。
+		// 不是 503：那会说成"这台适配器病了"；不是 202：§16.7 第 2 条严禁 202/200/"已受理"。
+		// retryable=false：重试同一家的同一个写只会拿到同一个 405，能改的是档位不是请求。
+		return http.StatusMethodNotAllowed, "write_entry_none", false, true
 	case "auth_required": // 401 但**不代登录**：能重试的是人，不是 Core
 		return http.StatusUnauthorized, "auth_required", false, true
 	case "rate_limited":
