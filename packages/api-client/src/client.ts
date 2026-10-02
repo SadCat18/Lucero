@@ -77,9 +77,11 @@ export function createCoreClient(cfg: CoreClientConfig = {}) {
       call<Schemas['Project']>('POST', '/api/v1/projects', { body, idempotencyKey }),
     listProjects: (query?: operations['listProjects']['parameters']['query']) =>
       call<Schemas['ProjectList']>('GET', '/api/v1/projects', { query }),
+    getProject: (id: string) => call<Schemas['Project']>('GET', `/api/v1/projects/${id}`),
 
     listAdapters: (query?: operations['listAdapters']['parameters']['query']) =>
       call<Schemas['AdapterList']>('GET', '/api/v1/adapters', { query }),
+    getAdapter: (id: string) => call<Schemas['AdapterInstance']>('GET', `/api/v1/adapters/${id}`),
     probeAdapter: (adapterKey: string, idempotencyKey = key()) =>
       call<Schemas['AdapterInstance']>('POST', `/api/v1/adapters/${adapterKey}/probe`, { idempotencyKey }),
     adapterCapabilities: (id: string, query?: operations['listAdapterCapabilities']['parameters']['query']) =>
@@ -89,6 +91,7 @@ export function createCoreClient(cfg: CoreClientConfig = {}) {
 
     listSessions: (query?: operations['listSessions']['parameters']['query']) =>
       call<Schemas['SessionList']>('GET', '/api/v1/sessions', { query }),
+    getSession: (id: string) => call<Schemas['Session']>('GET', `/api/v1/sessions/${id}`),
     /** §2.1 + T-30：免 Principal（不改业务状态），但仍必须带 Bearer */
     wsTicket: () => call<Schemas['WsTicket']>('POST', '/api/v1/ws-ticket', { noPrincipal: true }),
 

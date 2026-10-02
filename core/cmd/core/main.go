@@ -35,6 +35,7 @@ import (
 	"github.com/SadCat18/lucero/core/internal/eventjournal"
 	"github.com/SadCat18/lucero/core/internal/execution"
 	"github.com/SadCat18/lucero/core/internal/notification"
+	"github.com/SadCat18/lucero/core/internal/permission"
 	"github.com/SadCat18/lucero/core/internal/platform/db"
 	"github.com/SadCat18/lucero/core/internal/project"
 	"github.com/SadCat18/lucero/core/internal/session"
@@ -228,6 +229,18 @@ func boot(ctx context.Context, cfg config) (*Core, error) {
 	core.probe = probe
 	core.discover = discover
 	core.turns = turns
+	// 审批门那三件输入（T-442 ②，`approvalgate.go`）：§6 第七条通知 `approval/request` 到了泵上
+	// 要**同时**叫 `permission.Engine.Decide` 与 `approval.Service.Request`，而那两个包互不 import（C14）
+	// ⇒ 牵线只能住在装配层。时钟用 boot 那一份 `nowMillis`（要的是"15 分钟后的那个绝对毫秒数"，
+	// 不是"活多久"，所以不需要可推进的钟）；读面用 `execution.NewRepository(d.Read)`，
+	// 与 transport 那几个读注入同一个类型，不另开第二份查询。
+	// `nil` 那一格不是防御：`newAdapterServices` 在一个 `-adapter` 都没配时真的返回 nil 泵，
+	// 而没泵的 Core 也没有入站通知可门 —— 那时这一腿留空，`gateApproval` 的第一格会喊出来。
+	if core.turns != nil {
+		core.turns.enableApprovalGate(
+			permission.New(permission.NewSQLiteSource(d), nowMillis), core.approvalSvc,
+			execution.NewRepository(d.Read), nowMillis)
+	}
 	// 连接半边：send 的 start_now/guide 走这里；nil 时那两态 501 ErrTurnNotWired，queue 照常。
 	// 可以晚于 EnableSend —— 两格独立，NewService 签名不变。
 	// 「Ⅰ」之后这条腿还带一个副作用：它起的连接是**常驻**的，收尾帧由 `core.turns` 那条泵收，

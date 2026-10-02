@@ -115,6 +115,47 @@ function describeFailure(err: unknown): string {
   return String(err);
 }
 
+/**
+ * 详情格（F-8 批准的那五个 by-id 读口）。这里只有"读谁"，没有任何本地拼装或状态机 ——
+ * 契约① §7 要的是"面板纯 REST/WS 驱动"，所以一行详情必须能指到一次具体的 GET。
+ */
+export const DETAIL_READS = {
+  project: { endpoint: 'GET /api/v1/projects/{id}', read: (id: string) => core.getProject(id) },
+  session: { endpoint: 'GET /api/v1/sessions/{id}', read: (id: string) => core.getSession(id) },
+  task: { endpoint: 'GET /api/v1/tasks/{id}', read: (id: string) => core.getTask(id) },
+  execution: { endpoint: 'GET /api/v1/executions/{id}', read: (id: string) => core.getExecution(id) },
+  approval: { endpoint: 'GET /api/v1/approvals/{id}', read: (id: string) => core.getApproval(id) },
+} as const;
+export type DetailKind = keyof typeof DETAIL_READS;
+
+export const detail = reactive({
+  kind: '' as DetailKind | '',
+  id: '',
+  endpoint: '',
+  row: null as Record<string, unknown> | null,
+  error: '',
+  loading: false,
+});
+
+/** 一次 by-id 读。读不到就明写读不到：`row` 留 null、原因进 `error`，不许拿空对象冒充有值（§12） */
+export async function openDetail(kind: DetailKind, id: string): Promise<Record<string, unknown> | null> {
+  const spec = DETAIL_READS[kind];
+  detail.kind = kind;
+  detail.id = id;
+  detail.endpoint = spec.endpoint;
+  detail.loading = true;
+  try {
+    detail.row = await spec.read(id) as unknown as Record<string, unknown>;
+    detail.error = '';
+  } catch (err) {
+    detail.row = null;
+    detail.error = describeFailure(err);
+  } finally {
+    detail.loading = false;
+  }
+  return detail.row;
+}
+
 export async function refresh() {
   const [health, adapters, tasks, sessions, approvals,notifications, quota] = await Promise.allSettled([
     core.health(), core.listAdapters({ limit: 20 }), core.listTasks({ limit: 50 }),
@@ -234,7 +275,10 @@ export async function runChain() {
       () => core.listApprovals({ state: 'PENDING' }));
     const pending = approvals?.items.find((a) => a.execution_id === execution.id) ?? approvals?.items[0];
     if (!pending) {
-      chain.calls.push({ step: 'approval', method: 'GET /approvals', outcome: 'blocked', detail: 'FakeAdapter 未产生待决审批' });
+      // 只说观察到的事：这一格服务端是 200 空清单（09-27 起的实测），**不能断"是谁没干活"**——
+      // 缺的是 core 里"把权限决策变成一行审批"那条腿（本轮实测：`approval.Service.Request` 非测试调用点 0）。归因写在台账里，不写在面板上。
+      chain.calls.push({ step: 'approval', method: 'GET /approvals', outcome: 'blocked',
+        detail: approvals ? '审批列表 200 但 0 行待审 ⇒ 面板没有 id 可发 :resolve' : '审批列表这一发没成功（原因见上一条 call 记录）' });
       return;
     }
     await call('approval', `GET /executions/${execution.id}`,

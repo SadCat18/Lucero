@@ -149,6 +149,11 @@ type turnHub struct {
 	// provider id 记在这里：契约② §6 规则 3 要它挂在 `turn/claimed` 那一刻，泵是全仓唯一看见那一帧的地方。
 	flightsMu sync.Mutex
 	flights   map[string]flight
+
+	// gate 是审批门那三件外部输入的容器（T-442 ②，`approvalgate.go`）。nil = 没装配，
+	// 那时 `approval/request` 只喊不写 —— 装配位由 `enableApprovalGate` 单独开，
+	// 不动 newTurnHub 那条已经在六处散开的签名（加一个参数就要改六处，而这一腿只要三件输入）。
+	gate *approvalGate
 }
 
 // flight 一条在飞执行的观察：挂在哪个 key 上 + claimed 带回来的 Provider 把手（没有则空串，不猜）。
@@ -721,6 +726,13 @@ func (h *turnHub) handle(key string, gen uint, msg process.Inbound) {
 	if msg.Err == nil && msg.Frame != nil && msg.Frame.Method == adapter.MethodTurnClaimed && msg.ExecutionID != "" {
 		h.noteClaim(msg.ExecutionID, msg.Frame.ProviderExecutionID)
 		h.recordClaim(key, gen, msg.ExecutionID, msg.Frame.ProviderExecutionID)
+	}
+	// `approval/request` 是 §6 的**第七条** A→C 通知（Provider 真要动一个高危动作之前先问 Core）。
+	// 它在攒批与 claimed 之后、收尾判定之前：批次边界已经走上面那一段落好了（这一帧也算边界），
+	// 而这一腿**不推终态、不产收尾**，所以它绝不能被 `finishOf` 那一段读成"这一轮结束了"——
+	// 协议那句"它不改变 §6 规则 6 的收尾语义，一轮的终态仍只由 `turn/finished` 说"就是钉在这里的。
+	if msg.Err == nil && msg.Frame != nil && msg.Frame.Method == adapter.MethodApprovalRequest && msg.ExecutionID != "" {
+		h.gateApproval(key, gen, msg.ExecutionID, msg.Frame)
 	}
 	fin, ok := finishOf(msg)
 	if !ok {

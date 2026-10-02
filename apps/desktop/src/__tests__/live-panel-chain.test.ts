@@ -14,7 +14,8 @@
 import { describe, expect, beforeAll, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createCoreClient } from '@lucero/api-client/client';
-import { CHAIN, chain, connectEvents, data, link, refresh, runChain, stepDone } from '../stores/panel';
+import { CHAIN, chain, connectEvents, data, detail, link, openDetail, refresh, runChain, stepDone } from '../stores/panel';
+import type { DetailKind } from '../stores/panel';
 
 const origin = process.env.LUCERO_PANEL_ORIGIN ?? '';
 const endpointFile = process.env.LUCERO_CORE_ENDPOINT_FILE ?? '';
@@ -27,6 +28,8 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 describe.skipIf(!live)('面板 store 真后台：runChain() 连真 Core + 真 WS，数字与响应同源对拍', () => {
   /** 独立见证：直连 Core，不经过面板用的那个反代 */
   let direct: ReturnType<typeof createCoreClient>;
+  /** F-18 实证用的账本：面板每一发 fetch 有没有自己带 Authorization（只记布尔，凭据值一律不落这里） */
+  const sent: Array<{ path: string; hasAuth: boolean }> = [];
 
   // 端点解析、建客户端、补 location/fetch 全在 beforeAll：skip 的套件 vitest 仍会执行 describe 体，
   // 放在这里离线闸门就会拿 ENOENT 报红（10-01 12:5x 那轮 vitest/f204 两条腿就是这么红的）。
@@ -37,14 +40,26 @@ describe.skipIf(!live)('面板 store 真后台：runChain() 连真 Core + 真 WS
       extraHeaders: { authorization: `Bearer ${conf.token}`, 'x-lucero-principal': 'local-user' },
     });
 
-    // 浏览器白送的那一步：相对 → 绝对，原样转发给真 fetch（不看、不改响应）
+    // 浏览器白送的那一步：相对 → 绝对，原样转发给真 fetch（不看、不改响应）。
+    // **只登记相对 URL 那一支**＝面板自己发的；独立见证人走的是绝对 URL（它按契约带 Bearer），
+    // 混进来记就会把见证人的口令算成面板的（23:4x 第一版就这么假红过一次）。
     const realFetch = globalThis.fetch;
     (globalThis as { location?: unknown }).location = { origin, href: `${origin}/` };
-    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-      (typeof input === 'string' && input.startsWith('/'))
-        ? realFetch(origin + input, init)
-        : realFetch(input as string | URL, init)) as typeof fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/')) {
+        sent.push({ path: url, hasAuth: new Headers(init?.headers ?? {}).get('authorization') !== null });
+        return realFetch(origin + url, init);
+      }
+      return realFetch(input as string | URL, init);
+    }) as typeof fetch;
   });
+
+  /** 链上真实产生的 execution id：只从真 WS 帧里取（不自己造 id） */
+  function executionId(): string {
+    const f = data.events.find((e) => e.event_type === 'execution_created');
+    return f ? f.aggregate_id : '';
+  }
 
   async function waitLive(ms: number) {
     const until = Date.now() + ms;
@@ -212,6 +227,38 @@ describe.skipIf(!live)('面板 store 真后台：runChain() 连真 Core + 真 WS
     console.log(`  第 9 格（面板侧）同源通过：/output → 200、响应 ${rows.length} 块、面板 ${data.output.length} 块、`
       + `next_cursor="${srv.next_cursor}"、逐块 channel/content 等值`);
   }, 60_000);
+
+  it('详情格（T-433 ⑥）：面板那一行详情 = 一次真 by-id GET，与直连响应整对象相等；读不到就留 null + 原因', async () => {
+    const cases: Array<[DetailKind, string, () => Promise<unknown>]> = [
+      ['task', data.tasks[0]?.id ?? '', () => direct.getTask(data.tasks[0]!.id)],
+      ['session', data.sessions[0]?.id ?? '', () => direct.getSession(data.sessions[0]!.id)],
+      ['execution', executionId(), () => direct.getExecution(executionId())],
+    ];
+    for (const [kind, id, readDirect] of cases) {
+      if (!id) { console.log(`  详情格 ${kind}：没有可用的行 ⇒ 这一格没跑，不算绿`); continue; }
+      const srv = await readDirect();
+      const row = await openDetail(kind, id);
+      expect(row, `面板 ${kind} 详情没读到东西（error=${detail.error}）`).not.toBeNull();
+      expect(row, `${kind} 详情与直连 by-id 响应不是同一个对象内容`).toStrictEqual(srv);
+      expect(detail.endpoint, `${kind} 详情没记下它读的是哪个端点`).toContain(`/api/v1/${kind}s/`);
+      console.log(`  详情格 ${kind} 同源通过：${detail.endpoint} · ${Object.keys(row ?? {}).length} 个键整对象相等`);
+    }
+    // 读不到那一支：不存在的 id ⇒ row 必须留 null、原因必须非空（§12：不许拿空对象或 0 冒充有值）
+    const gone = await openDetail('approval', '01h00000-0000-7000-8000-000000000000');
+    expect(gone, '不存在的审批 id 竟然读出了行 = 掺假').toBeNull();
+    expect(detail.error.length, '读失败却没留下任何原因').toBeGreaterThan(0);
+    console.log(`  详情格读不到那一支：error=「${detail.error}」、row=null`);
+  }, 90_000);
+
+  it('F-18 实证（T-433 ⑤）：面板每一发 REST 都不自带 Authorization，口令只在反代进程里；换票那一发也确实发过', () => {
+    expect(sent.length, '一条请求都没记录到 ⇒ 这一格没跑，不算绿').toBeGreaterThan(0);
+    const withAuth = sent.filter((s) => s.hasAuth).map((s) => s.path);
+    expect(withAuth, `面板自己发出了 Authorization：${withAuth.join(' ,')}`).toHaveLength(0);
+    const ticket = sent.filter((s) => s.path.includes('ws-ticket')).length;
+    expect(ticket, '没走过 §2.1 换票 ⇒ WS 那条不能算真链路').toBeGreaterThan(0);
+    console.log(`  F-18：面板共发 ${sent.length} 发（含 ws-ticket ${ticket} 发），自带 Authorization 的 = 0；`
+      + `链路状态=${link.state}（口令值不在本文件、不在产物、只在反代进程环境）`);
+  });
 
   it('store 自身不掺假：seen 与时间线是同一批真帧（不多不少），点亮格只看事件', () => {
     const fromFrames: Set<string> = new Set(data.events.map((e) => e.event_type));

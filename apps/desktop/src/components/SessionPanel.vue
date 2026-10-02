@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { data } from '../stores/panel';
+import { data, openDetail } from '../stores/panel';
 import { statusText, when } from '@lucero/api-client/unknown';
 </script>
 
@@ -8,7 +8,7 @@ import { statusText, when } from '@lucero/api-client/unknown';
     <h2>会话 <code>GET /sessions</code></h2>
     <p v-if="!data.sessions.length" class="dim">未知 —— 列表为空或未连通。</p>
     <table v-else>
-      <thead><tr><th>title</th><th>managed</th><th>sync_state</th><th>confidence</th><th>cursor</th><th>最后同步</th></tr></thead>
+      <thead><tr><th>title</th><th>managed</th><th>sync_state</th><th>confidence</th><th>cursor</th><th>最后同步</th><th></th></tr></thead>
       <tbody>
         <tr v-for="s in data.sessions" :key="s.id">
           <td>{{ s.title ?? '—' }}</td>
@@ -17,6 +17,7 @@ import { statusText, when } from '@lucero/api-client/unknown';
           <td>{{ statusText(s.state_confidence) }}</td>
           <td><code>{{ s.sync_cursor ?? '—' }}</code></td>
           <td>{{ when(s.last_synced_at) }}</td>
+          <td><button @click="openDetail('session', s.id)">详情</button></td>
         </tr>
       </tbody>
     </table>

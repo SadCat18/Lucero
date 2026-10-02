@@ -197,6 +197,16 @@ func (s *Service) Started(ctx context.Context, tx *db.Tx, id string, cmd Command
 	return s.advance(ctx, tx, id, Running, cmd)
 }
 
+// BlockForApproval 是 RUNNING→WAITING_APPROVAL：这一次动作要人来批，执行停在门上。
+//
+// 谁调它：`cmd/core/approvalgate.go`（§6 第七条通知 `approval/request` 的落点）。**调用点在产品码里，
+// 不是只给测试的口子**——这条边在 REQ-APR-1 之前连名字都没有（`EventOf` 给它的是空串，
+// 于是"无事件的状态边落不了库"把它堵成写不通；T-442 ① 补的就是那个名字）。
+// payload 走 `cmd.ApprovalRequested` 那四键，缺 `approval_id`/`action` 会被 `eventPayload` 整笔拒掉。
+func (s *Service) BlockForApproval(ctx context.Context, tx *db.Tx, id string, cmd Command) (Result, error) {
+	return s.advance(ctx, tx, id, WaitingApproval, cmd)
+}
+
 // advance 是所有推进共用的四步：库里读当前行 → If-Match → §5.2 裁决 → 事件类型由 EventOf 决定 → Touch。
 // 任何一步不过就一行都不写。
 func (s *Service) advance(ctx context.Context, tx *db.Tx, id string, to State, cmd Command) (Result, error) {

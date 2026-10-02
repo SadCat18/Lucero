@@ -8,6 +8,7 @@ import QuotaPanel from './components/QuotaPanel.vue';
 import TaskPanel from './components/TaskPanel.vue';
 import SessionPanel from './components/SessionPanel.vue';
 import OutputPanel from './components/OutputPanel.vue';
+import DetailPanel from './components/DetailPanel.vue';
 import { connectEvents, refresh, stream } from './stores/panel';
 
 onMounted(() => {
@@ -27,6 +28,7 @@ onUnmounted(() => stream.value?.close());
       <ApprovalPanel />
       <QuotaPanel />
       <OutputPanel />
+      <DetailPanel />
       <EventTimeline />
     </div>
   </main>

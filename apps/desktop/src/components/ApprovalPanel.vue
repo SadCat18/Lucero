@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { data, resolveApproval } from '../stores/panel';
+import { data, openDetail, resolveApproval } from '../stores/panel';
 import { statusText, when } from '@lucero/api-client/unknown';
 
 async function decide(id: string, state: 'APPROVED' | 'REJECTED') {
@@ -21,6 +21,7 @@ async function decide(id: string, state: 'APPROVED' | 'REJECTED') {
           <td>{{ when(a.requested_at) }}</td>
           <td>{{ when(a.expires_at) }}</td>
           <td class="row-actions">
+            <button @click="openDetail('approval', a.id)">详情</button>
             <button @click="decide(a.id, 'APPROVED')">批准</button>
             <button @click="decide(a.id, 'REJECTED')">拒绝</button>
           </td>

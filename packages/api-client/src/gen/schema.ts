@@ -1132,7 +1132,12 @@ export interface components {
             risk_level: components["schemas"]["RiskLevel"];
             state: components["schemas"]["ApprovalState"];
             request?: components["schemas"]["JsonMap"];
-            resolution?: components["schemas"]["JsonMap"];
+            resolution?: components["schemas"]["ApprovalResolution"];
+            /**
+             * @description 决议发出的临时授权句柄。transport 视图**只读地**从上面 resolution 的同一个 `grant_id` 键取出
+             *     （`core/api/http/approvals.go` 的 `resolutionGrantID`，T-440 边界①：不写 SQL、不碰 `temporary_grants` —— 那张表归 audit）。
+             *     没决议过的行这里就是 null；面板不许把 null 折成空串。
+             */
             grant_id?: string | null;
             requested_at: components["schemas"]["Timestamp"];
             expires_at?: components["schemas"]["NullableTimestamp"];
@@ -1140,6 +1145,33 @@ export interface components {
             resolved_by?: string | null;
             /** Format: int64 */
             version?: number;
+        };
+        /**
+         * @description `approvals.resolution_json` 那一列的形状。写它的是域层（`internal/approval/approval.go` 的
+         *     `resolutionRecord` —— 注释原文「MarkResolved marshals exactly this struct」），transport 只做原文透传。
+         *     **不写 required**：没决议过的行这一格是 `{}`（实测断言在 `api/http/approvals_list_test.go`：
+         *     「没写过的 resolution 该出 {}」），所以任何键都只能在出现时按下面的类型读，不能当"一定在"。
+         */
+        ApprovalResolution: {
+            /** @description 决议记录的版本号 —— 与事件信封里那个「schema 为 1」同族 */
+            schema?: number;
+            /** @description 决议后的状态原词（APPROVED、REJECTED 等），不由面板推断 */
+            state?: string;
+            resolved_by?: string;
+            note?: string;
+            grant_id?: string;
+            /**
+             * @description 写侧是 `*grantRecord json:"grant,omitempty"` ⇒ **存否**是真的可缺：没发授权时这个键根本不出现，
+             *     出现了就必须是下面那三键。面板读到 null 与读不到键要分两种说法，不许合并。
+             */
+            grant?: components["schemas"]["ApprovalGrant"] | null;
+        };
+        /** @description 决议记录里那份授权描述（域层 grantRecord），不是 audit 的 temporary_grants 行 —— 面板只展示，不据此推断权限 */
+        ApprovalGrant: {
+            scope_type: string;
+            scope_id: string;
+            /** Format: int64 */
+            duration_ms: number;
         };
         ResolveApprovalRequest: {
             /** @enum {string} */
