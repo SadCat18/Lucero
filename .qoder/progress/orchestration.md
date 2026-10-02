@@ -3,7 +3,7 @@ TASK_ID: orchestrator
 STATUS: in_progress
 SCOPE: Lucero 多会话编排的唯一对外接口：派活、验收、记账、升级红线；不亲自写业务代码
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-10-02T15:31:28+08:00   <- 10-02 第一百八十批：巡检从昨夜 18:52 卡在 running 态（nextRunAt 已过 3.4h 未兑现）⇒ 四格待投压了两小时半；我已逐封直投（adapter/backend/frontend/test 四封全部 messageSent、四会话 opening）；重启巡检已记 NEEDS YOU 等用户点头
+LAST_UPDATED: 2026-10-02T15:39:39+08:00   <- 10-02 第一百八十一批：用户「全准」⇒ 8 笔已推 origin/main（独立 ls-remote 复验 = fee2ed5、ahead=0）；巡检已按批准 disable→改 prompt→enable 重启（每 30 分钟那句旧措辞按现读更正、新增第 0 步先清待投 + 自观察 runningAt 未清就上报），并手动触发一轮（run id 3cc5f20、status pending）；**卡住的 runningAt 字段仍在（工具无此参数，清不了）⇒ 我只报已排班，不报它活了**
 ⚠ 本行第一次落笔时那个提交号**被我自己吃掉了**：我把 `3ff8271` 用反引号包在 **bash 双引号的 python -c 字符串**里 ⇒ bash 把反引号当命令替换执行（真报错原文就是 `line 11: 3ff8271: command not found`、写进文件就成了空）。**同一条坑我今天踩的是第二次、形式不同**：上次是 `&&` 后接 `grep -c` 命中 0 截断链，这次是双引号里的反引号被执行。**规矩收紧：命令行里凡要写反引号，一律单引号包整段、或改叫 `git show --oneline -1` 现取；写完之后必须把那一行整行读回来**（本行就是这么发现少了一串哈希的）。
 
 ## Objective
