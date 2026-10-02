@@ -678,3 +678,30 @@ grep -rhoE 'writeError\(w, http\.Status[A-Za-z]+, "[a-z_]+"' core/api/http/*.go 
 
 不是写真 Adapter，而是：**用本协议的 contract test 跑通 FakeAdapter 全 11 个方法 + 4 种故障注入**，
 再交回主控。真 Adapter（Codex）的派发等 Wave-2 垂直链闭合之后。
+
+## 16. OpenCode 形态适配（REQ-OC-1..5，10-02 立项；依据＝`docs/adapters/phase0/opencode-integration-profile.md`，被调查版本 1.18.32）
+
+**这一节的性质**：它是**按 Provider 的真实形态修改我们的接法**，不是放宽协议。
+**五条与"服务从哪来"（下面那条分叉）无关**——无论走 (a)(b)(c) 哪一条，这五条今天就要落地；
+唯一依赖分叉的是"能不能实测 SSE 帧密度与审批载荷"，那一格我明写成未决，**不许用设计把它当已证填掉**。
+
+1. **REQ-OC-1 工具名 → 内置分类的映射表登记位（新增，不改枚举）**：
+   OpenCode 的小写 `bash`／`edit`／`write` 与别家的首字母大写 `Bash`／`Edit`／`Write` 形态不同（档案 §③ 实测工具名分布：`read 1202 / bash 1157 / grep 577 / edit 481 / glob 92 / write 39 / todowrite 19 / task 17 / question 4`）。
+   **裁定**：映射表住在**适配器侧**（每家一份，`core/cmd/<provider>-adapter/`），键=Provider 工具名字面量、值=契约① §3.1 那张内置分类表里的 action 串。
+   **两条禁令**：① **不许为此扩 `permission` 的内置枚举**——扩枚举等于把"不认识就失败关闭成要审批"那条默认（§3.1 第 2 行）从后门绕掉；
+   ② 表里**没有**的工具名 ⇒ 一律走"未登记 ⇒ `REQUIRE_APPROVAL` + `DEFAULT_UNKNOWN_RISK`"，**适配器不许自己判成"低风险"**。
+2. **REQ-OC-2 delta 是 Adapter 合成的，不是 Provider 白送的**：档案 §② 判决＝在我们能读到的那一层**伪流式**（一路 text 最多 2 个快照、`reasoning` 全部恰好 2 帧、载荷**无** delta/increment/chunk/append 语义字段；多帧只出现在 `tool`，因为那是状态机）。
+   **裁定**：适配器做**相邻快照 diff** 合成 `stream/delta`，并**自己维护每 turn 单调的 `sequence_no`**。
+   **不许沿用 Provider 的 `seq`**：它是**聚合内**单调号，跨聚合会重号，而我们的幂等键是 `(turn_ref, sequence_no)`（§6 规则 2/5）——直接塞它的 `seq` 会把两个不同对象的帧撞成同一把键。
+   **`after_seq` 补拉的口径写死**：断线重连后按我们的 `sequence_no` 补，**补回的是快照序列、补不回缺失的中间态**——这是**已知限制**，不是丢帧 bug，面板与测试都不许把它读成"Core 丢了内容"。
+3. **REQ-OC-3 收尾帧是合成的，`result_code` 映射要带着这条意识**：OpenCode 的持久事件词表只有 4 类（`message.part.updated.1`／`message.updated.1`／`session.updated.1`／`session.created.1`），**没有任何"一轮结束"类型** ⇒ 适配器只能靠"末条 message 的 parts 全终态"合成 `turn/finished`。
+   映射：`completed→SUCCEEDED`、`error→FAILED`、我方取消→`CANCELLED`。
+   **硬提醒（写进实现与用例）**：合成出来的收尾**不是 Provider 的断言**，§6 规则 6① 那句"收到 `turn/finished` ≠ 成功"在这里**更容易被误读成"对方说成功了"**。
+   连带：`turn/claimed`／`turn/dispatched` 在 OpenCode 上**没有对应物**，两帧只能由适配器自造时间戳与自号 ⇒ **§4.2 那两格取证信号别拿 OpenCode 验收**（那等于测我们自己的钟），换一家或换判据再说。
+4. **REQ-OC-4 额度的 0 与 NULL 落地方式（§7 的直接实例，这次有真数据了）**：档案 §④ 量到 `session` 24 行里 `cost=0` **15** 行、`cost>0` 9 行、`NULL` 0 行；`message` 2179 行里 `cost=0` **1600** 行、`NULL` **116** 行 ⇒ **0 与 NULL 在 OpenCode 自己的数据里同时存在，且 0 是多数**。
+   裁定（适配器观测的形状）：`cost>0` ⇒ `OBSERVED` + `confidence=HIGH`；`cost=0` ⇒ `OBSERVED` + **`confidence=LOW`**（分不清真实 0 价与未上报，**既不读成"用完了"也不读成"免费"**）；`cost IS NULL` ⇒ **不产出该条观测**（不是产出 0）；
+   账户级额度今天读不到 ⇒ `reset_at`／`window_start`／`window_end` 一律 `null` + **`overall_confidence: UNKNOWN`**。这是今天的诚实默认。
+5. **REQ-OC-5 版本分派与中断**：档案 §④ 证实 1.18.32 仍**两代命名并存**（`/abort` 5 处、`/interrupt` 11 处，`/session/{id}/abort` 与 `/api/session/{id}/interrupt` 同时存在，另有 `/revert` 一族）。
+   裁定：**路径按版本分派**，写进 §13 那族版本契约测试的形状里（一家一份映射，别在业务层判版本）；
+   **中断能力今天维持"路由存在、行为未验证"**——**不许写成可用**（§④ 明写未调用，因为 401）。
+6. **一条未决，我不替它填**：审批（`/permission/*`）**与提问（`/question/*`）在 OpenCode 是两套对象**，`permission` 表结构里字段名 `action`/`resource` 与我们天然对得上，但**本机该表 0 行**（1.18.14 也是 0 行）⇒ **`action` 的取值集合今天拿不到**；且审批**不落 journal** ⇒ **不能假设可以从 Provider 侧回捞历史审批**（可追溯性只能靠我们自己的 `approval` 聚合，事件目录已有 `approval_requested`）。
