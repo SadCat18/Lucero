@@ -1,9 +1,9 @@
 OWNER_ROLE: audit
 TASK_ID: audit-permission
-STATUS: idle（09-27 15:01 起：无自主待办；T-372 已答"排在 Wave-2 之后"，两条真触发条件见 Current checkpoint）
+STATUS: idle（09-27 15:01 起：无自主待办；T-372 列表、T-427 by-id、T-438 两腿均已交付（10-01 第 29/30 轮），两条真触发条件见 Current checkpoint）
 SCOPE: 权限判定、Approval 聚合与裁决、Temporary Grant、Audit 哈希链与敏感规则集、§9 绕审批门禁；不实现脱敏执行点，approvals/temporary_grants 的 SQL 只准出现在 internal/approval
 EVIDENCE_DIR: .qoder/evidence/audit/
-LAST_UPDATED: 2026-09-30T15:03+08:00（T-372 交付轮；时钟跨会话不稳见第 126 条，判据一律挂命令与输出）
+LAST_UPDATED: 2026-10-01T16:45+08:00（T-438 两腿已交付并自证：第 30 轮 153~160 条 + REQ-A16；时钟跨会话不稳见第 126 条）
   〔本机时钟跨会话不稳，见第 126 条；判据一律挂命令与输出〕
 
 ## Objective
@@ -54,27 +54,37 @@ LAST_UPDATED: 2026-09-30T15:03+08:00（T-372 交付轮；时钟跨会话不稳�
 ## Current checkpoint
 
 - Stage: B1 已解除并完成落库层；`approvals`/`temporary_grants`/`audit_entries` 真库链路打通；
-  **T-372 只读列表已交付（09-30 第 27 轮），T-390/W2-9 那格已闭（09-28 第 132 条）**
-- Last verified action: **09-30 15:03:03 逐包单独取数（交付前最后一次重跑；14:54:29 同数，被本次取代）** → audit **82** / permission **54** / approval **96**，三包 FAIL 0 / SKIP 0；
-  14:53:57 `bash scripts/build_stamp.sh` 指纹 **66b83f7898d6a78c898e125750901388**（HEAD=264d562，编译输入 2372，包=[./cmd/core ./test]）；
-  14:54:49 全仓 = 17 包 ok + `cmd/fake-adapter` 2 条红（mtime 09-30 14:54，adapter 在途，第 138 条）
+  **T-372 只读列表（09-30 第 27 轮）、T-427 by-id 读（10-01 第 29 轮）、T-438 两腿（10-01 第 30 轮：① `permission.RiskLevel` 出口 ② `ErrConflictingResolution` + 两层内容比较）均已交付并自证；
+  三包 82/58/113 全绿、本轮七枚变异全 FIRED；`:resolve` 剩下的仍在别人手上（backend 的 409 那一支、主控落 §3/§4）**
+- Last verified action: **10-01 16:42:01/03/06 逐包单独 `-count=1 -v`（交付前最后一次重跑）** → audit **82** / permission **58** / approval **113**，FAIL 0 / SKIP 0；
+  同轮各单独 `-count=3 -v`（16:42:20/22/26）= **246 / 174 / 339**，FAIL 0 / SKIP 0（正好 = ×3，两把计数面互相咬合）；
+  增量对得上：permission 54→58 = 本轮 4 条新用例，approval 101→113 = 5 条（表驱动那条含 7 子腿）；
+  16:42:43 → 16:43:06 全仓 `go test ./... -count=1` = **17 包 ok + 唯一红 `core/test` `TestWiringSurfaceHasCallSites`（4 红 1 绿，与巡检 16:23 同一读数，见第 156 条）**；
+  16:43:56 `bash scripts/build_stamp.sh` 指纹 **a9b0b53726562ec74b4afcd791f13b58**（HEAD=`9f8c5d9`，编译输入 2396，工作树未提交 28 处）；
+  16:43:50 三包 `go vet` exit=0；`grep -rn "MUTATION\|T438"` 三包 = 0；七枚变异跑完 `cmp` 证与备份逐字节相同、`.orig` 已按名删除（`.scratch/audit/*.orig` 现数 = 0）；
+  16:45:59 触发条件②复量：`Scrub:`/`ScrubHits`/`redactionHits`/`Scrub func(` 各 =1，`internal/audit/append.go` mtime 仍 09-21 15:12 ⇒ M8/M9 不必重放。
   ⇒ 我**不写"全仓 18/18"**，那只到我三个包 + 上面那棵树为止。
-  〔09-28 那次读数（三包 216 PASS、全仓 18 ok、vet 净）已被本轮**取代**，原文仍留在第 26 轮与 Verification evidence 里，不删。〕
+  〔14:16 那一档（82/54/101、全仓 17 ok + `TestEventProducerRosterMatchesDerivedSet` 红、指纹 `f265df86…`）已被本轮**取代**，原文留在第 29 轮，不删。〕
   ⚠ 本机时钟跨会话不稳（第 126 条），时刻只当读数，判据一律挂命令与输出。
-- Status: **T-372 已交付（09-30 14:56，第 27 轮 133~139 条）**。三包 82/54/96 全绿；
-  路由与 handler 仍归 backend（我没有注任何路由）；本轮新报 **REQ-A14**（`SweepExpired` 生产里无人调用）
-- Next action（两条真触发条件）：
-  ① **主控裁 REQ-A14**（谁在什么时机清扫过期审批）⇒ 我把"边界同步"那条用例改成真调度下的断言，并闭合这一格；
-  ② **谁改 `Chain`/`Scrub`/`redactionHits` 任一侧** ⇒ 我重放 M8/M9（09-30 14:53 复量：`ade8085..HEAD` 无人动我包）。
-  触发条件之外我不新增工作；`backend` 接 handler 时**不需要我再改任何东西**，形状就是 `Service.ListPage`。
+- Status: **T-438 两腿已交付（第 30 轮 153~160 条）**；T-427 by-id 读已交付（第 29 轮）；T-372 已入册（`0dceb09`）；T-425 三行在第 28 轮、`Resolve` 实际校验的三行在第 151 条。
+  本轮新开出 **REQ-A16**（三格口径：低/中是否分家、"同内容"的定义、已决行先拒谁），REQ-A15 那四格仍未裁。
+  交给别人两件、我不代做：backend 的 `writeResolveError` 需要 409 那一支（名字已给）；面板 `resolution` 字段多一个 `grant` 键（§4 的笔）。
+  REQ-A14 仍归位在"并入 T-372 剩余接线、派 backend"
+- Next action（两条真触发条件，之外我不新增工作）：
+  ① **主控落 §3/§4 那笔**——现在是 REQ-A15 的四格（谁能决议、`By` 的来源、两套身份、重复决议可观察形状）
+  加 REQ-A16 的三格（低/中是否分家、`Resolve` 的"同内容"定义、已决行先拒谁）。裁定后我这半的动作量各是"补一条断言或用例"。
+  backend 那两支（`RiskLevel` 接进 `Draft`、409 那一支）**不需要我再改任何东西**：出口与名字都已经在盘上，形状就是
+  `permission.RiskLevel(action)` 与 `errors.Is(err, approval.ErrConflictingResolution)`。
+  ② **谁改 `Chain`/`Scrub`/`redactionHits` 任一侧** ⇒ 我重放 M8/M9（10-01 16:45:59 复量：四处关键行各 =1、`audit/append.go` mtime 仍 09-21 15:12 ⇒ 未到）。
 - 备注（避免下轮把这些又当待办）：**签名已裁不做**（ADR-018 `accepted 2026-09-20`，见第 24 轮 122~123 条），
   `execution_started` 先于审批那一问**未实测、归编排决定**（第 128 条），锚点三处时机与推进腿已在册（第 92~94 条），
   T-23 第 1 条驳回的"替 backend 预置骨架"仍已撤回、接口形状都在 Coordination 里。
-- Verification: 13:16:25 实跑 `go test -count=1 ./internal/{audit,permission,approval}/...` = 3 包 ok，
-  173 PASS / 0 FAIL；全仓 17 包 0 FAIL；`grep -rn MUTATION` → 0
-  （18:19:50 = 162 PASS / 0 FAIL；18:21:08 复核仍绿），全仓 13 包 0 FAIL
-  〔**本行是 09-20 13:16 那一档的历史读数，不是 09-27 也不是 09-28**；09-28 当天的读数在上面
-  Last verified action 与第 132 条 / Verification evidence 第 21 条（216 = 93 顶层 + 123 子，0 FAIL / 0 SKIP）。〕
+- Verification: **本轮（第 30 轮）的交付证据 = 上面 Last verified action 全文 + 第 156/157 条**：
+  `-count=1 -v` 逐包 82/58/113、`-count=3 -v` 246/174/339（FAIL 0 / SKIP 0）；新用例逐条点名 =
+  permission 4 条（`TestRiskLevelAndTheChainsLastRungAgree`/`...PatternsAreTheOnesTheListsDeclare`/`TestRiskLevelAnswersAreLegalWhereTheyLand`/`TestDraftRiskLevelComesFromThisDoorOnly`）
+  + approval 5 条（`TestResolveReplayAndConflictAreDifferentAnswers` 含 7 子腿、`TestResolveChecksTheBodyBeforeTheRow`、`TestStoreNamesTheLoserOfARace`、`TestRealStoreConflictAndReplay`、`TestSweptRowRejectsALateApproval`）；
+  七枚变异 M-N1/N2/N3/O/P/Q/R 全 FIRED 并打印目标行原文（M-O 就是"摘掉名字"那一枚）。
+  〔第 29 轮那一档（82/54/101、15 行 `-run TestGetByIDThreeAnswers`、M-E/M-G/M-H）与更早两档（09-20 173 PASS、09-27/28 162/216 PASS）都是**历史读数**，原文留在各自轮次里，不删。〕
 
 ## Completed
 
@@ -1066,6 +1076,224 @@ LAST_UPDATED: 2026-09-30T15:03+08:00（T-372 交付轮；时钟跨会话不稳�
 139. **另记**：主控说 W2-9 那栏不用我再补（我 09-28 18:14 的读数已随 `6bad4a0` 入册、且他本人重跑 audit=82 PASS）
     ⇒ 我照 T-390 划掉，不重复取证也不另立一格。
 
+### 第 28 轮（2026-10-01 13:23~13:26，接 T-425：面板链停在 approval 两格 501 ⇒ 先回三行，不写码）
+
+140. **先核触发条件与前提，两条都过**：① 我这三个包 13:24:26 重跑 `ok`（audit/permission/approval + `cmd/core` 全 `ok`），
+    T-425 引用的"三包 82/54/96、FAIL 0"仍然成立，而且 `0dceb09` 的 stat 证明**它入册的就是我 T-372 那四件**
+    （approval.go +74 / store_sqlite.go +84 / list_page_test.go 383 新建 / approval_test.go +13），没有别人伸进来；
+    ② 那三处关键行 `Scrub:`/`ScrubHits`/`redactionHits` 现读各 = 1、13:25:06 ⇒ 触发条件②未到、M8/M9 不必重放。
+    工作树里脏的 6 件全在 `core/internal/execution/*`（backend 正在写 T-424 的 `/output`），我一件没碰。
+141. **答①「v0.1 内我能交什么」**：
+    - **`GET /approvals/{id}`：我现在就能交，零前置。** backend 那句 501 理由是对的一半——
+      `Service` 面上确实没有 by-id；但**读法本身在包内已经存在**（`Store.Get` + `SQLiteStore.Get` 早已实现，
+      `ErrNotFound` 语义也有、`TestStoreGetMissing` 钉着）。缺的只是 `Service` 上那一枚转发 + "空 id 不查"这一条守卫，
+      约 8 行 + 1 条三侧用例。表权限、事件登记、装配缺口**都不缺**。
+    - **`POST /approvals/{id}:resolve`：我这半已经交完了，缺的不在我包里。**
+      `Service.Resolve` 是完整实现且被测过（幂等两击只 1 事件、6 路并发单次、grant 落库 + `grant_issued`、
+      审计行与链、`temporary_grants` 的写门 `grantWindow`）。剩下三件都不是我能落的：
+      handler 与请求解析（backend）、`Resolution.By`/`CorrelationID`/`CausationID` 从哪来（cmd/core 装配 + §4 口径）、
+      以及**契约空白**——我 grep 过：`specs/contracts-internal-v0.1.md` 里 `resolved_by`/"谁能批准"这类话 **0 命中**，
+      契约③ §3 只有那条 `POST ...:resolve` 的名字，没写授权语义与响应体。
+      另有一个要主控拍的细节：`Service.Resolve` 今天**丢掉** `Store.MarkResolved` 的 `applied`（幂等两击都回 nil），
+      所以 transport 分不出"这次改写了"与"早就定了"。要么契约明写"两者都回 200 且响应体一致"（我倾向这个，最省、
+      且与幂等键那套口径同源），要么我加一个返回值——**我不自选，这属于 §3/§4 的笔**。
+142. **答②「我要谁配合」**：by-id 那一枚**不需要任何人**（我交完，backend 照 `ApprovalLister` 同族再注一个方法就通）；
+  `:resolve` 需要 **backend 接 handler**（它接列表那次一天就通了）+ **主控落契约 §3/§4**（谁能决议、`By` 的来源、
+  重复决议的 HTTP 码、200 响应体形状、非法 `state`/未知 id 用 404 还是 400）；**不需要 db 开任何入口**
+  （写全走既有 `Tx.Create`/`Tx.Touch`，§2.2.1 的 `db.Scrub` 也已入册）。
+  顺带把我这条 REQ-A14 归位：`orchestration.md:233`/`:291` 已把 "`approval.NewService` + `SweepExpired` 接进 cmd/core"
+  列在 T-372 剩余的接线里、派给 backend ⇒ **REQ-A14 不必另裁，并入 T-372 那一格即可**，我在账上标"已有归属"。
+143. **答③「判据形状我提」**（按主控口径三件：带 `-v` 数、可能红的先落文件看尾巴、默认面与 FAKE_ADAPTER 面各 `-count=3`）：
+  - by-id：一条用例三个答案 —— 命中 ⇒ 逐字段等于当初写入的原值（含 `RequesterPrincipal()` 能解出 principal_id）；
+    未知 id ⇒ `errors.Is(err, ErrNotFound)` **且返回的是零值 `Approval`**（不许半填充冒充成功）；
+    空 id ⇒ 报错**且假 store 计数 = 0**（一行都不许多读）。判据增量 = `-run 'TestGetByID'` 那趟的 `--- PASS` 行数 +
+    三包总数变化，两面各 `-count=3` 报数。
+  - `:resolve`：**我不新增判据**（幂等/并发/grant/事件/链已有）；若主控要"区分首次与重复"，那就是一枚返回值 + 一条用例，
+    量级他定。
+  - **本轮按 T-425 的要求没写任何码**：只落账。开工等主控一句"交"。
+
+
+### 第 29 轮（2026-10-01 14:0x~14:12，接 T-427"交"：by-id 读落盘 + 交主控要的三行）
+
+144. **开工前复量（不采信上一段的记忆）**：`14:10:27 date` 同轮 `git log -1` = `eddf1dc90af5bee372c415ead53111b398e2e453`
+    （"第一百六十二批（补记）"，14:01:59）。工作树脏 **30 处**，其中属于我三个包的只有
+    `core/internal/approval/{approval.go,approval_test.go,list_page_test.go}` 三件（`git status --porcelain | grep -E "internal/(audit|permission|approval)/"` 的原文），
+    `internal/audit`/`internal/permission` **零脏件** ⇒ 没有别人的在制品混进我的包，可以动手。
+    本轮行数增量按 `git diff --numstat` 现读：approval.go `28/0`、approval_test.go `2/0`、list_page_test.go `119/0`
+    （注：`--numstat` 才是行数，`--stat` 每列是缩放数）。
+145. **交付形状（只我包内，零路由、零别人面包）**：
+    - `requireID(id string) error`（approval.go:454）：空 id ⇒ `approval: no approval id given`，**与 `ErrNotFound` 分开**，
+      因为 transport 要把"你没指名"与"没有这个东西"送进不同码，而分开靠的是错误本身、不是解析字符串。
+    - `Service.GetByID(ctx, id)`（:465）：先守卫、后 `s.store.Get`，不新增任何判定——
+      "PENDING 还算不算待决"仍是 `Live`/`DeadlinePassed` 的答案，避免 REQ-A8 那味复发。
+    - `Service.Resolve` 顶部同一枚守卫（:283），**先查再取 store**，所以"空 id"不可能被回成"未知 id"。
+      动手前 grep 过：改动之前没有任何用例在断"空 id 的行为"，所以这不是把别人的期望改掉。
+    - `fakeStore.getRuns` 计数器（approval_test.go）：让"一次都不许多读"成为可断言的事实而不是注释。
+    - `TestGetByIDThreeAnswers` 四腿（list_page_test.go）：空 id（报错 + 零值 + `getRuns==0`，**并配一条对照腿断 `getRuns==1`**，
+      否则"计数为 0"可能只是计数器坏了）；未知 id（`errors.Is(err, ErrNotFound)` 且返回零值 `Approval`）；
+      命中（逐列等于写入值）；与列表/闸门同口径。
+    - 一处**如实标注的实现事实**：`request_json` 那列按**内容**比（`reflect.DeepEqual` 解出的 payload）而不是按字节，
+      因为脱敏执行点会对 JSON 列重编码并排序键 ⇒ 落库字节本来就不等于 `Request` 构造时的字节。
+      第一版我按字节断，红了 —— 那是真行为不是我写错期望，改判内容并把理由写进用例注释。
+146. **判据与读数（绿 = 最后一次重跑；逐包单独取数，不合并）**：
+    - `-count=3 -v -run 'TestGetByIDThreeAnswers'` ⇒ `--- PASS` 行 **15** =（1 顶层 + 4 子）× 3，14:12 后取；
+      明细 `-count=1` 印出四条腿名各一次。
+    - 三包各单独 `-count=3 -v` 落文件再看尾巴：**14:12:24 audit 246 PASS / 14:12:26 permission 162 / 14:12:29 approval 303，
+      FAIL 0、SKIP 0**（顶层/子分层也分别记：audit 117/246、permission 39/162、approval 147/303）。
+    - 全仓收口：`14:11:20 → 14:11:42` `go test ./... -count=1` ⇒ exit=1、**17 包 ok**、
+      唯一红 `github.com/SadCat18/lucero/core/test`（见 149，别人的）。
+      ⇒ **本轮"全绿"只到我三个包 + 那棵树（指纹 `f265df86400a8c43b0b6fc10eabdffbb`，构建时刻 14:12:12，HEAD `eddf1dc`，工作树未提交 30 处），
+      不含全仓。**
+147. **三枚变异全部 FIRED，判决按四档印**（备份只落 `.scratch/audit/`，还原与复验同轮做完）：
+    - M-E 摘掉 `Resolve`/`GetByID` 的守卫 ⇒ 目标腿红，原文 `err = approval: not found, want requireID's own message`
+      —— 打中的正是"两种答案分不开"这一条，不是解码层。
+    - M-G 把 `sql.ErrNoRows` 咽成 `(nil, nil)` ⇒ `err = <nil>, want ErrNotFound`。
+    - M-H 从 `selectColumns` 摘掉 `risk_level` ⇒ 红在 `sql: expected 16 destination arguments in Scan, not 17`，
+      **如实标注**：这一枚打在 Scan  arity 那一层，比我声称的"逐列相等"更外一层；
+      逐列相等那一条是被 M-E/M-G 之外的命中腿覆盖的，M-H 只证明"少读一列不可能蒙过去"。
+    - 还原复验：`grep -c requireID(` = 3（1 定义 + 2 调用点）、`risk_level, action` 回到原位、
+      三包 `MUTATION` 残留 grep = **0**、`.scratch/audit/` 里无 `.orig`/`*.bak` 遗留（只剩本轮三个读数日志，交账后按名删）。
+148. **主控 T-427 要的三行（全部从盘上读来，不含我替谁的决定）**：写在下面第 151 条，汇报正文同一份。
+    要点前置一句：`internal/approval` **没有任何权限判定**——`Engine.Decide`/`CheckTemporaryGrant` 全仓调用点
+    （`grep -rn "\.Decide("` / `grep -rn "CheckTemporaryGrant("`）**全部落在 `_test.go`**，非测试码 0 命中；
+    我这个包 import `internal/permission` 只为类型（`permission.Grant`/`Scope`/`Allow`/scope 常量）。
+149. **别人那格红的归属取证（不修、不进别人目录）**：`core/test` `TestEventProducerRosterMatchesDerivedSet` 红的原文行：
+    `【桶二·确认无生产者（派生集合）】20 个；名单 21 个：… execution_output_flushed …`
+    而同一次输出里 `宽覆盖 internal/execution/output.go:136（…）⇒ execution_output_flushed` —— 该文件在 `git status` 里是
+    **未跟踪 `??`**（backend 在写 T-424 的 `/output`），即"名册冻结（`c8df8a9` 09-30 20:56）之后有新发射位"。
+    按事实只报这一条，判"在途"而非"回归"；`test/event_producer_roster_test.go` mtime 09-30 20:40、`test/projection_test.go` mtime 10-01 12:27，
+    均早于我 14:11 那一跑，所以不是我起跑那一刻有人在写它——是新文件进了它的扫描根。
+150. **旗标面按事实报，不造一面**：`grep -rn "LUCERO_TEST_FAKE_ADAPTER" --include=*.go` 的命中只在
+    `cmd/core/{discoverassembly,probeassembly,sendpipe,sendwedge,turnpump_death,turnpump_late}_test.go`
+    与 `test/adapter_contract_test.go`；`grep -rn ... internal/audit internal/approval internal/permission` ⇒ **exit=1（0 命中）**。
+    ⇒ 对我这三个包，`LUCERO_TEST_FAKE_ADAPTER=1` 面是**空集**，与默认面是同一批用例；
+    按契约① 第 24 条⑩款（主控已改作用域）报这个事实，不编第二面的数字。
+
+151. **`Service.Resolve` 实际校验了什么（T-427 要的三行，逐条给盘上证据；HTTP 码与"谁能批"的口径是主控的笔，我只提建议不代裁）**：
+
+    **① 谁能批 —— 今天答案是"没有任何判定"。** 证据：`grep -rn "\.Decide(" --include=*.go core/` 与
+    `grep -rn "CheckTemporaryGrant(" --include=*.go core/` 的命中**全部在 `_test.go`**（非测试码 0 命中），
+    `internal/approval` 里对 `internal/permission` 的引用只有类型与常量（`permission.Grant`/`Scope`/`Allow`/`Scope*`）。
+    `Resolve` 面上关于身份的唯一要求是 `validateResolution` 里的 `if res.By == "" { ... }` ——
+    **只要 `By` 是非空字符串就通过**，所以"谁能批"这条判据现在既不存在、也没有对应字段可指。
+    这一格我不能自己填：把 `Engine.Decide` 塞进 `Resolve` 需要"决议者要满足哪条规则"的口径（§3/契约③），
+    而且 `Decide` 现在也没有生产调用方（同一批 grep 证据）。
+    **建议**：`Resolve` 的授权由 handler 层用 `permission.Engine` 判（决议者对 `approval:resolve` 这个 action 的 Effect），
+    或由主控明写"v0.1 决议者 = 已认证的 `local-user`，不另设权限规则"——两种都行，但**必须写进契约**，
+    否则我包里那行注释就成了第 2 份判定（REQ-A8 那味）。
+
+    **② 缺什么就拒（清单从 `Resolve`→`validateResolution`→`grantFor`→`grantWindow`/`validateGrantRequest` 现读；"码"是我的建议，落文归你）**：
+    | 缺/错的东西 | 我的错误原文（approval.go 行号现读） | 建议码（待裁） |
+    |---|---|---|
+    | 没给 approval id | `approval: no approval id given`（:456，**查 store 之前**） | 400 |
+    | 未知 id | `approval: not found` = `ErrNotFound`（:47） | 404 |
+    | `state` 不在 `allStates` | `approval: %q is not an approvals.state value`（:39） | 400 |
+    | 拿 `PENDING` 当决议 | `approval: PENDING is not a decision`（:360） | 400 |
+    | `By` 为空 | `approval: Resolution.By is required for audit`（:363） | 400 |
+    | `Temporary` 配非 APPROVED | `approval: a %s decision cannot also grant access`（:366） | 400 |
+    | grant 作用域 `TASK_MODE` | `approval: a temporary grant cannot be scoped to TASK_MODE`（:382） | 400 |
+    | 未知 grant `scope_type` | `approval: unknown grant scope_type %q`（:384） | 400 |
+    | 非 GLOBAL 作用域缺 `scope_id` | `approval: grant scope %s needs a scope_id`（:387） | 400 |
+    | 窗口 ≤0 或 >8h | `...must end after it starts...`（:348）/ `...exceeds the %dms cap`（:350，`MaxGrantDuration`=8h，:51） | 400 |
+    | 决议时行已定 | **不报错，返 `nil`**（幂等：`current.Resolved()` 直接 return，:290 段） | 200（见下面"未裁"那一件） |
+    | store/DB 失败 | `approval: resolve %s: %w`（:303）包一层 | 500 |
+
+    一句必须说清的边界：**我这层的错误里没有 HTTP 码**，也没有"哪个码"的字段——只有语义与消息文本。
+    上面"建议码"一列是给你落 §3/§4 的输入，不是我已实现的东西。
+
+    **③ `resolved_by` 从哪来 —— 现在是"调用方给什么就写什么"。** 来源是 `Resolution.By`（`internal/approval/approval.go:124`，
+    注释写的是 "principal id that resolved it; required for audit"），落库四处现读自 `store_sqlite.go:199` 起的 `MarkResolved`：
+    `approvals.resolved_by`（`Tx.Touch` 的 set）、`resolution_json` 的 `resolved_by`、`approval_resolved` 事件的
+    `PrincipalID` 与 payload、审计行的 `PrincipalID`。**今天没有任何一处校验 `By` 等于已认证 principal**——
+    handler 从请求体取还是从鉴权上下文取，决定权在 §4 与 backend。
+    还有一个并存的两套身份，必须一起裁：**临时授权发给的是 `request_json.principal_id`**
+    （`grantFor` 走 `a.RequesterPrincipal()`，:317/:327），不是 `By`；两个来源今天都未被验证。
+    **建议口径**：契约明写 `By := 已认证 principal，永不取请求体字段`，那么 handler 就无权收 `resolved_by`，
+    而 §4 的请求体里也不该出现它；若你要允许代决，就得另写"谁能代谁的决"，那一格目前空白。
+
+    **顺带仍未裁的一件**（第 141 条已报，本轮再顶一次以免隐身）：`Resolve` 今天丢掉 `MarkResolved` 的 `applied`，
+    所以 transport 分不出"这次改写了"与"早就定了"。要么契约明写两者都 200 且响应体一致（我倾向），要么我加一枚返回值——
+    量级一行，但**笔在他边**。
+
+152. **我这半交了，但对方的注释因此过期 ⇒ 只报不修**：`core/api/http/approvals.go:17~19`
+    （mtime **09-30 22:40**，早于我本轮 14:0x 的交付）现读原文仍写着"那一侧的读法今天只有分页与按 execution 两种，
+    **没有 by-id 的那一个**（`Service` 面上没有 Get）。要接它得先在 `internal/approval` 加一个方法 —— 那是 audit 的面包，
+    我不越过去自己造一个第二份读法"，`:39` 的 `ApprovalLister` 注释也仍说"by-id 与 resolve 今天都不在 transport 这一侧能办到的事里"。
+    ⇒ **`Service.GetByID` 已在盘（approval.go:465）并自证过**，那句"没有 by-id 的那一个"从 14:0x 起是旧事实。
+    我不碰那个文件（backend 的面包，T-426 已派给它）；要接的形状是照同族再注一口
+    `GetByID(ctx context.Context, id string) (approval.Approval, error)`，
+    它注释里担心的"为一个方法逼 cmd/core 造转发类型"由它自己裁 —— 我这边方法已经在那儿了。
+
+
+### 第 30 轮（2026-10-01 16:24~16:44，接 T-438 两腿：风险分类开出口 + 给"已决冲突"一个名字）
+
+153. **开工前把巡检给的坐标逐字复量**（16:24:17 现读，全部对得上，所以两条都动）：
+    `internal/permission/permission.go:131` = `highRiskActions = []string{`、`:143` = 那条 for、`:145` = `return RequireApproval, ReasonDefaultHighRisk`、
+    `ReasonDefaultHighRisk` 定义在 `:121`；`approval.go:261~263` 确实是空串写 `"UNKNOWN"`。
+    两处巡检没提但我读了才发现要紧的：**内置分类其实有两张表**（还有 `lowMediumActions`，命中 ⇒ `Allow`+`ReasonDefaultAllow`），
+    而 `approvals.risk_level` 的 CHECK 是**五个值**（`000001_core_schema.sql:408`：`LOW,MEDIUM,HIGH,CRITICAL,UNKNOWN`）。
+    开工前 `git status` 脏 30 处里属于我三包的只有 backend 那两件之外我自己的 approval 三件，`internal/permission` 零脏件；
+    起跑时 HEAD `9f8c5d9`（16:31:34 "ledger: 第一百六十八批"），交付指纹 **a9b0b53726562ec74b4afcd791f13b58**（16:43:56，编译输入 2396，未提交 28 处）。
+154. **① 交的形状：`permission.RiskLevel(action string) (level string, registered bool)`（permission.go:167）+ 三个常量。**
+    为什么是这个形状而不是两个函数或一个结构体：
+    - **出口只开一个**，`defaultFor`（链的最后一格，仍不导出）改成**吃这个函数**而不是再走一遍表 ⇒ "门"与"闸"不可能各拿一份规则
+      （这就是 §3.0-d 要的"内置只有一个归属"，我用结构保证而不是用注释请求同步）。
+    - **返回值直接用 `approvals.risk_level` 的词表**（HIGH/MEDIUM/UNKNOWN），因为调用方要把它原样塞进 `Draft.RiskLevel`；
+      中间多一次换词，就是第二个词表的出生地。
+    - `registered` 那一枚 bool 不是客气的第二答案：`"UNKNOWN"` 这个字符串**手写和真答出来长得一样**，
+      没有这个标志就分不出"分类器答了未登记"与"某人自己填了 UNKNOWN"。巡检要的"同时答两类"落在这里。
+    - **`MEDIUM` 是"低/中并作一档"里保守的那一个**，不是我发现了中风险：内置表只有两张，`lowMediumActions` 一条列表
+      被 §3.1 自己叫作"低/中"。要分 LOW 与 MEDIUM 得先给词表分家（那是新政策不是重构），我按 REQ-A16 上交，不自己编。
+    - `CRITICAL` 在 CHECK 里合法，但这份分类**一个都不发**——它不是一张表，是"没有登记表称某物为 critical"；有用例钉着。
+155. **② 交的形状：`ErrConflictingResolution`（approval.go:59）+ `sameDecision`（:417 起）两层各一道。**
+    - Service 预读那一层：`current.Resolved()` 之后不再无条件 `return nil`，同内容才 nil，不同内容 ⇒
+      `approval: <id> already records <旧>, this asks for <新>: ErrConflictingResolution`（**用 `%w` 包**，handler 按 `errors.Is` 分派，不猜文案）。
+    - `MarkResolved` 写事务里那一层（store_sqlite.go）：并发的输家拿同一个名字。预读挡不住"两个人都读到 PENDING"，
+      只有事务内那一次比较是竞态安全的；摘掉它只有 `TestStoreNamesTheLoserOfARace` 会红，这就是我单独写那一层的理由。
+    - **"同内容"我今天定的是**：状态相同 **且** 授权的（作用域类型、作用域 id、窗口时长）相同；
+      `By`/`Note`/`CorrelationID`/`CausationID` **不算内容**（谁点的、备注写了什么、哪条命令带来的，都不改变"判了什么"，
+      两次点击在事件日志里都留得下来）。这条定义是我的读法不是契约文字 ⇒ REQ-A16 上交。
+    - 为了让"换了窗口"可判，`resolution_json` 里现在记下授权内容（`grant{scope_type,scope_id,duration_ms}`）：
+      `temporary_grants` **没有任何列指回审批**（`000001` :430 起），所以这个链接必须在发的那一刻写下来。
+      写入与读取共用 `newResolutionRecord` 一个构造函数，真 store 与测试替身都走它。
+    - **顺序改了，且有契约后果**：`validateResolution` 现在排在读行之前。非法状态/缺决议人打在已决行上，
+      今天得到的是"调用方自己的错"，不再是"被已决行的终态吞掉"，也不再被冒充成冲突。主控落 §4 时这一格要写死。
+156. **判据与读数（绿 = 最后一次重跑；逐包单独取数）**：
+    - 16:42:01/03/06 三包单独 `-count=1 -v`：audit **82** / permission **58** / approval **113**，FAIL 0 / SKIP 0。
+      增量算得起来：permission 54→58 = 本轮 4 条新用例；approval 101→113 = 本轮 5 条（其中表驱动那条 1 顶层 + 7 子腿 = 8）。
+    - 16:42:20/22/26 各 `-count=3 -v`：**246 / 174 / 339**，FAIL 0 / SKIP 0，且正好 = ×3 ⇒ 两把计数面互相咬合。
+    - 16:42:43→16:43:06 全仓 `-count=1`：exit=1、**17 包 ok**、唯一红 `core/test` 的 `TestWiringSurfaceHasCallSites` = **4 红 1 绿**
+      （红：`permission.Engine.Decide`、`Engine.CheckTemporaryGrant`、`approval.Service.Request`、`execution.ApprovalStates.BlockingState`；
+      绿：`approval.Service.Resolve`，接在 `api/http/approval_resolve.go:117`）⇒ **与巡检 16:23 报的同一读数**，本轮我没加也没有修那一格。
+    - **两种计数面要分写**：全仓那份日志里只印得出 4 条 `--- FAIL` 子腿（那条绿腿在同一次批量运行里没被印出来）；
+      "4 红 1 绿"来自我随后单跑 `-run 'TestWiringSurfaceHasCallSites' ./test/` 的那份。拿批量文件去数绿腿会得到 0，那是读法不是事实。
+    - 16:43:50 三包 `go vet` exit=0。
+157. **七枚变异，判决四档，全部 FIRED**（脚本 `.scratch/audit/mutate_t438.py`；跑前逐枚现数锚点=1，跑完 `cmp` 证与备份逐字节相同、`.orig` 按名删除）：
+    - M-N1 `defaultFor` 不再认 HIGH ⇒ 一致性用例红在 `"filesystem.write" labelled HIGH but gated as REQUIRE_APPROVAL/DEFAULT_UNKNOWN_RISK`。
+    - M-N2 高风险那一圈改成字面相等 ⇒ `"remote.exec" = ("UNKNOWN", false)`（通配符失效）。
+    - M-N3 让出口发出 `LOW_MEDIUM` ⇒ CHECK 那条用例红：`which approvals.risk_level does not accept`（五值清单是从迁移文件现读的）。
+    - **M-O 摘掉名字（`%w`→`%v`）⇒ 就是主控要的那一支**：`a different decision got err = approval: ... already records APPROVED ..., want ErrConflictingResolution`
+      —— 错误文本还在、`errors.Is` 断了，正是"handler 只能猜文案"的形状。
+    - M-P `sameDecision` 不看授权内容 ⇒ 三条腿红成 `err = <nil>, want ErrConflictingResolution`（换窗口/换作用域/撤授权都被当成重放）。
+    - M-Q 摘掉写事务里那一层 ⇒ 只有 `TestStoreNamesTheLoserOfARace` 红（`applied=false err=<nil>`）⇒ 证明这层不是装饰。
+    - M-R 把已决判断挪到校验之前 ⇒ `TestResolveChecksTheBodyBeforeTheRow` 两条腿红。
+158. **本轮我自己写的三处坏判据，都当场换掉了，记下来免得下轮当成已验证**：
+    ① `TestStoreNamesTheLoserOfARace` 第一版我塞了 `permission.Grant{ID: decided.ResolutionJSON}`（把整列 JSON 当授权 id）——那是无意义输入，
+    改成"重放走同一个构造函数、断 `applied==false && err==nil`"；
+    ② 我还编过一个不存在的方法 `service(...).Resolve2x(...)`（落盘即编译不过），换成真路径；
+    ③ 更值得记的一条：**赢家行是我手工设 `State=APPROVED` 造出来的**，而真 store 会同时写 `resolution_json` ⇒ 我的 `sameDecision` 读到的是
+    生产永远写不出的形状，红了三条。修法是让赢家经过 `Resolve` 落库（替身也照 `newResolutionRecord` 写这一列）。
+    这三条都属于"取证工具自己坏了长得像结论"那一族（第 21/22 条老账的又一次）。
+159. **交给别人的两件事（我不动他们的面包）**：
+    ① backend：`writeResolveError`（`approval_resolve.go:187` 起）现在只有 `ErrNotFound`→404、其余→500；
+    名字已经在了，409 那一支的形状是 `errors.Is(err, approval.ErrConflictingResolution)`，码值串（`resolution_conflict` 之类）归 §15.2 与它。
+    ② 主控：`resolution_json` 多了一个 `grant` 对象 ⇒ 面板 `resolution` 字段多一个键（`approvals.go:155` 是原样透传）；
+    若把 `permission.RiskLevel` 登记进 §3.0-c 那张表，**它今天的非测试调用点 = 0**
+    （`grep -rn "RiskLevel(" --include=*.go` 去掉 `_test.go` 与我两个包 ⇒ exit=1 无输出），要等 T-439 落地才不为 0。
+160. **旗标面仍是空集**（同一条复量，不造第二面）：`LUCERO_TEST_FAKE_ADAPTER` 的读点只在 `cmd/core/*_test.go` 与
+    `test/adapter_contract_test.go`；我三个包里 `grep` ⇒ 0 命中。本轮"两面各 `-count=3`"因此只有默认面那一份数字，
+    按契约① 第 24 条⑩款（作用域已由主控改过）报事实。
+
 
 ## Remaining
 
@@ -1347,6 +1575,30 @@ LAST_UPDATED: 2026-09-30T15:03+08:00（T-372 交付轮；时钟跨会话不稳�
   请裁"谁在什么时机扫"（候选：`cmd/core` 启动后一次性收敛 + 一个 ticker；或 `GET /approvals` 之前顺手收敛）。
   **我不擅自接**：把清扫塞进读路径正是我这条包里被反复禁止的形状（第 134 条"只读是构造性的"），
   而它归装配层决定。裁定后我在自己包里要做的只是把"清扫与列表边界同步"那条用例改成真调度下的断言。
+- **REQ-A15 → 主控（`POST /approvals/{id}:resolve` 落 §3/§4 前要补的四格空白；证据全在第 151 条，行号为 10-01 14:1x 现读）**：
+  ① **"谁能批准"今天没有任何判据**——`internal/approval` 不调 `Engine.Decide`/`CheckTemporaryGrant`
+  （这两个符号在非测试码里 0 调用点，全仓命中都在 `_test.go`），`Resolution.By` 唯一的要求是非空。
+  请裁：决议者走 `permission.Engine` 判某个 action，还是明写"v0.1 决议者 = 已认证 principal、不设规则"。**两种我都能接，但不能两头都不写**——
+  一旦我自己选，就是我包里凭空多出第二份判定（REQ-A8 那味，第 133~138 条刚清过）。
+  ② **`resolved_by` 的来源必须钉成"已认证 principal，永不取请求体字段"**；否则 handler 一旦从 body 收 `resolved_by`，
+  审计行的 `PrincipalID`（`store_sqlite.go` `MarkResolved` 里那四处写入都取 `res.By`）就成了调用方自报的身份。
+  ③ **两套身份并存要一起裁**：临时授权发给的是 `request_json.principal_id`（`grantFor`→`RequesterPrincipal()`，approval.go:317/:327），
+  而 `resolved_by` 记的是 `res.By`。若允许"甲批乙的证"，就要写清 grant 归谁；若不允许，就写明两者必须相等、由谁校验。
+  ④ **重复决议的可观察形状**：`Service.Resolve` 今天丢掉 `Store.MarkResolved` 的 `applied`（approval.go:303 只包装错误），
+  幂等两击都回 `nil` ⇒ transport 分不出"这次改写了"与"早就定了"。
+  请裁 (a) 契约明写"两者都 200 且响应体一致"（我倾向，最省，且与幂等键口径同源），或 (b) 我加一枚返回值/字段。
+  另：**我包里的错误不含 HTTP 码**（只有消息文本与 `ErrNotFound`），第 151 条表格里"建议码"一列是输入不是实现，映射归 §3/§4。
+  裁定后我这半的动作量：①②③ 各是"补一条断言或用例"，④ 是一枚返回值 + 一条用例；**路由与 handler 仍归 backend（T-426）**。
+- **REQ-A16 → 主控（T-438 落完之后剩下的三格口径；我这轮的取舍都在这张单子上，没有一条是我自己批的）**：
+  ① **"低/中"要不要分成两档。** 内置分类今天只有两张表（`highRiskActions` / `lowMediumActions`），§3.1 自己把后者称作"低/中"，
+  所以 `RiskLevel` 对这一档只能给**一个**值。我取了 `MEDIUM`（CHECK 五值里保守的那一个），因为它不会把"可能是中风险"写成"低"。
+  要分家的话请给两份名单——那是新政策，不是把我的函数改个名。
+  ② **`Resolve` 的"同内容"定义要不要进契约。** 我按"状态 + 授权的（作用域类型、作用域 id、窗口时长）"判重放，
+  `By`/`Note`/关联号不算（它们不改变判了什么）。这条读法今天只活在我包的两个函数名里。
+  ③ **已决行遇到非法请求体，先拒谁。** 我把校验挪到了读行之前，所以 `state=MAYBE` 或缺 `By` 现在拿到的是调用方自己的错，
+  不再是 `nil`、也不再冒充冲突。§4 落文时这一格要有名字，否则 backend 的 400/409 两支会打架。
+  另两件属转告、不属裁定：`resolution_json` 现在带 `grant` 对象（面板 `resolution` 多一个键）；
+  `permission.RiskLevel` 的非测试调用点今天 = **0**，等 T-439 接。
 
 
 ## Changed files
@@ -1393,6 +1645,18 @@ LAST_UPDATED: 2026-09-30T15:03+08:00（T-372 交付轮；时钟跨会话不稳�
 - 第 26 轮（T-390 当天读数）：**零 `core/**` 改动**，只写 `.qoder/progress/audit.md` 与新建的
   `.qoder/evidence/audit/{t390-0928-v,t390-0928-repo18pkg,t390-0928-vet,t390-0928-grep,t390-0928-summary}.txt`
   （一次性测试输出本该进 `.scratch/audit/`，本轮按 T-390 的交账要求直接落到证据目录，`.scratch/audit/` 收尾 0 项）
+- 第 29 轮（T-427 by-id 交付，10-01 14:1x）：`core/internal/approval/approval.go` **+28/−0**、
+  `approval_test.go` **+2/−0**、`list_page_test.go` **+119/−0**（三件都是 `git diff --numstat` 现读，不是 `--stat` 的缩放列）；
+  本账 `.qoder/progress/audit.md`；一次性输出落 `.scratch/audit/`（`v3_*.txt`/`v1_*.txt`/`fullrun.txt`，交账后按名删）。
+  另记一条判据自身的口径：**下面那句"合计 11 个 .go 文件 / 2441 行"是第 1 轮那一批的数**，此后各轮没有重算过总量，
+  别把它当当前规模读（本轮新增的 5 条用例就在 `list_page_test.go` 里）。
+- 第 30 轮（T-438 两腿，10-01 16:2x~16:4x）：改 `core/internal/permission/permission.go`（+44/−5：`RiskLevel` 出口、三个常量、`defaultFor` 改吃它）、
+  `core/internal/approval/approval.go`、`internal/approval/store_sqlite.go`（+7/−4：写事务内那道比较）、
+  两个测试文件 `internal/approval/approval_test.go`（+63/−14）与 `store_sqlite_test.go`（+5/−3，都是"旧行为被两条用例当探针"的换法，见第 155/158 条）；
+  新建 `internal/permission/risk_entry_test.go`(195) 与 `internal/approval/resolve_conflict_test.go`(280)。
+  **一条归属上的诚实**：`git diff --numstat` 对 approval.go 现读是 **+126/−7**，但那是**第 29+30 两轮合起来**的量（T-427 那 28 行至今未入册），
+  本轮那份约 98 行是**减出来的算术、不是我另量过的**——要精确到轮次得等主控入册之后再取一次基线。
+  一次性产物：`.scratch/audit/mutate_t438.py` 与 `t438-*.txt` 读数日志；三枚 `.orig` 已在 `cmp` 证完之后按名删除（现数 0）。
 - `.qoder/progress/audit.md`（本文件）
 - 合计 11 个 .go 文件 / 2441 行
 

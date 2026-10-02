@@ -3,15 +3,23 @@ TASK_ID: api-client-panel
 STATUS: in_progress
 SCOPE: `apps/desktop/**`、`packages/api-client/**`、`specs/openapi/**`（契约③ §7 原文；禁止 import Core 内部类型）
 EVIDENCE_DIR: .qoder/evidence/frontend/
-LAST_UPDATED: 2026-09-30T21:58:50+08:00（T-415 子轮：第二枚 token `execution_claimed` 进 `core-v1.yaml:876` ⇒ C8-13 **`66/66/66、四条边全空`**；修前红是 `§6=66 / yaml=65 / 常量=66` 且两条失败边都指向 yaml。
-**预告的红没有发生**（巡检 21:53:32 说 db 那腿未到；我 21:55:21 现量 `ExecutionClaimed`=2 已到树里）⇒ 同一枚事实两次读数中间树动了一格，引用别人的读数必须带时刻。
-四处目前**都不在 HEAD**（逐面 `git show HEAD:… | grep -c` = 0；`claim.go` 还是未跟踪）⇒ 边界 ①「同一个提交」有了一张可核对清单。面板链顺带复跑 **`22 passed (22)`**：7b / 8 / 11 三格 ok、9 与 10 仍 blocked（归属已改：10 归 backend T-414③，9 今天不派）。
-本轮只动 yaml + 生成物两格、**没提交**；标签起跑与收工同为 `09dd199`。）
+LAST_UPDATED: 2026-10-01T23:58:01+08:00（T-433：用户一句「把前端所有的问题全都解决」，主控把它变成我名下六件。六件全部交账，其中五件做完、第 (4) 件交到我这一侧能交的证据级别。
+**(1) 在途的 `panel.ts` 先交平**：那一件就是 T-428 那句**假归因文案**的改正（`FakeAdapter 未产生待决审批` → 「审批列表 200 但 0 行待审 ⇒ 面板没有 id 可发 :resolve」+ 失败那一支另写），判据在 live 套件的「两把尺都说 0 行」那一条。
+**(6) 详情格转真跑**（不等任何人）：client 补 `getProject/getSession/getAdapter`，store 加 `DETAIL_READS` + `openDetail()`（只发那一次 by-id GET，不本地拼装），新组件 `DetailPanel.vue`，三个列表加「详情」按钮。
+  实测（三趟逐字相同）：`详情格 task 同源通过：GET /api/v1/tasks/{id} · 12 个键整对象相等`、`session · 15 个键`、`execution · 23 个键`，读不到那一支 `error=「404 not_found」、row=null`。
+**(2) yaml 补决议形状**：`ApprovalResolution`（不写 required —— 未决议的行 `resolution` 就是 `{}`，这条实测在 `api/http/approvals_list_test.go:138-139`）+ `ApprovalGrant`（`grant` 用 oneOf 允许 null、写侧 `omitempty` 所以键可根本不出现）+ `grant_id` 注明来源是决议记录同一个键。**主控给的"grant_id 恒 null"前提已过期**：`api/http/approvals.go:127` 的 T-440 只读映射已在 HEAD 里（`git status --porcelain core/api/http` 空）。我没有把 null 写成契约事实。
+**(5) F-18 从"扫描跳过"升级成实证**：`check-no-secret` 那一腿在没有 token 时只跳过"口令真值"一项（闸门原文 `note LUCERO_CORE_TOKEN 未提供 → 跳过…`）。现在 live 套件直接断面板每一发请求**都不自带 Authorization**：`F-18：面板共发 36 发（含 ws-ticket 1 发），自带 Authorization 的 = 0；链路状态=live`，并跑了一枚变异（让 store 带上 `Bearer mutation-probe…`）⇒ **三趟全 FIRED** 并列出那些相对路径。
+**(3) 27 个 SKIP 拆档**（现在 29 个）：它们不是"等谁的墙"，是**跑法**——默认闸门腿故意不起进程；这 29 条在 `run-t282.sh` / `run-panel-chain.sh` 里**条条真跑**。链上真正 blocked 的只有 `approval`（两边都 0 行）与它后面的 `resolve/accept`（没有合法 id），点名等的是 **backend 的 T-442② 发起面**（工作树里已见未跟踪 `core/cmd/core/approvalgate.go`，**未入册我不当已用**）。
+**(4) Wave-3 第一句的证据级别**：现在能交的是 **store 级实证**——真 Core 进程 + 真 WS + 36 发真 REST + 零手搭数据（面板代码里没有任何注入接缝）+ 每一格数字都对拍过直连响应；浏览器级那一层我这轮**没有工具面**（本会话工具集里没有 browser-use），所以我不说"面板在浏览器里被真后台驱动过"。**做不到全部就说做到哪一格**，这句按主控要求写在这里。
+交付前重跑（`HEAD=f83466a`，23:53 一把取齐）：live 三趟各 **`Tests 7 passed (7)`**、电池 **`22 passed (22)`**、`repro-req-s1.sh` exit 0 / `NOT-REPRODUCED`、闸门六腿 `非零退出腿数=0`（vitest 腿 `28 passed | 29 skipped (57)`）、`vue-tsc` 0、validate/codegen 0。我自己这轮又抓到一次**量法错**：F-18 判据第一版把独立见证人（直连、按契约带 Bearer）也算成"面板发的"⇒ 差点报成面板违反 F-18；改成只记相对 URL 那一支后才是对的量。零 git 写。）
 
-> 旧读数指针（细节按原段读）：**T-410** 20:34:58（入册带齐三处 ⇒ 65/65/65、预测前半关掉；面板链 11 格 9 通、7b 与第 11 格转绿；归因写法「标签变了≠内容变了」）/
-> **T-406** 19:27:35（一枚 `execution_unknown` + 「混态才会红」预测 + 6 处历史 checkpoint 改标）/ **T-358** 09-27 13:25:00（6 条红全塌）/
-> **REQ-S-1 复验轮** 13:19:16 / **T-317** 09-25 20:31:18 / **T-311** 20:09:05 / **T-286 合验轮** 19:25:01 / **T-287** 18:36:30 / **T-282** 18:15:20 /
-> **T-276** 09-24 10:54:12（头部五行规矩）/ **T-264** 10:14:28 / **T-256** 09:28:41 / T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。
+> 旧读数指针（细节按原段读）：**T-432** 15:35:18（只验渲染那份 + 三枚变异 + "exit=1 但没跑到断言"那次假 FIRED） / **T-428** 14:14:29（HEAD `eddf1dc`：真路径三环定位 + 第三枚变异只证到渲染面；等待对象被本封 T-432 收窄成"只等 backend T-430 ①"） /**T-420 续轮** 13:31:55（HEAD `2463251`：第 9 格两面转绿 + 第二枚变异 FIRED + 那处"200 分支不打字"的哑口补上）/
+> **T-420 首封** 13:16:19（HEAD `3a0d7c7`：假 WS 换成真后台、三趟 `4 passed` + 一枚 FIRED；**那棵树上第 9 格还是 blocked**，读数被续轮取代）/
+> **10-01 面板真后台手工轮** 12:32:10（store 那条链第一次经反代连真 WS：`seq=36`、`已见事件 35`，只推进到第 6 格；那条通路 13:1x 已被 T-420 固化成用例，手工读数按历史读）/
+> **10-01 复核轮** 11:58:58（四处同一提交已入册 ⇒ C8-13 在 HEAD 上 66/66/66；第 10 格转通并补了形状判据）/
+> **T-415** 09-30 21:58:50（第二枚 token；"预告的红没来"）/ **T-410** 20:34:58（65/65/65、9/11 通）/ **T-406** 19:27:35（首枚 token + 混态才会红）/
+> **T-358** 09-27 13:25:00 / **REQ-S-1 复验轮** 13:19:16 / **T-317** 09-25 20:31:18 / **T-311** 20:09:05 / **T-286 合验轮** 19:25:01 / **T-287** 18:36:30 /
+> **T-282** 18:15:20 / **T-276** 09-24 10:54:12（头部五行规矩）/ **T-264** 10:14:28 / **T-256** 09:28:41 / T-231 07:44:09 / T-22x 07:26:02 / T-222 07:13:19。
 
 > **外接结论（23:44 读到 `specs/adapter-protocol/**` 里一条在途新增的 C8-12，不是我改的）**：
 > 那条写"对拍看不见**解析器少收东西**这种失效，它只看得见两边不一致"，并要求判据必须两条腿：
@@ -51,16 +59,15 @@ LAST_UPDATED: 2026-09-30T21:58:50+08:00（T-415 子轮：第二枚 token `execut
 > **T-276 规矩（主控 10:45 裁，本册被举成反面例子）**：每次交账**同时**刷下面那五行，`Last verified action` 的时刻必须当场 `date` 实读；
 > "等"这一格写全**等谁 / 等什么 / 谁解锁**；头部与正文不一致时以正文为准，且那次交账记为"头部未刷 = 交账不完整"。
 
-- Stage: T-415 已交（绿交）—— 第二枚 token `execution_claimed` 进 `core-v1.yaml:876`（与 `execution_unknown` 同一行尾）+ 生成物重跑 **66 条** ⇒
-  C8-13 从 **`§6=66 / yaml=65 / 常量=66`** 变成 **`66/66/66、四条边全空`**（`=== RUN=1 / PASS=1 / FAIL=0 / SKIP=0`）。**派发里预告的那个红没有发生**：db 的 T-413 已在我 21:55:21 现量到时落进工作树（`ExecutionClaimed`=2）
-- Status: in_progress —— 我这侧无欠工、手里无红；面板链剩 2 格 blocked（第 9 格 `/output` 缺写者、今天不派；第 10 格 `/approvals` 归 backend T-414③）⇒ 依赖是 backend，不是路由
-- Last verified action: 当场 `date` 实读 **2026-09-30T21:58:50 +0800**。读数标签：起跑前与收工都读到 **`09dd199 21:31:58`**（这次标签没变，与 09-27 那轮不同，我仍按现量写而不写「大概」）。真跑：validate 修前 exit=1 / 修后 exit=0（66 类双向相等）；
-  Go 判据修前 exit=1（`§6=66 / yaml=65 / 常量=66`，两条失败边都是 `[?→yaml]`）、修后 **exit=0**、`=== RUN=1 / PASS=1 / FAIL=0 / SKIP=0`、`66/66/66 四条边全空`；闸门六腿 exit 全 0、非零腿数=0；live **`22 passed (22)`** 0 skip
-- Next action: **等谁**＝主控（把四处**同一个提交**入册：我的 yaml、主控的 §6、db 的 eventjournal 两行、backend 的未跟踪 `claim.go` —— 拆开任何一处 HEAD 就红）＋ backend（T-414③ 的 `GET /approvals` 接线）；
-  **等什么**＝入册后在新 HEAD 上 C8-13 仍 `66/66/66`（当前这份绿长在**工作树**：四面 `git show HEAD:… | grep -c execution_claimed` 全是 **0**），面板第 10 格转 200；
-  **谁解锁**＝主控那一笔提交 + backend 交账；我这侧无预备动作、**不提交**
-  被叫醒时：先现取 `git log -1` + 逐字 porcelain → `repro-req-s1.sh` → `run-t282.sh` → `run-gates.sh`
-- Verification: `bash .scratch/frontend/run-gates.sh`（六腿：validate / codegen / vitest / F20-4 / build / go c8-13；退出码无管道取、非零腿数回扫证据文件）＋ `bash .scratch/frontend/run-t282.sh`（live：自建二进制＋`-adapter fake=`＋自属数据目录＋起停收尾；**今天这一腿是红的**）
+- Stage: T-433 已交 —— 主控列的六件：(1) 在途 `panel.ts`（假归因文案的改正）交平；**(6) 详情格转真跑**（by-id 三格 12/15/23 键与直连整对象相等 + 404 那一支 row 留 null）；**(2) yaml 补 `ApprovalResolution`/`ApprovalGrant`/`grant_id` 来源**（不写 required，因为未决议就是 `{}`；主控那句"恒 null"前提经实测已过期）；**(5) F-18 变成实证**（面板 36 发里自带 Authorization = 0，变异 FIRED 三趟）；**(3) SKIP 拆档**（29 条不是墙、是跑法：两条 live 命令里条条真跑；真正 blocked 只有 approval 那一跳）；**(4) Wave-3 交的是 store 级证据**，浏览器级这轮没有工具面，我不冒充
+- Status: in_progress —— 无红：`HEAD=f83466a` 上 live 三趟各 `Tests 7 passed (7)`、电池 `22 passed (22)`、闸门六腿 `非零退出腿数=0`（vitest 腿 `28 passed | 29 skipped (57)`）、`repro-req-s1.sh` exit 0、`vue-tsc` 0。链仍停在 `approval`（面板 0 行｜直连 0 行两边一致）⇒ 等的只有 backend 的 T-442② 发起面
+- Last verified action: 当场 `date` 实读 **2026-10-01T23:58:01+08:00**。顺序：复测主控给的前提（非测试 `Service.Request` 调用点四写法仍 0；T-440 已入 HEAD；`approval_resolve.go` 已 tracked）→ 交 (1) → 做 (6)（client 三个 by-id 读法 + `DETAIL_READS`/`openDetail` + `DetailPanel.vue` + 三处「详情」按钮 + live 判据）→ 做 (2)（validate/codegen 各 0，第一版被 YAML 的 `schema: 1` 冒号咬了一次）→ 做 (5)（相对 URL 只记面板那一支 + 变异 FIRED×3 + 字节还原 14957/CR=0）→ 重取四把尺
+- Next action: **等谁**＝backend 的 **T-442②**（发起面：执行前问判定 → 调 `approval.Service.Request` 落一行；工作树里那个未跟踪 `core/cmd/core/approvalgate.go` 看着像它，**未入册我不当已用**）；**等什么**＝第一行真待审出现 ⇒ 我把 `resolve`/`accept` 两面补同源判据，并用变异把「面板漏读真行」那一格（**至今没有牙**）证一次；
+  **要主控裁两件**：① 要不要把这 29 条 live 用例折进默认闸门腿（做法＝vitest `globalSetup` 自起 Core + dev 反代；代价＝闸门多约 2 分钟 + 必须按端口收进程）；② Wave-3 那句要哪一级证据（store 级我已交；浏览器级需要能开 browser-use 的会话）；**我不自裁、不手工插行、不引 fixture、不提交**
+  固定顺序（不变）：现取 HEAD + porcelain → `run-panel-chain.sh`（三趟）→ `run-t282.sh` → `repro-req-s1.sh` → `run-gates.sh`
+- Verification: `bash .scratch/frontend/run-gates.sh`（六腿）＋ `bash .scratch/frontend/run-panel-chain.sh`（**现在 7 条**，三趟都报）＋ `bash .scratch/frontend/run-t282.sh`（22 条）＋ `bash .scratch/frontend/repro-req-s1.sh` ＋ `CGO_ENABLED=0 go test -count=1 -timeout 200s -v ./test/ -run '^TestEventTypeTripleEquality$'`。
+  **收尾口径（两条，都要留在交账里）**：① 带端口的活收尾三件各 = 0（端口 LISTEN=0 → CommandLine 认归属，别人不动只报 → 最后才看进程名）；② 变异轮的 `exit != 0` 本身不算 FIRED —— 每一枚都要打出自己的失败原文。
+  **本轮新增第三条**：判据的**取样范围**必须与它声称在量的东西同源 —— 我把独立见证人的直连请求记进"面板发的"，差点把 F-18 报成缺陷（量法错，不是面板错）
 
 ## Completed
 
@@ -1738,3 +1745,316 @@ REQ-S-1 在新 HEAD 上再次确认：`repro-req-s1.sh` → **exit 0**（`send 2
 **等谁**＝① 主控把四处**同一个提交**入册（清单见上，`claim.go` 未跟踪最容易漏）；② backend 的 T-414③（`GET /approvals` 接线）。
 **等什么**＝入册后在任何新 HEAD 上 C8-13 仍 `66/66/66、四条边全空`（现在这份绿长在**工作树**上，HEAD 里四处都还没有）；面板链第 10 格从 501 转 200。
 **谁解锁**＝主控那一笔提交 + backend 交账。我这侧无预备动作；被叫醒时按固定顺序跑并**当场重取 HEAD**。
+
+## 10-01 复核轮（四处同一提交已入册 ⇒ 面板链 10/11 通；主控那句「还没自己复跑」这一格做实了）· 本机 date 10-01 11:58:58+08:00
+
+### 基准自己现取（巡检那封的两个时刻都不是真值）
+`git rev-parse --short HEAD` = **`e4a1850`**、`git log -1` 给 **`2026-10-01 00:47:13`**（不是巡检写的"11:52:58"，也不是它中途划掉的"22:26:56"——它自己那句里就有两个时刻，说明那行是凭记忆写的）。
+`git cat-file -t e4a1850` = **commit** ✓。四处是否真在同一笔：`git show --name-only 48c2547`（00:38:48）里 **`specs/openapi/core-v1.yaml`、`specs/events/event-contract-v0.1.md`、`core/internal/eventjournal/events.go`、`core/internal/execution/claim.go`** 全在，而且**我那一格生成物 `packages/api-client/src/gen/schema.ts` 也一并带了**（`grep -c` = 1）⇒ 入册没漏我这侧。
+**工作树：`git status --porcelain | wc -l` = 1**（不是巡检说的 0），唯一那一行是 ` M .qoder/progress/orchestration.md`（主控自己的活账，正在写）。`core/` 面为**空** ⇒ 本轮读数**不需要**再写"含别人未提交"那行限定，但也不照抄"全干净"，两个口径分清。
+**这个 1 也带着时刻**（11:55:25 现量）：11:59:30 再量已经变 **2 行**，多出的是主控的 ` M specs/contracts-internal-v0.1.md` ⇒ 台账/契约面每隔几分钟就在动，**只有 `core/` 面我两次量到都是空**，那才是我这轮读数能承重的口径。
+
+### 三段脚本 + 一条判据，全部在入册后的 HEAD 上重跑
+- **C8-13**（新 HEAD）：`CGO_ENABLED=0 go test -count=1 -timeout 200s -v ./test/ -run '^TestEventTypeTripleEquality$'` → **exit=0**、结论行 **`§6=66 类、yaml=66 条、常量=66 个；四条边全空`** ⇒ 边界 ①「拆开任何一处 HEAD 就红」这一格正式闭：现在 **HEAD 里就是全的**，不再依赖工作树。
+- **REQ-S-1 复现器**：`bash .scratch/frontend/repro-req-s1.sh` → **exit 0**，自带 `fingerprint HEAD=e4a1850 core_脏面=[] build_mtime=10-01_11:57:09`。
+- **live 电池**：`bash .scratch/frontend/run-t282.sh` → **`Tests 22 passed (22)`、0 skip**。逐格：`7b ok`（三份快照齐）、`第 8 格 ok：send → 202 …`、**`第 10 格 ok：GET /approvals → 200，items=0 条（0 条是合法结果）、next_cursor=""`**、`第 11 格 ok：accept → 200，status=ACCEPTED version=7`；只剩 `第 9 格 blocked：output → 501`（读通道无写者，主控 21:5x 已定今天不派）。
+- **闸门链**：六腿 `validate / codegen / vitest / f204 / build / go c8-13` **exit 全 0、非零腿数=0**（离线 `26 passed | 22 skipped (48)`、F20-4 `1 passed`）。
+
+### 本轮唯一一处我这侧的改动：给"第 10 格的 200"补上形状判据
+原来那一支只 `console.log` 状态码 ⇒ **"它接通了"和"它给了个不像样的 200"在我的计数里长得一样**（同一种洞我这一串会话里第四次遇到：第 8 格、第 11 格、7b、现在第 10 格）。
+补的是契约里有的东西：`ApprovalList` = `CursorPage` + `required:[items]`（yaml:1429-1435）⇒ `items` 必须是数组、`next_cursor` 必须是字符串（REQ-F-19 空串是唯一合法的"没有下一页"）；有行时逐条核 `Approval` 的 yaml required 六键（`id/approval_type/action/state/risk_level/requested_at`，yaml:1206-1208）。**没发明任何新要求**。
+`approvals/{id}:resolve` 仍不测：列表 0 条 ⇒ 没有真 id 可打，我不编一个（0 条是合法结果，不是失败）。
+
+### 主控那句挂着的「面板只读后台真数据我从未亲自验过」——这轮递过去的东西
+我这侧能做的不是再自述一次，而是把每一格都留下**可复跑的一行命令 + 自带打印**：三段脚本、一条 Go 判据、加上 7b/8/10/11 现在都会自己说"我走了哪一支"。诊断表升 **v12**（第 10 格转通、v11 那句"11 格 9 通"作废）。**面板链现状 = 11 格里 10 格真通**，剩第 9 格等写者。
+
+### 证形（三句）
+- **改了什么**：`apps/desktop/src/__tests__/live-core.test.ts`（第 10 格 200 分支补形状判据）+ 诊断表 v12 + 本台账。**契约面零改动**（`specs/openapi/core-v1.yaml` 与生成物本轮未碰，且都已在 HEAD 里）。
+- **当场命令与原文**：`go … -run '^TestEventTypeTripleEquality$'` → exit=0 / `66/66/66`；`repro-req-s1.sh` → exit=0（自带 `core_脏面=[]`）；`run-t282.sh` → `Tests 22 passed (22)`；`run-gates.sh` → 六腿全 0。证据：`go-e4a1850.txt`、`live-…`（scratch，摘要在上面）、`gates-e4a1850.txt`、`repro-req-s1.txt`。
+- **没做的为什么**：不测 `:resolve`（无真 id，0 条是合法）；没动 `/output` 那一格（缺写者、今天不派，归 backend/T-370①）；没提交（零 git 写）。
+
+### 等（三问）
+**等谁**＝backend（第 9 格 `/output` 的写者 = T-370① 那一格）；另等主控按 Wave-2 那把尺**亲自跑**这一串。
+**等什么**＝第 9 格 501→200（届时我会给它补 200 的形状判据，不再只报状态码）；
+**谁解锁**＝backend 交账 / 主控亲跑。
+**但我把"我这侧无预备动作"这句收回**——写这一段时顺手核了一下自己的测试到底在跑什么，发现一处真空白：
+`live-core.test.ts` 的 §4 各跳是我**手写 `fetch()` 逐发打**的（只证服务端给得出契约形状），而 `chain.test.ts` 里那个 `runChain()` 走的是 `ws://fake/…` 的**离线替身**
+⇒ **面板 store 自己那条链（typed `createCoreClient` 方法 + WS 事件驱动）从来没在真 Core 上跑过**。
+这恰好是主控挂着的那句「面板只读后台真数据我从未亲自验过」里**我能做实的一半**，所以它现在是 Next action 的第一条，不等任何人。
+
+被叫醒时：现取 `git log -1` + `git status --porcelain`（分清 code 面与台账面）→ `repro-req-s1.sh` → `run-t282.sh` → `run-gates.sh`。
+**还有一条要记的时间事实**：我三次量 `core/` 面分别是 11:55:25 空、11:59:30 空、**12:0x 已变 ` M core/cmd/core/turnpump_late_test.go`**；
+本轮那几个读数能站住，靠的是复现器自己在 **11:57:10** 印的 `core_脏面=[]`（不是我事后回忆）⇒ 这就是把指纹写进输出的用处。
+
+## 10-01 面板真后台轮（Next action 自己那格做完了；顺带纠一处我自己含糊过的口径）· 本机 date 2026-10-01T12:32:10+08:00
+
+### 做了什么：让**面板 store 自己那条链**跑在真后台上，不再是我手写 fetch 替它跑
+上一轮我自己写下的判断是：typed client + 真 WS 驱动的 `runChain()` 从没在真 Core 上跑过（`live-core.test.ts` 各跳是我手写 `fetch()`、`chain.test.ts` 的 `runChain` 走 `ws://fake/…` 替身）。这轮把它做实了：
+- 通路：`bash .scratch/frontend/start-panel-live.sh`（起 Core `-adapter fake=` + Vite dev 反代）→ 面板 `http://localhost:5173/`；收工 `bash .scratch/frontend/stop-panel-live.sh`（回查 `pid alive=0`、残留进程数 0）。
+- **没有开测试后门**：口令只在 vite 进程环境里、由 `vite.config.ts` 的 `injectAuth` 注入 `/api`，面板一个都不持有（REQ-F-18）；`/ws` 是 `ws:true` 代理 + §2.1 一次性短票。
+- 驱动方式：`evaluate_script` 里对按钮做 `el.click()`（走真实 DOM→Vue 绑定）。**指针动作不可用**：`mcp__browser-use__click` 报视口 0x0 / `visibilityState=hidden` ⇒ 我没有"在浏览器里手点"，这一点写死在证据里。
+- 指纹：`HEAD=1cca6fe`；`core/` 面现量有别人的两件在途（`turnpump_late_test.go`、`projection_test.go`），都不在本轮调用路径上（链只走 HTTP 写面 + WS）。
+
+### 读到的东西（原文在 `.qoder/evidence/frontend/panel-live-1cca6fe.md`）
+`live | 游标 seq=36 | 已见事件 35` ⇒ **真 WS 在推事件**（35 条进 store，不是轮询出来的）。链的 `calls` 逐行 ok 到 send：
+`probe → project → discover → manage → task → queue → GET /executions → send` 全 `ok`，第 9 行 `output WS execution_output_flushed → blocked 超时未见输出`。
+点亮的格子（`done` 类名）：1 Create Project、2 Discover、3 Managed、4 Create Task、5 Create Execution、6 Send Message，外加 10 Continue → Succeeded。
+
+### 一处我自己的口径纠正（这条比"跑通了"更该交上去）
+我上一轮写「**面板链 11 格里 10 格真通**」——那句话**只对 raw fetch 电池成立，对 store 自己那条链不成立**，我一句话把两件事糊在一起了。实测形状是：
+`runChain()` 遇到第一个 blocked 就地停（面板设计如此），所以它这次只推进到第 6 格（Send Message），`approval / resolve / accept` 三步**根本没被驱动**；
+而第 10 格亮着是**事件自己点亮的**（fake 跑完 turn ⇒ `execution_succeeded` / `task_agent_completed` 进过 store），不是链推进到的 ⇒ "格子亮"与"链推进"是两回事，面板这个设计本身没错，**是我的措辞把它压扁了**。
+⇒ 结论要这样交给 backend/T-370①：第 9 格 `/output` 缺写者，卡住的不只是"那一跳的形状"，而是**面板链后面三步全跑不到**。这比上一封那句"blocked"具体得多，也更能说明为什么它值得排。
+
+### 证形（三句）
+- 改了什么：**本轮零码改动**（没有新增 vitest 用例，见下面那句"没做的为什么"）；新增两个可复跑脚本 `start-panel-live.sh` / `stop-panel-live.sh` + 一份证据 + 本台账。
+- 当场命令与原文：`bash .scratch/frontend/start-panel-live.sh`（打印 `build core=0 fake=0 core_mtime=10-01_12:28:09`、`fingerprint HEAD=1cca6fe`、`LUCERO_CORE_ORIGIN=http://127.0.0.1:62786 token_len=43`、`VITE ready`）；浏览器侧 `CLICKED:驱动整条链` → 上述 calls/点亮读数；`bash .scratch/frontend/stop-panel-live.sh` → `pid 1672 alive=0`、`pid 1677 alive=0`、`残留 core/fake 进程数=0`。
+- 没做的为什么：**没把它固化成一条 vitest 用例** —— 那需要给 store 的 `core`（`panel.ts:50` 处 `createCoreClient()` 无参、同源相对路径）开一个能指到真后台的口子，而"把口令或 baseUrl 塞进面板"正是 REQ-F-18 禁的那条线；真要做只能是"起 dev 反代 + 浏览器驱动"这条（就是这轮走通的这条），或者裁一次"面板可持有宿主注入的 baseUrl"。我把这个选择交上去，不自裁。也没提交任何东西（零 git 写）。
+
+### 等（三问）
+**等谁**＝backend（第 9 格 `/output` 的写者 = T-370①）；另等主控对"要不要给面板一个宿主注入的 baseUrl/把这条浏览器通路固化"表个态。
+**等什么**＝写者到位后我复跑同一套脚本 ⇒ store 那条链应能推进到 `resolve` 与 `accept`（现在停在第 6 格）。
+**谁解锁**＝backend 交账 / 主控一句话。
+固定动作（不变）：现取 `git log -1` + `git status --porcelain`（分清 code 面与台账面）→ `repro-req-s1.sh` → `run-t282.sh` → `run-gates.sh`；面板这一层加一条 `start-panel-live.sh` 手工通路核对。
+
+### 收尾时我自己漏了一件事，而且是被自己的假自检盖过去的（记下来，别再犯）
+第一版 `stop-panel-live.sh` 报的是 **`残留 core/fake 进程数=0` + 两个 pid `alive=0`**，我就据此写了"机器不替我留进程"。
+12:3x 复核 `netstat` 才发现 **5173 还在 LISTEN**，占着的是 **pid 17840 = 本项目的 vite 子进程**（命令行 `…\apps\desktop\…\vite\bin\vite.js`）——
+`npm run dev` 的包装进程（我记在 pids 里的 1677）被杀了，**真正监听端口的子进程活得好好的** ⇒ 我那句"残留=0"是**假绿**，而且是我自己登记过第五次的同一族：**判据没覆盖它声称在守的东西**（我只数了进程名，没数端口）。
+处置（当场做完）：① 确认命令行属于本项目后才 `Stop-Process`（不是本项目占 5173 的进程**不动，只报出来**），杀完 `LISTEN 数=0`；
+② 重写 `stop-panel-live.sh`：杀完 pids 之后**按端口反查**、匹配本项目 vite 路径才杀，最后自检三项变成 **`5173 LISTEN 数=0` / 残留进程数=0 / pids 两个 alive=0**（12:3x 实跑输出：`kill 了 1672 / 1677`、`5173 LISTEN 数=0`、`残留 core/fake 进程数=0`、两条 `alive=0`）。
+⇒ 端口这一维以后进我自己的收尾判据，不靠进程名猜。
+
+## T-420 子轮（把「验面板用的是假 WebSocket」那一格换成真后台：store 自己的 `runChain()` + 真 WS + 同源对拍，三趟都绿、变异咬人）· 本机 date 2026-10-01T13:10:19+08:00
+
+主控这一轮的原话是要点：「验面板的那条用的是假 WebSocket」⇒ 要求 a) 真 Core 带 `LUCERO_TEST_FAKE_ADAPTER=1`（不许把开关关掉凑绿）、
+b) **面板代码路径自己的 `runChain()` 去连真 WS 端点**（不许 cast 替身、不许只测服务端形状）、c) 面板每个数字都要能指到响应（服务端/面板**同源对拍**）；
+验收跑法「三趟都报，计数只从带 `-v` 那趟数，输出先落文件再看尾巴」；并且明写「别顺手把假 WS 留着凑绿」。
+
+### 改了什么（只一件：新增一份 live 套件，面板代码一行没动）
+新文件 `apps/desktop/src/__tests__/live-panel-chain.test.ts`（4 条用例，环境变量缺任一 ⇒ 整份 skip 并打印原因）。
+- **通路**：Core（含 fake adapter）← Vite dev 反代（`/api` 注入 `Authorization`、`/ws` 走 ws 代理）→ 面板 store。
+  `stores/panel.ts` 与 `packages/api-client/src/client.ts` **本轮零改动**（`git status --porcelain -- …panel.ts` 空、client.ts 不在改动面里）
+  ⇒ 没有为了跑通给面板开 baseUrl / 口令接缝，REQ-F-18 那条线一寸没碰：**面板代码路径拿不到口令**，口令只在反代进程环境里。
+- **真 WS 的证法**：用例里调的是 `connectEvents()`（**一个参数都不传**）⇒ 走 store 默认的 `ticketedUrl()` ⇒ 真换票（§2.1）+ 浏览器原生 `WebSocket` + 真事件流；
+  对比 `chain.test.ts:60` 的 `'ws://fake/ws/v1/events'` 与 `:31` 的 `as unknown as WebSocket` —— 那份是离线单测（闸门里必须能跑），职责分开写在两份文件头注释里，**没有把假替身留在真后台这条路上**。
+- 测试侧只做浏览器白送的那一步：把相对 URL 补成绝对 + 造 `globalThis.location`；不看、不改任何响应。
+- **独立见证人**：`createCoreClient({ baseUrl: http://<host_port>, extraHeaders: {authorization, x-lucero-principal} })` **直连 Core、绕开反代**，
+  读同一批事实跟面板的 `data.*` 逐格比 ⇒ 数字不同源就红。
+- 四条用例：① `state=live` + 游标是数字 + health 三字段与直连同值（**这一条不断「有帧」**：刚起来的 Core journal 可以真的还空着，把「没帧」当红是拿时序当缺陷）；
+  ② `runChain()` 自己走一遍，ok 的步必须含 `adapter,project,discover,managed,task,execution,send`，且真 WS 里能看到那六个链上事件；不 ok 的那条必须自己点名哪一跳、给原因（不钉别人的进度）；
+  ③ 同源对拍：task/session/approval 三面「条数相等 + 共有行的 `status/version/managed/state/sync_cursor/remote_revision` 逐字段 `toStrictEqual`」，
+  服务端那格 **501 时面板必须空着**（`quota` ⇒ 面板 `null`），这是 §12「UNKNOWN/未接通不许折算成有值」的机器判据；
+  ④ `data.seen` 与时间线双向相等（不多不少），点亮格只看事件。
+
+### 三趟读数（抄进正文，`.qoder/evidence/` 不入册）
+`bash .scratch/frontend/run-panel-chain.sh` → **`RUNNER_EXIT=0`、`三趟里失败的趟数=0`、`自检：5173 LISTEN=0`**，三趟**逐字相同**：
+```
+Test Files  1 passed (1) / Tests  4 passed (4)
+真 WS：state=live seq=1 health=READY mig=3（帧数留到链后再断）
+对拍通过：tasks=1 sessions=2 approvals=0 quota=501 面板 seen=18 帧=35
+点亮格（只看事件）= project,discover,managed,task,execution,send,succeed
+```
+每趟新起一个 Core + 自属数据目录（`coredata-panelchain{1,2,3}`）：12:56 那版三趟共用一个 Core，第 2 趟假红过一次 —— 原因不是面板，
+是 discover 是幂等 upsert、第二轮没有新 `session_discovered` 可看。**改的是跑法，不是判据。**
+
+### 变异（FIRED，且是在重构之后重做的）
+把 `panel.ts` 里 tasks 那一行的赋值掺进一行假数据（`{ id: 'fabricated-row-for-mutation-check', status: 'RUNNING' }`，锚点 `subs=1`）⇒
+**三趟各 `Tests 1 failed | 3 passed (4)`、`三趟里失败的趟数=3`**，失败原文：`→ task 条数与响应不等（面板 2 vs 响应 1）: expected 2 to be 1`。
+还原与备份在**同一条命令**里，且做了第二次独立读：`还原：字节相等=true 长度=12882 CR=0`、`含 fake 残留=no`、`fake_hits=0`、
+`git status --porcelain -- apps/desktop/src/stores/panel.ts` 输出为空。⇒ 「同源对拍」那一腿**有牙**，面板掺一行假数据就红。
+
+### 本轮我自己踩到、并如实记下的四处
+1. **采集期副作用**（真缺陷）：端点解析 / 建直连客户端 / 改 `globalThis` 一开始写在 `describe.skipIf(!live)` 的**套件体**里，
+   vitest 即使 skip 也执行套件体 ⇒ 离线闸门 `vitest` 与 `f204` 两腿红：`Error: ENOENT: no such file or directory, open ''`。
+   挪进 `beforeAll` 后离线复跑 `OFFLINE_EXIT=0`、`Test Files 1 skipped (1) / Tests 4 skipped (4)` + 打印 skip 原因。
+   **这条就是我台账里已经写过的「setup 副作用不许待在 describe 体」——这轮是我自己新写的文件又犯了一遍。**
+2. **一次假「node 输出没有」**：变异还原那条命令里 `node … off` 与 `md5sum` 的回显整段没出现（工具输出丢段，本轮第二次遇到）。
+   我没按它打印的字符串登记，改用第二次独立读（`grep -c` 假数据标记=0、`grep -n` 原行在位于第 128 行、字节数 12882、CR=0、`git status` 空）。
+3. **验收前不重跑变异就不算数**：三趟绿早于变异，重构（`beforeAll`）又动了同一条链 ⇒ 变异**重做了一遍**，绿也**重跑了一遍**（终跑就是上面那三趟）。
+4. `direct` 从 `const` 改成 `let direct!: …` 之后先跑 `vue-tsc --noEmit -p tsconfig.json`（**TSC_EXIT=0**）再跑 live，没把类型错误留到验收里才发现。
+
+### 绿的「全」是哪个集合
+闸门 `GATES_FILE=…/gates-t420-final-10-01.txt bash .scratch/frontend/run-gates.sh` → **`GATES_EXIT=0`、`非零退出腿数=0`**，
+六腿各 `exit=0`：validate / codegen / vitest / f204 / build / go c8-13。其中 **vitest 腿 `Test Files 3 passed | 2 skipped (5)`、`Tests 26 passed | 26 skipped (52)`**，
+跳过的两份正是 `live-core.test.ts (22)` 与 `live-panel-chain.test.ts (4)` —— 它们不在闸门里跑，由 `run-t282.sh` / `run-panel-chain.sh` 各自带真后台跑；
+C8-13 那腿 `--- PASS: TestEventTypeTripleEquality (0.00s)`、`ok github.com/SadCat18/lucero/core/test 0.244s`。
+
+### 树与时刻（归属）
+`fingerprint HEAD=3a0d7c7`，core 脏面**全是别人的在途**：`M core/api/http/executions.go`、`M core/cmd/core/turnpump*.go`、`M core/internal/execution/{finish,service}.go`、
+`M core/test/projection_test.go`，未跟踪 `core/internal/execution/output.go`、`core/cmd/fake-adapter/declaration_test.go` 等。
+⇒ 我这三趟是跑在**一棵未合验的树**上，只证我这侧的链与对拍，不引用 backend 的进度；那三个 `output.go` 若真把第 9 格装配起来，第 9 格的 200 形状判据**归我下一轮补**、现在不预填。
+同树（`core_mtime=10-01_13:15:25` 那次构建）上的另外两把尺一并记：`run-t282.sh` → `vitest exit=0`、**`Tests 22 passed (22)`**、收尾 `core alive=0 fake alive=0`；
+`repro-req-s1.sh` → **exit 0**、`⑧★ send -> 202 ok 27ms`、`⑨ 后续写请求 -> 201 ok 4ms`、`VERDICT: NOT-REPRODUCED`。
+
+### 没做的、为什么
+- **第 9 格 `/output`**：写者不是我（T-370①），主控也明写「别等它」⇒ 我没动它，面板 `pullOutput` 那条腿保持现状；
+- **`approvals/{id}:resolve`**：`approvals=0`，没有真 id 可解 ⇒ 断言只能停在这一格「服务端 501/空集时面板必须空着」，等真有一行待审才能点亮；
+- **没提交**（红线：零 git 写）；**没碰 `specs/**` 除我自己的 yaml 之外的任何文件**（本轮 yaml 一行没动）。
+
+## T-420 续轮（第 9 格两面真转绿；先补上我自己那个「200 那一支一行都不打」的哑分支）· 本机 date 2026-10-01T13:31:55+08:00
+
+### 主控 ①/②/④ 三句的落点，加一句必须回给主控的更正
+- **①「11 格里 10 格通」作废**我认领；但那句「面板那条链实际**只到第 6 格**」是**我 12:32 手工轮的读数，已被本轮两次实测取代**。
+  盘上现读（`bash .scratch/frontend/run-panel-chain.sh` 第 1 趟输出里 `chain.calls 全文` 那一段）：`send POST /executions/{id}/send ok` →
+  `approval GET /approvals?state=PENDING ok` → 停在 `approval GET /approvals blocked「FakeAdapter 未产生待决审批」`，且点亮格里**已经有 `output`**。
+  ⇒ 不判他对错、只报读数与量法：12:32 那次"只到第 6 格"在**当时那棵树**上是真的（第 9 格等事件超时）；13:2x 的树已把 backend 的 output 腿带进来 ⇒ 旧数不再描述现在。**两条并列、旧的标"被取代"、都不删。**
+- **②那枚假绿**（收尾按进程名数残留）认。本轮 runner 里三件各 = 0 的判据真跑过：`自检：5173 LISTEN=0`，且每趟起跑前显式检查端口没被占着（"被占着就跳过这一趟，不拿旧反代凑数"）。
+- **④「等的是 backend 与 audit」**这一轮自己解开了一半：`/output` 两面都到了（见下）。面板链现在停在的是**测试数据里没有那一行待决审批**，
+  性质变了：不再是"别人没装配"。⇒ 要请主控裁一件事：**我在用例里造一行待审**（那是业务写，且 `POST /approvals` 不是面板该走的面）还是**等 fake adapter 真走审批路径**。我不自裁。
+
+### 改了什么（两件判据 + 一行打印，全在我自己的可写面）
+1. `live-core.test.ts` 第 9 格的 **200 那一支原本一行都不打** ⇒「它接通了」与「它给了个不像样的 200」在我计数里长得一样（**与今天那两枚同族：看不见的东西不等于没有**）。
+   补成：打印 + 逐行 required 四键 `sequence_no / channel / content / created_at`（**从 yaml:1198 现读，不是我新立的口径**）。现读输出：
+   `第 9 格 ok：GET /executions/{id}/output → 200，items=1 条、next_cursor=""、每行四键齐（sequence_no/channel/content/created_at）`
+2. `live-panel-chain.test.ts` 新增第 5 条用例，把第 9 格**从面板一侧**看住：store 里补拉内容那条腿是 `pullOutput(...).catch(() => {})`
+   （fire-and-forget：失败不吭声、不进 `chain.calls`）⇒ 光看链会以为"过了"。现在拿直连 `GET /output` 的响应跟面板 `data.output` **逐块比**
+   （按 `sequence_no` 匹配后 `channel`/`content` 等值；服务端 501 判**面板必须空着**；服务端 0 块判**面板也必须 0 块**）。现读：
+   `第 9 格（面板侧）同源通过：/output → 200、响应 1 块、面板 1 块、next_cursor=""、逐块 channel/content 等值`
+3. 另加一行诊断打印 `已见类型（升序）= …`，把「seen=19」这个数变成可核对的集合 —— 就是它让我看清 `execution_output_flushed` 与 `execution_claimed` 已经在流里（18→19 那一格正是它）。
+
+### 变异（本轮第二枚，FIRED）
+把 `panel.ts` 里"收到 flush 帧就补拉"那一腿摘掉（`&& e.aggregate_id && false`，锚点 `subs=1`、保编译）⇒ **三趟各 `Tests 1 failed | 4 passed (5)`**，原文
+`→ 服务端 /output 有 1 块，面板只有 0 块 ⇒ 那条被 .catch 吞掉的腿没落地: expected 0 to be greater than or equal to 1`。
+还原做了第二次独立读：`字节相等=true 长度=12882 CR=0`、`git status --porcelain -- panel.ts` 输出 0 行、原行 `grep` 命中 1。
+⇒ 这一格现在**两面都有牙**：条数不等会红、面板不落地也会红。
+
+### 交付前最后一次重跑（四把尺都在同一棵树：HEAD `2463251`）
+- `run-panel-chain.sh` → `RUNNER_EXIT=0`、三趟各 **`Tests 5 passed (5)`**、`三趟里失败的趟数=0`、`自检：5173 LISTEN=0`；
+- `run-t282.sh` → `vitest exit=0`、**`22 passed (22)`**，第 7~11 格**逐跳都打得出行**（含新补的第 9 格那一支）；
+- `repro-req-s1.sh` → **exit 0 / `VERDICT: NOT-REPRODUCED`**（`⑧★ send -> 202`、`⑨ 后续写请求 -> 201 ok 7ms`）；
+- `run-gates.sh` → `GATES_EXIT=0`、**`非零退出腿数=0`**、`Tests 26 passed | 27 skipped (53)`（skip 的两份正是两个 live 套件 22 + 5，由上面两条脚本带真后台另跑）；C8-13 `--- PASS: TestEventTypeTripleEquality (0.00s)`；
+- `vue-tsc --noEmit` 在新增用例之后重取：**TSC_EXIT=0**。顺带记一条姿势坑：从仓库根用路径式 `-p apps/desktop/tsconfig.json` 跑会 `ERR_PACKAGE_PATH_NOT_EXPORTED` + exit=1，**那是我调用姿势错、不是码有问题**（必须在 `apps/desktop` 目录里跑）。
+
+### 树的变化要如实写（同一格在两个时刻是两种状态）
+13:16 我上一封交账时 HEAD 是 `3a0d7c7`、第 9 格的真读数就是 `blocked「WS execution_output_flushed 超时未见输出」`；
+13:23:54 主控落 `2463251`，core 工作区里 backend 的 output 腿（`core/internal/execution/output.go` 发 `OutputFlushedPayload`）进来 ⇒ **这一格在我两把尺上都转了**（REST 200 + 面板落地）。
+所以上一轮那句 blocked **不删**，标"被 13:2x 那批取代"，两条各带树与时刻并列。core 脏面本轮仍是别人在途（`M core/api/http/executions.go`、`M core/cmd/core/turnpump*.go`、`M core/internal/execution/*` 等），这四把尺只证面板这侧。
+
+### 没做的、为什么
+- **没有为点亮 `approval/resolve/accept` 去造一行待决审批**（等主控裁，理由见上面第 ④ 句）；
+- **没提交**（零 git 写）；**没碰 `core/**`**；**yaml 一行没动**（第 9 格那四键是现读来喂判据的，不是新立口径）。
+
+## T-428 子轮（主控裁「走真路径，别造 fixture」⇒ 我把那条路逐环在盘上定位：三环全缺、缺的都不在我这侧）· 本机 date 2026-10-01T14:13:06+08:00
+
+### 先交一句口径（主控 ② 点名要的：别只改脚本不留口径）
+**带端口的活，收尾判据三件各 = 0，缺一件就不许说"机器上没留东西"**：
+① `netstat -ano | grep ':<端口>' | grep -c LISTEN` = 0（**端口才是真相**）；② 杀之前按 `Get-CimInstance Win32_Process -Filter ProcessId=N` 读 CommandLine，
+**确认属于本项目才杀**，别人占同端口一律不动、只报出来；③ 最后才看进程名 / 我记的 pids。
+⇒ 只数进程名那种"残留 = 0"是假绿（10-01 我自己踩过：包装进程杀了、真正监听 5173 的 vite 子进程还活着，那个残留随后把下一次验收带进死代理 500）。
+
+### 真路径今天点不亮：三环的盘上定位（每条都是本轮现读，不是推断）
+1. **没人把权限决策变成一行审批**：写口是 `core/internal/approval/approval.go` 的 `func (s *Service) Request(ctx context.Context, d Draft)`，注释原文「Request creates an approval for a REQUIRE_APPROVAL decision」。
+   非测试调用点全仓 grep = **0**（模式：`\.Request(ctx|\.Request(c\.|approvalSvc()\.`，排除 `core/internal/approval/` 与 `_test.go` ⇒ 无命中）。
+2. **权限引擎不在链上**：`internal/permission` 的**非测试** importer 只有 approval 包那两个文件（`approval/approval.go:13`、`store_sqlite.go:13`）⇒ send/turn 那条路不问它，
+   `RequireApproval` 这个 Effect（`core/internal/permission/permission.go:18`）在活路径上没人产出。
+3. **REST 审批列表读 Core 本地表、不代理 adapter**：`core/api/http/approvals.go` 的 `listApprovals` 走 `ApprovalLister`（本地 store + cursor），
+   而 **core 非测试码里没有任何地方调用 adapter 的 `approval/list`**（协议文档 `specs/adapter-protocol/adapter-protocol-v0.1.md:89` 那行写的是 C→A 拉取）。
+   ⇒ fake 里那行种子审批（`core/cmd/fake-adapter/service.go:170-171` 的 `apr-1`，绑它自己的 `rsn-1`）**到不了** `GET /api/v1/approvals` —— 这就是我三趟 `items=0` 的真因。
+   顺带纠我自己一眼看错的东西：`capability("approval.list", false)` 的第二个参数**不是"支持与否"**，签名是 `func capability(name string, write bool, modes ...string)`（`main.go:725`）⇒ false 是"这是个读能力"。**读了签名才改口**，没把看错写进归因。
+4. **fixture 在契约里没有合法入口**：我自己的 yaml 里 `/api/v1/approvals` 只有 `get: listApprovals`、`/api/v1/approvals/{id}:resolve` 只有 `post: resolveApproval` ⇒ **没有 create 面**。
+   所以"造一行"只能变成**拦面板的 fetch 塞响应**，而那正是 T-420 b) 明令不许的姿势（不许替身）。⇒ 我按"做不到就报、不硬凑"处理：**保留这一格红 + 精确到 file:line 的归因**，不引 fixture。
+   主控那句"退 fixture 可以但要写明不验 `:resolve` 写口"我原样留着、等他要用时再动；我默认走的是"保留红"这条（低风险默认，随时可改派）。
+
+### 改了什么（两处，都在我的可写面）
+1. `stores/panel.ts` 那句 blocked 文案**在编归因**：原文 `detail: 'FakeAdapter 未产生待决审批'` —— 本轮实测说明**不是 fake 的锅**（它有 `approval/list`，是 Core 不问）。
+   换成只说观察到的事：`审批列表 200 但 0 行待审 ⇒ 面板没有 id 可发 :resolve`，并给"那一发本身没成功"另留一支（不拿 0 行冒充失败、也不拿失败冒充 0 行）。`git diff --numstat` = **4 加 / 1 删**，纯文案 + 两行注释，无行为改动。
+2. `live-panel-chain.test.ts`：链停在 `approval` 时加**两把尺一致性**判据 —— 面板说没有 ⇒ 独立见证直连 `listApprovals({state:'PENDING'})` 也必须 0 行，否则红（"面板漏读"）；直连若 501 就明写"还没注册"，与"注册了但 0 行"**分开读**。三趟现读：
+   `链停在 approval：面板「审批列表 200 但 0 行待审 ⇒ 面板没有 id 可发 :resolve」｜独立见证直连同一发 = 0 行待审 ⇒ 两边一致，缺的确实是服务端那条产生审批的腿`
+
+### 变异（第三枚，FIRED）+ 一句不粉饰的覆盖面缺口
+往 `data.approvals` 掺一行假待审 ⇒ **三趟各 `Tests 1 failed | 4 passed (5)`**，原文 `→ approval 条数与响应不等（面板 1 vs 响应 0）`；
+还原第二次独立读：`字节相等=true 长度=13328 CR=0`、`grep 假行残留=0`、`git diff` 回到 4/1。
+**但这枚只碰到渲染面**：链那一侧用的是自己发的 `core.listApprovals()` 响应、不吃 store 的列表 ⇒ 没走过"有真行"那一支。
+⇒ 老实登记：**「面板漏读真行」这一格至今没有任何变异证过它的牙**，要等真行存在才能验（不是我这侧能补的）。
+
+### 交付前最后一次重跑（同一棵树 `HEAD=eddf1dc`，core 脏面仍是 backend/audit 在途）
+`run-panel-chain.sh` → `RUNNER_EXIT=0`、三趟各 **`Tests 5 passed (5)`**、`第 9 格（面板侧）同源通过：/output → 200、响应 1 块、面板 1 块`、`自检：5173 LISTEN=0`；
+`run-t282.sh` → `build core=0 fake=0`（`core_mtime=10-01_14:12:13`）、`vitest exit=0`、**`22 passed (22)`**（第 9、10 格都打得出 ok 行）；
+`repro-req-s1.sh` → **exit 0 / `NOT-REPRODUCED`**；`run-gates.sh` → `GATES_EXIT=0`、**`非零退出腿数=0`**、`26 passed | 27 skipped (53)`、C8-13 `--- PASS`；`vue-tsc` **TSC_EXIT=0**。
+
+### 本轮我自己的失误（当场认、不当没发生）
+**`||` 短路写法把变异直接装上了**：本想"确认脚本存在再跑"，写成 `node … on 2>/dev/null || node -e "1"` ⇒ 前半段真的执行了 `on`。
+顺势跑完变异轮、紧接着还原，但**第一条还原命令忘了 export PATH** ⇒ `node: command not found`，那一刻工作树**带着假行**。
+我没把"命令跑完了"读成"还原成功了"，第二次独立读（字节 13518 → 13328、`grep` 残留 = 0、`git diff` 回到 4/1）才发现并补做 —— 记进记忆那条「计数打空 / 回显不见 ≠ 完成」的同族案例。
+
+### 要主控回一件事（不挡今天交账）
+第 10、11 格（`approval` → `resolve` → `accept`）卡在 core 那条"把权限决策变成审批行"的腿（上面三环）。
+**这条要不要并到 T-426（backend 的 handler 接线那批）或另开一格派给 backend？** 只要真行存在，我这侧判据已备好一半（`resolveApproval` 带 Idempotency-Key；If-Match/version 的用法在 F-8 那一跳已经跑通过）。
+**红线不变**：零 git 写、不碰 `core/**`、yaml 一行没动。
+## T-432 子轮（主控裁「另开一格派 backend，不并 T-426」⇒ 我只做 ② 允许那块：审批面只验渲染，标注写死；顺带烧掉自己一次"exit=1 的假变异"）· 本机 date 2026-10-01T15:35:18+08:00
+
+### 前提先复测（两小时内 HEAD 动了四次，别拿上午的数当现在的数）
+- 非测试码里 `approval.Service.Request` 调用点：四种写法（`.Request(` / `Svc.Request` / `approvalSvc.Request` / `.Request(ctx`）在 `HEAD=14b581d` 上**全 0**。
+- 命名坑收下并自验：`ApprovalGate` 全仓命中 **0**；真名 `ApprovalStates` 在 `core/internal/execution/approval.go:5`（注释）与 `:8`（`type ApprovalStates interface {`）。以后读到这一格的归因按真名读。
+- **这批确实入册了一格**：`core/api/http/approval_resolve.go` 与 `approval_resolve_test.go` 现在被 `14b581d` tracked ⇒ `:resolve` 写口可达；
+  但**发起面（T-430 ①）没落** ⇒ 服务端仍产生不出一行待审 ⇒ 我那一格今天照旧停在 `approval`，三趟现读都是「面板 0 行｜直连 0 行，两边一致」。等谁因此**只等一家**。
+
+### 本轮交付：`apps/desktop/src/__tests__/render-approval.test.ts`（离线，2 条）
+为什么值得做：审批面的渲染此前在非 live 套件里 **0 命中**（`grep -rn approvals src/__tests__/*.test.ts | grep -v live-` 无输出），也就是说"等 backend 落一行以后面板会长什么样"没人断过。
+姿势：`createSSRApp` + `vue/server-renderer`（`vue` 包 `exports` 里声明的 `./server-renderer` 子路径 ⇒ **没引新依赖**）真渲染 `ApprovalPanel.vue`，断四件：
+① `risk_level: UNKNOWN` → 「未知」，**不许折成 LOW**；② `resource: null` → 「—」，不许空串、不许 `>null<`，`expires_at: null` 走 `when()` 的「未知」；
+③ 0 行 → 明写「当前无待决审批」，且渲染里 `apr-` 出现次数 = 0（没拿到过的 id 不许冒出来）；④ 用例期间 `fetch` 调用数 = 0（spy 断言，替我把"没碰写口"从注释升级成断言）。
+枚举与 required 键全部从盘上抄：`RiskLevel` = LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN（yaml:831）、`ApprovalState` 含 PENDING（yaml:847）、`Approval` required 六键（yaml:1207）—— 我没造任何字面量。
+**主控 ② 要的标注在两个地方写死**：文件头注释 + `describe` 标题都明写「这一格不验 `POST /approvals/{id}:resolve` 写口，写口的证据只能在真后台链上给」；CRITICAL 高亮那一格也断了（`class="…bad…"` 只许贴在 CRITICAL 上）。
+
+### 三枚变异全 FIRED + 一次我自己差点登记的假绿
+`m1` `statusText(a.risk_level)` → `a.risk_level ?? 'LOW'` ⇒ `→ 未知 的格数不对：<section class="card"…`；`m2` `a.resource ?? '—'` → `a.resource || ''` ⇒ `→ expected … to contain '—'`；
+`m3` 空清单那一支 `v-if="!data.approvals.length"` → `v-if="false"` ⇒ `→ expected … to contain '当前无待决审批'`。三枚各 `Tests 1 failed | 1 passed (2)`、锚点 `subs=1`、跑完从字节备份立刻还原（`字节相等=true 长度=1376 CR=0`、`git status` 空）。
+**坑（我的）**：第一遍循环把输出重定向写成 `> ../.scratch/frontend/render-$m.txt` —— 从 `apps/desktop` 退一层是 `apps/`，那目录不存在 ⇒ 三枚都 `No such file or directory`，**而 subshell 给了 `exit=1`**。
+我若按「exit 非 0 = FIRED」收，台账里就会躺着三枚**根本没跑过的变异**。改绝对路径重跑、拿到每枚自己的 → 原文之后才算数。
+⇒ 新口径已写进头部 Verification：**变异轮的 exit 不是证据，失败原文才是**（同一族的第四次：看不见的东西不等于没有）。
+
+### 交付前重跑（`HEAD=14b581d`，本轮取了两遍；`db45793` 那遍的读数并列保留）
+- `run-panel-chain.sh` → `RUNNER_EXIT=0`、三趟各 **`Tests 5 passed (5)`**、`链停在 approval：面板 0 行｜直连 0 行 两边一致`、`自检：5173 LISTEN=0`；
+- `run-gates.sh` → `GATES_EXIT=0`、**`非零退出腿数=0`**、六腿各 0；vitest 腿 **`28 passed | 27 skipped (55)`**、`4 passed | 2 skipped (6)` 个文件（多的那份就是本轮渲染文件）；C8-13 `--- PASS: TestEventTypeTripleEquality (0.00s)`；
+- `vue-tsc --noEmit` → **TSC_EXIT=0**，并且**验了它覆盖**：`--listFiles | grep -c "render-approval|live-panel-chain"` = 2（不覆盖这两份的 typecheck 我不拿来当证据）；
+- 15:30 的 `db45793` 上：电池 `22 passed (22)`（第 9、10 格都打出 ok 行）、`repro-req-s1.sh` exit 0 / `NOT-REPRODUCED`。本轮只加离线渲染用例、没动这两把尺跑的码面 ⇒ 两条读数并列、不互相冒充。
+
+### 一条「我越界了吗」的自查（scoped porcelain 会咬人）
+`git status --porcelain -- apps/desktop packages/api-client specs` 里冒出 `M specs/contracts-internal-v0.1.md` —— 那是**只读面**，看着像我动了它。
+实测三件：`git diff --numstat` 输出为空；`git rev-parse HEAD:<该文件>` 与 `git hash-object <盘上该文件>` **两个 blob 哈希逐字相同**（`72fc5f52e7de4c9628aa3a1765b07d101a04981b`）；mtime `15:29:00`。
+⇒ **内容一字未动、只是 stat 脏**（别人重写过同样一次）。我自己的 `specs/openapi/core-v1.yaml` porcelain 行数 **0**（本轮 yaml 一行没动）。
+
+### 没做的、为什么
+- **没点那两个审批按钮、没碰 `:resolve` 写口**：T-428 裁语继续生效（不许手工插行冒充完整链），合法的 id 要等 T-430 ①；这条标注现在是**断言**不是措辞（fetch spy = 0 调用）。
+- **没给 by-id 详情面板预填判据**：`approval_resolve.go` 刚入册，详情面（T-430 ③）在 HEAD 里走不走得到我还没量 ⇒ 量到再写。
+- **没提交**（零 git 写）、**没碰 `core/**`**、**yaml 一行没动**、**没引新依赖**。
+
+## T-433 子轮（用户「把前端所有问题全解决」→ 主控列六件；我按能动手的顺序交：五件做完、(4) 交到我这侧的证据级别）· 本机 date 2026-10-01T23:58:01+08:00
+
+### (1) 先交平我名下那件在途的（主控 22:1x 现读它还是脏的，说得对）
+`apps/desktop/src/stores/panel.ts` 的脏量就是 T-428 那句**假归因**的改正：`detail: 'FakeAdapter 未产生待决审批'` → `审批列表 200 但 0 行待审 ⇒ 面板没有 id 可发 :resolve`，并给"那一发本身没成功"另留一支（不拿 0 行冒充失败、也不拿失败冒充 0 行）。
+判据在哪：`live-panel-chain.test.ts` 里「链停在 approval 时两把尺都说 0 行」那一条（本轮三趟现读：`面板「审批列表 200 但 0 行待审…」｜独立见证直连同一发 = 0 行待审 ⇒ 两边一致`）。本轮该文件累计 diff `45 加 / 1 删`（含 (6) 的 DETAIL_READS 与详情格）。
+
+### (6) 详情格：不靠任何人，把 by-id 读口转成真跑
+盘上依据：F-8 批准的 by-id 读面有 `getProject/getAdapter/getSession/getTask/getExecution/getApproval`（yaml 里 operationId 现读），而**面板此前完全没有详情面**（组件目录里八张卡，无详情；store 只在链里用过 getTask/getExecution）。
+做法（全部在我可写面）：`packages/api-client/src/client.ts` 补三个 by-id 读法（类型全来自生成物）；`stores/panel.ts` 加 `DETAIL_READS`（kind → 端点 + 那一次 GET）与 `openDetail()`，**读失败时 `row` 留 null、原因进 `error`**；新组件 `DetailPanel.vue`（`*_at` 走 `when()`、数字走 `num()`、字符串走 `statusText()`、嵌套对象原样给 JSON —— 不自己发明显示规则）；Task/Session/Approval 三张表各加一个「详情」按钮。
+实测（三趟逐字相同）：`详情格 task 同源通过：GET /api/v1/tasks/{id} · 12 个键整对象相等`、`session · 15 个键`、`execution · 23 个键`；读不到那一支 `error=「404 not_found」、row=null`。判据用的是 `toStrictEqual(整个直连响应)`，不是逐键挑着比。
+
+### (2) yaml 决议形状 —— 但主控给的那条前提已过期，我按盘上写
+他说 `grant_id` 今天恒 null（`api/http/approvals.go:164`）。现读：`git status --porcelain -- core/api/http` **为空**、`:127` 那句「`grant_id`（T-440）不再恒 null：它是域层已经交给我那份决议记录里的一个键」**已在 HEAD**。⇒ 我没有写"待 T-440 落地"那句 caveat，改写成**来源说明**（只读映射、不碰 audit 的 `temporary_grants`）。**把 null 当形状定死**才是他担心的那种错，我躲开了。
+新增两个 schema：`ApprovalResolution`（**不写 required**，依据是实测断言「没写过的 resolution 该出 `{}`」在 `approvals_list_test.go:138-139`；键取域层 `resolutionRecord`：schema/state/resolved_by/note/grant_id）与 `ApprovalGrant`（`scope_type/scope_id/duration_ms` 三键 required，因为写侧 `*grantRecord omitempty` ⇒ **键可根本不出现**，出现了就必须齐）。
+过程里被 YAML 咬了一次：描述里写「与事件信封的 `schema: 1` 同族」⇒ 流式映射里出现冒号 → `missed comma between flow collection entries (1241:70)`、validate exit=1。改块式写法后 validate/codegen 各 0，生成物里 `ApprovalResolution`/`ApprovalGrant` 各命中 2 次。
+
+### (5) F-18：那条"扫不到就跳过"的腿，现在有我自己的实证
+闸门里 `check-no-secret` 的原文是 `note  LUCERO_CORE_TOKEN 未提供 → 跳过"口令真值"这一项，其余四项照扫` ⇒ 默认那腿**看不见**"面板到底带没带口令"。现在 live 断的是这件事本身：`F-18：面板共发 36 发（含 ws-ticket 1 发），自带 Authorization 的 = 0；链路状态=live`。
+**枚四变异（FIRED×3）**：让 store 的 client 自己带 `Bearer mutation-probe-not-a-real-token` ⇒ 三趟各 `Tests 1 failed | 6 passed (7)`，原文 `→ 面板自己发出了 Authorization：/api/v1/ws-ticket ,/api/v1/health ,/api/v1/adapters?limit=20 …`。还原：`字节相等=true 长度=14957 CR=0`、`grep 残留=no`。
+**我在这条上抓到一次量法错（差点变成冤枉面板的红）**：第一版把 fetch 包装成"每一发都记"，于是**独立见证人**那些绝对 URL、按契约必须带 Bearer 的直连请求也被记进"面板发的" ⇒ 三趟红、原文里全是 `http://127.0.0.1:<port>/api/v1/…`。那不是缺陷是指南针坏了：改成**只记相对 URL 那一支**（面板走代理才用相对路径）之后，同一判据给出 `= 0`。⇒ 新口径进头部：判据的取样范围必须和它声称在量的东西同源。
+
+### (3) 那 29 条 SKIP 拆成两档（按主控要求的两面报法）
+- **已转真跑、条条带原文（29）**：`run-t282.sh` → `Tests 22 passed (22)`（health/401/501-vs-405/origin/游标空表示/换票幂等两票/hello_ack 抬游标/带游标只补发/票单次使用被拒 1008/events.ts 实走/C28②/manage-sync 两种红/F-8 单任务/§4 第 5~11 格逐跳/第 2~4 格真链/建项目 201/Idempotency 重放/缺 key 403/canonicalize 409/垂直切片）；`run-panel-chain.sh` → `Tests 7 passed (7)`×3（真换票真 WS、runChain 自己走、同源对拍、第 9 格输出面、**详情格**、**F-18**、seen⇄时间线）。默认闸门腿里它们显示为 SKIP，**是跑法不是欠账**：那条腿故意不起进程。
+- **仍 blocked 的只有链上那一跳（点名等谁）**：`approval` ⇒ 服务端 0 行待审，等 **backend 的 T-442② 发起面**（工作树里有未跟踪 `core/cmd/core/approvalgate.go`，**没入册我不当已用**）；它后面的 `resolve`/`accept` 因为没有合法 id 而到不了 —— 同一个上游。**这两跳不是 SKIP**，是 `chain.calls` 里带原因的 blocked 行，两把尺一致。
+- 要他把 29 条折进默认腿的话，做法是 vitest `globalSetup` 自起 Core + dev 反代（代价：闸门多约 2 分钟、收尾必须按端口认归属）；这属于跑法裁定，我不自裁。
+
+### (4) Wave-3 第一句：我这轮能交的证据级别（以及交不了的那一层）
+现在成立的是**store 级**：真 Core 进程（`go build ./cmd/core` + `-adapter fake=<路径>` 真子进程）、真 WS（`connectEvents()` 零参数 ⇒ 真换票 + 原生 WebSocket）、36 发真 REST、**面板代码里没有任何数据注入接缝**（`createCoreClient()` 无参，口令只在反代进程环境），每一格数字都与直连响应逐字段/整对象对拍过，读不到的格必须空着。
+交不了的层级说清楚：**浏览器级那一层这轮没有工具面**（本会话工具集里只有知识库类 MCP，没有 browser-use）。我 09-27/10-01 曾有过一次浏览器实证（`panel-live-1cca6fe.md`，那次靠 DOM `click()` 派发，视口 0x0），但它量的是**当时那条含假 WS 成分的通路** ⇒ 不能拿来当这一句的现证。所以我不写"面板在浏览器里被真后台驱动"，只写"做到 store 级、差浏览器级那一层，需要能开浏览器的会话或我下一轮补"。
+
+### 交付前最后一次重跑（`HEAD=f83466a`，23:53 一把取齐）
+`run-panel-chain.sh` → 三趟各 **`Tests 7 passed (7)`**、`三趟里失败的趟数=0`、`自检：5173 LISTEN=0`；`run-t282.sh` → `build core=0 fake=0`（`core_mtime=10-01_23:53:15`）、**`22 passed (22)`**；`repro-req-s1.sh` → exit 0 / `VERDICT: NOT-REPRODUCED`；`run-gates.sh` → `GATES_EXIT=0`、**`非零退出腿数=0`**、vitest 腿 **`28 passed | 29 skipped (57)`**、`4 passed | 2 skipped (6)` 个文件、C8-13 `--- PASS`；`vue-tsc` 0（并 `--listFiles` 确认覆盖新文件）。
+构建指纹要如实写：那几趟的 `core_脏面` 里有**别人未提交的在途码**（`M core/cmd/core/main.go`、`?? core/cmd/core/approvalgate.go` 等）⇒ 我的读数只证面板这侧，且在合验之前它们带着"混了在制品"这个条件（同 09-26 那条 FL 规矩）。
+
+### 没做的、为什么
+- 没把 live 用例折进默认闸门腿（跑法归主控裁）；没做浏览器级实证（本会话没有那个工具面，不拿旧的另一条通路的读数冒充）；
+- 没造待审行、没点 `:resolve`（T-428 裁语继续生效）；没提交（零 git 写）、没碰 `core/**`、`package.json` 一行没动（没引新依赖）。

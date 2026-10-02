@@ -3,7 +3,7 @@ TASK_ID: wave2-tests
 STATUS: in_progress
 SCOPE: Wave-2 三类测试（ownership lint / 状态机矩阵 / Adapter 契约 harness）+ Crash 骨架；对业务代码只读
 EVIDENCE_DIR: .qoder/evidence/test/
-LAST_UPDATED: 2026-09-30T20:42:26+0800   ← 本机 date 实测（**T-411 三条验收逐条有读数**：① 红话已拆成两条出路、不预设修法；② 补了一枚**常驻**反例腿 `TestProducerRosterComparisonLegs`（4 档：真漏登记／登记对了／登记反了／词表外名字），并把「改前改后都必红」两半都跑了 —— 旧措辞版与新版在同一漏登记场景下各 `rc=1`；③ 那枚反例**不读文本**：R3 把 :1022 退回旧措辞后它仍 PASS，而 R1／R2 摘掉比对的两半时它当场 FIRED（2 档／3 档）。**要认一笔账：我上轮说「入册前不再动这两个文件」，是主控 T-411 明文让我改的，所以判据指纹第二次变了** `71bb78dba8d1 → d5dff9810a50`；`turn_attribution_test.go` 仍是 `f18ecd8b858b` 未再动。主控那句「`execution_claimed` 不许写进『本名单当前是 21 条』那行」我按字记为纪律，盘上现读 §6 命中 0。
+LAST_UPDATED: 2026-10-01T16:06:01+0800   ← 本机 date 实测（**T-437 甲 已落盘**：`core/test/send_wedge_write_channel_test.go`（`a43bb892c198`，未跟踪新件，待入册）。形状按主控三条边界：① 真 `cmd/core` 子进程 + 真 HTTP + 真 handler（**装配不是复刻** —— 比我 09-27 写的甲更强，甲 当时那句『装配为测试复刻』的免责不再需要）；② `-timeout 90s` 且残留**按 pid 查**（`tasklist /FI "PID eq …"`，不扫进程名）；③ **整条不需要旗标、也不写 `t.Skip`** —— 默认面就真跑，起不来直接 `t.Fatalf` 报采不到。读数：send 那一发仍挂着时无关写 `POST /api/v1/projects` = **201 / 2ms**（预算 1s，主控定的数我没改）；杀掉那台孩子之后 send 返回 **503**、Core 仍 READY、pid 已消失。**为它补了一枚反空过变异 M1**（把「采样条件成立」那一支改成 false）⇒ 判据当场拒绝这枚绿：`1s 的断言是空过，不接受这种绿`；control PASS、`=== RUN`=1、字节还原一致。两面各 `-count=3`：默认面每趟 56 PASS/7 SKIP/1 FAIL、旗标开每趟 62 PASS/1 SKIP/1 FAIL，三趟逐项相同；那唯一 1 FAIL 是 T-431 判据在报 T-430 那四格（不是回归）。task #19 主控已落（错名改掉、Resolve 那格 0→1）⇒ 闭。
 
 ## Objective
 
@@ -18,6 +18,7 @@ LAST_UPDATED: 2026-09-30T20:42:26+0800   ← 本机 date 实测（**T-411 三条
 - [~] T-D Crash 骨架：§7 七条逐条落名；**11 条顶层用例全真跑（0 条顶层 SKIP）**，原 6 条 `t.Skip`
   已按 W2-7 改写 —— 能跑的那半真跑，跑不了的拆成 **5 条子用例 SKIP** 且每条把阻塞点点到 `file:line`。
 - [x] 验收命令最后一次重跑全绿（见 Verification evidence 的时间戳，报绿只写最后一次）
+- [ ] **交付前必跑两面 + 三趟**（契约① 第 24 条「证据生命周期」那款，10-01 由我的建议加码而来）：默认面与 `LUCERO_TEST_FAKE_ADAPTER=1` 那一面**各 `-count=3`**，三个计数（PASS/SKIP/FAIL）**只准从带 `-v` 那趟数**（非 `-v` 不打印 `--- SKIP` ⇒ 那种「SKIP 0」是空判据）；可能红的跑先 `> 文件 2>&1` 落盘再看尾巴；**三趟都报、不许只报一趟**，趟间不一致就当场报差异。**禁止**为过旗标面而关旗标、加 sleep、或只跑孤立用例。未两面齐 = 不宣称交付。
 - [x] 权威源 = 契约③ §7 且**运行时解析**，脚本内不保留副本；解析规则 <12 条即 exit 2
 - [x] 「主控自己的提交不计 worker 越界」：未提交集合判越界，已提交集合只计分布
 - [x] 契约③ §6.3 三处同步（check_7）：yaml 缺席只标记、落地即自动生效
@@ -123,6 +124,37 @@ LAST_UPDATED: 2026-09-30T20:42:26+0800   ← 本机 date 实测（**T-411 三条
   ③ **不许只验打印文本** —— 这条我用变异来证，不靠嘴说：`R3` 把那句红话**整行退回旧措辞** ⇒ 常驻腿仍 `PASS`（说明它判的不是文本）；`R1` 摘掉比对的 `extra` 那一半 ⇒ 当场 FIRED（2 个子档）；`R2` 摘掉 `missing` 那一半 ⇒ FIRED（3 个子档）；control 全 PASS；三枚各自字节还原一致（`还原一致 = True` ×3）。
   ④ **三面终读（20:41:12~20:41:33，同一棵工作树）**：默认面（旗标关）`RC=1`、顶层 **54 PASS / 7 SKIP / 1 FAIL（62 条）**，唯一 FAIL 仍是名册真树腿、红因 `未决发射位：internal/execution/claim.go:69`（**backend 在途**，未跟踪文件，不是我）；把 `LUCERO_CODE_ROOT` 指到 `git archive HEAD(07d2163) core` 的干净副本 ⇒ 同一条腿 **PASS、未决 0**；旗标开那一面定向 7 条（T-410 四腿 + 新常驻腿 + 扫描器／解析器反例腿）**全 PASS、RC=0**。**顶层数又从 61 变 62**（我加了常驻腿），交账里那句「53 PASS／6 SKIP」彻底作废，现值以上面这三面为准。
   ⑤ **主控的禁令按字收下**：`execution_claimed` **不许**进「本名单当前是 21 条」那行 —— 盘上现读 `grep -c execution_claimed specs/events/event-contract-v0.1.md` = **0**；而我这条判据在「常量／发射位先到、§6 未到」时把它报成**未决**（正是现在那枚红的形态），在「§6 与 yaml 齐、发射位也有」时把它算进**桶一**——两种都不是登记它的理由，所以禁令与判据行为一致，不需要我另加闸。
+  **Stage 追加（10-01 12:2x，T-418）**：
+  ① **REQ-S-1 的选项对不上，我按你留的口子先写三行、不套你的措辞**：**判据名** = `core/test/` 里那条「send 面在 handler 写事务内做网络往返」的判据（我 09-27 T-312 提的，账上别名「handler 层判据」）。**现在闭到哪** = 一个字没落（既没写用例也没进契约），前置是「backend 把连接面搬出写事务」（T-346 裁乙），它今天是否已完成我没现读，你一句话我就核。**要你挑的是哪两个** = 我账上框的是**三选一**（甲＝我落用例但装配是复刻／乙＝backend 先搬出去并开一条注入面／丙＝backend 自己交现场、我只出行文本），而 T-418① 讲的是「走过 `Close()` 那半已闭／abandon 那半不立自救判据 + 另立一条资源判据」——**两组不是同一件事**，所以我不把你的裁定复述成我的选项，等你先认这个差异。
+  ② **两面口径已升成我自己的验收项**（见上面 Completion criteria 那条新勾），引用按章节名不写编号：契约① 第 24 条「证据生命周期」里新加那款。现读 `grep -n 交付前必跑清单是两面的 specs/contracts-internal-v0.1.md` = `:671`。
+  ③ **你要的那条非计时资源判据，从包外写不出来 —— 障碍是实测不是推辞**：`Connection.pending` 未导出，而 `Connection` 的导出面只有 12 个方法（`grep -n '^func (c \*Connection) [A-Z]'` 现读：Child／Handshake／Initialize／Call／CallTurn／Cancel／Inbound／Turn／LastSeq／MissingSeq／SinceSeq／Close），**没有任何一个能读出 pending 的大小**。包内那条 `TestAbandonedWriteDoesNotLeakItsGoroutine`（`internal/process/connection_test.go:1276`）盯的是 `runtime.NumGoroutine()` 回落到 base、且带 5s 轮询 —— **既不是 pending、也不是非计时**，而它调的是未导出的 `conn.request(...)` ⇒ 这类断言只能住在那个包里，而红线不许我在别人包里建 `_test.go`。读码补一条：`request()` 四条出口（写失败 :446／回执 :456／ctx 取消 :464／dead :467）都调 `forget(id)`，`kill` 只 `close(c.dead)` 加遍历 `c.turns`、**不遍历 pending** ⇒ 今天没有「abandon 留下 pending」的已知路径，但也没有任何包外的眼睛盯它。
+  ④ **因此请你二选一（我不碰产品码，要动先报你）**：**(A)** 派 `adapter` 在 `internal/process` 开一个只读面（如 `PendingCount() int`，属观察面不属自救逻辑，不与第 23 条⑧款冲突），我在 `core/test/` 落那条非计时资源判据 ⇒ 覆盖面变成一条可指认的命令；**(B)** 这条判据由包内测试覆盖（backend／adapter 自己交），我只在契约① 判据表那格写明「包内判据、外部不可见」。我推荐 A，理由是 B 会把这条永远挂在别人的自觉上；但如果 A 被认为开了产品面的先例，我就按 B 落文本、不自作。
+  ⑤ **顺带把 `execution_claimed` 那批的量完状态交给你**（它正好重演并走完了我 19:5x 预言的那条路）：现读 §6=1、`core-v1.yaml`=1、`internal/execution/claim.go` **已在 HEAD 里** ⇒ 名册判据 §6 词表 66、发射位 31、**桶一 45**（新名由 `claim.go:69 Service.RecordClaim()` 认出，M=0／K=1）、**桶二 21 = 名单 21 —— 那句现状名单一个字没加**（与你的禁令一致，也不需我另加闸：它算有生产者，天然进不了名单）。
+  ⑥ **两面终读（12:27:42~12:28:02，HEAD `1cca6fe`，我名下只动 `projection_test.go` 一处文案）**：默认面 `go test ./test/ -count=1 -v` = **rc=0、55 PASS / 7 SKIP / 0 FAIL（62 条）**（昨天那枚 backend `claim.go` 的未决红已随三处同改补齐而消失）；旗标开定向 8 条（T-410 四腿 + T-411 常驻腿 + 三条名册腿）= **rc=0、8 PASS**。新文案的落点与原文都在 `t418-default.log` 里。
+  **Stage 追加（10-01 12:5x，T-422）**：
+  ① **主控要的逐字三行**（原文来自本账 09-27 T-312 那一格，锚字「三选一」；`grep -n 三选一 .qoder/progress/test.md` 现读落点 `:209`（我 12:2x 写的 :192 已被我自己这几轮的插入顶掉 ⇒ 行号只能当场取；选项正文另在 `:2544`），**行号会漂、认锚字**）：
+     - 判据名：`core/test/` 里那条「send 面在 handler 写事务内做网络往返」的判据（账上别名「handler 层判据」，REQ-S-1）。
+     - 现在闭到哪：**一个字没落** —— 没写用例、没进契约；前置是「backend 把连接面搬出写事务」（09-27 T-346 裁乙时给的条件）。
+     - 要你挑的是哪三个（**不是两个**）：甲＝我落用例但装配是复刻（`httpapi.Config` 23 个字段要复刻，复刻装配≠生产装配）／乙＝backend 先搬出去并开一条注入面（新生产面）／丙＝backend 自己交现场、我只出行文本。
+     **新量到的事实（12:59:30，可能让这道题变简单）**：乙 的前置**盘上已经完成** —— `core/api/http/executions.go` 现在两处 `Store.Write`（:316／:371）的闭包里只剩 `ExecutionSend.Reserve` ／ `recordSendIdentity` ／ `sealIdempotency` 这些 DB 动作，`Deliver(...)` 与 `CallSendTurn`（实现落 `cmd/core/sendpipe.go:118`、调用者 `internal/execution/send.go:277`）都在闭包**外** ⇒ 网络往返已不在写事务里。**所以要你决定只剩一句话**：这条判据由**我落（甲，装配是复刻）**还是**backend 自己交现场（丙，我只出行文本）**——乙 那半（搬出去）不用选了，它已经发生。我不替你选，也不把这句话替你复述成别的形状。
+  ② **(B) 的执行边界与交接**：判据只能住 `internal/process` 包内，而那按 §7 归 **adapter**，且红线不许我在别人包里建 `_test.go` ⇒ 我这侧交付的是**可粘文本 + 三条读数 + 一条真跑过的当场命令**，见 `.scratch/test/t422-pending-handoff.txt`（判据名／为什么只能包内／非计时口径：`Close()` 返回后**立即读一次** `len(pending)` 回基线，不许 sleep 或轮询『过一会儿就没了』——那正是现有 goroutine 用例的形状）。**我不写包内那条，也不开导出 API**（(A) 已被否，且我自己也说清了 A 的代价：为一条测试把内部状态升成对外契约）。
+  ③ **一次自纠**：我 12:29 那封里把「包外写不出来」讲成了道理；这一轮按主控要的口径**去撞了一次编译**，读数在 `t422-compile-attempt.log`，临时件 `core/test/t422_try_test.go` 已删（`cmp` 证明 `projection_test.go` 逐字节未变、`git status` 我名下仍只有它那件 ` M`）。巡检那条「命中数≠语义」也记我账上：`grep -c '尚无 owner'` 现在仍会命中 1，因为那一处正是我新写的引用句 —— **那一格今后用行原文判，不用命中数判**。
+  ④ **等谁更新**：`TestProjectionRejectedJournalAndAudit`（§5.4 那格）的前置从「等主控裁 owner」改为**等 backend 交 T-421（`FinishFromTurn` 三枚 id）与 T-424（`/output` 写者）**；它交完我就开旗标转真跑并报名字（解锁人＝backend，不是主控、也不是我）。
+  ⑤ **T-422 直投版的 ⑤ 已升成我的验收项**（就是上面那条改写的勾），本轮就是按它跑的：`-count=3` × 两面 = 6 趟，切趟的方法是先数顶层 `--- ` 行（186 行 = 62×3）再按首条用例名回映分段，**不靠 `cut`/`tail` 猜**。日志 `t422-default-c3.log`、`t422-flagon-c3.log`（都是先落盘再读尾巴）。
+  ⑥ **一枚不在我名下的新红，和它的摘条候选**：见头部那段。要提醒的口径差异：旗标开那一面是 **60 PASS / 1 SKIP**，默认面是 **54 PASS / 7 SKIP** —— 差的 6 条正是旗标打开后才真跑的那族（含 T-410 的 `TestEvidenceGateOnRealWire`），这也就是 ⑩ 款存在的理由。另外**这次红是我这条判据在正常情况下该红的样子**：它点名到 `execution_output_flushed` 与发射位行号，两边都有人改（名单归主控、发射位归 backend），我没有为了让它绿去缩扫描面。
+  ⑦ **②③ 的答复已交（本账 12:5x 那几格），主控直投版没改结论**：② 裁 (B) 归包内、owner=adapter，我这边交的是失败读数 + 包内可写证据 + 非计时口径（`t422-pending-handoff.txt`）；③ 的逐字三行在 `:2544~2551`（短版 `:209`），并附「乙 的前置已实测完成」⇒ 只剩 甲／丙 一句要裁。
+  **Stage 追加（10-01 15:0x~15:1x，T-431）**：
+  ① **判据形状**：`core/test/wiring_surface_test.go`。输入源=契约① §3.0-c 那张表（现读 5 行），脚本里**不内嵌清单**；每条一个子用例，红话点名到符号、定义文件与实际声明的类型名。扫描口径三层收口：非测试文件 → 排除定义它自己的那个包 → **要求调用方文件导入定义包**（最后一层是我自己撞出来的：`Request`／`Resolve` 这类常见名光按名字数会把别人的调用算成这条接线；排除项**计数打印**，不静默变窄）。表一行都读不到就 `t.Fatalf` 停 —— 看不见东西的判据不许报绿。
+  ② **两面读数**：HEAD `dbd5a51` 的 `git archive` 副本 = **5 行全 FAIL**（`Decide`／`CheckTemporaryGrant`／`Request`／`Resolve` 四处「调用点 0」+ `ApprovalGate.BlockingState` 一处「符号不存在」）；含 backend 在途的工作树 = **4 FAIL / 1 PASS**，绿的那行是 `approval.Service.Resolve` ⇒ 1 处调用点 `api/http/approval_resolve.go:117`（该文件未提交，`git cat-file -e HEAD:` 判定不在 HEAD 里）。⇒ 与派发那句「今天应当红，红的就是那五处」一致，且多给了一枚**表已经开始烂**的证据。
+  ③ **自证三支**（都在 .scratch 副本里做，真实产品码零改动、残留 0）：**正向对照** = 副本 `cmd/core` 里加一个带三条 import 的非测试文件，造出四个包外调用点 ⇒ `Decide`／`CheckTemporaryGrant`／`Request`／`Resolve` **四行 FAIL→PASS**，而 `ApprovalGate` 那行**不动**（它红在符号不存在，加调用者救不了 —— 两支红的性质不同，这一枚把它证出来了）；**反例** = 摘掉那个文件 ⇒ 回到 5 行全红、且与基线**逐行相同**；**③** = 带 `-v` 那趟 `=== RUN` 计数 6（>0）。日志 `t431-{baseline-head,positive,negative}.log`。
+  ④ **交回主控两格**（已开 task #19，笔不在我这）：(1) §3.0-c 第 5 行的 `execution.ApprovalGate.BlockingState` 是**错名** —— 盘上实名 `internal/execution/approval.go:5` 的 `ApprovalStates`（`ApprovalGate` 全树命中 0）；(2) 第 4 行 `approval.Service.Resolve` 标的「0」在 backend 那件入册的同一刻就变了 1，要么同步改表、要么让判据替它说话（现在它会以 PASS 的方式替这张表说话）。
+  ⑤ **名册判据那枚红已经没了，而且不是我改松的**：15:10:52 现读契约 `:322` 写着「本名单当前是 **20** 条」、实取 20 个、`execution_output_flushed` 已不在句里 ⇒ 是主控按 task #18 的出路 (1) 落的笔。两面各 `-count=3`：默认面每趟 55 PASS / 7 SKIP / 1 FAIL、旗标开每趟 61 PASS / 1 SKIP / 1 FAIL —— 那唯一 1 FAIL 就是**新判据本身**（今天该红），名册判据三趟全绿。判据文件我一字未动。
+  ⑥ **口径又变一次，必须明写**：顶层用例 **62 → 63**（新增 `TestWiringSurfaceHasCallSites`），默认面 FAIL 从 0（13:2x 那次是 1，因 roster 红）现在稳定为 **1**，且这一枚红是**我这条新判据在报接线没落地**，不是我的用例坏了。交账时「全绿」这个词我不会用，我只报三个计数与它们各自的归属。
+  **Stage 追加（10-01 16:0x，T-437 甲 落盘）**：
+  ① **为什么这一版比我自己 09-27 写的甲更好**：甲 原写「测试自持 adapter 子进程 + 真 handler」，我当时的顾虑是 `httpapi.Config`（现读结构体字段 **17 个**）要复刻 ⇒ 装配不是生产装配。落盘时改走了 `crash_test.go` 已有的那套真 Core 夹具（`buildCore` / `coreRun.boot` / `apiCall` / `seedCrashFixture` / `awaitPID` / `killPID`，同包可直接复用）⇒ **跑的是生产装配、生产路由、生产 SQLite**。
+  ② **枚出来的实测障碍（它决定了形状）**：真 fake-adapter 那条路**不能**用 —— Core 侧没有 `debug/*` 的 HTTP 路由（`grep -rn "debug/" core/api/http/*.go` 非测试零命中），从外面装不上 `debug/hang`；而真 fake 的 `session/send` 回执在 T-392① 之后来得很快 ⇒ 阻塞窗口≈0，那条「1 秒内 201」会**空过**。所以挂的那台用 `-adapter hang=<本测试二进制>`（孩子连握手都不回，crash_test 已证这样的请求真的挂着）—— 顺带这条**不需要 `LUCERO_TEST_FAKE_ADAPTER` 旗标**，也就躲开了「被 SKIP 遮住」那一族。
+  ③ **自证**：`control` PASS（=== RUN=1）；**M1** = 把「send 还挂着」那一支强制改成不成立 ⇒ 判据当场拒绝：`采样条件没成立…1s 的断言是空过，不接受这种绿`（日志 `t437-M1.log`）；改完字节还原一致 （`a43bb892c198` 两次相同）。锚点这次是**按行**定位的（前两次数缩进把自己改坏过两次，记这一笔）。
+  ④ **口径**：顶层用例 **63 → 64**（新增这一条），默认面 PASS 由 55→56。交付口径按 ⑩ 款：两面各 `-count=3`、只从带 `-v` 那趟数；两面三趟的 FAIL 集合完全相同 = `TestWiringSurfaceHasCallSites` 一格（四子档），那是 T-430 派给 backend 的四格接线，**我不替它关、也不把判据降成打印**。
   **Stage 追加（09-28 19:2x，T-276 收口轮：修越界 + 三腿）**：① **那条真红是我自己上一格造的，自造自认** ——
   `core/test/crash_test.go:1409` 在 `TestCrashApprovalNotLost` 重启后那段用了裸
   `SELECT state, execution_id, expires_at FROM approvals WHERE id = ?`，**违反契约③ §3.2.1 第 1 条**
@@ -398,7 +430,7 @@ LAST_UPDATED: 2026-09-30T20:42:26+0800   ← 本机 date 实测（**T-411 三条
   现 13 —— 增减**不在本轮**：本轮净减 6 条顶层、净增 5 条子用例，别的文件那 8 条我一条没碰。
   证据：`.qoder/evidence/test/crash-skip-t276-0928-repo18pkg.txt` / `…-directed.txt` / `…-pkg.txt`。
 - Next action:
-  **（09-30 20:4x 唯一动作）**：等主控入册我名下两件 —— `core/test/turn_attribution_test.go`（`f18ecd8b858b`，T-410 原语 + 两枚反例）与 `core/test/event_producer_roster_test.go`（`d5dff9810a50`，T-411 常驻反例腿 + 红话两条出路）。**这次真的冻结**：除非主控另派，我不再动这两个文件（本轮回改动第二次换指纹，那一次的依据是 T-411 明文）。入册后我这侧剩两件：**REQ-S-1**（task #8，等主控那半裁定 + 无并发窗口）；以及建议把 `LUCERO_TEST_FAKE_ADAPTER=1` 那一面写进交付前必跑清单（T-410 的教训：默认跑看不见，红能藏几天）。
+  **（10-01 16:0x 唯一动作）**：等主控入册我名下这一件新件 —— `core/test/send_wedge_write_channel_test.go`（`a43bb892c198`，REQ-S-1 甲）。入册后我这侧的待办只剩：**adapter 的 T-436**（收口层「目标早不在」过滤）与 **backend 的 T-430 四格**（我那四枚红等它们自己关）；REQ-S-1 之外无等主控项。另提请主控一处：甲 的「装配为测试复刻」那句免责可以**从判据行里去掉**——落盘版跑的是生产装配，比 09-27 那版强，别让我写的行文本反而把覆盖面写窄了。
   **补（09-28 19:2x，T-276 收口轮，两问交主控）**：
   ① **t47-smoke 那条 FAIL 不是我造的，请按别人的腿入册**：22 断言 **21 OK / 1 FAIL**，红在
   `RESULT_SEND_TWO_PHASE`（期望 `RUNNING_v3`、实测 `st=SUCCEEDED v=4`），**两次跑同一值、不是抖动**。

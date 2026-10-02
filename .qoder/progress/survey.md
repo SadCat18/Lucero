@@ -335,6 +335,26 @@ WorkBuddy 的**配置、账号、默认项目、既有会话**同样 0 次写入
   已提到 `qoder.md` 第 3 轮章节**头部**供主控直接引用。
 - 本角色状态：**关闭**（`STATUS: complete`，不再领新活；WorkBuddy 那 5 项由主控点名重开）。
 
+## T-444 重开（2026-10-01，OpenCode 接入前档案）
+
+- STATUS: complete（本任务四问已交；角色重开只为这一份档案，未再接别的活）
+- 交付物：`docs/adapters/phase0/opencode-integration-profile.md`（13,993B，落在我角色唯一可写目录内）
+- 时刻线（全部当场 `date`）：22:39:05 读契约 → 22:44:16 版本现量 → 23:01:16 启动桌面端并发现 `pid 23832 / 127.0.0.1:61677`
+  → 23:0x 十一发只读端点全 `401` → 23:0x~23:1x 库/包静态穷尽 → **23:12:38 关闭我起的进程**
+- 四问答案的一句话版：① 七条通知里 `stream/item` 映射干净、`stream/delta`/`turn/finished`/`turn/claimed`/`turn/dispatched` 都要 Adapter 合成、`approval/request` 有机制无载荷；
+  ② **持久层判为伪流式**（text/reasoning 每 part 最多 2 帧、无 delta 字段；多帧的是 tool 状态机）⇒ 攒批够用、**`after_seq` 补拉不够用**；
+  ③ `permission` 表列名 `action`/`resource` 与我们载荷天然对齐，但表 0 行 ⇒ 取值集合拿不到；**未加字段，改提 REQ-OC-1/2**；
+  ④ 额度 `cost` 的 **0 与 NULL 在 OpenCode 自己数据里并存**（message 2,179 行：NULL 116 / =0 1600），建议 `=0 → LOW`、`NULL → 不产出`；模型清单走缓存文件；中断路由在、行为未测。
+- 边界自证：**真消息 0 / 3 全未花**；未装软件、未改第三方配置、未截 IPC、未读凭据值；
+  凭据只以 `***(len 35)`/`***(len 51)` 掩码形状与字段名出现；静态 `[静]` 与实测 `[实]` 与推断 `[推]` 全文分标。
+- 残留：**零**（`Get-Process OpenCode` = 0；监听数 39 → 39；`61677` 仅 TIME_WAIT）。
+  一次性产物全在 `.scratch/survey/opencode-integration-1001/`（未碰 /tmp、%TEMP%、$env:TEMP）
+- **待主控裁的前置分叉（不是我能定的）**：接 OpenCode 的服务从哪来 ——
+  (a) 装 `opencode` CLI 自起 `serve`（撞红线④，要用户点头，但能把 ②③④ 全部实测重做）
+  (b) 复用桌面端内嵌服务（要用户提供服务口令，或允许写其配置 = 禁区）
+  (c) 只做 LOCAL_DATA 只读（今天就能开工，写链为空，且 `turn/{claimed,dispatched,finished}` 三帧全靠 Adapter 自造 ⇒ **别拿它验收 §4.2 那两帧的取证强度**）
+- Next action: 无。等主控对 (a)/(b)/(c) 的裁定，或 REQ-OC-1/2 的批复。
+
 ## Recovery note
 
 - Interruption point: **无**——第 1 轮（五家静态）+ 第 2 轮（WorkBuddy 动态实测）均已闭环并改判落盘

@@ -1,17 +1,16 @@
 OWNER_ROLE: db
 TASK_ID: db-platform
-STATUS: complete（T-413 两行已落、C8-12 转 PASS、`go test ./...` 18 包 ok／0 FAIL；只剩合批入册这一件不在我手里）
+STATUS: complete（T-413 四处同改已由 `48c2547` 入库；10-01 11:55 复跑三条判据全 PASS、`./...` 18 包 0 FAIL）
 SCOPE: Core 的 DB 平台层唯一写路径（连接与 PRAGMA 分层、串行写通道、事务原语、迁移器、Event Journal 写入、强制脱敏）；不含业务语义
 EVIDENCE_DIR: .qoder/evidence/
-LAST_UPDATED: 2026-09-30T22:06+08:00
-UNCOMMITTED: core/internal/eventjournal/events.go —— **T-413 的两行**（`git diff HEAD --numstat` = `2 1`，21:58:11 实测；归属 db）。
-  同族等合批的另两件不在我名下、也还未入库：`specs/events/event-contract-v0.1.md`（主控 §6 一行）与
-  `specs/openapi/core-v1.yaml`（frontend T-415 一枚 token）；backend 的 `claim.go` 等仍是未跟踪 `??`。
-  ⇒ HEAD `09dd199` 里 `execution_claimed` **三处全 0（自洽，不会红）**，工作树三处齐（全绿）。
-  上一批 `execution_unknown` 已在库（`2c65177` 19:57:03）。
-  被验树指纹（本轮末次）：**构建时刻 2026-09-30T21:57:37、HEAD `09dd199`、未提交 20 处、编译输入 2380 个、
-  指纹 `38bf468ccdd2273adb60cf582da4f841`、包 [./cmd/core ./test]**（前一枚 `28ca76db…` 是 21:56:44、
-  frontend 落 yaml 之前那棵树，留着标"被取代"）
+LAST_UPDATED: 2026-10-01T12:00+08:00
+UNCOMMITTED: 无 —— 本角色名下零未提交、零未跟踪（11:55:19 实测：`git diff HEAD --numstat` 对我四路径为空；
+  `events.go` 最后一次提交 = **`48c2547`（10-01 00:38:48，"core+specs: 四处同改 + T-414 一次入库"）**，
+  HEAD 内 `ExecutionClaimed` 命中 2、§6 与 yaml 各 1）。
+  11:56:37 全仓仅有的 2 件脏是主控的 `orchestration.md` 与 frontend 的 `live-core.test.ts`，都不是我的。
+  被验树指纹（配 11:55:19→11:56:12 那组读数）：**2026-10-01T11:56:26、HEAD `e4a1850`、未提交 2 处、
+  编译输入 2383 个、指纹 `5cec753547d4f3460eddea3e8151b8a4`、包 [./cmd/core ./test]**；
+  09-30 那三枚（`28ca76db…`/`38bf468c…`/`a7753907…`）留在 `## Completed` 的 T-413 段里，各自配对那次的读数
 
 ## Objective
 
@@ -40,45 +39,37 @@ UNCOMMITTED: core/internal/eventjournal/events.go —— **T-413 的两行**（`
 
 ## Current checkpoint
 
-- Stage: **T-413（主控 21:5x 补派的那两行）已落，全仓转绿**——`events.go:49` 常量 `ExecutionClaimed` +
-  `catalog` 的 `:93` 一枚 `true`，与今天已入库的 `ExecutionUnknown`（`:48`/`:92`）逐字同构；
-  上一批 **T-403/407 整条链由 `2c65177`（19:57:03）一次入库并复测通过**（没留 09-24 那种窗口）
-- Status: complete（**代码上不等任何人**；我那两行等主控合批入册，这与"等裁"不同——见下面"等（三问）"）
-- Last verified action: **最后一次重跑 = 09-30 21:55:01→21:57:37（当场 `date` 实读；本行于 22:01 刷新）** ——
-  scoped 门禁 `-v`：**`=== RUN` 49、49 `--- PASS`、0 FAIL、0 SKIP**（`ok platform/db 2.601s` + `ok eventjournal 0.514s`），
-  我包内对拍 `contract §6 and the catalogue agree on **66** event types`；`gofmt -l` 空、`go vet` exit 0；
-  主控点的那条判据 **从红转 PASS**：`C8-12：目录 66 类 / 常量 66 个；两个"独有"都空`（21:55:17）；
-  `./test/` 整包 **55 PASS／0 FAIL／7 SKIP**、`./internal/...` **13 包 ok**、`go test ./...` **18 包 ok／0 FAIL**（21:57:37）
-  ——**那 7 个 SKIP 不在我包里**（我 scoped 的 SKIP = 0），本轮没去逐一点名它们等谁；
-  变异取证：摘掉 `ExecutionClaimed: true`（`subs=1`）→ **FIRED**（§6 registers 但 catalogue 没有），
-  **同变异下 C8-12 仍 PASS ⇒ map 那枚的唯一见证是我那条对拍**（与 T-252 同一格）；
-  被验树指纹 **21:57:37、HEAD `09dd199`（21:31:58）、未提交 20 处、编译输入 2380、
-  指纹 `38bf468ccdd2273adb60cf582da4f841`**（前一枚 21:56:44/`28ca76db…` 对应 frontend 落 yaml 之前的树）；
-  **末两次复跑 22:02:49→22:02:51**：`LUCERO_REQ_DB2=1` 那条 `--- PASS (0.19s)`、
-  `C8-12 66/66` 与 **`C8-13 三格相等 §6=66 / yaml=66 / 常量=66，四条边全空`** ⇒ 三处在**工作树**已齐，只差入库；
-  **交账前最后一次 22:06:23** 再跑 scoped：**`RUN` 49／49 PASS／0 FAIL／0 SKIP**，
-  指纹 22:06:24/HEAD `09dd199`/`a7753907b8a7333918a41315c235e7e8`（未提交 21 处、编译输入 2381）
-  ——**别人在途会让指纹每跑必变**，所以配对读数的是"哪一枚对应哪一次判据"，不是"哪一枚最新"
-- 等（三问，按 T-276②）：**等主控合批**——**等谁**＝主控；**等什么**＝`execution_claimed` 那一族的入库
-  （21:58:11 实测 HEAD 内三处全 0、工作树三处齐：我的 `events.go` +2/−1、主控的 §6、frontend 的 yaml，
-  外加 backend 那 3 个未跟踪件）；**谁解锁**＝主控（入册）。
-  **HEAD 那棵树这一轮是自洽的、不会红**（backend 的发射位 `claim.go` 还是 `??` 未跟踪）⇒ 只是"未入库"，不是"缺一致性"。
-  - 已成立的历史格（留档勿再当待办读）：~~等合批入册（execution_unknown 那一族）~~ ⇒ **19:57:03 由 `2c65177` 落地**、
-    我 20:25:47 复跑全绿；~~等主控在 (a)/(b) 之间选~~ ⇒ T-407① 已裁 **(a)**；
-    ~~等主控把 `versionless_test.go` 那 +3 行入册~~ ⇒ 09-25 18:11:58 复量已成立（`2c56023`、HEAD 内 = 1）。
-- 范围自证：**基线现取 `09dd199`（09-30 21:31:58，`git cat-file -t` = commit）**——本轮 HEAD 一路换过
-  `738cb13`(19:02) → `07d2163`(20:02) → `89b32b3`(20:27) → `09dd199`(21:31)，所以每个数都带自己那次的时刻、不互相顶替
-  （19:2x 那三枚哈希的分歧已核完、只 `73c926d` 无效且巡检已自纠：详见 `## Completed` 的 T-407 收单段）。
-  **本轮我名下只有 1 件、且未入库**：`git diff HEAD --numstat` = **`2 1 core/internal/eventjournal/events.go`**
-  （T-413 那两行），`git status` 同一件 ` M`；`touch.go`、`versionless_test.go`、`core/migrations/` 对 HEAD 零差异；
-  **未跟踪件本角色 0 个**（backend 的 `claim.go`/`claim_test.go`/`turnpump_claim_test.go` 是它的，我没碰）。
-  上一批 `ExecutionUnknown` 的两行确认在库：`git log -1 -- …/events.go` = **`2c65177`（19:57:03）**、
-  `git show HEAD:…/events.go | grep -c ExecutionUnknown` = **2**。
-  计数口径并列不推：21:57:37 指纹报"未提交 20 处"（含我 1 件），19:33:55 我数 numstat 总 23；
-  `events.go` 的 mtime 现读 **21:56:36**（T-413 还原后的字节），旧句"18:27:16/17:37:08"都随各自那次为真、现已过期，就地留着不抹
-- Next action: **无待办**；下一次开工先复跑 `Verification` 那两条 + `go test ./test/ -run TestEventTypeTripleEquality`
-  确认合批后三处仍在库、基线没被带歪（上一句"等合批"针对 `execution_unknown`，已于 19:57:03 落地并复跑完；
-  本轮 `execution_claimed` 的合批是同一件事的下一次，**不阻塞我**）。**我不动 `specs/**`、不动 `core/test/**`、不放宽对拍。**
+- Stage: **`execution_claimed` 四处同改已入库、我三件判据全复跑过**——我那两行（`events.go:49` 常量 + `:93`
+  catalog 一枚 `true`）由 **`48c2547`（10-01 00:38:48，"core+specs: 四处同改 + T-414 一次入库"）** 收走；
+  历史明细都在 `## Completed`（T-413 段、T-403/407 段、09-30 20:25 与 10-01 11:55 两轮复测），头部只留当前态
+- Status: complete（**不等任何人、不等入册**；本角色账上无待办）
+- Last verified action: **最后一次重跑 = 10-01 11:55:19→11:56:26（当场 `date` 实读；本行于 11:57 刷新）** ——
+  ① scoped 门禁 `-v`：**`=== RUN` 49、49 `--- PASS`、0 FAIL、0 SKIP**（`ok platform/db 2.789s` +
+  `ok eventjournal 0.492s`；11:55:30→35），`gofmt -l` 空、`go vet` exit 0；
+  ② 契约① 第 17 条落地判据（带 flag 单跑那一条）→ **`--- PASS (0.18s)`**（11:55:45）；
+  ③ 三格同步判据 → **`C8-12 目录 66/常量 66，两个"独有"都空` PASS** +
+  **`C8-13 三格相等：§6=66 类、yaml=66 条、常量=66 个；四条边全空` PASS**（11:55:45）；
+  信息性 `go test ./...` → **18 包 ok／0 FAIL 包**（11:56:12）——**巡检预告的那枚负载敏感红（T-416，整包 3 趟 1 红）
+  这轮没撞见**；若撞见我按它的口径读成"backend 那一格"，不动自己的对拍；
+  "三处仍在库"的硬证：`git show HEAD:core/internal/eventjournal/events.go | grep -c ExecutionClaimed` = **2**、
+  `HEAD:specs/events/event-contract-v0.1.md | grep -c execution_claimed` = **1**、
+  `HEAD:specs/openapi/core-v1.yaml` = **1**；被验树指纹 **11:56:26、HEAD `e4a1850`、未提交 2 处、编译输入 2383、
+  指纹 `5cec753547d4f3460eddea3e8151b8a4`**（指纹每跑必变，配对靠"哪枚对哪次"）
+- 等（三问，按 T-276②）：**本格为空——不等任何人、不等入册。**
+  - 已成立的历史格（留档勿再当待办读）：~~等 `execution_claimed` 那族合批入册~~ ⇒ **`48c2547`（10-01 00:38:48）落地**，
+    我 11:55:19 复跑三处全在 HEAD；~~等合批（`execution_unknown` 族）~~ ⇒ `2c65177`（09-30 19:57:03）；
+    ~~等主控在 (a)/(b) 之间选~~ ⇒ T-407① 已裁 **(a)**；~~等 `versionless_test.go` 那 +3 行入册~~ ⇒ `2c56023`（09-25 17:47:36）。
+- 范围自证：**基线现取 `e4a1850`（10-01 00:47:13，`git cat-file -t` = commit；巡检 11:52:58 报的就是这一枚）**。
+  **我名下这次全部在库、零未提交**：`git diff HEAD --numstat` 对我四路径（`core/internal/eventjournal`、
+  `core/internal/platform/db`、`core/migrations`）= **空**；`git log -1 -- …/events.go` = **`48c2547`
+  （00:38:48，"core+specs: 四处同改 + T-414 一次入库"）**，HEAD 内 `ExecutionClaimed` = 2、
+  `ExecutionUnknown` = 2，§6 与 yaml 各 1；**未跟踪件本角色 0 个**。
+  11:56:37 现读全仓只有 2 件脏：`.qoder/progress/orchestration.md`（主控自己在写）与
+  `apps/desktop/src/__tests__/live-core.test.ts`（frontend 在写）⇒ **巡检 11:52:58 说"工作树全干净"在它那一刻为真，
+  两分半后多了这两件，都不是我的、我也不碰**。
+  历史细节（哈希换过几枚、`09dd199`/`89b32b3` 等）留在 `## Completed` 各段里，头部不再复述
+- Next action: **无待办**。下一次开工先复跑 `Verification` 三条确认基线没被带歪（本条已在 10-01 11:55 执行完，
+  三条全 PASS），然后等主控派活。**我不动 `specs/**`、不动 `core/test/**`、不放宽对拍。**
   - 已作废/已成立的历史层（T-276③：头部只留活动项，历史按"留档"读，勿再当待办）：
     ① ~~把 T-233 与 adapter 那两处更正按改后口径转告 adapter~~（T-243 08:20 销账：巡检 07:50 已覆盖同一格，
       且"分开两种错形"本是 **adapter 07:46 先纠出来的**——它按 `landedStatus` 落码在先，
@@ -107,6 +98,28 @@ UNCOMMITTED: core/internal/eventjournal/events.go —— **T-413 的两行**（`
 
 ## Completed
 
+- **10-01 11:55 合批后复测轮（执行 Next action，零代码零判据改动）**：
+  - **入库硬证（我自己现取，不转抄巡检）**：`git cat-file -t e4a1850` = commit、`git log -1 -- …/events.go` =
+    **`48c2547`（10-01 00:38:48，"core+specs: 四处同改 + T-414 一次入库"）**；
+    `git show HEAD:core/internal/eventjournal/events.go | grep -c ExecutionClaimed` = **2**、
+    `…| grep -c ExecutionUnknown` = **2**、HEAD 内 §6 与 yaml 的 `execution_claimed` 各 **1**；
+    我四路径 `git diff HEAD --numstat` = **空** ⇒ 本角色零未提交、零未跟踪。
+  - **三条判据全 PASS**（11:55:19→11:56:26）：① scoped `-v` **`=== RUN` 49／49 PASS／0 FAIL／0 SKIP**
+    （`ok platform/db 2.789s`、`ok eventjournal 0.492s`）+ `gofmt -l` 空 + `go vet` exit 0；
+    ② 带 flag 单跑 `TestLifecycleRowLandsTheFiveColumns` → **`--- PASS (0.18s)`**；
+    ③ `C8-12 目录 66/常量 66，两个"独有"都空` **PASS** 与 **`C8-13 三格相等：§6=66 类、yaml=66 条、常量=66 个；
+    四条边全空` PASS** ⇒ **`execution_claimed` 这一族的三处同改闭合**；信息性 `./...` **18 包 ok／0 FAIL 包**（11:56:12）。
+  - **巡检预告那枚负载敏感红（T-416，"整包 3 趟 1 红、同快照再跑又过"）这轮没撞见**；
+    按它的口径记一条：**真撞到手软失败，我先当 backend 那一格读、重跑取指纹，不松自己的对拍**（写在这条里备查）。
+  - **一处读数与巡检不同、两条都真**：巡检 11:52:58 报 `git status --porcelain | wc -l` = 0，
+    我 11:55:30 数到 **1**（`.qoder/progress/orchestration.md`，主控正在写）、11:56:37 数到 **2**
+    （多出 `apps/desktop/src/__tests__/live-core.test.ts`，frontend 在写）⇒ 差 3 分钟、都不是我的码，
+    **我不据此说它量错，也不据此说树脏在我头上**。
+  - **顺手修了自己造出的一处账本损伤**：我刷新头部时把新的 `SCOPE/EVIDENCE_DIR/LAST_UPDATED/UNCOMMITTED`
+    当成"替换"插进去，实际是**追加** ⇒ 头部一度出现两套同名键（14-24 行是旧的那套，含 09-30 的旧指纹）。
+    修法：先把三枚 09-30 指纹补进本节的 T-413 段（避免删历史丢证据），再删掉重复的那 11 行；
+    删后自证：`^SCOPE:`/`^LAST_UPDATED:`/`^UNCOMMITTED:` 各 **1**、`^## ` **11**、`- Next action:` **1**、
+    CR 字节数 **0**（`tr -dc '\r' | wc -c`，确认 `sed -i` 没把行尾改成 CRLF）。删之前先 `cp` 到 `.scratch/db/` 留了底。
 - **T-413（09-30 21:54：登记 `execution_claimed`）两行已落，全仓转绿**（这是主控 T-412① 漏派、21:5x 补开的那张，
   主控自己写明"这一格是我漏派给你的，不是你的欠账"）：
   - **改的两处与 `ExecutionUnknown` 逐字同构**：`events.go:49` 常量 `ExecutionClaimed = "execution_claimed"`
@@ -131,9 +144,11 @@ UNCOMMITTED: core/internal/eventjournal/events.go —— **T-413 的两行**（`
     于是 `./test/` 整包 **55 PASS／0 FAIL／7 SKIP**（那 7 个 SKIP 不在我包里，我 scoped 是 0 SKIP）、
     `./internal/...` 13 ok、`go test ./...` **18 包 ok／0 FAIL**（21:57:37）。
     上一轮 20:27 那枚 `TestEventProducerRosterMatchesDerivedSet` 的红也随 §6 那行自消（我没碰 `core/test/**`）。
-  - **指纹两枚**（同一轮内树动过一次）：21:56:44/HEAD `09dd199`/`28ca76dbd248e7593c89f07964f9707d`（未提交 20 处）
-    与 **21:57:37/HEAD `09dd199`/`38bf468ccdd2273adb60cf582da4f841`（未提交 20 处、编译输入 2380）**；
-    后者对应上面那组全仓绿读数。
+  - **指纹三枚**（同一轮内树动过两次，各配自己那次读数；这就是"未入库窗口"的物证）：
+    21:56:44/HEAD `09dd199`/`28ca76dbd248e7593c89f07964f9707d`（未提交 20 处，**yaml 还没落**）；
+    21:57:37/HEAD `09dd199`/`38bf468ccdd2273adb60cf582da4f841`（未提交 20 处、编译输入 2380，对应全仓绿那组）；
+    **22:06:24/HEAD `09dd199`/`a7753907b8a7333918a41315c235e7e8`（未提交 21 处、编译输入 2381，配交账前那次
+    `RUN` 49／49 PASS／0 FAIL）**
   - **入库状态实测（21:58:11/21:58:34，不猜）**：HEAD `09dd199`（21:31:58）里 `execution_claimed` **三处全 0**
     （`git show HEAD:specs/events/event-contract-v0.1.md`、`HEAD:specs/openapi/core-v1.yaml`、
     `HEAD:core/internal/eventjournal/events.go` 各 0），工作树里三处各 1/1/2 ⇒ **我的、主控的、frontend 的那一件
