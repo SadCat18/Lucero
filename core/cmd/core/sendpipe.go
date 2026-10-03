@@ -115,6 +115,13 @@ func (p *sendPipe) CallSendTurn(ctx context.Context, call execution.TurnCall) (e
 	}
 	// 在飞名单登记必须早于出帧（崩溃那一支的名单来源，见 `turnHub.watch`）。
 	p.hub.watch(adapterKey.String, call.ExecutionID)
+	// 派发之前最后一道门（T-452）：**待审批 → 临时授权 → 判定**，顺序不许反。
+	// 它排在取连接之后、出帧之前 —— 早一步（在反查 session 之前）会拿不到这一行该问的字段，
+	// 晚一步（出帧之后）就变成"已经送出去了再追认"，那正是 §16.7/§3 规则 1 要堵的形状。
+	if err := p.hub.gateBeforeDispatch(cctx, call.ExecutionID); err != nil {
+		return execution.TurnReceipt{}, err
+	}
+
 	f, err := conn.CallTurn(cctx, call.ExecutionID, "session/send", params)
 	if err != nil {
 		// 对端没了 ⇒ 这条常驻连接不再可用：退役它，下一次 send 重连（④ 那句"死亡即重连"）。
