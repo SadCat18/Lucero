@@ -33,3 +33,5 @@ Thumbs.db
 .qoder/scratch/
 # 审计链头检查点与运行期锚点（ADR-018）：本地数据，入库会让"删行"被 diff 掩盖
 *.head
+
+.lucero-run/
