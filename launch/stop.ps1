@@ -1,4 +1,5 @@
-﻿#requires -Version 5.1
+﻿#requires -Version 7
+# 停止：pwsh -NoProfile -File launch/stop.ps1（PowerShell 7）
 # 一键停：只关我们自己起的那两个进程，绝不按进程名广杀。
 $ErrorActionPreference = 'SilentlyContinue'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)

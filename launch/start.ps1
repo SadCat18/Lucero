@@ -1,4 +1,5 @@
-﻿#requires -Version 5.1
+﻿#requires -Version 7
+# 启动：pwsh -NoProfile -File launch/start.ps1（PowerShell 7；系统自带的 5.1 不要用）
 # 一键起：Core + 面板（浏览器）。停止用 stop.ps1。
 # 约定：不新增依赖、不改任何业务代码；端口由 Core 随机分配并写进 core.endpoint（REQ-L-1）。
 $ErrorActionPreference = 'Stop'
